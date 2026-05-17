@@ -83,6 +83,7 @@ async function openPanel(label: PanelLabel, x: number, y: number) {
   if (existing) {
     await existing.setSize(size);
     if (label === "voice") {
+      await existing.setIgnoreCursorEvents(false).catch(() => {});
       await existing.center();
     } else {
       await existing.setPosition(position);
@@ -146,6 +147,9 @@ async function openVoicePanel() {
 }
 
 async function closeCurrentWindow() {
+  if (currentLabel === "voice") {
+    await currentWindow.setIgnoreCursorEvents(true).catch(() => {});
+  }
   await currentWindow.close();
 }
 
