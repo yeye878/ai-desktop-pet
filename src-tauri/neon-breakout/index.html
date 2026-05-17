@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NEON BREAKOUT</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap');
+  body {
+    background: #0a0a0f;
+    display: flex; justify-content: center; align-items: center;
+    min-height: 100vh; overflow: hidden; font-family: 'Orbitron', monospace;
+  }
+  #bg-grid {
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background-image:
+      linear-gradient(rgba(0,255,255,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,255,255,0.03) 1px, transparent 1px);
+    background-size: 40px 40px; z-index: 0;
+  }
+  #game-wrapper {
+    position: relative; z-index: 1;
+    display: flex; flex-direction: column; align-items: center; gap: 16px;
+  }
+  #hud {
+    display: flex; justify-content: space-between; width: 720px;
+    padding: 12px 24px; border-radius: 8px;
+    background: rgba(0,0,0,0.6); border: 1px solid rgba(0,255,255,0.2);
+  }
+  .hud-item {
+    color: #0ff; font-size: 14px; text-transform: uppercase; letter-spacing: 2px;
+    text-shadow: 0 0 10px rgba(0,255,255,0.5);
+  }
+  .hud-val { color: #fff; font-size: 20px; font-weight: 700; margin-top: 2px; }
+  canvas {
+    border: 2px solid rgba(0,255,255,0.3); border-radius: 4px;
+    box-shadow: 0 0 30px rgba(0,255,255,0.1), inset 0 0 30px rgba(0,0,0,0.5);
+  }
+  #start-screen, #gameover-screen {
+    position: absolute; top: 0; left: 0; width: 720px; height: 540px;
+    display: flex; flex-direction: column; justify-content: center; align-items: center;
+    background: rgba(5,5,15,0.92); border-radius: 4px; z-index: 10;
+    backdrop-filter: blur(8px);
+  }
+  #gameover-screen { display: none; }
+  .screen-title {
+    font-size: 48px; font-weight: 900; color: #0ff; letter-spacing: 6px;
+    text-shadow: 0 0 20px #0ff, 0 0 40px #0ff, 0 0 80px rgba(0,255,255,0.3);
+    margin-bottom: 12px;
+  }
+  .screen-sub { color: rgba(255,255,255,0.5); font-size: 12px; letter-spacing: 4px; margin-bottom: 40px; }
+  .btn {
+    padding: 14px 48px; font-family: 'Orbitron', monospace; font-size: 16px; font-weight: 700;
+    color: #0ff; background: transparent; border: 2px solid #0ff; border-radius: 4px;
+    cursor: pointer; letter-spacing: 3px; text-transform: uppercase; transition: all 0.2s;
+    box-shadow: 0 0 15px rgba(0,255,255,0.2);
+  }
+  .btn:hover {
+    background: rgba(0,255,255,0.15); box-shadow: 0 0 30px rgba(0,255,255,0.4);
+    transform: scale(1.05);
+  }
+  .go-score { font-size: 28px; color: #fff; margin-bottom: 8px; }
+  .go-label { font-size: 11px; color: rgba(255,255,255,0.4); letter-spacing: 3px; margin-bottom: 32px; }
+  .power-legend {
+    position: absolute; bottom: 16px; display: flex; gap: 16px; font-size: 10px;
+    color: rgba(255,255,255,0.35); letter-spacing: 1px;
+  }
+  .pl-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+</style>
+</head>
+<body>
+<div id="bg-grid"></div>
+<div id="game-wrapper">
+  <div id="hud">
+    <div class="hud-item">Score<div class="hud-val" id="h-score">0</div></div>
+    <div class="hud-item">Level<div class="hud-val" id="h-level">1</div></div>
+    <div class="hud-item">Lives<div class="hud-val" id="h-lives">3</div></div>
+    <div class="hud-item">Combo<div class="hud-val" id="h-combo">x1</div></div>
+  </div>
+  <div style="position:relative">
+    <canvas id="gc" width="720" height="540"></canvas>
+    <div id="start-screen">
+      <div class="screen-title">NEON BREAKOUT</div>
+      <div class="screen-sub">CYBER EDITION</div>
+      <button class="btn" id="btn-start">START GAME</button>
+      <div class="power-legend">
+        <span><span class="pl-dot" style="background:#0f0"></span>Wide Paddle</span>
+        <span><span class="pl-dot" style="background:#f0f"></span>Multi Ball</span>
+        <span><span class="pl-dot" style="background:#ff0"></span>Laser</span>
+        <span><span class="pl-dot" style="background:#f55"></span>Slow</span>
+      </div>
+    </div>
+    <div id="gameover-screen">
+      <div class="screen-title" style="font-size:36px;color:#f55">GAME OVER</div>
+      <div class="screen-sub">SYSTEM CRASH</div>
+      <div class="go-label">FINAL SCORE</div>
+      <div class="go-score" id="go-score">0</div>
+      <button class="btn" id="btn-restart" style="border-color:#f55;color:#f55;box-shadow:0 0 15px rgba(255,80,80,0.2)">REBOOT</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const C = document.getElementById('gc'), X = C.getContext('2d');
+const W = 720, H = 540;
+const COLORS = ['#0ff','#f0f','#ff0','#f55','#0f0','#fa0','#55f','#f0a'];
+const BRICK_COLORS = [
+  ['#0ff','#088'], ['#f0f','#808'], ['#ff0','#880'], ['#f55','#833'],
+  ['#0f0','#080'], ['#fa0','#850'], ['#55f','#338'], ['#f0a','#805']
+];
+
+// Audio
+const AC = new (window.AudioContext || window.webkitAudioContext)();
+function playTone(f, dur, vol=0.1, type='square') {
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.type = type; o.frequency.value = f;
+  g.gain.setValueAtTime(vol, AC.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + dur);
+  o.connect(g); g.connect(AC.destination);
+  o.start(); o.stop(AC.currentTime + dur);
+}
+function sfxHit() { playTone(520 + Math.random()*200, 0.08, 0.08); }
+function sfxBrick(c) { playTone(300 + c*80, 0.12, 0.1, 'sawtooth'); }
+function sfxDie() { playTone(120, 0.4, 0.15, 'sawtooth'); }
+function sfxPower() { playTone(800, 0.15, 0.08); playTone(1200, 0.15, 0.06); }
+function sfxWin() { [0,100,200,300,400].forEach((d,i)=>setTimeout(()=>playTone(400+i*100,0.2,0.08),d)); }
+
+// State
+let state = 'menu'; // menu, play, over
+let score, lives, level, combo, maxCombo;
+let paddle, balls, bricks, particles, powerups, lasers;
+let shakeTimer = 0, flashAlpha = 0;
+let keys = {};
+let levelTransition = 0;
+
+// Paddle
+function mkPaddle() {
+  return { x: W/2, y: H-36, w: 100, h: 14, speed: 0, baseW: 100, wideTimer: 0, laserTimer: 0, laserCD: 0 };
+}
+
+// Ball
+function mkBall(x, y, dx, dy) {
+  return { x, y, dx, dy, r: 6, trail: [], stuck: false };
+}
+
+// Brick
+function mkBrick(x, y, w, h, hp, ci) {
+  return { x, y, w, h, hp, maxHp: hp, ci, shakeT: 0 };
+}
+
+// Particle
+function spawnP(x, y, col, n=8) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random()*Math.PI*2, s = 1 + Math.random()*3;
+    particles.push({ x, y, vx: Math.cos(a)*s, vy: Math.sin(a)*s, life: 1, col, r: 1+Math.random()*2 });
+  }
+}
+
+// Powerup
+function spawnPowerup(x, y) {
+  const types = ['wide','multi','laser','slow'];
+  const weights = [3, 3, 2, 2];
+  let total = weights.reduce((a,b)=>a+b,0), r = Math.random()*total, t;
+  for (let i = 0; i < types.length; i++) { r -= weights[i]; if (r <= 0) { t = types[i]; break; } }
+  const colors = { wide:'#0f0', multi:'#f0f', laser:'#ff0', slow:'#f55' };
+  powerups.push({ x, y, type: t, col: colors[t], vy: 1.5, r: 10, pulse: 0 });
+}
+
+// Laser
+function fireLaser() {
+  if (paddle.laserCD > 0) return;
+  lasers.push({ x: paddle.x - 20, y: paddle.y, vy: -8, w: 3, h: 12 });
+  lasers.push({ x: paddle.x + 20, y: paddle.y, vy: -8, w: 3, h: 12 });
+  paddle.laserCD = 12;
+  playTone(1000, 0.05, 0.04, 'sawtooth');
+}
+
+// Level gen
+function genLevel(lv) {
+  bricks = [];
+  const cols = 10, bw = 64, bh = 22, pad = 6, ox = (W - cols*(bw+pad)+pad)/2;
+  let rows = Math.min(4 + lv, 10);
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      if (Math.random() < 0.08 * lv && r < 2) continue; // gaps in higher levels
+      let hp = 1 + Math.floor(r/2);
+      if (lv > 3 && Math.random() < 0.15) hp += 2;
+      if (lv > 6 && r === 0) hp += 2;
+      hp = Math.min(hp, 8);
+      bricks.push(mkBrick(ox + c*(bw+pad), 50 + r*(bh+pad), bw, bh, hp, r % COLORS.length));
+    }
+  }
+}
+
+function initGame() {
+  score = 0; lives = 3; level = 1; combo = 0; maxCombo = 0;
+  paddle = mkPaddle();
+  particles = []; powerups = []; lasers = [];
+  genLevel(level);
+  resetBall();
+  updateHUD();
+}
+
+function resetBall() {
+  balls = [mkBall(paddle.x, paddle.y - 14, 0, 0)];
+  balls[0].stuck = true;
+}
+
+function launchBall() {
+  if (balls.length && balls[0].stuck) {
+    const a = -Math.PI/2 + (Math.random()-0.5)*0.6;
+    balls[0].dx = Math.cos(a)*5; balls[0].dy = Math.sin(a)*5;
+    balls[0].stuck = false;
+  }
+}
+
+function updateHUD() {
+  document.getElementById('h-score').textContent = score;
+  document.getElementById('h-level').textContent = level;
+  document.getElementById('h-lives').textContent = lives;
+  document.getElementById('h-combo').textContent = 'x' + Math.max(1, combo);
+}
+
+function startGame() {
+  AC.resume();
+  state = 'play';
+  document.getElementById('start-screen').style.display = 'none';
+  document.getElementById('gameover-screen').style.display = 'none';
+  initGame();
+}
+
+function gameOver() {
+  state = 'over';
+  document.getElementById('go-score').textContent = score;
+  document.getElementById('gameover-screen').style.display = 'flex';
+}
+
+function nextLevel() {
+  level++;
+  sfxWin();
+  levelTransition = 120;
+  paddle.laserTimer = 0; paddle.wideTimer = 0; paddle.w = paddle.baseW;
+  powerups = []; lasers = [];
+  genLevel(level);
+  resetBall();
+  updateHUD();
+}
+
+// Input
+document.addEventListener('keydown', e => {
+  keys[e.key] = true;
+  if (e.key === ' ' && state === 'play') launchBall();
+  if (e.key === ' ' && state === 'play' && paddle.laserTimer > 0) fireLaser();
+});
+document.addEventListener('keyup', e => keys[e.key] = false);
+C.addEventListener('mousemove', e => {
+  if (state !== 'play') return;
+  const rect = C.getBoundingClientRect();
+  paddle.x = Math.max(paddle.w/2, Math.min(W - paddle.w/2, (e.clientX - rect.left) * (W / rect.width)));
+});
+C.addEventListener('click', () => { if (state === 'play') { launchBall(); if (paddle.laserTimer > 0) fireLaser(); }});
+document.getElementById('btn-start').addEventListener('click', startGame);
+document.getElementById('btn-restart').addEventListener('click', startGame);
+
+// Update
+function update() {
+  if (state !== 'play') return;
+
+  // Paddle movement
+  if (keys['ArrowLeft'] || keys['a']) paddle.speed = -8;
+  else if (keys['ArrowRight'] || keys['d']) paddle.speed = 8;
+  else paddle.speed *= 0.85;
+  paddle.x += paddle.speed;
+  paddle.x = Math.max(paddle.w/2, Math.min(W - paddle.w/2, paddle.x));
+
+  // Timers
+  if (paddle.wideTimer > 0) { paddle.wideTimer--; paddle.w = 160; if (paddle.wideTimer <= 0) paddle.w = paddle.baseW; }
+  if (paddle.laserTimer > 0) { paddle.laserTimer--; if (paddle.laserCD > 0) paddle.laserCD--; }
+  if (levelTransition > 0) levelTransition--;
+
+  // Balls
+  for (let b of balls) {
+    if (b.stuck) { b.x = paddle.x; b.y = paddle.y - 14; continue; }
+    // Trail
+    b.trail.push({x:b.x, y:b.y});
+    if (b.trail.length > 8) b.trail.shift();
+    b.x += b.dx; b.y += b.dy;
+    // Wall bounce
+    if (b.x - b.r < 0) { b.x = b.r; b.dx = Math.abs(b.dx); sfxHit(); }
+    if (b.x + b.r > W) { b.x = W - b.r; b.dx = -Math.abs(b.dx); sfxHit(); }
+    if (b.y - b.r < 0) { b.y = b.r; b.dy = Math.abs(b.dy); sfxHit(); }
+    // Paddle
+    if (b.dy > 0 && b.y + b.r >= paddle.y && b.y + b.r <= paddle.y + paddle.h + 4
+        && b.x >= paddle.x - paddle.w/2 - b.r && b.x <= paddle.x + paddle.w/2 + b.r) {
+      const off = (b.x - paddle.x) / (paddle.w/2);
+      const ang = -Math.PI/2 + off * Math.PI/3;
+      const spd = Math.sqrt(b.dx*b.dx + b.dy*b.dy);
+      b.dx = Math.cos(ang) * spd; b.dy = Math.sin(ang) * spd;
+      b.y = paddle.y - b.r;
+      combo = 0;
+      sfxHit(); spawnP(b.x, b.y, '#0ff', 4);
+    }
+    // Bricks
+    for (let br of bricks) {
+      if (br.hp <= 0) continue;
+      if (b.x + b.r > br.x && b.x - b.r < br.x + br.w && b.y + b.r > br.y && b.y - b.r < br.y + br.h) {
+        // Determine bounce side
+        const overlapL = b.x + b.r - br.x, overlapR = br.x + br.w - (b.x - b.r);
+        const overlapT = b.y + b.r - br.y, overlapB = br.y + br.h - (b.y - b.r);
+        const minO = Math.min(overlapL, overlapR, overlapT, overlapB);
+        if (minO === overlapL || minO === overlapR) b.dx = -b.dx; else b.dy = -b.dy;
+        br.hp--; br.shakeT = 6; combo++; if (combo > maxCombo) maxCombo = combo;
+        score += 10 * Math.max(1, combo);
+        const ci = br.ci;
+        sfxBrick(ci);
+        spawnP(b.x, b.y, COLORS[ci], 6);
+        if (br.hp <= 0 && Math.random() < 0.12) spawnPowerup(br.x + br.w/2, br.y + br.h/2);
+        break;
+      }
+    }
+  }
+  // Remove dead balls
+  balls = balls.filter(b => b.y - b.r < H + 20);
+  if (balls.length === 0) { lives--; combo = 0; sfxDie(); shakeTimer = 15; flashAlpha = 0.3; if (lives <= 0) { gameOver(); return; } resetBall(); }
+
+  // Lasers
+  for (let l of lasers) { l.y += l.vy; }
+  lasers = lasers.filter(l => l.y > 0);
+  for (let l of lasers) {
+    for (let br of bricks) {
+      if (br.hp <= 0) continue;
+      if (l.x > br.x && l.x < br.x + br.w && l.y > br.y && l.y < br.y + br.h) {
+        br.hp--; br.shakeT = 6; combo++; score += 10 * Math.max(1, combo);
+        sfxBrick(br.ci); spawnP(l.x, l.y, COLORS[br.ci], 4);
+        l.vy = 0; l.y = -100; // remove
+        if (br.hp <= 0 && Math.random() < 0.12) spawnPowerup(br.x + br.w/2, br.y + br.h/2);
+        break;
+      }
+    }
+  }
+
+  // Powerups
+  for (let p of powerups) { p.y += p.vy; p.pulse += 0.1; }
+  powerups = powerups.filter(p => p.y < H + 20);
+  for (let p of powerups) {
+    if (p.y + p.r >= paddle.y && p.y - p.r <= paddle.y + paddle.h && p.x >= paddle.x - paddle.w/2 && p.x <= paddle.x + paddle.w/2) {
+      sfxPower(); spawnP(p.x, p.y, p.col, 12);
+      if (p.type === 'wide') paddle.wideTimer = 480;
+      if (p.type === 'multi') {
+        const nb = balls.length;
+        for (let i = 0; i < Math.min(nb, 3); i++) {
+          const src = balls[i % nb];
+          const a = Math.atan2(src.dy, src.dx) + (Math.random()-0.5)*0.8;
+          const spd = Math.sqrt(src.dx*src.dx+src.dy*src.dy);
+          balls.push(mkBall(src.x, src.y, Math.cos(a)*spd, Math.sin(a)*spd));
+        }
+      }
+      if (p.type === 'laser') paddle.laserTimer = 360;
+      if (p.type === 'slow') balls.forEach(b => { b.dx *= 0.6; b.dy *= 0.6; });
+      p.y = H + 100; // remove
+    }
+  }
+
+  // Particles
+  for (let p of particles) { p.x += p.vx; p.y += p.vy; p.vy += 0.05; p.life -= 0.025; }
+  particles = particles.filter(p => p.life > 0);
+
+  // Shake
+  if (shakeTimer > 0) shakeTimer--;
+  if (flashAlpha > 0) flashAlpha -= 0.02;
+
+  // Brick shake
+  for (let br of bricks) { if (br.shakeT > 0) br.shakeT--; }
+
+  // Level clear
+  if (bricks.every(b => b.hp <= 0)) nextLevel();
+
+  updateHUD();
+}
+
+// Draw
+function draw() {
+  X.save();
+  // Screen shake
+  if (shakeTimer > 0) { X.translate((Math.random()-0.5)*6, (Math.random()-0.5)*6); }
+
+  X.fillStyle = '#0a0a0f'; X.fillRect(0, 0, W, H);
+
+  // Grid bg
+  X.strokeStyle = 'rgba(0,255,255,0.03)'; X.lineWidth = 1;
+  for (let gx = 0; gx < W; gx += 40) { X.beginPath(); X.moveTo(gx,0); X.lineTo(gx,H); X.stroke(); }
+  for (let gy = 0; gy < H; gy += 40) { X.beginPath(); X.moveTo(0,gy); X.lineTo(W,gy); X.stroke(); }
+
+  // Bricks
+  for (let br of bricks) {
+    if (br.hp <= 0) continue;
+    const sx = br.shakeT > 0 ? (Math.random()-0.5)*3 : 0;
+    const sy = br.shakeT > 0 ? (Math.random()-0.5)*3 : 0;
+    const hpRatio = br.hp / br.maxHp;
+    const col = BRICK_COLORS[br.ci];
+    X.fillStyle = col[0];
+    X.globalAlpha = 0.3 + hpRatio * 0.7;
+    X.shadowColor = col[0]; X.shadowBlur = 12;
+    X.fillRect(br.x + sx, br.y + sy, br.w, br.h);
+    X.shadowBlur = 0;
+    // Inner highlight
+    X.fillStyle = 'rgba(255,255,255,0.15)';
+    X.fillRect(br.x + sx + 2, br.y + sy + 2, br.w - 4, br.h/2 - 2);
+    // HP indicator
+    if (br.maxHp > 1) {
+      X.fillStyle = '#fff'; X.font = '10px Orbitron, monospace'; X.textAlign = 'center';
+      X.globalAlpha = 0.7;
+      X.fillText(br.hp, br.x + sx + br.w/2, br.y + sy + br.h/2 + 4);
+    }
+    X.globalAlpha = 1;
+  }
+
+  // Powerups
+  for (let p of powerups) {
+    const glow = 0.5 + Math.sin(p.pulse)*0.3;
+    X.shadowColor = p.col; X.shadowBlur = 15 * glow;
+    X.fillStyle = p.col; X.globalAlpha = 0.9;
+    X.beginPath(); X.arc(p.x, p.y, p.r, 0, Math.PI*2); X.fill();
+    X.shadowBlur = 0;
+    X.fillStyle = '#000'; X.font = 'bold 10px Orbitron, monospace'; X.textAlign = 'center';
+    X.fillText(p.type[0].toUpperCase(), p.x, p.y + 4);
+    X.globalAlpha = 1;
+  }
+
+  // Lasers
+  for (let l of lasers) {
+    X.fillStyle = '#ff0'; X.shadowColor = '#ff0'; X.shadowBlur = 8;
+    X.fillRect(l.x - l.w/2, l.y, l.w, l.h);
+    X.shadowBlur = 0;
+  }
+
+  // Balls
+  for (let b of balls) {
+    // Trail
+    for (let i = 0; i < b.trail.length; i++) {
+      const t = b.trail[i], a = (i+1)/b.trail.length * 0.4;
+      X.fillStyle = `rgba(0,255,255,${a})`;
+      X.beginPath(); X.arc(t.x, t.y, b.r * (i/b.trail.length), 0, Math.PI*2); X.fill();
+    }
+    // Glow
+    X.shadowColor = '#0ff'; X.shadowBlur = 20;
+    X.fillStyle = '#fff';
+    X.beginPath(); X.arc(b.x, b.y, b.r, 0, Math.PI*2); X.fill();
+    X.shadowBlur = 0;
+    // Inner
+    X.fillStyle = '#0ff'; X.globalAlpha = 0.6;
+    X.beginPath(); X.arc(b.x, b.y, b.r*0.6, 0, Math.PI*2); X.fill();
+    X.globalAlpha = 1;
+  }
+
+  // Paddle
+  const px = paddle.x - paddle.w/2, py = paddle.y;
+  X.shadowColor = '#0ff'; X.shadowBlur = 15;
+  X.fillStyle = '#0ff';
+  // Rounded paddle
+  const pr = 7;
+  X.beginPath();
+  X.moveTo(px + pr, py); X.lineTo(px + paddle.w - pr, py);
+  X.quadraticCurveTo(px + paddle.w, py, px + paddle.w, py + pr);
+  X.lineTo(px + paddle.w, py + paddle.h - pr);
+  X.quadraticCurveTo(px + paddle.w, py + paddle.h, px + paddle.w - pr, py + paddle.h);
+  X.lineTo(px + pr, py + paddle.h);
+  X.quadraticCurveTo(px, py + paddle.h, px, py + paddle.h - pr);
+  X.lineTo(px, py + pr);
+  X.quadraticCurveTo(px, py, px + pr, py);
+  X.fill();
+  X.shadowBlur = 0;
+  // Highlight
+  X.fillStyle = 'rgba(255,255,255,0.3)';
+  X.fillRect(px + 4, py + 2, paddle.w - 8, 4);
+  // Laser indicators
+  if (paddle.laserTimer > 0) {
+    X.fillStyle = '#ff0'; X.globalAlpha = 0.6 + Math.sin(Date.now()*0.01)*0.3;
+    X.fillRect(paddle.x - 22, py - 4, 4, 4);
+    X.fillRect(paddle.x + 18, py - 4, 4, 4);
+    X.globalAlpha = 1;
+  }
+
+  // Particles
+  for (let p of particles) {
+    X.globalAlpha = p.life;
+    X.fillStyle = p.col; X.shadowColor = p.col; X.shadowBlur = 6;
+    X.beginPath(); X.arc(p.x, p.y, p.r * p.life, 0, Math.PI*2); X.fill();
+  }
+  X.globalAlpha = 1; X.shadowBlur = 0;
+
+  // Flash
+  if (flashAlpha > 0) {
+    X.fillStyle = `rgba(255,50,50,${flashAlpha})`;
+    X.fillRect(0, 0, W, H);
+  }
+
+  // Level transition
+  if (levelTransition > 0) {
+    X.fillStyle = `rgba(0,0,0,${Math.min(levelTransition/60, 0.7)})`;
+    X.fillRect(0, 0, W, H);
+    X.fillStyle = '#0ff'; X.font = 'bold 36px Orbitron, monospace'; X.textAlign = 'center';
+    X.shadowColor = '#0ff'; X.shadowBlur = 20;
+    X.fillText(`LEVEL ${level}`, W/2, H/2);
+    X.font = '14px Orbitron, monospace';
+    X.fillStyle = 'rgba(255,255,255,0.5)';
+    X.fillText('GET READY', W/2, H/2 + 30);
+    X.shadowBlur = 0;
+  }
+
+  // Combo display
+  if (combo > 2 && state === 'play') {
+    X.fillStyle = '#ff0'; X.font = 'bold 20px Orbitron, monospace'; X.textAlign = 'center';
+    X.globalAlpha = Math.min(1, combo/10);
+    X.shadowColor = '#ff0'; X.shadowBlur = 10;
+    X.fillText(`x${combo} COMBO!`, W/2, H - 70);
+    X.globalAlpha = 1; X.shadowBlur = 0;
+  }
+
+  X.restore();
+}
+
+// Loop
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
