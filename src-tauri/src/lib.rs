@@ -2,6 +2,7 @@ mod behavior;
 mod openclaw;
 mod storage;
 mod system;
+mod tts;
 
 use serde::Serialize;
 use std::{
@@ -53,6 +54,7 @@ pub struct AppState {
     pub profession: tokio::sync::Mutex<String>,
     pub active_ai_pid: tokio::sync::Mutex<Option<u32>>,
     pub active_chat: StdMutex<ActiveChatState>,
+    pub tts: tts::TtsManager,
 }
 
 fn unix_now() -> i64 {
@@ -616,11 +618,44 @@ fn exit_app() {
     std::process::exit(0);
 }
 
+#[tauri::command]
+async fn tts_synthesize(
+    text: String,
+    voice: String,
+    rate: Option<i32>,
+    pitch: Option<i32>,
+    volume: Option<i32>,
+    state: tauri::State<'_, AppState>,
+) -> Result<tts::TtsResult, String> {
+    let req = tts::TtsRequest {
+        text,
+        voice,
+        rate: rate.unwrap_or(0),
+        pitch: pitch.unwrap_or(0),
+        volume: volume.unwrap_or(100),
+    };
+    state.tts.synthesize(&req).await
+}
+
+#[tauri::command]
+async fn tts_list_voices() -> Result<Vec<tts::TtsVoice>, String> {
+    tts::TtsManager::list_voices().await
+}
+
 fn get_db_path() -> PathBuf {
     let mut path = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
     path.push("ai-desktop-pet");
     std::fs::create_dir_all(&path).ok();
     path.push("pet.db");
+    path
+}
+
+fn tts_cache_dir(app: &tauri::App) -> PathBuf {
+    let mut path = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("ai-desktop-pet"));
+    path.push("tts_cache");
     path
 }
 
@@ -666,6 +701,7 @@ pub fn run() {
                 profession: tokio::sync::Mutex::new(profession),
                 active_ai_pid: tokio::sync::Mutex::new(None),
                 active_chat: StdMutex::new(ActiveChatState::default()),
+                tts: tts::TtsManager::new(tts_cache_dir(app)),
             };
             app.manage(app_state);
 
@@ -709,6 +745,8 @@ pub fn run() {
             get_profession,
             eat_files,
             exit_app,
+            tts_synthesize,
+            tts_list_voices,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

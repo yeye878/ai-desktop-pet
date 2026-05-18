@@ -14,6 +14,7 @@ import {
   type VoiceSettings,
   type VoiceStatus,
 } from "../services/voice";
+import { TtsPlayer, DEFAULT_TTS_SETTINGS, type TtsSettings } from "../services/tts";
 
 const emit = defineEmits<{ close: [] }>();
 
@@ -28,17 +29,21 @@ type AiErrorPayload = {
 };
 
 const VOICE_SETTINGS_KEY = "voice_settings";
+const TTS_SETTINGS_KEY = "tts_settings";
 const currentWindow = getCurrentWindow();
 const chat = useChatStore();
 const pet = usePetStore();
 const voice = new VoiceController();
+const ttsPlayer = new TtsPlayer();
 
 const settings = ref<VoiceSettings>({ ...DEFAULT_VOICE_SETTINGS });
+const ttsSettings = ref<TtsSettings>({ ...DEFAULT_TTS_SETTINGS });
 const status = ref<VoiceStatus>("idle");
 const transcript = ref("");
 const interimText = ref("");
 const errorText = ref("");
 const isSending = ref(false);
+const isGenerating = ref(false);
 const waveSeed = ref(0);
 let waveTimer: ReturnType<typeof setInterval> | null = null;
 let unlistenAiFinished: UnlistenFn | null = null;
@@ -48,9 +53,10 @@ const canListen = computed(() => settings.value.enabled && isSpeechRecognitionSu
 const statusLabel = computed(() => {
   if (!settings.value.enabled) return "语音功能已关闭";
   if (!isSpeechRecognitionSupported()) return "当前环境不支持语音识别";
-  if (chat.isLoading || isSending.value) return "正在等待回复";
+  if (isGenerating.value) return "正在生成语音";
+  if (chat.isLoading || isSending.value) return "AI 思考中";
   if (status.value === "listening") return "正在聆听";
-  if (status.value === "speaking") return "正在播报";
+  if (status.value === "speaking") return "正在播放";
   if (status.value === "error") return "需要重试";
   if (transcript.value) return "确认后发送";
   return "准备就绪";
@@ -80,6 +86,12 @@ async function loadSettings() {
   } catch {
     settings.value = { ...DEFAULT_VOICE_SETTINGS };
   }
+  try {
+    const raw = await invoke<string>("get_setting_value", { key: TTS_SETTINGS_KEY });
+    if (raw) ttsSettings.value = { ...DEFAULT_TTS_SETTINGS, ...JSON.parse(raw) };
+  } catch {
+    ttsSettings.value = { ...DEFAULT_TTS_SETTINGS };
+  }
 }
 
 async function startListening() {
@@ -97,7 +109,7 @@ async function startListening() {
     return;
   }
 
-  voice.stopSpeaking();
+  ttsPlayer.stop();
   transcript.value = "";
   interimText.value = "";
   errorText.value = "";
@@ -154,7 +166,7 @@ async function sendTranscript() {
 
 function cancelVoice() {
   voice.abortListening();
-  voice.stopSpeaking();
+  ttsPlayer.stop();
   transcript.value = "";
   interimText.value = "";
   errorText.value = "";
@@ -182,15 +194,17 @@ onMounted(async () => {
   unlistenAiFinished = await listen<AiFinishedPayload>("ai-finished", async (event) => {
     isSending.value = false;
     chat.isLoading = false;
-    status.value = settings.value.autoSpeak ? "speaking" : "idle";
     pet.setState("speaking");
     if (settings.value.enabled && settings.value.autoSpeak) {
+      isGenerating.value = true;
+      status.value = "speaking";
       try {
-        await voice.speak(event.payload.text, settings.value);
+        await ttsPlayer.speak(event.payload.text, ttsSettings.value);
       } catch (err) {
         errorText.value = err instanceof Error ? err.message : String(err);
         status.value = "error";
       }
+      isGenerating.value = false;
     }
     if (status.value === "speaking") status.value = "idle";
     if (pet.state === "speaking") pet.setState("idle");
@@ -210,296 +224,393 @@ onBeforeUnmount(() => {
   unlistenAiFinished?.();
   unlistenAiError?.();
   voice.abortListening();
-  voice.stopSpeaking();
+  ttsPlayer.stop();
 });
 </script>
 
 <template>
-  <section class="voice-panel">
+  <section class="voice-panel" :class="{ active: status === 'listening', speaking: status === 'speaking', generating: isGenerating }">
+    <div class="panel-glow"></div>
+
     <div class="voice-header">
-      <div>
-        <div class="eyebrow">Voice Mode</div>
-        <h2>语音对话</h2>
+      <div class="header-left">
+        <span class="badge">VOICE</span>
+        <span class="status-indicator" :class="status"></span>
+        <span class="status-text">{{ statusLabel }}</span>
       </div>
-      <button class="icon-btn" title="关闭" @click="cancelVoice">×</button>
+      <button class="close-btn" title="关闭" @click="cancelVoice">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1 1l12 12M13 1L1 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </button>
     </div>
 
-    <div class="orb-wrap" :class="{ active: status === 'listening', speaking: status === 'speaking' }">
-      <div class="orb">
-        <span>{{ status === "listening" ? "听" : status === "speaking" ? "说" : "AI" }}</span>
+    <div class="visual-core">
+      <div class="orb-container" :class="{ active: status === 'listening', speaking: status === 'speaking' || isGenerating }">
+        <div class="orb-glow"></div>
+        <div class="orb">
+          <div class="orb-inner">
+            <svg v-if="status === 'listening'" width="24" height="24" viewBox="0 0 24 24" fill="none">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" fill="currentColor"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            <svg v-else-if="status === 'speaking' || isGenerating" width="24" height="24" viewBox="0 0 24 24" fill="none">
+              <path d="M11 5L6 9H2v6h4l5 4V5zM19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.08" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            <svg v-else width="22" height="22" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="3" fill="currentColor"/>
+              <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+          </div>
+        </div>
+        <div class="ring ring-1"></div>
+        <div class="ring ring-2"></div>
+        <div class="ring ring-3"></div>
       </div>
-      <div class="ring ring-a"></div>
-      <div class="ring ring-b"></div>
+
+      <div class="waveform" aria-hidden="true">
+        <span v-for="i in 32" :key="i" :style="waveStyle(i)" />
+      </div>
     </div>
 
-    <div class="waveform" aria-hidden="true">
-      <span v-for="index in 28" :key="index" :style="waveStyle(index)" />
-    </div>
-
-    <div class="status-row">
-      <span class="status-dot" :class="status"></span>
-      <span>{{ statusLabel }}</span>
-      <small>{{ settings.shortcut }}</small>
-    </div>
-
-    <textarea
-      v-model="transcript"
-      class="transcript"
-      :placeholder="displayText"
-      :disabled="status === 'listening' || isSending || chat.isLoading"
-    />
-
-    <div v-if="interimText || errorText" class="live-caption" :class="{ error: errorText }">
-      {{ interimText || errorText }}
+    <div class="content-area">
+      <textarea
+        v-model="transcript"
+        class="transcript"
+        :placeholder="displayText"
+        :disabled="status === 'listening' || isSending || chat.isLoading"
+        rows="2"
+      />
+      <div v-if="interimText || errorText" class="live-caption" :class="{ error: !!errorText }">
+        {{ interimText || errorText }}
+      </div>
     </div>
 
     <div class="actions">
-      <button class="secondary-btn" :disabled="status === 'listening'" @click="clearTranscript">清空</button>
-      <button class="primary-btn listen" :disabled="chat.isLoading && status !== 'listening'" @click="startListening">
+      <button class="action-btn secondary" :disabled="status === 'listening'" @click="clearTranscript">清空</button>
+      <button class="action-btn primary mic" :class="{ recording: status === 'listening' }" :disabled="chat.isLoading && status !== 'listening'" @click="startListening">
         {{ primaryLabel }}
       </button>
-      <button class="primary-btn" :disabled="!transcript.trim() || chat.isLoading || isSending" @click="sendTranscript">
-        发送
-      </button>
+      <button class="action-btn primary" :disabled="!transcript.trim() || chat.isLoading || isSending" @click="sendTranscript">发送</button>
     </div>
+
+    <div class="shortcut-hint">{{ settings.shortcut }}</div>
   </section>
 </template>
 
 <style scoped>
 .voice-panel {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 10px;
   width: 100%;
   height: 100%;
   box-sizing: border-box;
-  padding: 16px 18px 18px;
-  color: #f8fafc;
-  background:
-    radial-gradient(circle at 20% 12%, rgba(20, 184, 166, 0.32), transparent 30%),
-    radial-gradient(circle at 78% 20%, rgba(244, 114, 182, 0.28), transparent 26%),
-    linear-gradient(145deg, rgba(15, 23, 42, 0.94), rgba(30, 41, 59, 0.88));
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  padding: 18px 20px 16px;
+  color: #e2e8f0;
+  background: linear-gradient(160deg, rgba(10, 15, 30, 0.96), rgba(15, 23, 42, 0.98));
+  border: 1px solid rgba(100, 200, 255, 0.08);
   border-radius: 22px;
-  box-shadow: 0 28px 80px rgba(2, 6, 23, 0.44), inset 0 1px 0 rgba(255, 255, 255, 0.16);
   overflow: hidden;
-  min-height: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
-.voice-header,
-.status-row,
-.actions {
-  display: flex;
-  align-items: center;
+.panel-glow {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 60% 40% at 20% 0%, rgba(56, 189, 248, 0.08), transparent),
+    radial-gradient(ellipse 50% 35% at 80% 10%, rgba(168, 85, 247, 0.06), transparent);
+  transition: opacity 0.4s;
+}
+
+.voice-panel.active .panel-glow {
+  background:
+    radial-gradient(ellipse 60% 40% at 20% 0%, rgba(34, 197, 94, 0.12), transparent),
+    radial-gradient(ellipse 50% 35% at 80% 10%, rgba(56, 189, 248, 0.08), transparent);
+}
+
+.voice-panel.speaking .panel-glow,
+.voice-panel.generating .panel-glow {
+  background:
+    radial-gradient(ellipse 60% 40% at 20% 0%, rgba(56, 189, 248, 0.12), transparent),
+    radial-gradient(ellipse 50% 35% at 80% 10%, rgba(168, 85, 247, 0.1), transparent);
 }
 
 .voice-header {
+  display: flex;
+  align-items: center;
   justify-content: space-between;
   flex: 0 0 auto;
+  margin-bottom: 6px;
 }
 
-.eyebrow {
-  font-size: 10px;
-  letter-spacing: 0;
-  color: #67e8f9;
-  text-transform: uppercase;
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
-h2 {
-  margin: 2px 0 0;
-  font-size: 22px;
-  font-weight: 750;
+.badge {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 1.2px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: rgba(56, 189, 248, 0.12);
+  color: #7dd3fc;
+  border: 1px solid rgba(56, 189, 248, 0.15);
 }
 
-.icon-btn {
-  width: 30px;
-  height: 30px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
+.status-indicator {
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  color: #e2e8f0;
-  background: rgba(255, 255, 255, 0.08);
-  cursor: pointer;
-  font-size: 20px;
-  line-height: 1;
+  background: #475569;
+  transition: all 0.3s;
 }
 
-.orb-wrap {
-  flex: 0 0 auto;
-  position: relative;
-  width: 118px;
-  height: 118px;
-  margin: 2px auto 0;
+.status-indicator.listening {
+  background: #4ade80;
+  box-shadow: 0 0 8px rgba(74, 222, 128, 0.6);
+}
+
+.status-indicator.speaking {
+  background: #38bdf8;
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.6);
+}
+
+.status-indicator.error {
+  background: #fb7185;
+}
+
+.status-text {
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.close-btn {
+  width: 28px;
+  height: 28px;
   display: grid;
   place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #64748b;
+  cursor: pointer;
+  transition: color 0.2s, background 0.2s;
+}
+
+.close-btn:hover {
+  color: #e2e8f0;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.visual-core {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 0;
+}
+
+.orb-container {
+  position: relative;
+  width: 100px;
+  height: 100px;
+  display: grid;
+  place-items: center;
+}
+
+.orb-glow {
+  position: absolute;
+  inset: -10px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(56, 189, 248, 0.15), transparent 70%);
+  opacity: 0;
+  transition: opacity 0.5s;
+}
+
+.orb-container.active .orb-glow {
+  background: radial-gradient(circle, rgba(74, 222, 128, 0.2), transparent 70%);
+  opacity: 1;
+}
+
+.orb-container.speaking .orb-glow {
+  background: radial-gradient(circle, rgba(139, 92, 246, 0.2), transparent 70%);
+  opacity: 1;
 }
 
 .orb {
-  width: 76px;
-  height: 76px;
+  width: 60px;
+  height: 60px;
   border-radius: 50%;
   display: grid;
   place-items: center;
-  background: linear-gradient(145deg, #22d3ee, #a78bfa 52%, #fb7185);
-  box-shadow: 0 18px 46px rgba(34, 211, 238, 0.32);
+  background: linear-gradient(135deg, #1e293b, #0f172a);
+  border: 1.5px solid rgba(100, 200, 255, 0.15);
   z-index: 2;
+  transition: border-color 0.3s, box-shadow 0.3s;
 }
 
-.orb span {
-  font-size: 20px;
-  font-weight: 800;
+.orb-container.active .orb {
+  border-color: rgba(74, 222, 128, 0.4);
+  box-shadow: 0 0 20px rgba(74, 222, 128, 0.15);
 }
+
+.orb-container.speaking .orb {
+  border-color: rgba(139, 92, 246, 0.4);
+  box-shadow: 0 0 20px rgba(139, 92, 246, 0.15);
+}
+
+.orb-inner {
+  color: #94a3b8;
+  transition: color 0.3s;
+}
+
+.orb-container.active .orb-inner { color: #4ade80; }
+.orb-container.speaking .orb-inner { color: #a78bfa; }
 
 .ring {
   position: absolute;
-  inset: 22px;
   border-radius: 50%;
-  border: 1px solid rgba(103, 232, 249, 0.28);
+  border: 1px solid rgba(56, 189, 248, 0.1);
+  animation: pulse 3s ease-in-out infinite;
 }
 
-.ring-a {
-  animation: breathe 2.4s ease-in-out infinite;
+.ring-1 { inset: 8px; animation-delay: 0s; }
+.ring-2 { inset: 0px; animation-delay: 0.8s; opacity: 0.6; }
+.ring-3 { inset: -8px; animation-delay: 1.6s; opacity: 0.3; }
+
+.orb-container.active .ring {
+  border-color: rgba(74, 222, 128, 0.15);
+  animation-duration: 1.5s;
 }
 
-.ring-b {
-  inset: 10px;
-  border-color: rgba(251, 113, 133, 0.2);
-  animation: breathe 2.4s ease-in-out infinite reverse;
-}
-
-.orb-wrap.active .ring,
-.orb-wrap.speaking .ring {
-  animation-duration: 1.1s;
+.orb-container.speaking .ring {
+  border-color: rgba(139, 92, 246, 0.15);
+  animation-duration: 1.8s;
 }
 
 .waveform {
-  flex: 0 0 56px;
-  height: 56px;
-  padding: 0 8px;
+  height: 40px;
+  width: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
+  gap: 3px;
+  padding: 0 16px;
 }
 
 .waveform span {
-  width: 5px;
+  width: 3px;
   border-radius: 999px;
-  background: linear-gradient(180deg, #67e8f9, #a78bfa);
-  transition: height 0.12s ease, opacity 0.12s ease;
+  background: linear-gradient(180deg, rgba(56, 189, 248, 0.6), rgba(139, 92, 246, 0.4));
+  transition: height 0.1s ease, opacity 0.1s ease;
 }
 
-.status-row {
-  flex: 0 0 auto;
-  gap: 8px;
-  justify-content: center;
-  color: #cbd5e1;
-  font-size: 13px;
-}
-
-.status-row small {
-  padding: 3px 7px;
-  border-radius: 999px;
-  color: #94a3b8;
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #94a3b8;
-}
-
-.status-dot.listening {
-  background: #22c55e;
-  box-shadow: 0 0 16px rgba(34, 197, 94, 0.8);
-}
-
-.status-dot.speaking {
-  background: #38bdf8;
-}
-
-.status-dot.error {
-  background: #fb7185;
+.content-area {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
 }
 
 .transcript {
   flex: 1 1 auto;
-  min-height: 58px;
+  min-height: 48px;
   box-sizing: border-box;
   width: 100%;
-  height: auto;
-  padding: 12px;
+  padding: 10px 12px;
   resize: none;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
   outline: none;
-  color: #f8fafc;
-  background: rgba(15, 23, 42, 0.42);
+  color: #f1f5f9;
+  background: rgba(255, 255, 255, 0.03);
   font: inherit;
+  font-size: 13px;
   line-height: 1.5;
+  transition: border-color 0.2s;
+}
+
+.transcript:focus {
+  border-color: rgba(56, 189, 248, 0.2);
 }
 
 .transcript::placeholder {
-  color: #94a3b8;
+  color: #475569;
 }
 
 .live-caption {
-  flex: 0 0 auto;
-  min-height: 18px;
-  color: #a5f3fc;
-  font-size: 12px;
+  font-size: 11px;
+  color: #7dd3fc;
   text-align: center;
+  padding: 0 4px;
 }
 
 .live-caption.error {
-  color: #fecdd3;
+  color: #fca5a5;
 }
 
 .actions {
   flex: 0 0 auto;
-  gap: 10px;
-  margin-top: 2px;
+  display: flex;
+  gap: 8px;
+  padding-top: 4px;
 }
 
-.primary-btn,
-.secondary-btn {
-  height: 38px;
+.action-btn {
+  height: 36px;
   border: 0;
-  border-radius: 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
   cursor: pointer;
-  font-weight: 700;
+  transition: opacity 0.15s, transform 0.1s;
 }
 
-.primary-btn {
+.action-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.action-btn.primary {
   flex: 1;
   color: #0f172a;
-  background: linear-gradient(135deg, #67e8f9, #f0abfc);
+  background: linear-gradient(135deg, #38bdf8, #a78bfa);
 }
 
-.primary-btn.listen {
-  flex: 1.25;
+.action-btn.primary.mic {
+  flex: 1.3;
 }
 
-.secondary-btn {
-  width: 70px;
-  color: #e2e8f0;
-  background: rgba(255, 255, 255, 0.1);
+.action-btn.primary.mic.recording {
+  background: linear-gradient(135deg, #4ade80, #22d3ee);
 }
 
-button:disabled {
-  opacity: 0.45;
+.action-btn.secondary {
+  width: 60px;
+  color: #94a3b8;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.action-btn:disabled {
+  opacity: 0.35;
   cursor: not-allowed;
 }
 
-@keyframes breathe {
-  0%, 100% {
-    transform: scale(0.94);
-    opacity: 0.42;
-  }
-  50% {
-    transform: scale(1.18);
-    opacity: 0.86;
-  }
+.shortcut-hint {
+  text-align: center;
+  font-size: 10px;
+  color: #334155;
+  padding-top: 4px;
+}
+
+@keyframes pulse {
+  0%, 100% { transform: scale(0.95); opacity: 0.4; }
+  50% { transform: scale(1.1); opacity: 0.8; }
 }
 </style>

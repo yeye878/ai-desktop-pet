@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, computed, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { usePetStore, THEMES, FONT_COLORS, resolveSkinId } from "../stores/pet";
@@ -10,6 +10,13 @@ import {
   serializeVoiceSettings,
   type VoiceSettings,
 } from "../services/voice";
+import {
+  listEdgeVoices,
+  TtsPlayer,
+  DEFAULT_TTS_SETTINGS,
+  type TtsSettings,
+  type TtsVoice,
+} from "../services/tts";
 
 const emit = defineEmits<{ close: [] }>();
 const pet = usePetStore();
@@ -33,11 +40,21 @@ const avatarInputRef = ref<HTMLInputElement | null>(null);
 const BG_KEY = "ai-desktop-pet.chat-bg";
 const CUSTOM_BG_KEY = "ai-desktop-pet.chat-bg-custom";
 const VOICE_SETTINGS_KEY = "voice_settings";
+const TTS_SETTINGS_KEY = "tts_settings";
 const chatBg = ref(localStorage.getItem(BG_KEY) || "none");
 const customBgImage = ref(localStorage.getItem(CUSTOM_BG_KEY) || "");
 const bgInputRef = ref<HTMLInputElement | null>(null);
 const voiceSettings = ref<VoiceSettings>({ ...DEFAULT_VOICE_SETTINGS });
 const availableVoices = ref<SpeechSynthesisVoice[]>([]);
+const ttsSettings = ref<TtsSettings>({ ...DEFAULT_TTS_SETTINGS });
+const edgeVoices = ref<TtsVoice[]>([]);
+const ttsPreviewPlayer = new TtsPlayer();
+const isPreviewing = ref(false);
+
+const filteredEdgeVoices = computed(() => {
+  const lang = voiceSettings.value.language || "zh-CN";
+  return edgeVoices.value.filter((v) => v.language.startsWith(lang.split("-")[0]));
+});
 
 const personalities = [
   { id: "gentle", name: "温柔陪伴", desc: "柔和耐心，先接住情绪" },
@@ -121,6 +138,17 @@ async function loadVoiceSettings() {
   }
 
   availableVoices.value = await getAvailableVoices();
+
+  try {
+    const raw = await invoke<string>("get_setting_value", { key: TTS_SETTINGS_KEY });
+    if (raw) ttsSettings.value = { ...DEFAULT_TTS_SETTINGS, ...JSON.parse(raw) };
+  } catch {
+    ttsSettings.value = { ...DEFAULT_TTS_SETTINGS };
+  }
+
+  try {
+    edgeVoices.value = await listEdgeVoices();
+  } catch {}
 }
 
 async function resetModel() {
@@ -247,6 +275,29 @@ async function selectProfession(profession: string) {
   } catch (e) {
     alert("职业切换失败: " + e);
   }
+}
+
+async function updateTtsSettings(patch: Partial<TtsSettings>) {
+  ttsSettings.value = { ...ttsSettings.value, ...patch };
+  try {
+    await invoke("set_setting_value", {
+      key: TTS_SETTINGS_KEY,
+      value: JSON.stringify(ttsSettings.value),
+    });
+  } catch {}
+}
+
+async function previewVoice() {
+  if (isPreviewing.value) {
+    ttsPreviewPlayer.stop();
+    isPreviewing.value = false;
+    return;
+  }
+  isPreviewing.value = true;
+  try {
+    await ttsPreviewPlayer.speak("你好，我是你的桌宠伙伴，很高兴认识你。", ttsSettings.value);
+  } catch {}
+  isPreviewing.value = false;
 }
 
 async function updateVoiceSettings(patch: Partial<VoiceSettings>) {
@@ -433,56 +484,130 @@ onMounted(() => {
               <option value="ja-JP">日本語</option>
             </select>
           </label>
+
           <label class="field-row">
-            <span>声音</span>
+            <span>声音引擎</span>
             <select
-              :value="voiceSettings.voiceName"
-              @change="updateVoiceSettings({ voiceName: ($event.target as HTMLSelectElement).value })"
+              :value="ttsSettings.engine"
+              @change="updateTtsSettings({ engine: ($event.target as HTMLSelectElement).value as any })"
             >
-              <option value="">自动选择</option>
-              <option
-                v-for="voice in availableVoices"
-                :key="voice.name"
-                :value="voice.name"
-              >
-                {{ voice.name }} · {{ voice.lang }}
-              </option>
+              <option value="edge">微软自然语音</option>
+              <option value="system">系统语音</option>
             </select>
           </label>
 
-          <label class="range-row">
-            <span>语速 {{ voiceSettings.rate.toFixed(1) }}</span>
-            <input
-              type="range"
-              min="0.6"
-              max="1.5"
-              step="0.1"
-              :value="voiceSettings.rate"
-              @input="updateVoiceSettings({ rate: Number(($event.target as HTMLInputElement).value) })"
-            />
-          </label>
-          <label class="range-row">
-            <span>音调 {{ voiceSettings.pitch.toFixed(1) }}</span>
-            <input
-              type="range"
-              min="0.6"
-              max="1.6"
-              step="0.1"
-              :value="voiceSettings.pitch"
-              @input="updateVoiceSettings({ pitch: Number(($event.target as HTMLInputElement).value) })"
-            />
-          </label>
-          <label class="range-row">
-            <span>音量 {{ Math.round(voiceSettings.volume * 100) }}%</span>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.1"
-              :value="voiceSettings.volume"
-              @input="updateVoiceSettings({ volume: Number(($event.target as HTMLInputElement).value) })"
-            />
-          </label>
+          <template v-if="ttsSettings.engine === 'edge'">
+            <label class="field-row">
+              <span>声音角色</span>
+              <select
+                :value="ttsSettings.voice"
+                @change="updateTtsSettings({ voice: ($event.target as HTMLSelectElement).value })"
+              >
+                <option
+                  v-for="v in filteredEdgeVoices"
+                  :key="v.id"
+                  :value="v.id"
+                >
+                  {{ v.name }} · {{ v.gender === 'Female' ? '女' : '男' }}
+                </option>
+              </select>
+            </label>
+            <div class="preview-row">
+              <button class="preview-btn" @click="previewVoice">
+                {{ isPreviewing ? '停止' : '试听' }}
+              </button>
+            </div>
+          </template>
+
+          <template v-else>
+            <label class="field-row">
+              <span>声音</span>
+              <select
+                :value="voiceSettings.voiceName"
+                @change="updateVoiceSettings({ voiceName: ($event.target as HTMLSelectElement).value })"
+              >
+                <option value="">自动选择</option>
+                <option
+                  v-for="voice in availableVoices"
+                  :key="voice.name"
+                  :value="voice.name"
+                >
+                  {{ voice.name }} · {{ voice.lang }}
+                </option>
+              </select>
+            </label>
+          </template>
+
+          <template v-if="ttsSettings.engine === 'edge'">
+            <label class="range-row">
+              <span>语速 {{ ttsSettings.rate >= 0 ? '+' : '' }}{{ ttsSettings.rate }}%</span>
+              <input
+                type="range"
+                min="-50"
+                max="100"
+                step="10"
+                :value="ttsSettings.rate"
+                @input="updateTtsSettings({ rate: Number(($event.target as HTMLInputElement).value) })"
+              />
+            </label>
+            <label class="range-row">
+              <span>音调 {{ ttsSettings.pitch >= 0 ? '+' : '' }}{{ ttsSettings.pitch }}Hz</span>
+              <input
+                type="range"
+                min="-50"
+                max="50"
+                step="5"
+                :value="ttsSettings.pitch"
+                @input="updateTtsSettings({ pitch: Number(($event.target as HTMLInputElement).value) })"
+              />
+            </label>
+            <label class="range-row">
+              <span>音量 {{ ttsSettings.volume }}%</span>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                step="10"
+                :value="ttsSettings.volume"
+                @input="updateTtsSettings({ volume: Number(($event.target as HTMLInputElement).value) })"
+              />
+            </label>
+          </template>
+          <template v-else>
+            <label class="range-row">
+              <span>语速 {{ voiceSettings.rate.toFixed(1) }}</span>
+              <input
+                type="range"
+                min="0.6"
+                max="1.5"
+                step="0.1"
+                :value="voiceSettings.rate"
+                @input="updateVoiceSettings({ rate: Number(($event.target as HTMLInputElement).value) })"
+              />
+            </label>
+            <label class="range-row">
+              <span>音调 {{ voiceSettings.pitch.toFixed(1) }}</span>
+              <input
+                type="range"
+                min="0.6"
+                max="1.6"
+                step="0.1"
+                :value="voiceSettings.pitch"
+                @input="updateVoiceSettings({ pitch: Number(($event.target as HTMLInputElement).value) })"
+              />
+            </label>
+            <label class="range-row">
+              <span>音量 {{ Math.round(voiceSettings.volume * 100) }}%</span>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.1"
+                :value="voiceSettings.volume"
+                @input="updateVoiceSettings({ volume: Number(($event.target as HTMLInputElement).value) })"
+              />
+            </label>
+          </template>
         </div>
       </div>
 
@@ -836,6 +961,28 @@ onMounted(() => {
 .range-row span {
   font-size: 12px;
   color: #475569;
+}
+
+.preview-row {
+  display: flex;
+  justify-content: flex-end;
+  padding: 4px 9px;
+}
+
+.preview-btn {
+  padding: 6px 16px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 8px;
+  background: linear-gradient(135deg, #e0f2fe, #f0e6ff);
+  color: #334155;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.preview-btn:hover {
+  opacity: 0.8;
 }
 
 .switch-row small {

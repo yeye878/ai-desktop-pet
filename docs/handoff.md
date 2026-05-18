@@ -1,6 +1,6 @@
 # AI Desktop Pet — 交接日志
 
-> 更新时间: 2026-05-17
+> 更新时间: 2026-05-18
 
 ## 项目概述
 
@@ -307,6 +307,43 @@ Idle → 空闲600秒 → Sleeping → 精力满 → Idle
    - **眼球追踪与感知**：桌宠瞳孔实时朝鼠标相对位置微调偏移；当鼠标位于左/右侧时身体有轻微旋转倾斜。
    - **动作反馈**：鼠标悬停在桌宠时，耳朵抖动加快并产生火花粒子；点击桌宠触发带有重力物理模拟的弹跳（Bounce）；长按超过 500ms 触发受压变形（Squash）。
    - **防走失与 Bug 修复**：修复因 `ctx.restore()` 缺失导致的“桌宠飞天”问题；新增画布双击（`dblclick`）直接重置窗口到屏幕中心功能。
+
+## 今日变更 (2026-05-18) — 高级 TTS 语音系统 Phase 1 & 2
+
+1. **TTS Provider 抽象层（Rust 后端）**：
+   - 新增 `src-tauri/src/tts/` 模块：`mod.rs`（TtsManager + TtsProvider trait）、`edge_tts.rs`（Edge TTS WebSocket 实现）、`cache.rs`（音频缓存）
+   - `TtsManager` 支持合成请求 → 缓存查找 → 生成音频 → 写入缓存的完整链路
+   - 音频缓存基于 `provider + voice + rate + pitch + text` 的 SHA256 哈希，存储为 MP3 文件
+   - 新增 `tts_synthesize` 和 `tts_list_voices` 两个 Tauri IPC 命令
+2. **Edge TTS 实现（当前有 403 问题待修复）**：
+   - 使用 `tokio-tungstenite` WebSocket 连接微软 Edge 语音服务
+   - 已添加 `Sec-MS-GEC` 时间验证 token、`User-Agent`、`Origin` 等必要请求头
+   - **已知问题**：微软端点返回 403，原因是协议验证机制持续变化
+   - **计划修复方案**：改用 `edge-tts` Python CLI 作为子进程调用（活跃维护，协议变更自动跟进）
+3. **前端 TTS 服务重构**：
+   - 新增 `src/services/tts.ts`：`TtsPlayer` 类封装后端调用 + `<audio>` 元素播放
+   - `VoicePanel.vue` 从 `window.speechSynthesis` 切换到 `TtsPlayer`
+   - 新增 `isGenerating` 状态，区分"正在生成语音"和"正在播放"
+4. **设置页声音引擎区域**：
+   - 新增"声音引擎"选择器（微软自然语音 / 系统语音）
+   - Edge 引擎下显示声音角色选择（按当前语言过滤）+ 试听按钮
+   - 语速/音调/音量滑块根据引擎类型显示不同参数范围
+5. **语音面板 UI 重做**：
+   - 深色玻璃拟态背景 + 状态感知的微光效果
+   - 新 orb 设计：SVG 图标 + 三层呼吸环 + 状态色联动（绿=聆听/紫=播放/灰=待机）
+   - 更细腻的 32 条声波可视化
+   - 状态指示器（badge + dot + 文字）替代旧的大标题
+   - 操作按钮重新设计：录音中变绿、按压缩放反馈
+6. **新增 Rust 依赖**：
+   - `tokio-tungstenite`、`reqwest`、`futures-util`、`uuid`、`sha2`、`hex`、`url`
+7. **验证记录**：
+   - `cargo check` / `cargo check --release` 通过
+   - `npx vite build` 通过
+   - `npx tauri build` 通过
+
+## 待修复
+
+- **Edge TTS 403 问题**：微软 WebSocket 端点拒绝连接。推荐方案：改用 `edge-tts` Python CLI 子进程（`pip install edge-tts`），命令格式 `edge-tts --voice "zh-CN-XiaoxiaoNeural" --text "..." --write-media output.mp3`
 
 ## 已知待实现
 
