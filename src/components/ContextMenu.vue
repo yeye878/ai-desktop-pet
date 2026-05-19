@@ -3,7 +3,7 @@ import { useChatStore } from "../stores/chat";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-const emit = defineEmits<{ close: []; openSettings: [] }>();
+const emit = defineEmits<{ close: []; openSettings: [tab: string] }>();
 const chat = useChatStore();
 const currentWindow = getCurrentWindow();
 
@@ -26,8 +26,14 @@ async function action(name: string) {
       chat.clearMessages();
       await currentWindow.emit("chat-history-cleared");
       break;
-    case "settings":
-      emit("openSettings");
+    case "settings_appearance":
+      emit("openSettings", "appearance");
+      return;
+    case "settings_voice":
+      emit("openSettings", "voice");
+      return;
+    case "settings_system":
+      emit("openSettings", "system");
       return;
     case "exit":
       await invoke("exit_app");
@@ -60,9 +66,17 @@ async function action(name: string) {
       <span class="menu-icon">&#x1F5D1;&#xFE0F;</span>
       <span>清空对话</span>
     </div>
-    <div class="menu-item" @click="action('settings')">
+    <div class="menu-item" @click="action('settings_appearance')">
+      <span class="menu-icon">&#x1F3A8;</span>
+      <span>个性外观</span>
+    </div>
+    <div class="menu-item" @click="action('settings_voice')">
+      <span class="menu-icon">&#x1F399;&#xFE0F;</span>
+      <span>语音设置</span>
+    </div>
+    <div class="menu-item" @click="action('settings_system')">
       <span class="menu-icon">&#x2699;&#xFE0F;</span>
-      <span>设置</span>
+      <span>系统设置</span>
     </div>
     <div class="menu-divider" />
     <div class="menu-item exit-item" @click="action('exit')">

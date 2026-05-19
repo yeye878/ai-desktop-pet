@@ -200,9 +200,11 @@ onMounted(async () => {
       status.value = "speaking";
       try {
         await ttsPlayer.speak(event.payload.text, ttsSettings.value);
-      } catch (err) {
-        errorText.value = err instanceof Error ? err.message : String(err);
-        status.value = "error";
+      } catch (err: any) {
+        if (err?.message !== "Aborted") {
+          errorText.value = err instanceof Error ? err.message : String(err);
+          status.value = "error";
+        }
       }
       isGenerating.value = false;
     }

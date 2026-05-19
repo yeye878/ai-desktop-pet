@@ -11,20 +11,20 @@ const TRUSTED_TOKEN: &str = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
 const VOICES_URL: &str = "https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/voices/list?trustedclienttoken=6A5AA1D4EAFF4E9FB37E23D68491D6F4";
 const WSS_URL: &str = "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1";
 const OUTPUT_FORMAT: &str = "audio-24khz-96kbitrate-mono-mp3";
-const EDGE_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0";
+const EDGE_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0";
 const EDGE_ORIGIN: &str = "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold";
-const WIN_EPOCH_OFFSET: u64 = 621_355_968_000_000_000;
-const TICKS_PER_SEC: u64 = 10_000_000;
-const ROUND_INTERVAL: u64 = 3_000_000_000;
+const SEC_MS_GEC_VERSION: &str = "1-143.0.3650.75";
+const WIN_EPOCH_OFFSET_SECS: u64 = 11_644_473_600;
 
 fn compute_sec_ms_gec() -> String {
     let unix_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let ticks = unix_secs * TICKS_PER_SEC + WIN_EPOCH_OFFSET;
-    let rounded = ticks - (ticks % ROUND_INTERVAL);
-    let input = format!("{rounded}{TRUSTED_TOKEN}");
+    let ticks = unix_secs + WIN_EPOCH_OFFSET_SECS;
+    let rounded = ticks - (ticks % 300);
+    let final_ticks = rounded * 10_000_000;
+    let input = format!("{final_ticks}{TRUSTED_TOKEN}");
     let hash = Sha256::digest(input.as_bytes());
     hex::encode_upper(hash)
 }
@@ -52,8 +52,9 @@ pub async fn list_voices() -> Result<Vec<TtsVoice>, String> {
 pub async fn synthesize(req: &TtsRequest) -> Result<Vec<u8>, String> {
     let conn_id = Uuid::new_v4().to_string().replace('-', "");
     let sec_ms_gec = compute_sec_ms_gec();
+    let muid = hex::encode_upper(Uuid::new_v4().as_bytes());
     let url = format!(
-        "{WSS_URL}?TrustedClientToken={TRUSTED_TOKEN}&ConnectionId={conn_id}&Sec-MS-GEC={sec_ms_gec}"
+        "{WSS_URL}?TrustedClientToken={TRUSTED_TOKEN}&ConnectionId={conn_id}&Sec-MS-GEC={sec_ms_gec}&Sec-MS-GEC-Version={SEC_MS_GEC_VERSION}"
     );
 
     let request = Request::builder()
@@ -63,12 +64,13 @@ pub async fn synthesize(req: &TtsRequest) -> Result<Vec<u8>, String> {
         .header("Pragma", "no-cache")
         .header("Cache-Control", "no-cache")
         .header("Sec-MS-GEC", &sec_ms_gec)
-        .header("Sec-MS-GEC-Version", "1-130.0.2849.68")
+        .header("Sec-MS-GEC-Version", SEC_MS_GEC_VERSION)
         .header("Host", "speech.platform.bing.com")
         .header("Connection", "Upgrade")
         .header("Upgrade", "websocket")
         .header("Sec-WebSocket-Version", "13")
         .header("Sec-WebSocket-Key", tungstenite::handshake::client::generate_key())
+        .header("Cookie", format!("muid={muid};"))
         .body(())
         .map_err(|e| format!("构建请求失败: {e}"))?;
 
@@ -142,4 +144,32 @@ fn build_ssml(voice: &str, rate: i32, pitch: i32, volume: i32, text: &str) -> St
 
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_list_voices() {
+        match list_voices().await {
+            Ok(v) => println!("Successfully listed {} voices", v.len()),
+            Err(e) => panic!("list_voices failed: {}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_synthesize() {
+        let req = TtsRequest {
+            text: "你好，这是一次测试。".to_string(),
+            voice: "zh-CN-XiaoxiaoNeural".to_string(),
+            rate: 0,
+            pitch: 0,
+            volume: 100,
+        };
+        match synthesize(&req).await {
+            Ok(audio) => println!("Successfully synthesized {} bytes of audio", audio.len()),
+            Err(e) => panic!("synthesize failed: {}", e),
+        }
+    }
 }

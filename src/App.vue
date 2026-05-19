@@ -27,7 +27,7 @@ const PET_W = 120;
 const PANEL_GAP = 8;
 const PANEL_SPECS: Record<PanelLabel, { width: number; height: number; title: string }> = {
   chat: { width: 340, height: 400, title: "AI Desktop Pet Chat" },
-  "context-menu": { width: 170, height: 310, title: "AI Desktop Pet Menu" },
+  "context-menu": { width: 170, height: 375, title: "AI Desktop Pet Menu" },
   settings: { width: 380, height: 460, title: "AI Desktop Pet Settings" },
   voice: { width: 430, height: 520, title: "AI Desktop Pet Voice" },
 };
@@ -135,9 +135,44 @@ async function openContextMenu(e: MouseEvent) {
   await openPanel("context-menu", cursor.x, cursor.y);
 }
 
-async function openSettingsPanel() {
+async function openSettingsPanel(tab = "appearance") {
   const pet = await getPetAnchor();
-  await openPanel("settings", pet.x + PET_W + PANEL_GAP, pet.y);
+  const spec = PANEL_SPECS["settings"];
+  const position = new LogicalPosition(Math.round(pet.x + PET_W + PANEL_GAP), Math.round(pet.y));
+  const size = new LogicalSize(spec.width, spec.height);
+
+  const existing = await WebviewWindow.getByLabel("settings");
+  if (existing) {
+    await existing.setSize(size);
+    await existing.setPosition(position);
+    await existing.setAlwaysOnTop(true);
+    await existing.show();
+    await existing.setFocus();
+    await existing.emit("switch-tab", tab);
+    await closePanel("context-menu");
+    return;
+  }
+
+  const baseUrl = window.location.href.split("#")[0].split("?")[0];
+  const url = `${baseUrl}?window=settings&tab=${tab}`;
+
+  new WebviewWindow("settings", {
+    url,
+    x: position.x,
+    y: position.y,
+    width: spec.width,
+    height: spec.height,
+    title: spec.title,
+    transparent: true,
+    decorations: false,
+    alwaysOnTop: true,
+    resizable: false,
+    skipTaskbar: true,
+    shadow: false,
+    focus: true,
+    parent: "main",
+  });
+
   await closePanel("context-menu");
 }
 

@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch } from 'vue';
+import { usePetStore } from '../stores/pet';
 
 const props = defineProps<{ mode: string; customImage?: string }>();
+const petStore = usePetStore();
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 let ctx: CanvasRenderingContext2D | null = null;
 let W = 0, H = 0, animId = 0;
@@ -18,6 +20,7 @@ let sfPackets: any[] = [];
 let sfEMPs: any[] = [];
 let sfScanY = 0;
 let sfHexes: any[] = [];
+let sfNebulae: any[] = [];
 // Cute state
 let ctPetals: any[] = [];
 let ctBubbles: any[] = [];
@@ -113,6 +116,12 @@ function initScifi() {
       sfHexes.push({ x: hx, y: hy, s: hs, glow: 0, glowDecay: rnd(0.005, 0.015) });
     }
   }
+  // Floating space nebulas
+  sfNebulae = [
+    { x: W * 0.25, y: H * 0.25, vx: rnd(0.04, 0.12), vy: rnd(0.03, 0.08), r: Math.max(140, W * 0.35), color1: 'rgba(56, 189, 248, 0.075)', color2: 'rgba(56, 189, 248, 0)' },
+    { x: W * 0.75, y: H * 0.7, vx: rnd(-0.12, -0.04), vy: rnd(-0.08, -0.03), r: Math.max(160, W * 0.42), color1: 'rgba(167, 139, 250, 0.07)', color2: 'rgba(167, 139, 250, 0)' },
+    { x: W * 0.5, y: H * 0.45, vx: rnd(0.02, 0.08), vy: rnd(-0.06, -0.02), r: Math.max(110, W * 0.3), color1: 'rgba(45, 212, 191, 0.06)', color2: 'rgba(45, 212, 191, 0)' }
+  ];
 }
 
 function spawnPacket(fromNode: any, toNode: any) {
@@ -198,55 +207,137 @@ function update() {
     particles = particles.filter(p => p.life > 0);
   } else if (props.mode === 'scifi') {
     const now2 = performance.now();
+    const petState = petStore.state;
+
+    // Define speed and frequency multipliers based on pet state
+    let speedMult = 1.0;
+    let packetSpawnRate = 0.003;
+    let nodeJitter = 0.0;
+    let scanlineSpeed = 0.6;
+
+    if (petState === 'thinking') {
+      speedMult = 1.8;
+      nodeJitter = 0.4;
+      packetSpawnRate = 0.018; // active thought processing
+      scanlineSpeed = 1.2;
+    } else if (petState === 'speaking') {
+      speedMult = 1.35;
+      nodeJitter = 0.15;
+      packetSpawnRate = 0.025; // massive communication activity
+      scanlineSpeed = 1.8;
+    } else if (petState === 'listening') {
+      speedMult = 0.55;
+      packetSpawnRate = 0.001;
+      scanlineSpeed = 0.45;
+
+      // Sonar scan pulse in listening state
+      if (Math.random() < 0.016) {
+        const sx = mx > -900 ? mx : W / 2;
+        const sy = my > -900 ? my : H / 2;
+        ripples.push({
+          x: sx,
+          y: sy,
+          r: 0,
+          maxR: Math.max(W, H) * 0.75,
+          alpha: 0.38,
+          lw: 1.2,
+          speed: 2.2,
+          color: 'rgba(56,189,248,'
+        });
+      }
+    }
+
+    // Nebulae drift
+    for (const neb of sfNebulae) {
+      neb.x += neb.vx * speedMult;
+      neb.y += neb.vy * speedMult;
+      if (neb.x - neb.r > W) neb.x = -neb.r;
+      if (neb.x + neb.r < 0) neb.x = W + neb.r;
+      if (neb.y - neb.r > H) neb.y = -neb.r;
+      if (neb.y + neb.r < 0) neb.y = H + neb.r;
+    }
+
     // Scan line
-    sfScanY = (sfScanY + 0.6) % H;
+    sfScanY = (sfScanY + scanlineSpeed) % H;
+
     // Nodes
     for (const n of sfNodes) {
-      n.x += n.vx; n.y += n.vy;
+      n.x += n.vx * speedMult;
+      n.y += n.vy * speedMult;
+
+      if (nodeJitter > 0) {
+        n.x += rnd(-nodeJitter, nodeJitter);
+        n.y += rnd(-nodeJitter, nodeJitter);
+      }
+
       if (n.x < 0 || n.x > W) { n.vx *= -1; n.x = Math.max(0, Math.min(W, n.x)); }
       if (n.y < 0 || n.y > H) { n.vy *= -1; n.y = Math.max(0, Math.min(H, n.y)); }
-      n.pulse += n.pulseSpd * 0.016;
+      n.pulse += n.pulseSpd * 0.016 * speedMult;
+
       // Mouse attraction
       const dx = mx - n.x, dy = my - n.y, dist = Math.sqrt(dx*dx+dy*dy);
-      if (dist < 100 && dist > 2) { n.energy = Math.min(1, n.energy + 0.04); }
-      else { n.energy *= 0.95; }
+      if (dist < 110 && dist > 2) {
+        n.energy = Math.min(1, n.energy + 0.045);
+        // Soft pull
+        n.x += (dx / dist) * 0.22 * speedMult;
+        n.y += (dy / dist) * 0.22 * speedMult;
+      } else {
+        n.energy *= 0.94;
+      }
+
       // EMPs
       for (const e of sfEMPs) {
         const ed = Math.sqrt((n.x-e.x)**2+(n.y-e.y)**2);
-        if (Math.abs(ed - e.r) < 18) { n.energy = 1; n.activatedAt = now2; }
+        if (Math.abs(ed - e.r) < 22) { n.energy = 1.0; n.activatedAt = now2; }
       }
+
       // Randomly spawn data packets
-      if (Math.random() < 0.003 && sfNodes.length > 1) {
+      if (Math.random() < packetSpawnRate && sfNodes.length > 1) {
         const targets = sfNodes.filter(o => o !== n);
         const t = targets[Math.floor(Math.random() * targets.length)];
         const d2 = Math.sqrt((n.x-t.x)**2+(n.y-t.y)**2);
-        if (d2 < 200) spawnPacket(n, t);
+        if (d2 < 240) spawnPacket(n, t);
       }
     }
+
     // Hex glows
     for (const h of sfHexes) { h.glow = Math.max(0, h.glow - h.glowDecay); }
     // Move cursor hex
     for (const h of sfHexes) {
       const d = Math.sqrt((h.x-mx)**2+(h.y-my)**2);
-      if (d < h.s * 2.5) h.glow = Math.min(1, h.glow + 0.12);
+      if (d < h.s * 2.8) {
+        h.glow = Math.min(1.0, h.glow + 0.14);
+      }
     }
+
     // Data packets
     for (let i = sfPackets.length-1; i >= 0; i--) {
-      const p = sfPackets[i]; p.t += 0.022;
-      p.x = p.x + (p.tx - sfPackets[i].x) * 0;
+      const p = sfPackets[i];
+      p.t += 0.024 * speedMult;
       if (p.t >= 1) { sfPackets.splice(i, 1); continue; }
-      sfPackets[i].cx = sfPackets[i].cx ?? sfPackets[i].x;
-      sfPackets[i].cy = sfPackets[i].cy ?? sfPackets[i].y;
     }
+
     // Recompute packet pos from stored origin
     for (const pk of sfPackets) {
       pk.x = pk.ox + (pk.tx - pk.ox) * pk.t;
       pk.y = pk.oy + (pk.ty - pk.oy) * pk.t;
     }
+
     // EMPs expand
     for (let i = sfEMPs.length-1; i >= 0; i--) {
       const e = sfEMPs[i]; e.r += e.spd; e.alpha *= 0.97;
       if (e.alpha < 0.01) { sfEMPs.splice(i, 1); }
+    }
+
+    // Update scifi burst particles
+    for (const p of particles) {
+      if (p.shape === 'scifi-spark') {
+        p.x += p.vx * speedMult;
+        p.y += p.vy * speedMult;
+        p.vx *= 0.94;
+        p.vy *= 0.94;
+        p.life -= p.decay * speedMult;
+      }
     }
   } else if (props.mode === 'minimal') {
     for (const p of particles) {
@@ -351,103 +442,195 @@ function draw() {
       ctx.restore();
     }
   } else if (props.mode === 'scifi') {
+    const t = performance.now() / 1000;
+    const petState = petStore.state;
+
+    // 1. Deep space backdrop
     const g = ctx.createLinearGradient(0, 0, 0, H);
-    g.addColorStop(0, '#0a0f28'); g.addColorStop(0.5, '#0f1738'); g.addColorStop(1, '#081024');
+    g.addColorStop(0, '#040618'); g.addColorStop(0.5, '#070a24'); g.addColorStop(1, '#030514');
     ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
     
-    // Hex Grid
+    // 2. Glowing Dynamic space nebulas
+    ctx.save();
+    ctx.globalCompositeOperation = 'screen';
+    for (const neb of sfNebulae) {
+      const ng = ctx.createRadialGradient(neb.x, neb.y, 0, neb.x, neb.y, neb.r);
+      ng.addColorStop(0, neb.color1);
+      ng.addColorStop(1, neb.color2);
+      ctx.fillStyle = ng;
+      ctx.beginPath(); ctx.arc(neb.x, neb.y, neb.r, 0, Math.PI*2); ctx.fill();
+    }
+    ctx.restore();
+
+    // 3. Hex Grid
     ctx.lineWidth = 1;
     for (const h of sfHexes) {
       if (h.glow > 0.01) {
-        ctx.strokeStyle = `rgba(56,189,248,${h.glow * 0.15})`;
+        ctx.strokeStyle = `rgba(56,189,248,${h.glow * 0.16})`;
         ctx.beginPath();
         for (let i = 0; i < 6; i++) {
           const a = i * Math.PI / 3;
-          const x = h.x + Math.cos(a) * h.s;
-          const y = h.y + Math.sin(a) * h.s;
-          i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+          let vx = h.x + Math.cos(a) * h.s;
+          let vy = h.y + Math.sin(a) * h.s;
+          
+          // Warp mesh vertices away from cursor
+          if (mx > -900) {
+            const dx = vx - mx;
+            const dy = vy - my;
+            const dist = Math.sqrt(dx*dx+dy*dy);
+            if (dist < 90) {
+              const force = (90 - dist) / 90;
+              const push = force * force * 14.0; // push vertices away by up to 14px
+              vx += (dx / (dist || 1)) * push;
+              vy += (dy / (dist || 1)) * push;
+            }
+          }
+          
+          i === 0 ? ctx.moveTo(vx, vy) : ctx.lineTo(vx, vy);
         }
         ctx.closePath(); ctx.stroke();
       }
     }
     
-    // Scanline
+    // 4. Scanline
     const sg = ctx.createLinearGradient(0, sfScanY - 50, 0, sfScanY);
-    sg.addColorStop(0, 'rgba(56,189,248,0)'); sg.addColorStop(1, 'rgba(56,189,248,0.08)');
+    sg.addColorStop(0, 'rgba(56,189,248,0)'); sg.addColorStop(1, 'rgba(56,189,248,0.065)');
     ctx.fillStyle = sg; ctx.fillRect(0, sfScanY - 50, W, 50);
-    ctx.fillStyle = 'rgba(56,189,248,0.3)'; ctx.fillRect(0, sfScanY, W, 1);
+    ctx.fillStyle = 'rgba(56,189,248,0.22)'; ctx.fillRect(0, sfScanY, W, 1);
 
-    // Neural Connections
-    ctx.lineWidth = 1.5;
+    // 5. Neural Connections (glitchy/pulsing when thinking)
+    ctx.lineWidth = 1.2;
     for (let i = 0; i < sfNodes.length; i++) {
       for (let j = i + 1; j < sfNodes.length; j++) {
         const a = sfNodes[i], b = sfNodes[j], dx = a.x - b.x, dy = a.y - b.y, d = Math.sqrt(dx*dx+dy*dy);
-        if (d < 250) {
+        if (d < 240) {
           const e = Math.max(a.energy, b.energy);
-          const alpha = (1 - d/250) * (0.15 + e * 0.4);
+          let alpha = (1 - d/240) * (0.12 + e * 0.45);
+          
+          if (petState === 'thinking') {
+            // High-frequency transmission pulse
+            alpha *= (0.68 + Math.sin(t * 15.0 + d * 0.05) * 0.32);
+          } else if (petState === 'speaking') {
+            // Wave propagation pulse
+            alpha *= (0.8 + Math.cos(t * 6.0 - d * 0.02) * 0.2);
+          }
+          
           ctx.strokeStyle = `rgba(167,139,250,${alpha})`;
           ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
         }
       }
     }
 
-    // Nodes
-    for (const n of sfNodes) {
-      ctx.fillStyle = n.color;
-      ctx.shadowColor = n.color; ctx.shadowBlur = 10 + n.energy * 20;
-      ctx.beginPath(); ctx.arc(n.x, n.y, n.r + n.energy * 2, 0, Math.PI*2); ctx.fill();
-      ctx.shadowBlur = 0;
-      if (n.type === 'hub') {
-        ctx.strokeStyle = n.color; ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.arc(n.x, n.y, n.r + 6 + Math.sin(n.pulse)*2, 0, Math.PI*2); ctx.stroke();
+    // Quantum capture threads from cursor to nearby nodes
+    if (mx > -900) {
+      for (const n of sfNodes) {
+        const dx = n.x - mx, dy = n.y - my, dist = Math.sqrt(dx*dx+dy*dy);
+        if (dist < 110) {
+          const strength = (110 - dist) / 110;
+          ctx.strokeStyle = `rgba(56, 189, 248, ${strength * 0.45})`;
+          ctx.lineWidth = 0.6 + strength * 0.8;
+          ctx.beginPath();
+          ctx.moveTo(mx, my);
+          ctx.lineTo(n.x, n.y);
+          ctx.stroke();
+
+          // Technical micro-distance tag at midpoint of thread
+          if (strength > 0.6) {
+            ctx.fillStyle = `rgba(56, 189, 248, ${strength * 0.6})`;
+            ctx.font = '6px monospace';
+            const midX = mx + dx * 0.5;
+            const midY = my + dy * 0.5;
+            ctx.fillText(`${Math.round(dist)}pm`, midX + 5, midY - 2);
+          }
+        }
       }
     }
 
-    // Packets
+    // 6. Nodes (Hubs & standard nodes)
+    for (const n of sfNodes) {
+      ctx.fillStyle = n.color;
+      ctx.shadowColor = n.color; 
+      ctx.shadowBlur = 8 + n.energy * 18;
+      ctx.beginPath(); ctx.arc(n.x, n.y, n.r + n.energy * 2.2, 0, Math.PI*2); ctx.fill();
+      ctx.shadowBlur = 0;
+      
+      if (n.type === 'hub') {
+        ctx.strokeStyle = n.color; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(n.x, n.y, n.r + 6.5 + Math.sin(n.pulse)*2.5, 0, Math.PI*2); ctx.stroke();
+      }
+    }
+
+    // 7. Packets
     for (const p of sfPackets) {
       ctx.fillStyle = p.color; ctx.shadowColor = p.color; ctx.shadowBlur = 8;
       ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI*2); ctx.fill();
       ctx.shadowBlur = 0;
     }
 
-    // EMPs
+    // 8. EMPs
     for (const e of sfEMPs) {
-      ctx.strokeStyle = e.color; ctx.lineWidth = 2 + e.alpha * 3;
+      ctx.strokeStyle = e.color; ctx.lineWidth = 1.5 + e.alpha * 3;
       ctx.globalAlpha = e.alpha;
       ctx.beginPath(); ctx.arc(e.x, e.y, e.r, 0, Math.PI*2); ctx.stroke();
-      ctx.globalAlpha = 1;
+      ctx.globalAlpha = 1.0;
     }
 
-    // Holographic reticle at cursor
+    // 9. Holographic reticle at cursor
     if (mx > -900) {
-      const t = performance.now() / 1000;
       ctx.save(); ctx.translate(mx, my);
-      // Outer rotating ring with ticks
-      ctx.rotate(t * 0.8);
-      ctx.strokeStyle = 'rgba(56,189,248,0.5)'; ctx.lineWidth = 1;
+      
+      // Outer rotating tick ring
+      ctx.rotate(t * 0.7);
+      ctx.strokeStyle = 'rgba(56,189,248,0.55)'; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.arc(0, 0, 22, 0, Math.PI * 2); ctx.stroke();
       for (let i = 0; i < 12; i++) {
         const a = (i / 12) * Math.PI * 2;
-        const len = i % 3 === 0 ? 5 : 2.5;
+        const len = i % 3 === 0 ? 5.5 : 2.5;
         ctx.beginPath();
         ctx.moveTo(Math.cos(a) * 17, Math.sin(a) * 17);
         ctx.lineTo(Math.cos(a) * (17 + len), Math.sin(a) * (17 + len));
         ctx.stroke();
       }
-      ctx.rotate(-t * 1.6); // inner ring counter-rotates
-      ctx.strokeStyle = 'rgba(167,139,250,0.4)'; ctx.lineWidth = 0.8;
-      ctx.beginPath(); ctx.arc(0, 0, 14, 0.3, Math.PI * 2 - 0.3); ctx.stroke();
-      // Crosshair
-      ctx.rotate(-t * (-1.6)); // reset
+      
+      // Inner rotating dashed ring
+      ctx.rotate(-t * 1.5); 
+      ctx.strokeStyle = 'rgba(167,139,250,0.45)'; ctx.lineWidth = 0.8;
+      ctx.beginPath(); ctx.arc(0, 0, 14, 0.4, Math.PI * 2 - 0.4); ctx.stroke();
+      
       ctx.restore();
-      // Crosshair lines (no rotation)
+      
+      // Crosshair lines
       ctx.save(); ctx.translate(mx, my);
-      ctx.strokeStyle = 'rgba(56,189,248,0.35)'; ctx.lineWidth = 0.8;
+      ctx.strokeStyle = 'rgba(56,189,248,0.38)'; ctx.lineWidth = 0.8;
       ctx.beginPath(); ctx.moveTo(-28, 0); ctx.lineTo(-6, 0); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(6, 0); ctx.lineTo(28, 0); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(0, -28); ctx.lineTo(0, -6); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(0, 6); ctx.lineTo(0, 28); ctx.stroke();
+      
+      // Cyberpunk Tech Data Labels
+      ctx.fillStyle = 'rgba(56,189,248,0.6)';
+      ctx.font = '8px monospace';
+      const stateStr = petState.toUpperCase();
+      ctx.fillText(`SYS_STATE: ${stateStr}`, 32, -12);
+      ctx.fillText(`LOC: [${Math.round(mx)},${Math.round(my)}]`, 32, -2);
+      ctx.fillText(`NET_ACTIVE: TRUE`, 32, 8);
       ctx.restore();
+    }
+
+    // 10. Quantum Particle Burst drawing
+    for (const p of particles) {
+      if (p.shape === 'scifi-spark') {
+        ctx.save();
+        ctx.globalAlpha = p.alpha * p.life;
+        ctx.fillStyle = p.color;
+        ctx.shadowColor = p.color;
+        ctx.shadowBlur = 6;
+        
+        ctx.translate(p.x, p.y);
+        ctx.rotate(t * 2.0);
+        ctx.fillRect(-p.size/2, -p.size/2, p.size, p.size);
+        ctx.restore();
+      }
     }
   } else if (props.mode === 'minimal') {
     const g = ctx.createLinearGradient(0, 0, W, H);
@@ -522,6 +705,23 @@ function onClick(x: number, y: number) {
     for (const h of sfHexes) {
       const d = Math.sqrt((h.x-x)**2+(h.y-y)**2);
       if (d < 80) h.glow = 1;
+    }
+    // Quantum particle burst!
+    for (let i = 0; i < 18; i++) {
+      const angle = rnd(0, Math.PI * 2);
+      const speed = rnd(2.0, 5.5);
+      particles.push({
+        x, y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        size: rnd(1.5, 3.5),
+        alpha: rnd(0.6, 0.9),
+        color: pick(Object.values(SF_COLS)),
+        shape: 'scifi-spark',
+        life: 1.0,
+        decay: rnd(0.015, 0.035),
+        temp: true
+      });
     }
   }
   else if (mode === 'minimal') {

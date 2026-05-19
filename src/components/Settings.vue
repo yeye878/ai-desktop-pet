@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { usePetStore, THEMES, FONT_COLORS, resolveSkinId } from "../stores/pet";
 import {
   DEFAULT_VOICE_SETTINGS,
@@ -296,7 +297,11 @@ async function previewVoice() {
   isPreviewing.value = true;
   try {
     await ttsPreviewPlayer.speak("你好，我是你的桌宠伙伴，很高兴认识你。", ttsSettings.value);
-  } catch {}
+  } catch (e: any) {
+    if (e.message !== "Aborted") {
+      alert("试听失败: " + (e.message || e));
+    }
+  }
   isPreviewing.value = false;
 }
 
@@ -329,7 +334,10 @@ function memBarColor(mem: number): string {
   return "var(--pet-accent, #ffa07a)";
 }
 
-onMounted(() => {
+const activeTab = ref("appearance");
+let unlistenSwitchTab: UnlistenFn | null = null;
+
+onMounted(async () => {
   loadSystemInfo();
   loadMemories();
   loadCurrentModel();
@@ -339,6 +347,20 @@ onMounted(() => {
   loadPersonality();
   loadProfession();
   loadVoiceSettings();
+
+  const params = new URLSearchParams(window.location.search);
+  const tabParam = params.get("tab");
+  if (tabParam) {
+    activeTab.value = tabParam;
+  }
+
+  unlistenSwitchTab = await listen<string>("switch-tab", (event) => {
+    activeTab.value = event.payload;
+  });
+});
+
+onUnmounted(() => {
+  unlistenSwitchTab?.();
 });
 </script>
 
@@ -355,376 +377,399 @@ onMounted(() => {
       </button>
     </div>
 
+    <!-- Tab navigation -->
+    <div class="settings-tabs">
+      <button :class="['tab-btn', { active: activeTab === 'appearance' }]" @click="activeTab = 'appearance'">
+        <span>🎨</span><span>外观</span>
+      </button>
+      <button :class="['tab-btn', { active: activeTab === 'voice' }]" @click="activeTab = 'voice'">
+        <span>🎙️</span><span>语音</span>
+      </button>
+      <button :class="['tab-btn', { active: activeTab === 'system' }]" @click="activeTab = 'system'">
+        <span>⚙️</span><span>系统</span>
+      </button>
+    </div>
+
     <div class="settings-body">
-      <!-- 系统状态 -->
-      <div class="section">
-        <h3>&#x1F4CA; 系统状态</h3>
-        <div class="stat-row">
-          <span class="stat-label">CPU</span>
-          <div class="stat-bar">
+      <!-- APPEARANCE TAB -->
+      <template v-if="activeTab === 'appearance'">
+        <!-- 主题皮肤 -->
+        <div class="section">
+          <h3>&#x1F3A8; 主题皮肤</h3>
+          <div class="skin-grid">
             <div
-              class="stat-fill"
-              :style="{ width: systemInfo.cpu + '%', background: cpuBarColor(systemInfo.cpu) }"
-            />
+              v-for="t in themes"
+              :key="t.id"
+              class="skin-item"
+              :class="{ active: currentSkin === t.id, animated: t.animated }"
+              @click="selectSkin(t.id)"
+            >
+              <div class="skin-preview" :style="{ background: t.headerGradient }">
+                <span class="skin-check" v-if="currentSkin === t.id">&#x2714;</span>
+              </div>
+              <span>{{ t.name }}</span>
+              <small v-if="t.animated">随时间变色</small>
+            </div>
           </div>
-          <span class="stat-value">{{ systemInfo.cpu.toFixed(1) }}%</span>
         </div>
-        <div class="stat-row">
-          <span class="stat-label">内存</span>
-          <div class="stat-bar">
+
+        <!-- 字体颜色 -->
+        <div class="section">
+          <h3>&#x1F58A;&#xFE0F; 字体颜色</h3>
+          <div class="font-color-grid">
             <div
-              class="stat-fill"
-              :style="{ width: systemInfo.memory + '%', background: memBarColor(systemInfo.memory) }"
-            />
-          </div>
-          <span class="stat-value">{{ systemInfo.memory.toFixed(1) }}%</span>
-        </div>
-      </div>
-
-      <!-- AI 模型 -->
-      <div class="section">
-        <h3>&#x1F916; AI 模型</h3>
-        <p class="current-model">{{ currentModel || '加载中...' }}</p>
-        <p class="hint">使用本地 Claude Code CLI，会话自动保持上下文</p>
-        <button class="action-btn" @click="resetModel">
-          {{ modelSaved ? "&#x2705; 已重置" : "&#x1F504; 重置会话" }}
-        </button>
-      </div>
-
-      <!-- 性格 -->
-      <div class="section">
-        <h3>&#x2728; 性格</h3>
-        <div class="option-grid personality-grid">
-          <button
-            v-for="item in personalities"
-            :key="item.id"
-            class="option-item"
-            :class="{ active: currentPersonality === item.id }"
-            @click="selectPersonality(item.id)"
-          >
-            <span class="option-name">{{ item.name }}</span>
-            <span class="option-desc">{{ item.desc }}</span>
-          </button>
-        </div>
-        <p class="hint">切换后会重置 Claude 会话，让新设定立即生效</p>
-      </div>
-
-      <!-- 职业 -->
-      <div class="section">
-        <h3>&#x1F9ED; 职业</h3>
-        <div class="option-grid profession-grid">
-          <button
-            v-for="item in professions"
-            :key="item.id"
-            class="option-item"
-            :class="{ active: currentProfession === item.id }"
-            @click="selectProfession(item.id)"
-          >
-            <span class="option-name">{{ item.name }}</span>
-            <span class="option-desc">{{ item.desc }}</span>
-          </button>
-        </div>
-      </div>
-
-      <div class="section">
-        <h3>语音交互</h3>
-        <div class="voice-options">
-          <label class="switch-row">
-            <span>
-              <strong>启用语音</strong>
-              <small>允许麦克风输入和回复播报</small>
-            </span>
-            <input
-              type="checkbox"
-              :checked="voiceSettings.enabled"
-              @change="updateVoiceSettings({ enabled: ($event.target as HTMLInputElement).checked })"
-            />
-          </label>
-          <label class="switch-row">
-            <span>
-              <strong>识别后自动发送</strong>
-              <small>关闭后会先填入输入框</small>
-            </span>
-            <input
-              type="checkbox"
-              :checked="voiceSettings.autoSend"
-              @change="updateVoiceSettings({ autoSend: ($event.target as HTMLInputElement).checked })"
-            />
-          </label>
-          <label class="switch-row">
-            <span>
-              <strong>自动朗读回复</strong>
-              <small>AI 回复完成后直接播报</small>
-            </span>
-            <input
-              type="checkbox"
-              :checked="voiceSettings.autoSpeak"
-              @change="updateVoiceSettings({ autoSpeak: ($event.target as HTMLInputElement).checked })"
-            />
-          </label>
-
-          <label class="field-row">
-            <span>快捷键</span>
-            <input
-              type="text"
-              :value="voiceSettings.shortcut"
-              placeholder="Ctrl+Alt+V"
-              @change="updateVoiceSettings({ shortcut: ($event.target as HTMLInputElement).value.trim() || DEFAULT_VOICE_SETTINGS.shortcut })"
-            />
-          </label>
-
-          <label class="field-row">
-            <span>语言</span>
-            <select
-              :value="voiceSettings.language"
-              @change="updateVoiceSettings({ language: ($event.target as HTMLSelectElement).value })"
+              v-for="fc in FONT_COLORS"
+              :key="fc.id"
+              class="font-color-item"
+              :class="{ active: currentFontColor === fc.value }"
+              @click="selectFontColor(fc.value)"
             >
-              <option value="zh-CN">中文普通话</option>
-              <option value="en-US">English (US)</option>
-              <option value="ja-JP">日本語</option>
-            </select>
-          </label>
-
-          <label class="field-row">
-            <span>声音引擎</span>
-            <select
-              :value="ttsSettings.engine"
-              @change="updateTtsSettings({ engine: ($event.target as HTMLSelectElement).value as any })"
-            >
-              <option value="edge">微软自然语音</option>
-              <option value="system">系统语音</option>
-            </select>
-          </label>
-
-          <template v-if="ttsSettings.engine === 'edge'">
-            <label class="field-row">
-              <span>声音角色</span>
-              <select
-                :value="ttsSettings.voice"
-                @change="updateTtsSettings({ voice: ($event.target as HTMLSelectElement).value })"
+              <div
+                class="font-color-preview"
+                :style="{
+                  color: fc.value || 'var(--pet-bubble-bot-text, #4a4a4a)',
+                }"
               >
-                <option
-                  v-for="v in filteredEdgeVoices"
-                  :key="v.id"
-                  :value="v.id"
-                >
-                  {{ v.name }} · {{ v.gender === 'Female' ? '女' : '男' }}
-                </option>
-              </select>
-            </label>
-            <div class="preview-row">
-              <button class="preview-btn" @click="previewVoice">
-                {{ isPreviewing ? '停止' : '试听' }}
-              </button>
+                Aa
+              </div>
+              <span>{{ fc.name }}</span>
             </div>
-          </template>
-
-          <template v-else>
-            <label class="field-row">
-              <span>声音</span>
-              <select
-                :value="voiceSettings.voiceName"
-                @change="updateVoiceSettings({ voiceName: ($event.target as HTMLSelectElement).value })"
-              >
-                <option value="">自动选择</option>
-                <option
-                  v-for="voice in availableVoices"
-                  :key="voice.name"
-                  :value="voice.name"
-                >
-                  {{ voice.name }} · {{ voice.lang }}
-                </option>
-              </select>
-            </label>
-          </template>
-
-          <template v-if="ttsSettings.engine === 'edge'">
-            <label class="range-row">
-              <span>语速 {{ ttsSettings.rate >= 0 ? '+' : '' }}{{ ttsSettings.rate }}%</span>
-              <input
-                type="range"
-                min="-50"
-                max="100"
-                step="10"
-                :value="ttsSettings.rate"
-                @input="updateTtsSettings({ rate: Number(($event.target as HTMLInputElement).value) })"
-              />
-            </label>
-            <label class="range-row">
-              <span>音调 {{ ttsSettings.pitch >= 0 ? '+' : '' }}{{ ttsSettings.pitch }}Hz</span>
-              <input
-                type="range"
-                min="-50"
-                max="50"
-                step="5"
-                :value="ttsSettings.pitch"
-                @input="updateTtsSettings({ pitch: Number(($event.target as HTMLInputElement).value) })"
-              />
-            </label>
-            <label class="range-row">
-              <span>音量 {{ ttsSettings.volume }}%</span>
-              <input
-                type="range"
-                min="0"
-                max="100"
-                step="10"
-                :value="ttsSettings.volume"
-                @input="updateTtsSettings({ volume: Number(($event.target as HTMLInputElement).value) })"
-              />
-            </label>
-          </template>
-          <template v-else>
-            <label class="range-row">
-              <span>语速 {{ voiceSettings.rate.toFixed(1) }}</span>
-              <input
-                type="range"
-                min="0.6"
-                max="1.5"
-                step="0.1"
-                :value="voiceSettings.rate"
-                @input="updateVoiceSettings({ rate: Number(($event.target as HTMLInputElement).value) })"
-              />
-            </label>
-            <label class="range-row">
-              <span>音调 {{ voiceSettings.pitch.toFixed(1) }}</span>
-              <input
-                type="range"
-                min="0.6"
-                max="1.6"
-                step="0.1"
-                :value="voiceSettings.pitch"
-                @input="updateVoiceSettings({ pitch: Number(($event.target as HTMLInputElement).value) })"
-              />
-            </label>
-            <label class="range-row">
-              <span>音量 {{ Math.round(voiceSettings.volume * 100) }}%</span>
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.1"
-                :value="voiceSettings.volume"
-                @input="updateVoiceSettings({ volume: Number(($event.target as HTMLInputElement).value) })"
-              />
-            </label>
-          </template>
-        </div>
-      </div>
-
-      <!-- 主题皮肤 -->
-      <div class="section">
-        <h3>&#x1F3A8; 主题皮肤</h3>
-        <div class="skin-grid">
-          <div
-            v-for="t in themes"
-            :key="t.id"
-            class="skin-item"
-            :class="{ active: currentSkin === t.id, animated: t.animated }"
-            @click="selectSkin(t.id)"
-          >
-            <div class="skin-preview" :style="{ background: t.headerGradient }">
-              <span class="skin-check" v-if="currentSkin === t.id">&#x2714;</span>
-            </div>
-            <span>{{ t.name }}</span>
-            <small v-if="t.animated">随时间变色</small>
           </div>
         </div>
-      </div>
 
-      <!-- 字体颜色 -->
-      <div class="section">
-        <h3>&#x1F58A;&#xFE0F; 字体颜色</h3>
-        <div class="font-color-grid">
-          <div
-            v-for="fc in FONT_COLORS"
-            :key="fc.id"
-            class="font-color-item"
-            :class="{ active: currentFontColor === fc.value }"
-            @click="selectFontColor(fc.value)"
-          >
-            <div
-              class="font-color-preview"
-              :style="{
-                color: fc.value || 'var(--pet-bubble-bot-text, #4a4a4a)',
-              }"
-            >
-              Aa
-            </div>
-            <span>{{ fc.name }}</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- 对话背景 -->
-      <div class="section">
-        <h3>&#x1F5BC;&#xFE0F; 对话背景</h3>
-        <div class="bg-grid">
-          <button :class="['bg-opt', { active: chatBg === 'none' }]" @click="selectBg('none')">
-            <div class="bg-opt-preview bg-prev-none">&#x2716;</div>
-            <span>无</span>
-          </button>
-          <button :class="['bg-opt', { active: chatBg === 'cute' }]" @click="selectBg('cute')">
-            <div class="bg-opt-preview bg-prev-cute">&#x1F43E;</div>
-            <span>可爱</span>
-          </button>
-          <button :class="['bg-opt', { active: chatBg === 'scifi' }]" @click="selectBg('scifi')">
-            <div class="bg-opt-preview bg-prev-scifi">&#x1F680;</div>
-            <span>科幻</span>
-          </button>
-          <button :class="['bg-opt', { active: chatBg === 'minimal' }]" @click="selectBg('minimal')">
-            <div class="bg-opt-preview bg-prev-minimal">&#x25CB;</div>
-            <span>简洁</span>
-          </button>
-          <button :class="['bg-opt', { active: chatBg === 'custom' }]" @click="chooseBgImage">
-            <div class="bg-opt-preview bg-prev-custom">
-              <img v-if="customBgImage" :src="customBgImage" alt="" />
-              <span v-else>&#x1F4F7;</span>
-            </div>
-            <span>自定义</span>
-          </button>
-          <button v-if="chatBg === 'custom' && customBgImage" class="bg-opt danger" @click="clearCustomBg">
-            <div class="bg-opt-preview bg-prev-none">&#x1F5D1;</div>
-            <span>清除</span>
-          </button>
-        </div>
-        <input ref="bgInputRef" class="avatar-input" type="file" accept="image/*" @change="onBgImageSelected" />
-      </div>
-
-      <!-- 用户头像 -->
-      <div class="section">
-        <h3>&#x1F464; 用户头像</h3>
-        <div class="avatar-setting">
-          <div class="avatar-preview">
-            <img v-if="pet.userAvatar" :src="pet.userAvatar" alt="用户头像" />
-            <span v-else>&#x1F464;</span>
-          </div>
-          <div class="avatar-actions">
-            <button class="avatar-btn primary" @click="chooseAvatar">选择图片</button>
-            <button
-              class="avatar-btn"
-              :disabled="!pet.userAvatar"
-              @click="clearAvatar"
-            >
-              恢复默认
+        <!-- 对话背景 -->
+        <div class="section">
+          <h3>&#x1F5BC;&#xFE0F; 对话背景</h3>
+          <div class="bg-grid">
+            <button :class="['bg-opt', { active: chatBg === 'none' }]" @click="selectBg('none')">
+              <div class="bg-opt-preview bg-prev-none">&#x2716;</div>
+              <span>无</span>
+            </button>
+            <button :class="['bg-opt', { active: chatBg === 'cute' }]" @click="selectBg('cute')">
+              <div class="bg-opt-preview bg-prev-cute">&#x1F43E;</div>
+              <span>可爱</span>
+            </button>
+            <button :class="['bg-opt', { active: chatBg === 'scifi' }]" @click="selectBg('scifi')">
+              <div class="bg-opt-preview bg-prev-scifi">&#x1F680;</div>
+              <span>科幻</span>
+            </button>
+            <button :class="['bg-opt', { active: chatBg === 'minimal' }]" @click="selectBg('minimal')">
+              <div class="bg-opt-preview bg-prev-minimal">&#x25CB;</div>
+              <span>简洁</span>
+            </button>
+            <button :class="['bg-opt', { active: chatBg === 'custom' }]" @click="chooseBgImage">
+              <div class="bg-opt-preview bg-prev-custom">
+                <img v-if="customBgImage" :src="customBgImage" alt="" />
+                <span v-else>&#x1F4F7;</span>
+              </div>
+              <span>自定义</span>
+            </button>
+            <button v-if="chatBg === 'custom' && customBgImage" class="bg-opt danger" @click="clearCustomBg">
+              <div class="bg-opt-preview bg-prev-none">&#x1F5D1;</div>
+              <span>清除</span>
             </button>
           </div>
-          <input
-            ref="avatarInputRef"
-            class="avatar-input"
-            type="file"
-            accept="image/*"
-            @change="onAvatarSelected"
-          />
+          <input ref="bgInputRef" class="avatar-input" type="file" accept="image/*" @change="onBgImageSelected" />
         </div>
-      </div>
 
-      <!-- 宠物记忆 -->
-      <div class="section" v-if="memories.length > 0">
-        <h3>&#x1F9E0; 宠物记忆</h3>
-        <div v-for="m in memories" :key="m.key" class="memory-item">
-          <strong>{{ m.key }}:</strong> {{ m.value }}
+        <!-- 用户头像 -->
+        <div class="section">
+          <h3>&#x1F464; 用户头像</h3>
+          <div class="avatar-setting">
+            <div class="avatar-preview">
+              <img v-if="pet.userAvatar" :src="pet.userAvatar" alt="用户头像" />
+              <span v-else>&#x1F464;</span>
+            </div>
+            <div class="avatar-actions">
+              <button class="avatar-btn primary" @click="chooseAvatar">选择图片</button>
+              <button
+                class="avatar-btn"
+                :disabled="!pet.userAvatar"
+                @click="clearAvatar"
+              >
+                恢复默认
+              </button>
+            </div>
+            <input
+              ref="avatarInputRef"
+              class="avatar-input"
+              type="file"
+              accept="image/*"
+              @change="onAvatarSelected"
+            />
+          </div>
         </div>
-      </div>
+      </template>
+
+      <!-- VOICE TAB -->
+      <template v-else-if="activeTab === 'voice'">
+        <!-- 语音交互 -->
+        <div class="section">
+          <h3>语音交互</h3>
+          <div class="voice-options">
+            <label class="switch-row">
+              <span>
+                <strong>启用语音</strong>
+                <small>允许麦克风输入和回复播报</small>
+              </span>
+              <input
+                type="checkbox"
+                :checked="voiceSettings.enabled"
+                @change="updateVoiceSettings({ enabled: ($event.target as HTMLInputElement).checked })"
+              />
+            </label>
+            <label class="switch-row">
+              <span>
+                <strong>识别后自动发送</strong>
+                <small>关闭后会先填入输入框</small>
+              </span>
+              <input
+                type="checkbox"
+                :checked="voiceSettings.autoSend"
+                @change="updateVoiceSettings({ autoSend: ($event.target as HTMLInputElement).checked })"
+              />
+            </label>
+            <label class="switch-row">
+              <span>
+                <strong>自动朗读回复</strong>
+                <small>AI 回复完成后直接播报</small>
+              </span>
+              <input
+                type="checkbox"
+                :checked="voiceSettings.autoSpeak"
+                @change="updateVoiceSettings({ autoSpeak: ($event.target as HTMLInputElement).checked })"
+              />
+            </label>
+
+            <label class="field-row">
+              <span>快捷键</span>
+              <input
+                type="text"
+                :value="voiceSettings.shortcut"
+                placeholder="Ctrl+Alt+V"
+                @change="updateVoiceSettings({ shortcut: ($event.target as HTMLInputElement).value.trim() || DEFAULT_VOICE_SETTINGS.shortcut })"
+              />
+            </label>
+
+            <label class="field-row">
+              <span>语言</span>
+              <select
+                :value="voiceSettings.language"
+                @change="updateVoiceSettings({ language: ($event.target as HTMLSelectElement).value })"
+              >
+                <option value="zh-CN">中文普通话</option>
+                <option value="en-US">English (US)</option>
+                <option value="ja-JP">日本語</option>
+              </select>
+            </label>
+
+            <label class="field-row">
+              <span>声音引擎</span>
+              <select
+                :value="ttsSettings.engine"
+                @change="updateTtsSettings({ engine: ($event.target as HTMLSelectElement).value as any })"
+              >
+                <option value="edge">微软自然语音</option>
+                <option value="system">系统语音</option>
+              </select>
+            </label>
+
+            <template v-if="ttsSettings.engine === 'edge'">
+              <label class="field-row">
+                <span>声音角色</span>
+                <select
+                  :value="ttsSettings.voice"
+                  @change="updateTtsSettings({ voice: ($event.target as HTMLSelectElement).value })"
+                >
+                  <option
+                    v-for="v in filteredEdgeVoices"
+                    :key="v.id"
+                    :value="v.id"
+                  >
+                    {{ v.name }} · {{ v.gender === 'Female' ? '女' : '男' }}
+                  </option>
+                </select>
+              </label>
+              <div class="preview-row">
+                <button class="preview-btn" @click="previewVoice">
+                  {{ isPreviewing ? '停止' : '试听' }}
+                </button>
+              </div>
+            </template>
+
+            <template v-else>
+              <label class="field-row">
+                <span>声音</span>
+                <select
+                  :value="voiceSettings.voiceName"
+                  @change="updateVoiceSettings({ voiceName: ($event.target as HTMLSelectElement).value })"
+                >
+                  <option value="">自动选择</option>
+                  <option
+                    v-for="voice in availableVoices"
+                    :key="voice.name"
+                    :value="voice.name"
+                  >
+                    {{ voice.name }} · {{ voice.lang }}
+                  </option>
+                </select>
+              </label>
+            </template>
+
+            <template v-if="ttsSettings.engine === 'edge'">
+              <label class="range-row">
+                <span>语速 {{ ttsSettings.rate >= 0 ? '+' : '' }}{{ ttsSettings.rate }}%</span>
+                <input
+                  type="range"
+                  min="-50"
+                  max="100"
+                  step="10"
+                  :value="ttsSettings.rate"
+                  @input="updateTtsSettings({ rate: Number(($event.target as HTMLInputElement).value) })"
+                />
+              </label>
+              <label class="range-row">
+                <span>音调 {{ ttsSettings.pitch >= 0 ? '+' : '' }}{{ ttsSettings.pitch }}Hz</span>
+                <input
+                  type="range"
+                  min="-50"
+                  max="50"
+                  step="5"
+                  :value="ttsSettings.pitch"
+                  @input="updateTtsSettings({ pitch: Number(($event.target as HTMLInputElement).value) })"
+                />
+              </label>
+              <label class="range-row">
+                <span>音量 {{ ttsSettings.volume }}%</span>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="10"
+                  :value="ttsSettings.volume"
+                  @input="updateTtsSettings({ volume: Number(($event.target as HTMLInputElement).value) })"
+                />
+              </label>
+            </template>
+            <template v-else>
+              <label class="range-row">
+                <span>语速 {{ voiceSettings.rate.toFixed(1) }}</span>
+                <input
+                  type="range"
+                  min="0.6"
+                  max="1.5"
+                  step="0.1"
+                  :value="voiceSettings.rate"
+                  @input="updateVoiceSettings({ rate: Number(($event.target as HTMLInputElement).value) })"
+                />
+              </label>
+              <label class="range-row">
+                <span>音调 {{ voiceSettings.pitch.toFixed(1) }}</span>
+                <input
+                  type="range"
+                  min="0.6"
+                  max="1.6"
+                  step="0.1"
+                  :value="voiceSettings.pitch"
+                  @input="updateVoiceSettings({ pitch: Number(($event.target as HTMLInputElement).value) })"
+                />
+              </label>
+              <label class="range-row">
+                <span>音量 {{ Math.round(voiceSettings.volume * 100) }}%</span>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.1"
+                  :value="voiceSettings.volume"
+                  @input="updateVoiceSettings({ volume: Number(($event.target as HTMLInputElement).value) })"
+                />
+              </label>
+            </template>
+          </div>
+        </div>
+      </template>
+
+      <!-- SYSTEM TAB -->
+      <template v-else-if="activeTab === 'system'">
+        <!-- 系统状态 -->
+        <div class="section">
+          <h3>&#x1F4CA; 系统状态</h3>
+          <div class="stat-row">
+            <span class="stat-label">CPU</span>
+            <div class="stat-bar">
+              <div
+                class="stat-fill"
+                :style="{ width: systemInfo.cpu + '%', background: cpuBarColor(systemInfo.cpu) }"
+              />
+            </div>
+            <span class="stat-value">{{ systemInfo.cpu.toFixed(1) }}%</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-label">内存</span>
+            <div class="stat-bar">
+              <div
+                class="stat-fill"
+                :style="{ width: systemInfo.memory + '%', background: memBarColor(systemInfo.memory) }"
+              />
+            </div>
+            <span class="stat-value">{{ systemInfo.memory.toFixed(1) }}%</span>
+          </div>
+        </div>
+
+        <!-- AI 模型 -->
+        <div class="section">
+          <h3>&#x1F916; AI 模型</h3>
+          <p class="current-model">{{ currentModel || '加载中...' }}</p>
+          <p class="hint">使用本地 Claude Code CLI，会话自动保持上下文</p>
+          <button class="action-btn" @click="resetModel">
+            {{ modelSaved ? "&#x2705; 已重置" : "&#x1F504; 重置会话" }}
+          </button>
+        </div>
+
+        <!-- 性格 -->
+        <div class="section">
+          <h3>&#x2728; 性格</h3>
+          <div class="option-grid personality-grid">
+            <button
+              v-for="item in personalities"
+              :key="item.id"
+              class="option-item"
+              :class="{ active: currentPersonality === item.id }"
+              @click="selectPersonality(item.id)"
+            >
+              <span class="option-name">{{ item.name }}</span>
+              <span class="option-desc">{{ item.desc }}</span>
+            </button>
+          </div>
+          <p class="hint">切换后会重置 Claude 会话，让新设定立即生效</p>
+        </div>
+
+        <!-- 职业 -->
+        <div class="section">
+          <h3>&#x1F9ED; 职业</h3>
+          <div class="option-grid profession-grid">
+            <button
+              v-for="item in professions"
+              :key="item.id"
+              class="option-item"
+              :class="{ active: currentProfession === item.id }"
+              @click="selectProfession(item.id)"
+            >
+              <span class="option-name">{{ item.name }}</span>
+              <span class="option-desc">{{ item.desc }}</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- 宠物记忆 -->
+        <div class="section" v-if="memories.length > 0">
+          <h3>&#x1F9E0; 宠物记忆</h3>
+          <div v-for="m in memories" :key="m.key" class="memory-item">
+            <strong>{{ m.key }}:</strong> {{ m.value }}
+          </div>
+        </div>
+      </template>
     </div>
   </div>
 </template>
@@ -1378,5 +1423,43 @@ onMounted(() => {
   50% {
     background-position: 100% 50%;
   }
+}
+
+/* ===== Tabs ===== */
+.settings-tabs {
+  display: flex;
+  background: rgba(15, 23, 42, 0.03);
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+  padding: 4px;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.settings-tabs .tab-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px;
+  border: none;
+  background: transparent;
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border-radius: 8px;
+  transition: all 0.2s;
+}
+
+.settings-tabs .tab-btn:hover {
+  background: rgba(15, 23, 42, 0.04);
+  color: #334155;
+}
+
+.settings-tabs .tab-btn.active {
+  background: white;
+  color: var(--pet-primary, #ff6b6b);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
 }
 </style>

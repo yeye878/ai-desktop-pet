@@ -212,7 +212,15 @@ impl StreamParseState {
                             Some("thinking") => {
                                 if let Some(thinking) = block["thinking"].as_str() {
                                     if thinking.len() > self.thinking_len {
-                                        let delta = thinking[self.thinking_len..].to_string();
+                                        let delta = if thinking.is_char_boundary(self.thinking_len) {
+                                            thinking[self.thinking_len..].to_string()
+                                        } else {
+                                            let mut start = self.thinking_len;
+                                            while start < thinking.len() && !thinking.is_char_boundary(start) {
+                                                start += 1;
+                                            }
+                                            thinking[start..].to_string()
+                                        };
                                         self.thinking_len = thinking.len();
                                         self.full_thinking = thinking.to_string();
                                         thinking_delta = Some(delta);

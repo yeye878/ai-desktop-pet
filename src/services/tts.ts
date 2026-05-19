@@ -46,6 +46,7 @@ export function clearVoicesCache() {
 export class TtsPlayer {
   private audio: HTMLAudioElement | null = null;
   private playing = false;
+  private activeReject: ((reason?: any) => void) | null = null;
 
   get isPlaying() {
     return this.playing;
@@ -70,16 +71,21 @@ export class TtsPlayer {
 
     return new Promise<void>((resolve, reject) => {
       if (!this.audio) return resolve();
+      this.activeReject = reject;
+
       this.audio.onended = () => {
         this.playing = false;
+        this.activeReject = null;
         resolve();
       };
       this.audio.onerror = () => {
         this.playing = false;
+        this.activeReject = null;
         reject(new Error("音频播放失败"));
       };
       this.audio.play().catch((e) => {
         this.playing = false;
+        this.activeReject = null;
         reject(e);
       });
     });
@@ -87,9 +93,16 @@ export class TtsPlayer {
 
   stop() {
     if (this.audio) {
+      this.audio.onended = null;
+      this.audio.onerror = null;
       this.audio.pause();
       this.audio.src = "";
       this.audio = null;
+    }
+    if (this.activeReject) {
+      const reject = this.activeReject;
+      this.activeReject = null;
+      reject(new Error("Aborted"));
     }
     this.playing = false;
   }
