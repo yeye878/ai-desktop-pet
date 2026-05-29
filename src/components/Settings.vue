@@ -30,6 +30,18 @@ const memories = ref<Array<{ key: string; value: string }>>([]);
 const currentModel = ref("");
 const modelSaved = ref(false);
 
+const backendType = ref("claude_code");
+const apiConfig = ref({
+  api_key: "",
+  base_url: "",
+  model: "",
+  confirm_enabled: true
+});
+const isTestingConnection = ref(false);
+const testResult = ref({ success: false, message: "" });
+const isSavingConfig = ref(false);
+const configSaved = ref(false);
+
 // 皮肤
 const currentSkin = ref("default");
 const themes = Object.values(THEMES);
@@ -49,12 +61,37 @@ const voiceSettings = ref<VoiceSettings>({ ...DEFAULT_VOICE_SETTINGS });
 const availableVoices = ref<SpeechSynthesisVoice[]>([]);
 const ttsSettings = ref<TtsSettings>({ ...DEFAULT_TTS_SETTINGS });
 const edgeVoices = ref<TtsVoice[]>([]);
+const edgeVoiceSearch = ref("");
+const showAllEdgeVoices = ref(false);
 const ttsPreviewPlayer = new TtsPlayer();
 const isPreviewing = ref(false);
 
 const filteredEdgeVoices = computed(() => {
-  const lang = voiceSettings.value.language || "zh-CN";
-  return edgeVoices.value.filter((v) => v.language.startsWith(lang.split("-")[0]));
+  const lang = (voiceSettings.value.language || "zh-CN").toLowerCase();
+  const langBase = lang.split("-")[0];
+  const query = edgeVoiceSearch.value.trim().toLowerCase();
+  const selectedVoice = ttsSettings.value.voice;
+
+  return edgeVoices.value.filter((voice) => {
+    const voiceLang = voice.language.toLowerCase();
+    const isSameLanguage = voiceLang === lang || voiceLang.startsWith(`${langBase}-`);
+    const isSelected = voice.id === selectedVoice;
+    if (!showAllEdgeVoices.value && !isSameLanguage && !isSelected) return false;
+
+    if (!query) return true;
+    return [
+      voice.id,
+      voice.name,
+      voice.language,
+      voice.gender,
+    ].some((value) => value.toLowerCase().includes(query));
+  });
+});
+
+const edgeVoiceSummary = computed(() => {
+  if (edgeVoices.value.length === 0) return "正在加载人声列表";
+  if (showAllEdgeVoices.value) return `全部 ${filteredEdgeVoices.value.length} / ${edgeVoices.value.length} 个`;
+  return `当前语言 ${filteredEdgeVoices.value.length} / ${edgeVoices.value.length} 个`;
 });
 
 const personalities = [
@@ -150,6 +187,110 @@ async function loadVoiceSettings() {
   try {
     edgeVoices.value = await listEdgeVoices();
   } catch {}
+
+  if (ttsSettings.value.engine === "edge" && edgeVoices.value.length > 0) {
+    const hasSavedVoice = edgeVoices.value.some((voice) => voice.id === ttsSettings.value.voice);
+    if (!hasSavedVoice) {
+      await updateTtsSettings({ voice: edgeVoices.value[0].id });
+    }
+  }
+}
+
+async function loadBackendSettings() {
+  try {
+    backendType.value = await invoke("get_backend_type");
+    const config = await invoke<any>("get_api_config");
+    apiConfig.value = {
+      api_key: config.api_key || "",
+      base_url: config.base_url || "https://api.openai.com/v1",
+      model: config.model || "gpt-4o-mini",
+      confirm_enabled: config.confirm_enabled !== false
+    };
+    if (backendType.value === "direct_api") {
+      currentModel.value = `直连 API: ${apiConfig.value.model}`;
+    }
+  } catch (e) {
+    console.error("加载后端设置失败", e);
+  }
+}
+
+async function selectBackend(type: string) {
+  try {
+    await invoke("set_backend_type", { backend: type });
+    backendType.value = type;
+    if (type === "claude_code") {
+      await loadCurrentModel();
+    } else {
+      currentModel.value = `直连 API: ${apiConfig.value.model}`;
+    }
+  } catch (e) {
+    alert("切换后端失败: " + e);
+  }
+}
+
+const PRESETS = {
+  openai: {
+    base_url: "https://api.openai.com/v1",
+    model: "gpt-4o-mini"
+  },
+  deepseek: {
+    base_url: "https://api.deepseek.com/v1",
+    model: "deepseek-chat"
+  },
+  qwen: {
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    model: "qwen-plus"
+  },
+  ollama: {
+    base_url: "http://localhost:11434/v1",
+    model: "qwen2.5:7b"
+  }
+};
+
+function applyPreset(key: keyof typeof PRESETS) {
+  const preset = PRESETS[key];
+  apiConfig.value.base_url = preset.base_url;
+  apiConfig.value.model = preset.model;
+  testResult.value = { success: false, message: "" };
+}
+
+async function saveApiConfig() {
+  isSavingConfig.value = true;
+  configSaved.value = false;
+  try {
+    await invoke("set_api_config", {
+      apiKey: apiConfig.value.api_key,
+      baseUrl: apiConfig.value.base_url,
+      model: apiConfig.value.model,
+      confirmEnabled: apiConfig.value.confirm_enabled
+    });
+    configSaved.value = true;
+    currentModel.value = `直连 API: ${apiConfig.value.model}`;
+    setTimeout(() => {
+      configSaved.value = false;
+    }, 2000);
+  } catch (e) {
+    alert("保存失败: " + e);
+  } finally {
+    isSavingConfig.value = false;
+  }
+}
+
+async function testConnection() {
+  isTestingConnection.value = true;
+  testResult.value = { success: false, message: "" };
+  try {
+    const res = await invoke<string>("test_api_connection", {
+      apiKey: apiConfig.value.api_key,
+      baseUrl: apiConfig.value.base_url,
+      model: apiConfig.value.model
+    });
+    testResult.value = { success: true, message: res };
+  } catch (e: any) {
+    testResult.value = { success: false, message: e.toString() };
+  } finally {
+    isTestingConnection.value = false;
+  }
 }
 
 async function resetModel() {
@@ -160,6 +301,14 @@ async function resetModel() {
     setTimeout(() => (modelSaved.value = false), 2000);
   } catch (e) {
     alert("重置失败: " + e);
+  }
+}
+
+async function startClaudeConfig() {
+  try {
+    await invoke("open_claude_config");
+  } catch (e) {
+    alert("启动配置终端失败: " + e);
   }
 }
 
@@ -317,6 +466,7 @@ async function updateVoiceSettings(patch: Partial<VoiceSettings>) {
       value: serializeVoiceSettings(voiceSettings.value),
     });
     window.dispatchEvent(new CustomEvent("voice-settings-changed"));
+    await currentWindow.emit("voice-settings-changed");
   } catch (e) {
     alert("语音设置保存失败: " + e);
   }
@@ -347,6 +497,7 @@ onMounted(async () => {
   loadPersonality();
   loadProfession();
   loadVoiceSettings();
+  loadBackendSettings();
 
   const params = new URLSearchParams(window.location.search);
   const tabParam = params.get("tab");
@@ -546,7 +697,7 @@ onUnmounted(() => {
               <input
                 type="text"
                 :value="voiceSettings.shortcut"
-                placeholder="Ctrl+Alt+V"
+                placeholder="Alt+V"
                 @change="updateVoiceSettings({ shortcut: ($event.target as HTMLInputElement).value.trim() || DEFAULT_VOICE_SETTINGS.shortcut })"
               />
             </label>
@@ -575,23 +726,42 @@ onUnmounted(() => {
             </label>
 
             <template v-if="ttsSettings.engine === 'edge'">
+              <div class="voice-picker-tools">
+                <input
+                  class="voice-search"
+                  type="search"
+                  v-model="edgeVoiceSearch"
+                  placeholder="搜索人声、地区或编号"
+                />
+                <label class="mini-check">
+                  <input type="checkbox" v-model="showAllEdgeVoices" />
+                  <span>显示全部</span>
+                </label>
+              </div>
               <label class="field-row">
-                <span>声音角色</span>
+                <span>
+                  声音角色
+                  <small>{{ edgeVoiceSummary }}</small>
+                </span>
                 <select
                   :value="ttsSettings.voice"
                   @change="updateTtsSettings({ voice: ($event.target as HTMLSelectElement).value })"
+                  :disabled="filteredEdgeVoices.length === 0"
                 >
                   <option
                     v-for="v in filteredEdgeVoices"
                     :key="v.id"
                     :value="v.id"
                   >
-                    {{ v.name }} · {{ v.gender === 'Female' ? '女' : '男' }}
+                    {{ v.name }} · {{ v.language }} · {{ v.gender === 'Female' ? '女' : '男' }}
                   </option>
                 </select>
               </label>
+              <div v-if="filteredEdgeVoices.length === 0" class="voice-empty">
+                没找到匹配的人声，可以清空搜索或打开“显示全部”。
+              </div>
               <div class="preview-row">
-                <button class="preview-btn" @click="previewVoice">
+                <button class="preview-btn" :disabled="filteredEdgeVoices.length === 0" @click="previewVoice">
                   {{ isPreviewing ? '停止' : '试听' }}
                 </button>
               </div>
@@ -717,14 +887,118 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <!-- AI 模型 -->
+        <!-- AI 后端与模型 -->
         <div class="section">
-          <h3>&#x1F916; AI 模型</h3>
-          <p class="current-model">{{ currentModel || '加载中...' }}</p>
-          <p class="hint">使用本地 Claude Code CLI，会话自动保持上下文</p>
-          <button class="action-btn" @click="resetModel">
-            {{ modelSaved ? "&#x2705; 已重置" : "&#x1F504; 重置会话" }}
-          </button>
+          <h3>&#x1F916; AI 后端与模型</h3>
+          
+          <div class="backend-selector">
+            <button 
+              class="backend-btn" 
+              :class="{ active: backendType === 'claude_code' }"
+              @click="selectBackend('claude_code')"
+            >
+              <span>🐚</span> Claude Code
+            </button>
+            <button 
+              class="backend-btn" 
+              :class="{ active: backendType === 'direct_api' }"
+              @click="selectBackend('direct_api')"
+            >
+              <span>🌐</span> 直连 API Agent
+            </button>
+          </div>
+
+          <!-- Claude Code 模式 -->
+          <template v-if="backendType === 'claude_code'">
+            <p class="current-model">{{ currentModel || '加载中...' }}</p>
+            <p class="hint">使用本地 Claude Code CLI 子进程，会话自动保持上下文。</p>
+            <div class="model-actions">
+              <button class="action-btn" @click="resetModel">
+                {{ modelSaved ? "&#x2705; 已重置" : "&#x1F504; 重置会话" }}
+              </button>
+              <button class="action-btn config-btn" @click="startClaudeConfig">
+                &#x1F527; 配置/登录 Claude Code
+              </button>
+            </div>
+          </template>
+
+          <!-- 直连 API Agent 模式 -->
+          <template v-else>
+            <div class="api-form">
+              <div class="form-group">
+                <label>接口地址 (Base URL)</label>
+                <input 
+                  type="text" 
+                  v-model="apiConfig.base_url" 
+                  placeholder="https://api.openai.com/v1" 
+                />
+              </div>
+
+              <div class="form-group">
+                <label>API 密钥 (API Key)</label>
+                <input 
+                  type="password" 
+                  v-model="apiConfig.api_key" 
+                  placeholder="sk-••••••••••••••••" 
+                />
+              </div>
+
+              <div class="form-group">
+                <label>模型名称 (Model)</label>
+                <input 
+                  type="text" 
+                  v-model="apiConfig.model" 
+                  placeholder="gpt-4o-mini" 
+                />
+              </div>
+
+              <div class="form-group">
+                <label>预设一键填充</label>
+                <div class="presets-container">
+                  <span class="preset-badge" @click="applyPreset('openai')">OpenAI</span>
+                  <span class="preset-badge" @click="applyPreset('deepseek')">DeepSeek</span>
+                  <span class="preset-badge" @click="applyPreset('qwen')">通义千问</span>
+                  <span class="preset-badge" @click="applyPreset('ollama')">Ollama本地</span>
+                </div>
+              </div>
+
+              <div class="toggle-group">
+                <label>工具调用二次确认 (推荐)</label>
+                <input 
+                  type="checkbox" 
+                  class="toggle-input" 
+                  v-model="apiConfig.confirm_enabled" 
+                />
+              </div>
+              <p class="hint" style="margin-top: -4px;">开启后，敏感工具（如命令执行、文件写入）在运行前需要您手动允许。</p>
+
+              <!-- 测试连接结果 -->
+              <div 
+                v-if="testResult.message" 
+                class="test-result" 
+                :class="testResult.success ? 'success' : 'error'"
+              >
+                {{ testResult.success ? '✅ 连接成功！' : '❌ ' + testResult.message }}
+              </div>
+
+              <div class="api-actions">
+                <button 
+                  class="action-btn test-btn" 
+                  @click="testConnection" 
+                  :disabled="isTestingConnection || !apiConfig.api_key"
+                >
+                  {{ isTestingConnection ? '⏳ 测试中...' : '🔌 测试连接' }}
+                </button>
+                <button 
+                  class="action-btn" 
+                  @click="saveApiConfig"
+                  :disabled="isSavingConfig"
+                >
+                  {{ configSaved ? '✅ 保存成功' : (isSavingConfig ? '⏳ 保存中...' : '💾 保存配置') }}
+                </button>
+              </div>
+            </div>
+          </template>
         </div>
 
         <!-- 性格 -->
@@ -916,6 +1190,21 @@ onUnmounted(() => {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
 
+.model-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.config-btn {
+  background: linear-gradient(135deg, #a78bfa, #8b5cf6) !important;
+  box-shadow: 0 8px 18px rgba(139, 92, 246, 0.22) !important;
+}
+
+.config-btn:hover {
+  background: linear-gradient(135deg, #8b5cf6, #7c3aed) !important;
+}
+
 /* ===== 性格 / 职业 ===== */
 .option-grid {
   display: grid;
@@ -1001,11 +1290,71 @@ onUnmounted(() => {
   min-width: 0;
 }
 
+.field-row span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
 .switch-row strong,
 .field-row span,
 .range-row span {
   font-size: 12px;
   color: #475569;
+}
+
+.field-row small {
+  font-size: 9px;
+  line-height: 1.25;
+  color: #94a3b8;
+  font-weight: 500;
+}
+
+.voice-picker-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 1px;
+}
+
+.voice-search {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 8px;
+  padding: 7px 9px;
+  background: rgba(255, 255, 255, 0.86);
+  color: #475569;
+  font-size: 11px;
+  outline: none;
+}
+
+.voice-search:focus {
+  border-color: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.32);
+}
+
+.mini-check {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  color: #64748b;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.mini-check input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--pet-primary, #ff6b6b);
+}
+
+.voice-empty {
+  padding: 6px 9px 2px;
+  color: #94a3b8;
+  font-size: 10px;
+  line-height: 1.4;
 }
 
 .preview-row {
@@ -1028,6 +1377,11 @@ onUnmounted(() => {
 
 .preview-btn:hover {
   opacity: 0.8;
+}
+
+.preview-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .switch-row small {
@@ -1461,5 +1815,162 @@ onUnmounted(() => {
   background: white;
   color: var(--pet-primary, #ff6b6b);
   box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+}
+
+/* 直连 API 设置样式 */
+.backend-selector {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.backend-btn {
+  flex: 1;
+  padding: 8px 12px;
+  background: rgba(15, 23, 42, 0.04);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 8px;
+  font-size: 12px;
+  color: #475569;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+.backend-btn:hover {
+  background: rgba(15, 23, 42, 0.08);
+}
+
+.backend-btn.active {
+  background: var(--pet-primary, #ff6b6b);
+  color: white;
+  border-color: transparent;
+  box-shadow: 0 4px 12px rgba(255, 107, 107, 0.2);
+}
+
+.api-form {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.form-group label {
+  font-size: 11px;
+  color: #64748b;
+  font-weight: 600;
+}
+
+.form-group input {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: rgba(255, 255, 255, 0.7);
+  font-size: 12px;
+  color: #334155;
+  transition: all 0.2s;
+  outline: none;
+}
+
+.form-group input:focus {
+  border-color: var(--pet-primary, #ff6b6b);
+  background: white;
+  box-shadow: 0 0 0 2px rgba(255, 107, 107, 0.12);
+}
+
+.toggle-group {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 0;
+}
+
+.toggle-group label {
+  font-size: 12px;
+  color: #475569;
+  font-weight: 500;
+}
+
+.toggle-input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--pet-primary, #ff6b6b);
+  cursor: pointer;
+}
+
+.presets-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.preset-badge {
+  padding: 4px 8px;
+  background: rgba(15, 23, 42, 0.04);
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  border-radius: 6px;
+  font-size: 10.5px;
+  color: #64748b;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.preset-badge:hover {
+  background: rgba(15, 23, 42, 0.08);
+  color: #334155;
+  transform: translateY(-1px);
+}
+
+.api-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.api-actions .action-btn {
+  flex: 1;
+}
+
+.test-btn {
+  background: rgba(15, 23, 42, 0.06);
+  color: #475569;
+  box-shadow: none;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.test-btn:hover:not(:disabled) {
+  background: rgba(15, 23, 42, 0.1);
+}
+
+.test-result {
+  font-size: 11px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  line-height: 1.4;
+  margin-top: 4px;
+}
+
+.test-result.success {
+  background: rgba(34, 197, 94, 0.1);
+  color: #15803d;
+  border: 1px solid rgba(34, 197, 94, 0.15);
+}
+
+.test-result.error {
+  background: rgba(239, 68, 68, 0.1);
+  color: #b91c1c;
+  border: 1px solid rgba(239, 68, 68, 0.15);
+  word-break: break-all;
 }
 </style>

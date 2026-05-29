@@ -115,7 +115,11 @@ async function openPanel(label: PanelLabel, x: number, y: number) {
 
 async function closePanel(label: PanelLabel) {
   const win = await WebviewWindow.getByLabel(label);
-  await win?.close();
+  if (label === "context-menu") {
+    await win?.hide();
+  } else {
+    await win?.close();
+  }
 }
 
 async function toggleChat() {
@@ -187,7 +191,11 @@ async function closeCurrentWindow() {
   if (currentLabel === "voice") {
     await currentWindow.setIgnoreCursorEvents(true).catch(() => {});
   }
-  await currentWindow.close();
+  if (currentLabel === "context-menu") {
+    await currentWindow.hide();
+  } else {
+    await currentWindow.close();
+  }
 }
 
 async function repositionOpenPanels() {
@@ -397,7 +405,7 @@ onMounted(async () => {
 
   if (currentLabel === "context-menu") {
     unlistenFocusChanged = await currentWindow.onFocusChanged(({ payload: focused }) => {
-      if (!focused) currentWindow.close();
+      if (!focused) currentWindow.hide();
     });
   }
 
@@ -512,6 +520,6 @@ body,
 
 /* Dashboard 窗口不需要透明背景 */
 .window-main {
-  background: var(--dash-content-bg, #181615);
+  background: var(--dash-sidebar-bg, #151312);
 }
 </style>

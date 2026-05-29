@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from "vue";
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -29,7 +29,7 @@ const chat = useChatStore();
 const currentWindow = getCurrentWindow();
 
 // === 导航 ===
-type NavPage = "home" | "appearance" | "voice" | "system" | "about";
+type NavPage = "home" | "chat" | "appearance" | "voice" | "system" | "about";
 const activePage = ref<NavPage>("home");
 const isPetActive = ref(false);
 
@@ -436,6 +436,7 @@ async function petAction(name: string) {
     try {
       await invoke("clear_chat_history");
       chat.clearMessages();
+      await currentWindow.emit("chat-history-cleared");
     } catch {}
   }
 }
@@ -457,6 +458,76 @@ function memBarColor(mem: number): string {
   return "var(--pet-accent, #ffa07a)";
 }
 
+// === 窗口最大化/还原控制 ===
+const isMaximized = ref(false);
+async function toggleMaximize() {
+  const maximized = await currentWindow.isMaximized();
+  if (maximized) {
+    await currentWindow.unmaximize();
+    isMaximized.value = false;
+  } else {
+    await currentWindow.maximize();
+    isMaximized.value = true;
+  }
+}
+
+// === 对话框与消息同步 ===
+const chatInput = ref("");
+const thinkingContent = ref("");
+const dashChatMessagesRef = ref<HTMLDivElement | null>(null);
+
+let unlistenThinking: UnlistenFn | null = null;
+let unlistenAiFinished: UnlistenFn | null = null;
+let unlistenAiError: UnlistenFn | null = null;
+let unlistenChatCleared: UnlistenFn | null = null;
+let unlistenSyncMessage: UnlistenFn | null = null;
+
+async function refreshChatState() {
+  try {
+    const history = await invoke<any[]>("get_chat_history");
+    chat.setMessages(history.map(item => ({
+      role: item.role === "assistant" ? "assistant" as const : "user" as const,
+      content: item.content,
+      thinking: item.thinking || undefined,
+      timestamp: typeof item.created_at === 'number' ? item.created_at : new Date(item.created_at).getTime(),
+    })));
+  } catch {}
+}
+
+async function sendDashboardMessage() {
+  const text = chatInput.value.trim();
+  if (!text || chat.isLoading) return;
+
+  chat.addMessage("user", text);
+  chatInput.value = "";
+  chat.isLoading = true;
+  thinkingContent.value = "";
+  pet.setState("thinking");
+
+  // Broadcast user message to other windows (like the pet chat bubble)
+  await currentWindow.emit("sync-chat-message", { role: "user", content: text });
+
+  try {
+    await invoke("send_to_ai", { message: text });
+  } catch (err) {
+    chat.isLoading = false;
+    chat.addMessage("assistant", `出错了: ${err}`);
+    pet.setState("confused");
+  }
+}
+
+function scrollDashChatToBottom() {
+  nextTick(() => {
+    if (dashChatMessagesRef.value) {
+      dashChatMessagesRef.value.scrollTop = dashChatMessagesRef.value.scrollHeight;
+    }
+  });
+}
+
+watch(() => [chat.messages.length, thinkingContent.value], () => {
+  scrollDashChatToBottom();
+}, { flush: "post" });
+
 // === 生命周期 ===
 let unlistenPetStatus: UnlistenFn | null = null;
 
@@ -475,6 +546,56 @@ onMounted(async () => {
 
   sysInfoTimer = setInterval(loadSystemInfo, 5000);
 
+  // 检查最大化状态
+  isMaximized.value = await currentWindow.isMaximized();
+
+  // 加载对话历史并监听实时同步
+  await refreshChatState();
+
+  unlistenThinking = await listen<string>("ai-thinking", (event) => {
+    chat.isLoading = true;
+    thinkingContent.value += event.payload;
+  });
+
+  unlistenAiFinished = await listen<any>("ai-finished", (event) => {
+    const last = chat.messages[chat.messages.length - 1];
+    if (!(last?.role === "assistant" && last.content === event.payload.text)) {
+      chat.addMessage("assistant", event.payload.text, event.payload.thinking || undefined);
+    }
+    chat.isLoading = false;
+    thinkingContent.value = "";
+  });
+
+  unlistenAiError = await listen<any>("ai-error", (event) => {
+    const text = event.payload.aborted ? "已中止" : `出错了: ${event.payload.message}`;
+    const last = chat.messages[chat.messages.length - 1];
+    if (!(last?.role === "assistant" && last.content === text)) {
+      chat.addMessage("assistant", text, event.payload.thinking || undefined);
+    }
+    chat.isLoading = false;
+    thinkingContent.value = "";
+  });
+
+  unlistenChatCleared = await listen("chat-history-cleared", () => {
+    chat.clearMessages();
+    chat.isLoading = false;
+    thinkingContent.value = "";
+  });
+
+  unlistenSyncMessage = await listen<any>("sync-chat-message", (event) => {
+    const payload = event.payload;
+    const last = chat.messages[chat.messages.length - 1];
+    if (last && last.role === payload.role && last.content === payload.content) {
+      return;
+    }
+    chat.addMessage(payload.role, payload.content);
+    if (payload.role === "user") {
+      chat.isLoading = true;
+      thinkingContent.value = "";
+      pet.setState("thinking");
+    }
+  });
+
   // 检查桌宠窗口是否已存在
   const existing = await WebviewWindow.getByLabel("pet");
   isPetActive.value = !!existing;
@@ -482,11 +603,19 @@ onMounted(async () => {
   unlistenPetStatus = await listen("pet-window-closed", () => {
     isPetActive.value = false;
   });
+
+  await nextTick();
+  scrollDashChatToBottom();
 });
 
 onUnmounted(() => {
   if (sysInfoTimer) clearInterval(sysInfoTimer);
   unlistenPetStatus?.();
+  unlistenThinking?.();
+  unlistenAiFinished?.();
+  unlistenAiError?.();
+  unlistenChatCleared?.();
+  unlistenSyncMessage?.();
 });
 </script>
 
@@ -495,12 +624,21 @@ onUnmounted(() => {
     <!-- 自定义标题栏 -->
     <div class="dashboard-titlebar" data-tauri-drag-region>
       <div class="titlebar-title">
-        <span class="titlebar-mark">AI</span>
+        <span class="titlebar-mark">AP</span>
         <span>Desktop Pet</span>
       </div>
       <div class="titlebar-controls">
         <button class="titlebar-btn" @click="minimizeWindow" title="最小化">
           <svg width="12" height="2" viewBox="0 0 12 2"><rect width="12" height="2" rx="1" fill="currentColor"/></svg>
+        </button>
+        <button class="titlebar-btn" @click="toggleMaximize" :title="isMaximized ? '还原' : '最大化'">
+          <svg v-if="!isMaximized" width="10" height="10" viewBox="0 0 10 10" fill="none">
+            <rect x="1" y="1" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
+          </svg>
+          <svg v-else width="10" height="10" viewBox="0 0 10 10" fill="none">
+            <rect x="1" y="3" width="6" height="6" rx="1.2" stroke="currentColor" stroke-width="1.2"/>
+            <path d="M3 3V1.8C3 1.35782 3.35782 1 3.8 1H8.2C8.64218 1 9 1.35782 9 1.8V6.2C9 6.64218 8.64218 7 8.2 7H7" stroke="currentColor" stroke-width="1.2"/>
+          </svg>
         </button>
         <button class="titlebar-btn close" @click="closeWindow" title="关闭">
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
@@ -530,6 +668,13 @@ onUnmounted(() => {
           >
             <span class="sidebar-item-icon">⌂</span>
             <span>首页</span>
+          </button>
+          <button
+            :class="['sidebar-item', { active: activePage === 'chat' }]"
+            @click="activePage = 'chat'"
+          >
+            <span class="sidebar-item-icon">💬</span>
+            <span>对话互动</span>
           </button>
           <button
             :class="['sidebar-item', { active: activePage === 'appearance' }]"
@@ -580,7 +725,7 @@ onUnmounted(() => {
       </div>
 
       <!-- 内容区 -->
-      <div class="dashboard-content">
+      <div :class="['dashboard-content', { 'chat-page-active': activePage === 'chat' }]">
         <Transition name="page-fade" mode="out-in">
           <!-- ========== 首页 ========== -->
           <div v-if="activePage === 'home'" key="home">
@@ -588,7 +733,7 @@ onUnmounted(() => {
               <div>
                 <div class="page-kicker">Control Center</div>
                 <h1 class="page-title">桌宠控制台</h1>
-                <p class="page-subtitle">状态、外观和声音集中管理</p>
+                <p class="page-subtitle">状态、外观 and 声音集中管理</p>
               </div>
               <div :class="['status-pill', isPetActive ? 'live' : 'idle']">
                 <span class="status-pill-dot" />
@@ -638,15 +783,8 @@ onUnmounted(() => {
                     </div>
                   </div>
                 </div>
-                <div class="pet-card-actions">
-                  <button
-                    :class="['dash-btn', 'primary', { active: isPetActive }]"
-                    @click="isPetActive ? emit('closePet') : emit('openPet'); isPetActive = !isPetActive"
-                  >
-                    {{ isPetActive ? '收回桌宠' : '召唤桌宠' }}
-                  </button>
-                </div>
               </div>
+
 
               <!-- 快捷操作 -->
               <div class="dash-card">
@@ -703,6 +841,65 @@ onUnmounted(() => {
                   </div>
                 </div>
               </div>
+            </div>
+          </div>
+
+          <!-- ========== 对话互动 (独立页面) ========== -->
+          <div v-else-if="activePage === 'chat'" key="chat" class="dash-chat-page">
+            <div class="dash-chat-messages" ref="dashChatMessagesRef">
+              <div v-if="chat.messages.length === 0" class="dash-chat-empty">
+                🐾 暂无对话历史，跟小家伙说点什么吧！
+              </div>
+              
+              <div
+                v-for="msg in chat.messages" :key="msg.id"
+                :class="['dash-msg-wrapper', msg.role]"
+              >
+                <div class="dash-msg-bubble">
+                  <div v-if="msg.thinking" class="dash-msg-thinking">
+                    <details>
+                      <summary>思考过程</summary>
+                      <p>{{ msg.thinking }}</p>
+                    </details>
+                  </div>
+                  <div class="dash-msg-text">{{ msg.content }}</div>
+                </div>
+              </div>
+              
+              <!-- AI 实时打字状态 -->
+              <div v-if="chat.isLoading" class="dash-msg-wrapper assistant loading">
+                <div class="dash-msg-bubble">
+                  <div v-if="thinkingContent" class="dash-msg-thinking">
+                    <details open>
+                      <summary>正在思考...</summary>
+                      <p>{{ thinkingContent }}</p>
+                    </details>
+                  </div>
+                  <div class="dash-typing-dots">
+                    <span class="dot"></span>
+                    <span class="dot"></span>
+                    <span class="dot"></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            
+            <div class="dash-chat-input-area">
+              <input
+                type="text"
+                v-model="chatInput"
+                @keydown.enter="sendDashboardMessage"
+                placeholder="发送消息给桌宠..."
+                :disabled="chat.isLoading"
+                class="dash-chat-input"
+              />
+              <button
+                @click="sendDashboardMessage"
+                :disabled="chat.isLoading || !chatInput.trim()"
+                class="dash-chat-send-btn"
+              >
+                发送
+              </button>
             </div>
           </div>
 

@@ -1,6 +1,10 @@
 node_modules/
 dist/
+desktop-release/
 target/
 src-tauri/target/
 *.log
 .DS_Store
+*.exe
+nul
+resources/

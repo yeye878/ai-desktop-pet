@@ -257,7 +257,7 @@ function draw(ctx: CanvasRenderingContext2D) {
   const size = 80;
   // Update bounce physics
   if (bounceOffset !== 0 || bounceVy !== 0) {
-    bounceVy += 0.6; // gravity
+    bounceVy += 1.0; // snappy gravity
     bounceOffset += bounceVy;
     if (bounceOffset >= 0) { bounceOffset = 0; bounceVy = 0; }
   }
@@ -811,8 +811,8 @@ function onMouseUp(e: MouseEvent) {
   if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
   squashAmt = 1;
   if (!dragStarted) {
-    // Bounce!
-    bounceVy = -10;
+    // Snappy Bounce!
+    bounceVy = -8.0;
     bounceOffset = 0;
     spawnParticles('heart', 4, pet.position.x, pet.position.y - 30);
     emit("click");

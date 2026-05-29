@@ -674,6 +674,12 @@ function onMouseMove(x: number, y: number) {
   if (props.mode === 'custom') { if (Math.random() < 0.15) addRipple(x, y); }
 }
 
+function clearPointer() {
+  mx = -999;
+  my = -999;
+  trail = [];
+}
+
 function onClick(x: number, y: number) {
   const mode = props.mode;
   if (mode === 'cute') {
@@ -737,7 +743,7 @@ function onClick(x: number, y: number) {
   else if (mode === 'custom') { addRipple(x, y, true); }
 }
 
-defineExpose({ onMouseMove, onClick, resize });
+defineExpose({ onMouseMove, onClick, clearPointer, resize });
 
 watch(() => props.mode, () => { if (W > 0) initParticles(); });
 watch(() => props.customImage, (src) => {

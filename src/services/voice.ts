@@ -16,7 +16,7 @@ export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
   enabled: true,
   autoSend: true,
   autoSpeak: true,
-  shortcut: "Ctrl+Alt+V",
+  shortcut: "Alt+V",
   language: "zh-CN",
   rate: 1,
   pitch: 1,

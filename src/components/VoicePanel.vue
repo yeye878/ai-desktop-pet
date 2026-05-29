@@ -44,10 +44,22 @@ const interimText = ref("");
 const errorText = ref("");
 const isSending = ref(false);
 const isGenerating = ref(false);
-const waveSeed = ref(0);
-let waveTimer: ReturnType<typeof setInterval> | null = null;
+
+const fluidCanvasRef = ref<HTMLCanvasElement | null>(null);
+let animId = 0;
 let unlistenAiFinished: UnlistenFn | null = null;
 let unlistenAiError: UnlistenFn | null = null;
+
+interface Spark {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  life: number;
+  size: number;
+  color: string;
+}
+const sparks = ref<Spark[]>([]);
 
 const canListen = computed(() => settings.value.enabled && isSpeechRecognitionSupported() && !chat.isLoading);
 const statusLabel = computed(() => {
@@ -67,16 +79,6 @@ const primaryLabel = computed(() => {
   if (transcript.value) return "重说";
   return "开始说话";
 });
-
-function waveStyle(index: number) {
-  const phase = waveSeed.value + index * 0.74;
-  const active = status.value === "listening" || status.value === "speaking";
-  const height = active ? 14 + Math.abs(Math.sin(phase)) * 38 : 12 + Math.abs(Math.sin(phase)) * 16;
-  return {
-    height: `${Math.round(height)}px`,
-    opacity: active ? 0.72 + Math.abs(Math.cos(phase)) * 0.24 : 0.38,
-  };
-}
 
 async function loadSettings() {
   try {
@@ -187,9 +189,157 @@ onMounted(async () => {
   await currentWindow.center();
   await currentWindow.setFocus();
 
-  waveTimer = setInterval(() => {
-    waveSeed.value += 0.18;
-  }, 80);
+  // Start canvas fluid animation loop
+  const canvas = fluidCanvasRef.value;
+  if (canvas) {
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      const dpr = window.devicePixelRatio || 1;
+      const W = 240;
+      const H = 150;
+      canvas.width = W * dpr;
+      canvas.height = H * dpr;
+      canvas.style.width = W + "px";
+      canvas.style.height = H + "px";
+      ctx.scale(dpr, dpr);
+
+      const render = (timestamp: number) => {
+        const time = timestamp * 0.001;
+        ctx.clearRect(0, 0, W, H);
+
+        const cx = W / 2;
+        const cy = H / 2 - 12;
+        const R = 32;
+
+        // Particle generation in listening mode
+        if (status.value === "listening" && Math.random() < 0.35) {
+          const angle = Math.random() * Math.PI * 2;
+          sparks.value.push({
+            x: cx + Math.cos(angle) * R,
+            y: cy + Math.sin(angle) * R,
+            vx: Math.cos(angle) * (0.8 + Math.random() * 1.5),
+            vy: Math.sin(angle) * (0.8 + Math.random() * 1.5),
+            life: 1.0,
+            size: 1.2 + Math.random() * 1.5,
+            color: Math.random() < 0.5 ? "#4ade80" : "#22d3ee"
+          });
+        }
+
+        // Draw sparks
+        for (let i = sparks.value.length - 1; i >= 0; i--) {
+          const s = sparks.value[i];
+          s.x += s.vx;
+          s.y += s.vy;
+          s.life -= 0.025;
+          if (s.life <= 0) {
+            sparks.value.splice(i, 1);
+            continue;
+          }
+          ctx.save();
+          ctx.globalAlpha = s.life;
+          ctx.fillStyle = s.color;
+          ctx.shadowBlur = 4;
+          ctx.shadowColor = s.color;
+          ctx.beginPath();
+          ctx.arc(s.x, s.y, s.size, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+
+        // Render overlapping fluid layers
+        const drawBlob = (color: string, speedMult: number, phaseOffset: number, scale: number) => {
+          ctx.save();
+          ctx.fillStyle = color;
+          ctx.shadowColor = color;
+          ctx.shadowBlur = 10;
+          ctx.globalCompositeOperation = "screen";
+
+          ctx.beginPath();
+          const numPoints = 64;
+          for (let i = 0; i < numPoints; i++) {
+            const theta = (i / numPoints) * Math.PI * 2;
+            let offset = 0;
+
+            if (status.value === "listening") {
+              offset += Math.sin(theta * 3 + time * 14 * speedMult + phaseOffset) * 8;
+              offset += Math.cos(theta * 5 - time * 18 * speedMult) * 4;
+            } else if (status.value === "speaking" || isGenerating.value) {
+              const speakAmp = status.value === "speaking" ? 11 : 6;
+              offset += Math.sin(theta * 2 + time * 9 * speedMult + phaseOffset) * speakAmp;
+              offset += Math.cos(theta * 4 - time * 13 * speedMult) * (speakAmp * 0.4);
+            } else {
+              // Gentle breathing/morphing blob
+              offset += Math.sin(theta * 2.5 + time * 2.2 * speedMult + phaseOffset) * 3;
+              offset += Math.cos(theta * 3.5 - time * 2.8 * speedMult) * 1.5;
+            }
+
+            const r = (R + offset) * scale;
+            const x = cx + Math.cos(theta) * r;
+            const y = cy + Math.sin(theta) * r;
+
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          }
+          ctx.closePath();
+          ctx.fill();
+          ctx.restore();
+        };
+
+        // Draw background shadow layer
+        ctx.globalAlpha = 0.16;
+        drawBlob("#4338ca", 0.8, Math.PI, 1.1);
+
+        // Core cyan fluid blob
+        const cyanCol = status.value === "listening" ? "rgba(74, 222, 128, 0.42)" : "rgba(56, 189, 248, 0.45)";
+        ctx.globalAlpha = 0.65;
+        drawBlob(cyanCol, 1.0, 0, 1.0);
+
+        // Core violet fluid blob
+        const violetCol = status.value === "listening" ? "rgba(34, 211, 238, 0.38)" : "rgba(167, 139, 250, 0.4)";
+        ctx.globalAlpha = 0.55;
+        drawBlob(violetCol, 1.1, Math.PI * 0.5, 0.95);
+
+        // Draw waves
+        ctx.globalAlpha = 0.85;
+        const wave1Col = status.value === "listening" ? "rgba(74, 222, 128, 0.45)" : "rgba(56, 189, 248, 0.45)";
+        const wave2Col = status.value === "listening" ? "rgba(34, 211, 238, 0.35)" : "rgba(167, 139, 250, 0.35)";
+
+        // Render 2 continuous wave channels
+        const drawSpectrumWave = (color: string, ampMult: number, phase: number) => {
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 1.8;
+          ctx.beginPath();
+          const wavePoints = 36;
+          for (let i = 0; i <= wavePoints; i++) {
+            const x = (i / wavePoints) * W;
+            let y = H - 24;
+
+            let amp = 2;
+            let freq = 0.08;
+            let speed = 4;
+            if (status.value === "listening") {
+              amp = 18; freq = 0.11; speed = 16;
+            } else if (status.value === "speaking" || isGenerating.value) {
+              amp = 12; freq = 0.09; speed = 11;
+            } else {
+              amp = 1.5; freq = 0.05; speed = 2.5;
+            }
+
+            y += Math.sin(i * freq + time * speed + phase) * amp * ampMult;
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          }
+          ctx.stroke();
+        };
+
+        drawSpectrumWave(wave1Col, 1.0, 0);
+        drawSpectrumWave(wave2Col, 0.8, Math.PI * 0.6);
+
+        animId = requestAnimationFrame(render);
+      };
+      animId = requestAnimationFrame(render);
+    }
+  }
 
   unlistenAiFinished = await listen<AiFinishedPayload>("ai-finished", async (event) => {
     isSending.value = false;
@@ -222,7 +372,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
-  if (waveTimer) clearInterval(waveTimer);
+  cancelAnimationFrame(animId);
   unlistenAiFinished?.();
   unlistenAiError?.();
   voice.abortListening();
@@ -232,7 +382,14 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="voice-panel" :class="{ active: status === 'listening', speaking: status === 'speaking', generating: isGenerating }">
+    <div class="cyber-scanlines"></div>
     <div class="panel-glow"></div>
+
+    <!-- Tech telemetry readouts in the corners -->
+    <div class="tech-tag top-left">[SYS_RECOG: WEB_SPEECH]</div>
+    <div class="tech-tag top-right">[GAIN_FACTOR: 1.2X]</div>
+    <div class="tech-tag bottom-left">[DECODE: ACTIVE]</div>
+    <div class="tech-tag bottom-right">[SYS_SAMPLING: 44.1KHZ]</div>
 
     <div class="voice-header">
       <div class="header-left">
@@ -246,30 +403,22 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="visual-core">
-      <div class="orb-container" :class="{ active: status === 'listening', speaking: status === 'speaking' || isGenerating }">
-        <div class="orb-glow"></div>
-        <div class="orb">
-          <div class="orb-inner">
-            <svg v-if="status === 'listening'" width="24" height="24" viewBox="0 0 24 24" fill="none">
-              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" fill="currentColor"/>
-              <path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-            </svg>
-            <svg v-else-if="status === 'speaking' || isGenerating" width="24" height="24" viewBox="0 0 24 24" fill="none">
-              <path d="M11 5L6 9H2v6h4l5 4V5zM19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.08" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-            </svg>
-            <svg v-else width="22" height="22" viewBox="0 0 24 24" fill="none">
-              <circle cx="12" cy="12" r="3" fill="currentColor"/>
-              <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-            </svg>
-          </div>
+      <!-- Dynamic fluid canvas rendering both the blob core and the bottom waves -->
+      <div class="canvas-container">
+        <canvas ref="fluidCanvasRef" class="fluid-canvas"></canvas>
+        <div class="core-overlay-icon" :class="status">
+          <svg v-if="status === 'listening'" width="20" height="20" viewBox="0 0 24 24" fill="none">
+            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" fill="currentColor"/>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
+          <svg v-else-if="status === 'speaking' || isGenerating" width="20" height="20" viewBox="0 0 24 24" fill="none">
+            <path d="M11 5L6 9H2v6h4l5 4V5zM19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.08" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
+          <svg v-else width="18" height="18" viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="12" r="3" fill="currentColor"/>
+            <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
         </div>
-        <div class="ring ring-1"></div>
-        <div class="ring ring-2"></div>
-        <div class="ring ring-3"></div>
-      </div>
-
-      <div class="waveform" aria-hidden="true">
-        <span v-for="i in 32" :key="i" :style="waveStyle(i)" />
       </div>
     </div>
 
@@ -306,36 +455,68 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   box-sizing: border-box;
-  padding: 18px 20px 16px;
+  padding: 22px 20px 16px;
   color: #e2e8f0;
-  background: linear-gradient(160deg, rgba(10, 15, 30, 0.96), rgba(15, 23, 42, 0.98));
-  border: 1px solid rgba(100, 200, 255, 0.08);
-  border-radius: 22px;
+  background: linear-gradient(165deg, rgba(8, 12, 28, 0.88), rgba(12, 18, 38, 0.94));
+  border: 1px solid rgba(56, 189, 248, 0.15);
+  box-shadow: 
+    0 20px 40px rgba(0, 0, 0, 0.6),
+    inset 0 0 24px rgba(56, 189, 248, 0.05);
+  border-radius: 24px;
   overflow: hidden;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  backdrop-filter: blur(20px);
 }
+
+/* Cyber Telemetry grid & scanlines */
+.cyber-scanlines {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+  background-size: 100% 4px, 6px 100%;
+  z-index: 10;
+  opacity: 0.45;
+}
+
+.tech-tag {
+  position: absolute;
+  font-family: monospace, monospace;
+  font-size: 8px;
+  font-weight: 700;
+  color: rgba(56, 189, 248, 0.35);
+  letter-spacing: 0.5px;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.tech-tag.top-left { top: 8px; left: 14px; }
+.tech-tag.top-right { top: 8px; right: 14px; }
+.tech-tag.bottom-left { bottom: 8px; left: 14px; }
+.tech-tag.bottom-right { bottom: 8px; right: 14px; }
 
 .panel-glow {
   position: absolute;
   inset: 0;
   pointer-events: none;
   background:
-    radial-gradient(ellipse 60% 40% at 20% 0%, rgba(56, 189, 248, 0.08), transparent),
-    radial-gradient(ellipse 50% 35% at 80% 10%, rgba(168, 85, 247, 0.06), transparent);
+    radial-gradient(ellipse 60% 40% at 20% 0%, rgba(56, 189, 248, 0.12), transparent),
+    radial-gradient(ellipse 50% 35% at 80% 10%, rgba(168, 85, 247, 0.08), transparent);
   transition: opacity 0.4s;
+  z-index: 1;
 }
 
 .voice-panel.active .panel-glow {
   background:
-    radial-gradient(ellipse 60% 40% at 20% 0%, rgba(34, 197, 94, 0.12), transparent),
-    radial-gradient(ellipse 50% 35% at 80% 10%, rgba(56, 189, 248, 0.08), transparent);
+    radial-gradient(ellipse 60% 40% at 20% 0%, rgba(74, 222, 128, 0.16), transparent),
+    radial-gradient(ellipse 50% 35% at 80% 10%, rgba(56, 189, 248, 0.1), transparent);
 }
 
 .voice-panel.speaking .panel-glow,
 .voice-panel.generating .panel-glow {
   background:
-    radial-gradient(ellipse 60% 40% at 20% 0%, rgba(56, 189, 248, 0.12), transparent),
-    radial-gradient(ellipse 50% 35% at 80% 10%, rgba(168, 85, 247, 0.1), transparent);
+    radial-gradient(ellipse 60% 40% at 20% 0%, rgba(56, 189, 248, 0.16), transparent),
+    radial-gradient(ellipse 50% 35% at 80% 10%, rgba(168, 85, 247, 0.14), transparent);
 }
 
 .voice-header {
@@ -344,6 +525,7 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   flex: 0 0 auto;
   margin-bottom: 6px;
+  z-index: 2;
 }
 
 .header-left {
@@ -361,6 +543,7 @@ onBeforeUnmount(() => {
   background: rgba(56, 189, 248, 0.12);
   color: #7dd3fc;
   border: 1px solid rgba(56, 189, 248, 0.15);
+  text-shadow: 0 0 4px rgba(56, 189, 248, 0.4);
 }
 
 .status-indicator {
@@ -373,16 +556,17 @@ onBeforeUnmount(() => {
 
 .status-indicator.listening {
   background: #4ade80;
-  box-shadow: 0 0 8px rgba(74, 222, 128, 0.6);
+  box-shadow: 0 0 8px rgba(74, 222, 128, 0.8);
 }
 
 .status-indicator.speaking {
   background: #38bdf8;
-  box-shadow: 0 0 8px rgba(56, 189, 248, 0.6);
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.8);
 }
 
 .status-indicator.error {
   background: #fb7185;
+  box-shadow: 0 0 6px rgba(251, 113, 133, 0.6);
 }
 
 .status-text {
@@ -400,12 +584,13 @@ onBeforeUnmount(() => {
   background: rgba(255, 255, 255, 0.04);
   color: #64748b;
   cursor: pointer;
-  transition: color 0.2s, background 0.2s;
+  transition: all 0.2s;
 }
 
 .close-btn:hover {
   color: #e2e8f0;
   background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.12);
 }
 
 .visual-core {
@@ -413,103 +598,54 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-  padding: 8px 0;
-}
-
-.orb-container {
-  position: relative;
-  width: 100px;
-  height: 100px;
-  display: grid;
-  place-items: center;
-}
-
-.orb-glow {
-  position: absolute;
-  inset: -10px;
-  border-radius: 50%;
-  background: radial-gradient(circle, rgba(56, 189, 248, 0.15), transparent 70%);
-  opacity: 0;
-  transition: opacity 0.5s;
-}
-
-.orb-container.active .orb-glow {
-  background: radial-gradient(circle, rgba(74, 222, 128, 0.2), transparent 70%);
-  opacity: 1;
-}
-
-.orb-container.speaking .orb-glow {
-  background: radial-gradient(circle, rgba(139, 92, 246, 0.2), transparent 70%);
-  opacity: 1;
-}
-
-.orb {
-  width: 60px;
-  height: 60px;
-  border-radius: 50%;
-  display: grid;
-  place-items: center;
-  background: linear-gradient(135deg, #1e293b, #0f172a);
-  border: 1.5px solid rgba(100, 200, 255, 0.15);
+  justify-content: center;
+  padding: 2px 0;
   z-index: 2;
-  transition: border-color 0.3s, box-shadow 0.3s;
 }
 
-.orb-container.active .orb {
-  border-color: rgba(74, 222, 128, 0.4);
-  box-shadow: 0 0 20px rgba(74, 222, 128, 0.15);
-}
-
-.orb-container.speaking .orb {
-  border-color: rgba(139, 92, 246, 0.4);
-  box-shadow: 0 0 20px rgba(139, 92, 246, 0.15);
-}
-
-.orb-inner {
-  color: #94a3b8;
-  transition: color 0.3s;
-}
-
-.orb-container.active .orb-inner { color: #4ade80; }
-.orb-container.speaking .orb-inner { color: #a78bfa; }
-
-.ring {
-  position: absolute;
-  border-radius: 50%;
-  border: 1px solid rgba(56, 189, 248, 0.1);
-  animation: pulse 3s ease-in-out infinite;
-}
-
-.ring-1 { inset: 8px; animation-delay: 0s; }
-.ring-2 { inset: 0px; animation-delay: 0.8s; opacity: 0.6; }
-.ring-3 { inset: -8px; animation-delay: 1.6s; opacity: 0.3; }
-
-.orb-container.active .ring {
-  border-color: rgba(74, 222, 128, 0.15);
-  animation-duration: 1.5s;
-}
-
-.orb-container.speaking .ring {
-  border-color: rgba(139, 92, 246, 0.15);
-  animation-duration: 1.8s;
-}
-
-.waveform {
-  height: 40px;
-  width: 100%;
+.canvas-container {
+  position: relative;
+  width: 240px;
+  height: 150px;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 3px;
-  padding: 0 16px;
 }
 
-.waveform span {
-  width: 3px;
-  border-radius: 999px;
-  background: linear-gradient(180deg, rgba(56, 189, 248, 0.6), rgba(139, 92, 246, 0.4));
-  transition: height 0.1s ease, opacity 0.1s ease;
+.fluid-canvas {
+  position: absolute;
+  inset: 0;
+}
+
+.core-overlay-icon {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -64%);
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #94a3b8;
+  backdrop-filter: blur(4px);
+  z-index: 5;
+  transition: all 0.3s;
+}
+
+.core-overlay-icon.listening {
+  color: #4ade80;
+  border-color: rgba(74, 222, 128, 0.35);
+  box-shadow: 0 0 16px rgba(74, 222, 128, 0.15);
+}
+
+.core-overlay-icon.speaking {
+  color: #a78bfa;
+  border-color: rgba(167, 139, 250, 0.35);
+  box-shadow: 0 0 16px rgba(167, 139, 250, 0.15);
 }
 
 .content-area {
@@ -518,6 +654,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 6px;
   min-height: 0;
+  z-index: 2;
 }
 
 .transcript {
@@ -527,19 +664,22 @@ onBeforeUnmount(() => {
   width: 100%;
   padding: 10px 12px;
   resize: none;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(56, 189, 248, 0.12);
   border-radius: 12px;
   outline: none;
   color: #f1f5f9;
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(15, 23, 42, 0.45);
   font: inherit;
   font-size: 13px;
   line-height: 1.5;
-  transition: border-color 0.2s;
+  transition: all 0.3s;
+  backdrop-filter: blur(4px);
 }
 
 .transcript:focus {
-  border-color: rgba(56, 189, 248, 0.2);
+  border-color: rgba(56, 189, 248, 0.35);
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.12);
+  background: rgba(15, 23, 42, 0.6);
 }
 
 .transcript::placeholder {
@@ -562,6 +702,7 @@ onBeforeUnmount(() => {
   display: flex;
   gap: 8px;
   padding-top: 4px;
+  z-index: 2;
 }
 
 .action-btn {
@@ -571,7 +712,7 @@ onBeforeUnmount(() => {
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  transition: opacity 0.15s, transform 0.1s;
+  transition: opacity 0.15s, transform 0.1s, border-color 0.2s;
 }
 
 .action-btn:active:not(:disabled) {
@@ -595,8 +736,13 @@ onBeforeUnmount(() => {
 .action-btn.secondary {
   width: 60px;
   color: #94a3b8;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(15, 23, 42, 0.45);
   border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.action-btn.secondary:hover {
+  background: rgba(15, 23, 42, 0.6);
+  border-color: rgba(56, 189, 248, 0.2);
 }
 
 .action-btn:disabled {
@@ -609,10 +755,6 @@ onBeforeUnmount(() => {
   font-size: 10px;
   color: #334155;
   padding-top: 4px;
-}
-
-@keyframes pulse {
-  0%, 100% { transform: scale(0.95); opacity: 0.4; }
-  50% { transform: scale(1.1); opacity: 0.8; }
+  z-index: 2;
 }
 </style>

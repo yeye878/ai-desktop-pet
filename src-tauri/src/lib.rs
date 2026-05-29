@@ -1,4 +1,5 @@
 mod behavior;
+mod direct_api;
 mod openclaw;
 mod storage;
 mod system;
@@ -42,6 +43,16 @@ struct AiErrorPayload {
     aborted: bool,
 }
 
+#[derive(Clone, Serialize)]
+struct FileMetadata {
+    path: String,
+    name: String,
+    size: u64,
+    extension: String,
+    exists: bool,
+    is_file: bool,
+}
+
 pub struct AppState {
     pub ai: tokio::sync::Mutex<openclaw::ClaudeAdapter>,
     pub behavior: tokio::sync::Mutex<behavior::BehaviorEngine>,
@@ -55,6 +66,10 @@ pub struct AppState {
     pub active_ai_pid: tokio::sync::Mutex<Option<u32>>,
     pub active_chat: StdMutex<ActiveChatState>,
     pub tts: tts::TtsManager,
+    pub backend_type: tokio::sync::Mutex<String>,
+    pub direct_api_config: tokio::sync::Mutex<Option<direct_api::DirectApiConfig>>,
+    pub pending_confirms: tokio::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>>,
+    pub abort_token: tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>,
 }
 
 fn unix_now() -> i64 {
@@ -124,6 +139,65 @@ async fn send_to_ai(
 }
 
 async fn run_ai_message(app_handle: tauri::AppHandle, message: String) {
+    let state = app_handle.state::<AppState>();
+    let backend = state.backend_type.lock().await.clone();
+
+    if backend == "direct_api" {
+        let system_prompt = {
+            let personality = state.personality.lock().await;
+            let profession = state.profession.lock().await;
+            openclaw::build_system_prompt(&personality, &profession)
+        };
+
+        let chat_history = {
+            let db = state.db.lock().await;
+            db.get_recent_messages(10).unwrap_or_default()
+        };
+
+        let config_opt = state.direct_api_config.lock().await.clone();
+        let Some(config) = config_opt else {
+            {
+                if let Ok(mut active) = state.active_chat.lock() {
+                    active.active = None;
+                }
+                let mut behavior = state.behavior.lock().await;
+                behavior.set_state(behavior::PetState::Confused);
+            }
+            let _ = app_handle.emit(
+                "ai-error",
+                AiErrorPayload {
+                    message: "未配置直连 API 后端，请先在设置中配置 API Key。".to_string(),
+                    thinking: None,
+                    aborted: false,
+                },
+            );
+            return;
+        };
+
+        // 创建新的 CancellationToken
+        let token = tokio_util::sync::CancellationToken::new();
+        {
+            let mut abort = state.abort_token.lock().await;
+            *abort = Some(token);
+        }
+
+        direct_api::run_direct_api_agent(
+            app_handle.clone(),
+            message,
+            config,
+            system_prompt,
+            chat_history,
+        )
+        .await;
+
+        // 执行结束，清理 abort_token
+        {
+            let mut abort = state.abort_token.lock().await;
+            *abort = None;
+        }
+        return;
+    }
+
     // 启动 Claude CLI 流式子进程
     let system_prompt = {
         let state = app_handle.state::<AppState>();
@@ -135,7 +209,7 @@ async fn run_ai_message(app_handle: tauri::AppHandle, message: String) {
     let child_result = {
         let state = app_handle.state::<AppState>();
         let ai = state.ai.lock().await;
-        ai.spawn_streaming(&message, &system_prompt)
+        ai.spawn_streaming(&app_handle, &message, &system_prompt)
     };
     let mut child = match child_result {
         Ok(child) => child,
@@ -316,6 +390,15 @@ async fn run_ai_message(app_handle: tauri::AppHandle, message: String) {
 
 #[tauri::command]
 async fn abort_ai(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    // 1. 中止 Direct API 模式
+    {
+        let abort = state.abort_token.lock().await;
+        if let Some(ref token) = *abort {
+            token.cancel();
+        }
+    }
+
+    // 2. 中止 Claude Code 模式
     let pid = {
         let mut active = state.active_ai_pid.lock().await;
         active.take()
@@ -329,6 +412,126 @@ async fn abort_ai(state: tauri::State<'_, AppState>) -> Result<(), String> {
     let mut behavior = state.behavior.lock().await;
     behavior.set_state(behavior::PetState::Idle);
     Ok(())
+}
+
+#[tauri::command]
+async fn set_backend_type(backend: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    {
+        let mut backend_type = state.backend_type.lock().await;
+        *backend_type = backend.clone();
+    }
+    let db = state.db.lock().await;
+    db.save_setting("backend_type", &backend).map_err(|e| e.to_string())?;
+
+    // 切换后端时，清空当前活动会话
+    if let Ok(mut active) = state.active_chat.lock() {
+        active.active = None;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_backend_type(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let backend_type = state.backend_type.lock().await;
+    Ok(backend_type.clone())
+}
+
+#[tauri::command]
+async fn set_api_config(
+    api_key: String,
+    base_url: String,
+    model: String,
+    confirm_enabled: bool,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.save_setting("api_key", &api_key).map_err(|e| e.to_string())?;
+    db.save_setting("api_base_url", &base_url).map_err(|e| e.to_string())?;
+    db.save_setting("api_model", &model).map_err(|e| e.to_string())?;
+    db.save_setting("api_confirm_enabled", if confirm_enabled { "true" } else { "false" }).map_err(|e| e.to_string())?;
+
+    let mut config = state.direct_api_config.lock().await;
+    *config = Some(direct_api::DirectApiConfig {
+        api_key,
+        base_url,
+        model,
+        confirm_enabled,
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_api_config(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let db = state.db.lock().await;
+    let api_key = db.get_setting("api_key").unwrap_or_default().unwrap_or_default();
+    let base_url = db.get_setting("api_base_url").unwrap_or_default().unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+    let model = db.get_setting("api_model").unwrap_or_default().unwrap_or_else(|| "gpt-4o-mini".to_string());
+    let confirm_enabled = db.get_setting("api_confirm_enabled").unwrap_or_default().unwrap_or_else(|| "true".to_string()) == "true";
+
+    Ok(serde_json::json!({
+        "api_key": api_key,
+        "base_url": base_url,
+        "model": model,
+        "confirm_enabled": confirm_enabled,
+    }))
+}
+
+#[tauri::command]
+async fn test_api_connection(
+    api_key: String,
+    base_url: String,
+    model: String,
+) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let url = if base_url.ends_with("/chat/completions") {
+        base_url.clone()
+    } else {
+        format!("{}/chat/completions", base_url.trim_end_matches('/'))
+    };
+
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [
+            { "role": "user", "content": "ping" }
+        ],
+        "max_tokens": 5
+    });
+
+    let res = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("连接请求发送失败: {e}"))?;
+
+    let status = res.status();
+    if status.is_success() {
+        Ok("连接成功".to_string())
+    } else {
+        let err_text = res
+            .text()
+            .await
+            .unwrap_or_else(|_| "无法读取错误详情".to_string());
+        Err(format!("连接失败 ({}): {}", status, err_text))
+    }
+}
+
+#[tauri::command]
+async fn confirm_tool(
+    id: String,
+    approved: bool,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let mut confirms = state.pending_confirms.lock().await;
+    if let Some(tx) = confirms.remove(&id) {
+        let _ = tx.send(approved);
+        Ok(())
+    } else {
+        Err("无效的确认请求 ID".to_string())
+    }
 }
 
 #[tauri::command]
@@ -614,8 +817,188 @@ async fn eat_files(paths: Vec<String>) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn get_file_metadata(paths: Vec<String>) -> Result<Vec<FileMetadata>, String> {
+    let mut results = Vec::new();
+    for p in &paths {
+        let path = std::path::Path::new(p);
+        let exists = path.exists();
+        let is_file = exists && path.is_file();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let extension = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        let size = if is_file {
+            tokio::fs::metadata(p).await.map(|m| m.len()).unwrap_or(0)
+        } else {
+            0
+        };
+        results.push(FileMetadata {
+            path: p.clone(),
+            name,
+            size,
+            extension,
+            exists,
+            is_file,
+        });
+    }
+    Ok(results)
+}
+
+#[tauri::command]
+async fn read_file_as_data_url(path: String) -> Result<String, String> {
+    use base64::Engine;
+    let p = std::path::Path::new(&path);
+    if !p.exists() || !p.is_file() {
+        return Err("文件不存在".into());
+    }
+    let size = tokio::fs::metadata(&path)
+        .await
+        .map_err(|e| e.to_string())?
+        .len();
+    if size > 5 * 1024 * 1024 {
+        return Err("文件过大，无法生成预览 (>5MB)".into());
+    }
+    let bytes = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
+    let ext = p
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let mime = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "svg" => "image/svg+xml",
+        _ => "application/octet-stream",
+    };
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(format!("data:{};base64,{}", mime, b64))
+}
+
+#[tauri::command]
+async fn open_claude_config(app_handle: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::path::PathBuf;
+        
+        let mut cmd_path = PathBuf::from("claude.cmd");
+        let mut node_dir = None;
+
+        if let Ok(resource_dir) = app_handle.path().resource_dir() {
+            let bundled_node_dir = resource_dir.join("node");
+            let path_options = vec![
+                bundled_node_dir.join("claude.cmd"),
+                bundled_node_dir.join("node_modules").join(".bin").join("claude.cmd"),
+            ];
+
+            for path in path_options {
+                if path.exists() {
+                    cmd_path = path;
+                    node_dir = Some(bundled_node_dir);
+                    break;
+                }
+            }
+        }
+
+        let script = if let Some(ref ndir) = node_dir {
+            format!(
+                "clear; Write-Host '==================================================' -ForegroundColor Cyan; \
+                 Write-Host '   智能桌宠 - Claude Code 登录与配置向导' -ForegroundColor Green; \
+                 Write-Host '==================================================' -ForegroundColor Cyan; \
+                 Write-Host '即将为您拉起内置的 Claude Code CLI 进行认证登录...' -ForegroundColor Yellow; \
+                 $env:PATH = '{}' + ';' + $env:PATH; \
+                 & '{}'; \
+                 Write-Host '配置结束。按任意键关闭此窗口...' -ForegroundColor Cyan; \
+                 $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')",
+                ndir.to_string_lossy().replace('\\', "\\\\"),
+                cmd_path.to_string_lossy().replace('\\', "\\\\")
+            )
+        } else {
+            "clear; Write-Host '没有找到内置的便携式 Node / Claude Code。将尝试调用全局命令...' -ForegroundColor Yellow; \
+             & 'claude.cmd'; \
+             Write-Host '配置配置结束。按任意键关闭此窗口...' -ForegroundColor Cyan; \
+             $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')".to_string()
+        };
+
+        std::process::Command::new("powershell.exe")
+            .args(["-NoExit", "-Command", &script])
+            .spawn()
+            .map_err(|e| format!("Failed to spawn PowerShell: {}", e))?;
+        
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Unsupported operating system".to_string())
+    }
+}
+
+#[tauri::command]
 fn exit_app() {
     std::process::exit(0);
+}
+
+#[derive(Serialize)]
+pub struct ClaudeStatus {
+    pub logged_in: bool,
+    pub token_preview: Option<String>,
+    pub model: Option<String>,
+    pub base_url: Option<String>,
+}
+
+#[tauri::command]
+async fn check_claude_status() -> Result<ClaudeStatus, String> {
+    let mut path = dirs::home_dir().ok_or_else(|| "无法获取用户主目录".to_string())?;
+    path.push(".claude");
+    path.push("settings.json");
+
+    if !path.exists() {
+        return Ok(ClaudeStatus {
+            logged_in: false,
+            token_preview: None,
+            model: None,
+            base_url: None,
+        });
+    }
+
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("无法读取 Claude 配置文件: {e}"))?;
+
+    let json: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("解析 Claude 配置文件失败: {e}"))?;
+
+    let env = json.get("env");
+    let token = env.and_then(|e| e.get("ANTHROPIC_AUTH_TOKEN")).and_then(|t| t.as_str());
+    let model = env.and_then(|e| e.get("ANTHROPIC_MODEL")).and_then(|m| m.as_str()).map(|s| s.to_string());
+    let base_url = env.and_then(|e| e.get("ANTHROPIC_BASE_URL")).and_then(|u| u.as_str()).map(|s| s.to_string());
+
+    if let Some(tok) = token {
+        if !tok.trim().is_empty() {
+            let preview = if tok.len() > 8 {
+                format!("{}...", &tok[..8])
+            } else {
+                tok.to_string()
+            };
+            return Ok(ClaudeStatus {
+                logged_in: true,
+                token_preview: Some(preview),
+                model,
+                base_url,
+            });
+        }
+    }
+
+    Ok(ClaudeStatus {
+        logged_in: false,
+        token_preview: None,
+        model,
+        base_url,
+    })
 }
 
 #[tauri::command]
@@ -685,6 +1068,41 @@ pub fn run() {
         .flatten()
         .unwrap_or_default();
 
+    let backend_type = db
+        .get_setting("backend_type")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "claude_code".to_string());
+
+    let api_key = db.get_setting("api_key").ok().flatten().unwrap_or_default();
+    let api_base_url = db
+        .get_setting("api_base_url")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+    let api_model = db
+        .get_setting("api_model")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "gpt-4o-mini".to_string());
+    let api_confirm_enabled = db
+        .get_setting("api_confirm_enabled")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "true".to_string())
+        == "true";
+
+    let direct_config = if !api_key.is_empty() {
+        Some(direct_api::DirectApiConfig {
+            api_key,
+            base_url: api_base_url,
+            model: api_model,
+            confirm_enabled: api_confirm_enabled,
+        })
+    } else {
+        None
+    };
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -702,13 +1120,14 @@ pub fn run() {
                 active_ai_pid: tokio::sync::Mutex::new(None),
                 active_chat: StdMutex::new(ActiveChatState::default()),
                 tts: tts::TtsManager::new(tts_cache_dir(app)),
+                backend_type: tokio::sync::Mutex::new(backend_type),
+                direct_api_config: tokio::sync::Mutex::new(direct_config),
+                pending_confirms: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+                abort_token: tokio::sync::Mutex::new(None),
             };
             app.manage(app_state);
 
-            // 设置窗口属性
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.set_always_on_top(true);
-            }
+            // main 窗口现在是控制台，无需置顶
 
             Ok(())
         })
@@ -744,9 +1163,19 @@ pub fn run() {
             set_profession,
             get_profession,
             eat_files,
+            get_file_metadata,
+            read_file_as_data_url,
             exit_app,
+            open_claude_config,
             tts_synthesize,
             tts_list_voices,
+            set_backend_type,
+            get_backend_type,
+            set_api_config,
+            get_api_config,
+            test_api_connection,
+            confirm_tool,
+            check_claude_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Default capabilities for the app",
-  "windows": ["main", "chat", "context-menu", "settings", "voice"],
+  "windows": ["main", "pet", "chat", "context-menu", "settings", "voice"],
   "permissions": [
     "core:default",
     "core:window:default",
@@ -19,6 +19,11 @@
     "core:window:allow-inner-size",
     "core:window:allow-cursor-position",
     "core:window:allow-set-ignore-cursor-events",
+    "core:window:allow-minimize",
+    "core:window:allow-hide",
+    "core:window:allow-maximize",
+    "core:window:allow-unmaximize",
+    "core:window:allow-is-maximized",
     "shell:allow-open",
     "global-shortcut:allow-register",
     "global-shortcut:allow-unregister",

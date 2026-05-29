@@ -1,8 +1,8 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { useChatStore } from "../stores/chat";
+import { useChatStore, type FileAttachment } from "../stores/chat";
 import { usePetStore } from "../stores/pet";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, type DragDropEvent } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -75,6 +75,42 @@ let unlistenThinking: UnlistenFn | null = null;
 let unlistenAiFinished: UnlistenFn | null = null;
 let unlistenAiError: UnlistenFn | null = null;
 let unlistenChatCleared: UnlistenFn | null = null;
+let unlistenVoiceChanged: UnlistenFn | null = null;
+let unlistenSyncMessage: UnlistenFn | null = null;
+
+interface ToolConfirmPayload {
+  id: string;
+  tool_name: string;
+  arguments: string;
+}
+const pendingConfirm = ref<ToolConfirmPayload | null>(null);
+let unlistenToolConfirm: UnlistenFn | null = null;
+
+interface PendingFile {
+  id: string;
+  path: string;
+  name: string;
+  size: number;
+  extension: string;
+  isImage: boolean;
+  previewUrl: string;
+  status: "loading" | "ready" | "error";
+  errorMessage?: string;
+}
+interface RustFileMetadata {
+  path: string;
+  name: string;
+  size: number;
+  extension: string;
+  exists: boolean;
+  is_file: boolean;
+}
+const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"];
+const MAX_FILE_SIZE = 10 * 1024 * 1024;
+const MAX_FILES = 5;
+const pendingFiles = ref<PendingFile[]>([]);
+const fileValidationError = ref("");
+let fileErrorTimer: ReturnType<typeof setTimeout> | null = null;
 
 const thinkingContent = ref("");
 const isThinkingCollapsed = ref(true);
@@ -117,6 +153,7 @@ onMounted(async () => {
     chat.isLoading = false;
     thinkingContent.value = "";
     isThinkingCollapsed.value = true;
+    pendingConfirm.value = null;
     pet.setState("speaking");
     pet.updateMood({ happiness: 0.05 });
     void speakAssistantReply(event.payload.text);
@@ -132,6 +169,7 @@ onMounted(async () => {
     chat.isLoading = false;
     thinkingContent.value = "";
     isThinkingCollapsed.value = true;
+    pendingConfirm.value = null;
     pet.setState(event.payload.aborted ? "idle" : "confused");
   });
 
@@ -139,6 +177,28 @@ onMounted(async () => {
     chat.clearMessages();
     chat.isLoading = false;
     thinkingContent.value = "";
+    pendingConfirm.value = null;
+  });
+
+  unlistenSyncMessage = await listen<any>("sync-chat-message", (event) => {
+    const payload = event.payload;
+    const last = chat.messages[chat.messages.length - 1];
+    if (last && last.role === payload.role && last.content === payload.content) {
+      return;
+    }
+    chat.addMessage(payload.role, payload.content);
+    if (payload.role === "user") {
+      chat.isLoading = true;
+      thinkingContent.value = "";
+      isThinkingCollapsed.value = false;
+      pet.setState("thinking");
+    }
+  });
+
+  unlistenToolConfirm = await listen<ToolConfirmPayload>("ai-tool-confirm", (event) => {
+    pendingConfirm.value = event.payload;
+    isThinkingCollapsed.value = false;
+    scrollToBottomAfterRender();
   });
 
   try {
@@ -154,6 +214,9 @@ onMounted(async () => {
 
   window.addEventListener("storage", handleStorageChange);
   window.addEventListener("voice-settings-changed", handleVoiceSettingsChanged);
+  unlistenVoiceChanged = await listen("voice-settings-changed", () => {
+    void loadVoiceSettings();
+  });
   await scrollToBottomAfterRender();
 });
 
@@ -178,14 +241,34 @@ onBeforeUnmount(() => {
     unlistenAiError();
     unlistenAiError = null;
   }
+  if (unlistenToolConfirm) {
+    unlistenToolConfirm();
+    unlistenToolConfirm = null;
+  }
   if (unlistenChatCleared) {
     unlistenChatCleared();
     unlistenChatCleared = null;
+  }
+  if (unlistenSyncMessage) {
+    unlistenSyncMessage();
+    unlistenSyncMessage = null;
+  }
+  if (unlistenVoiceChanged) {
+    unlistenVoiceChanged();
+    unlistenVoiceChanged = null;
+  }
+  if (fileErrorTimer) {
+    clearTimeout(fileErrorTimer);
+    fileErrorTimer = null;
   }
   window.removeEventListener("storage", handleStorageChange);
   window.removeEventListener("voice-settings-changed", handleVoiceSettingsChanged);
   voice.abortListening();
   voice.stopSpeaking();
+});
+
+watch(chatBg, () => {
+  bgCanvasRef.value?.clearPointer();
 });
 
 function handleStorageChange(e: StorageEvent) {
@@ -216,7 +299,9 @@ watch(
 
 async function sendMessage() {
   const text = input.value.trim();
-  if (!text) return;
+  const files = [...pendingFiles.value];
+
+  if (!text && files.length === 0) return;
 
   if (activeTab.value === "clipboard") {
     await saveClipboardText(text);
@@ -224,8 +309,21 @@ async function sendMessage() {
   }
   if (chat.isLoading) return;
 
-  chat.addMessage("user", text);
+  const fullMessage = buildMessageWithFiles(text, files);
+
+  const fileAttachments: FileAttachment[] | undefined =
+    files.length > 0
+      ? files.map((f) => ({ name: f.name, isImage: f.isImage, extension: f.extension }))
+      : undefined;
+
+  const displayText = text || "(已发送文件)";
+  chat.addMessage("user", displayText, undefined, fileAttachments);
+  
+  // Broadcast user message to other windows (like the dashboard)
+  await currentWindow.emit("sync-chat-message", { role: "user", content: displayText });
+
   input.value = "";
+  clearPendingFiles();
   chat.isLoading = true;
   thinkingContent.value = "";
   isThinkingCollapsed.value = false;
@@ -236,7 +334,7 @@ async function sendMessage() {
 
   try {
     await invoke<{ started: boolean }>("send_to_ai", {
-      message: text,
+      message: fullMessage,
     });
   } catch (err) {
     chat.isLoading = false;
@@ -271,6 +369,20 @@ async function abortAi() {
     await invoke("abort_ai");
   } catch {
     // Ignore abort failures.
+  }
+}
+
+async function handleToolConfirm(approved: boolean) {
+  if (!pendingConfirm.value) return;
+  try {
+    await invoke("confirm_tool", {
+      id: pendingConfirm.value.id,
+      approved,
+    });
+  } catch (e) {
+    console.error("确认工具失败:", e);
+  } finally {
+    pendingConfirm.value = null;
   }
 }
 
@@ -426,7 +538,7 @@ function handleDragDropEvent(event: DragDropEvent) {
   }
   isFileOver.value = false;
   if (event.type === "drop" && event.paths.length > 0 && isPositionInsideBubble(event.position)) {
-    appendFilePaths(event.paths);
+    void addToPendingFiles(event.paths);
   }
 }
 
@@ -439,10 +551,133 @@ function isPositionInsideBubble(position: { x: number; y: number }) {
   return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
 }
 
-function appendFilePaths(paths: string[]) {
-  const fileText = paths.map((path) => `"${path}"`).join(" ");
-  const prompt = `请使用文件投喂分类流程处理这些本地文件路径: ${fileText}`;
-  input.value = input.value.trim() ? `${input.value.trim()} ${prompt}` : prompt;
+function showFileError(msg: string) {
+  fileValidationError.value = msg;
+  if (fileErrorTimer) clearTimeout(fileErrorTimer);
+  fileErrorTimer = setTimeout(() => {
+    fileValidationError.value = "";
+  }, 3000);
+}
+
+async function addToPendingFiles(paths: string[]) {
+  if (fileErrorTimer) clearTimeout(fileErrorTimer);
+  fileValidationError.value = "";
+
+  if (pendingFiles.value.length + paths.length > MAX_FILES) {
+    fileValidationError.value = `最多同时添加 ${MAX_FILES} 个文件`;
+    fileErrorTimer = setTimeout(() => {
+      fileValidationError.value = "";
+    }, 3000);
+    return;
+  }
+
+  try {
+    const metadataList = await invoke<RustFileMetadata[]>("get_file_metadata", { paths });
+
+    for (const meta of metadataList) {
+      if (!meta.exists || !meta.is_file) {
+        showFileError(`文件不存在或是目录: ${meta.name}`);
+        continue;
+      }
+      if (meta.size > MAX_FILE_SIZE) {
+        showFileError(`文件过大: ${meta.name} (最大 10MB)`);
+        continue;
+      }
+
+      const isImage = IMAGE_EXTENSIONS.includes(meta.extension);
+      let previewUrl = "";
+
+      if (isImage) {
+        previewUrl = convertFileSrc(meta.path);
+      }
+
+      pendingFiles.value.push({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        path: meta.path,
+        name: meta.name,
+        size: meta.size,
+        extension: meta.extension,
+        isImage,
+        previewUrl,
+        status: "ready",
+      });
+    }
+  } catch (err) {
+    showFileError(`获取文件信息失败: ${err}`);
+  }
+}
+
+function removePendingFile(id: string) {
+  pendingFiles.value = pendingFiles.value.filter((f) => f.id !== id);
+}
+
+function clearPendingFiles() {
+  pendingFiles.value = [];
+  fileValidationError.value = "";
+}
+
+async function handleImageError(file: PendingFile) {
+  try {
+    const dataUrl = await invoke<string>("read_file_as_data_url", { path: file.path });
+    file.previewUrl = dataUrl;
+  } catch {
+    file.status = "error";
+    file.errorMessage = "预览不可用";
+  }
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function getFileIcon(ext: string): string {
+  const map: Record<string, string> = {
+    pdf: "\u{1F4C4}",
+    doc: "\u{1F4DD}",
+    docx: "\u{1F4DD}",
+    xls: "\u{1F4CA}",
+    xlsx: "\u{1F4CA}",
+    csv: "\u{1F4CA}",
+    ppt: "\u{1F4D1}",
+    pptx: "\u{1F4D1}",
+    zip: "\u{1F4E6}",
+    rar: "\u{1F4E6}",
+    "7z": "\u{1F4E6}",
+    mp3: "\u{1F3B5}",
+    wav: "\u{1F3B5}",
+    flac: "\u{1F3B5}",
+    mp4: "\u{1F3AC}",
+    avi: "\u{1F3AC}",
+    mkv: "\u{1F3AC}",
+    txt: "\u{1F4C3}",
+    md: "\u{1F4C3}",
+    json: "\u{1F4C3}",
+    js: "\u{1F4BB}",
+    ts: "\u{1F4BB}",
+    py: "\u{1F4BB}",
+    rs: "\u{1F4BB}",
+    go: "\u{1F4BB}",
+    java: "\u{1F4BB}",
+  };
+  return map[ext] || "\u{1F4CE}";
+}
+
+function buildMessageWithFiles(text: string, files: PendingFile[]): string {
+  if (files.length === 0) return text;
+
+  const fileLines = files
+    .map((f, i) => {
+      const typeLabel = f.isImage ? "图片" : "文件";
+      const icon = f.isImage ? "\u{1F4F7}" : getFileIcon(f.extension);
+      return `${i + 1}. ${icon} ${typeLabel}: "${f.name}" (路径: ${f.path}, 大小: ${formatFileSize(f.size)})`;
+    })
+    .join("\n");
+
+  const fileBlock = `\n\n---\n[用户附加了以下本地文件]\n${fileLines}\n\n提示: 你可以使用 read_file 工具读取上述文件的内容来帮助用户。`;
+
+  return text ? `${text}${fileBlock}` : `[用户附加了文件，但没有输入文字]${fileBlock}`;
 }
 
 async function scrollToBottomAfterRender() {
@@ -461,6 +696,10 @@ function onBgMouseMove(e: MouseEvent) {
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     bgCanvasRef.value.onMouseMove(e.clientX - rect.left, e.clientY - rect.top);
   }
+}
+
+function clearBgPointer() {
+  bgCanvasRef.value?.clearPointer();
 }
 
 function onBgClick(e: MouseEvent) {
@@ -581,6 +820,8 @@ function formatClipboardTime(value: string | number): string {
     <div
       class="messages-area"
       @mousemove.passive="onBgMouseMove"
+      @mouseleave="clearBgPointer"
+      @blur.capture="clearBgPointer"
       @click.self="onBgClick"
     >
       <BgCanvas
@@ -619,6 +860,12 @@ function formatClipboardTime(value: string | number): string {
             </div>
 
             <div class="bubble">{{ msg.content }}</div>
+            <div v-if="msg.files && msg.files.length > 0" class="msg-files">
+              <div v-for="(file, fi) in msg.files" :key="fi" class="msg-file-tag">
+                <span>{{ file.isImage ? "\u{1F4F7}" : getFileIcon(file.extension) }}</span>
+                <span>{{ file.name }}</span>
+              </div>
+            </div>
             <div class="msg-time">{{ formatTime(msg.timestamp) }}</div>
           </div>
 
@@ -654,6 +901,35 @@ function formatClipboardTime(value: string | number): string {
                 等待思考输出...
               </div>
             </div>
+
+            <Transition name="confirm-fade">
+              <div v-if="pendingConfirm" class="tool-confirm-card">
+                <div class="confirm-card-header">
+                  <span class="confirm-card-icon">⚡</span>
+                  <span class="confirm-card-title">请求运行敏感操作</span>
+                </div>
+                
+                <div class="confirm-card-body">
+                  <div class="confirm-tool-info">
+                    <span class="info-label">操作类别:</span>
+                    <span class="info-value">{{ pendingConfirm.tool_name === 'run_command' ? '🐚 运行命令行' : '📝 写入文件' }}</span>
+                  </div>
+                  <div class="confirm-tool-args">
+                    <span class="info-label">核心参数:</span>
+                    <pre class="args-code"><code>{{ pendingConfirm.arguments }}</code></pre>
+                  </div>
+                </div>
+
+                <div class="confirm-card-actions">
+                  <button class="confirm-btn deny" @click="handleToolConfirm(false)">
+                    ❌ 拒绝
+                  </button>
+                  <button class="confirm-btn approve" @click="handleToolConfirm(true)">
+                    ✅ 允许
+                  </button>
+                </div>
+              </div>
+            </Transition>
           </div>
         </div>
       </template>
@@ -726,6 +1002,52 @@ function formatClipboardTime(value: string | number): string {
       </div>
     </div>
 
+    <Transition name="fade">
+      <div v-if="fileValidationError" class="file-validation-error">
+        {{ fileValidationError }}
+      </div>
+    </Transition>
+
+    <Transition name="slide-up">
+      <div v-if="pendingFiles.length > 0" class="file-preview-area">
+        <div class="file-preview-header">
+          <span>{{ pendingFiles.length }} 个文件待发送</span>
+          <button class="clear-all-btn" @click="clearPendingFiles">全部移除</button>
+        </div>
+        <div class="file-preview-list">
+          <TransitionGroup name="file-item">
+            <div
+              v-for="file in pendingFiles"
+              :key="file.id"
+              class="file-preview-item"
+              :class="{ error: file.status === 'error' }"
+            >
+              <template v-if="file.isImage">
+                <img
+                  v-if="file.previewUrl && file.status !== 'error'"
+                  :src="file.previewUrl"
+                  class="preview-thumbnail"
+                  @error="handleImageError(file)"
+                />
+                <div v-else class="preview-fallback">
+                  <span class="file-icon">{{ getFileIcon(file.extension) }}</span>
+                  <span class="fallback-text">预览不可用</span>
+                </div>
+              </template>
+              <template v-else>
+                <div class="preview-file-card">
+                  <span class="file-icon-lg">{{ getFileIcon(file.extension) }}</span>
+                  <span class="file-name" :title="file.name">{{ file.name }}</span>
+                  <span class="file-size">{{ formatFileSize(file.size) }}</span>
+                </div>
+              </template>
+              <button class="remove-file-btn" @click="removePendingFile(file.id)">&times;</button>
+            </div>
+          </TransitionGroup>
+        </div>
+      </div>
+    </Transition>
+
     <div class="chat-input">
       <button
         v-if="activeTab === 'chat'"
@@ -751,7 +1073,7 @@ function formatClipboardTime(value: string | number): string {
       />
       <button
         class="send-btn"
-        :disabled="!input.trim() || (activeTab === 'chat' && chat.isLoading)"
+        :disabled="(!input.trim() && pendingFiles.length === 0) || (activeTab === 'chat' && chat.isLoading)"
         @click="sendMessage"
       >
         <svg v-if="activeTab === 'chat'" width="18" height="18" viewBox="0 0 24 24" fill="none">
@@ -771,8 +1093,8 @@ function formatClipboardTime(value: string | number): string {
     </div>
 
     <div v-if="isFileOver" class="drop-hint">
-      <div class="drop-icon">&#x1F4C1;</div>
-      <div>松开添加文件路径</div>
+      <div class="drop-icon">&#x1F4CE;</div>
+      <div>松开添加文件</div>
     </div>
   </div>
 </template>
@@ -1516,5 +1838,362 @@ function formatClipboardTime(value: string | number): string {
   50% {
     background-position: 100% 50%;
   }
+}
+
+/* 交互式工具确认卡片样式 */
+.tool-confirm-card {
+  margin-top: 10px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.88), rgba(255, 255, 255, 0.75));
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(245, 158, 11, 0.28);
+  border-radius: 14px;
+  padding: 12px;
+  box-shadow: 0 10px 25px rgba(245, 158, 11, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.confirm-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid rgba(245, 158, 11, 0.12);
+  padding-bottom: 6px;
+}
+
+.confirm-card-icon {
+  font-size: 16px;
+  animation: pulseLight 1.5s infinite;
+}
+
+.confirm-card-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #b45309;
+}
+
+.confirm-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.confirm-tool-info {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+}
+
+.confirm-tool-args {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.info-label {
+  font-weight: 600;
+  color: #64748b;
+  min-width: 60px;
+  font-size: 11px;
+}
+
+.info-value {
+  color: #1e293b;
+  font-weight: 500;
+}
+
+.args-code {
+  background: rgba(15, 23, 42, 0.06);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-family: Consolas, Monaco, monospace;
+  font-size: 11px;
+  color: #0f172a;
+  max-height: 120px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+}
+
+.confirm-card-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.confirm-btn {
+  flex: 1;
+  padding: 8px;
+  border: none;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+.confirm-btn.deny {
+  background: rgba(239, 68, 68, 0.08);
+  color: #dc2626;
+  border: 1px solid rgba(239, 68, 68, 0.15);
+}
+
+.confirm-btn.deny:hover {
+  background: #ef4444;
+  color: white;
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.2);
+}
+
+.confirm-btn.approve {
+  background: rgba(34, 197, 94, 0.08);
+  color: #16a34a;
+  border: 1px solid rgba(34, 197, 94, 0.15);
+}
+
+.confirm-btn.approve:hover {
+  background: #22c55e;
+  color: white;
+  box-shadow: 0 4px 12px rgba(34, 197, 94, 0.2);
+}
+
+@keyframes slideUp {
+  from { transform: translateY(12px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes pulseLight {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(0.92); }
+}
+
+.confirm-fade-enter-active,
+.confirm-fade-leave-active {
+  transition: all 0.25s ease;
+}
+
+.confirm-fade-enter-from,
+.confirm-fade-leave-to {
+  opacity: 0;
+  transform: translateY(10px);
+}
+
+/* ===== 文件预览区 ===== */
+.file-preview-area {
+  padding: 8px 10px 0;
+  border-top: 1px solid rgba(15, 23, 42, 0.06);
+  background: rgba(255, 255, 255, 0.42);
+}
+
+.file-preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  color: #64748b;
+  margin-bottom: 6px;
+}
+
+.clear-all-btn {
+  background: none;
+  border: none;
+  color: #94a3b8;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.clear-all-btn:hover {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.file-preview-list {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-bottom: 8px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.file-preview-item {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  border-radius: 10px;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  background: rgba(255, 255, 255, 0.8);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.2s, box-shadow 0.2s;
+  flex-shrink: 0;
+}
+
+.file-preview-item:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+.file-preview-item.error {
+  opacity: 0.55;
+}
+
+.preview-thumbnail {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.preview-fallback,
+.preview-file-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 4px;
+  width: 100%;
+  height: 100%;
+}
+
+.file-icon {
+  font-size: 20px;
+}
+
+.file-icon-lg {
+  font-size: 24px;
+}
+
+.fallback-text {
+  font-size: 9px;
+  color: #94a3b8;
+}
+
+.file-name {
+  font-size: 10px;
+  max-width: 62px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+  color: #334155;
+}
+
+.file-size {
+  font-size: 9px;
+  color: #94a3b8;
+}
+
+.remove-file-btn {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.5);
+  color: white;
+  border: none;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s;
+  padding: 0;
+}
+
+.file-preview-item:hover .remove-file-btn {
+  opacity: 1;
+}
+
+.remove-file-btn:hover {
+  background: rgba(239, 68, 68, 0.85);
+}
+
+/* 验证错误提示 */
+.file-validation-error {
+  padding: 5px 12px;
+  font-size: 11px;
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.06);
+  border-top: 1px solid rgba(239, 68, 68, 0.1);
+}
+
+/* 消息气泡中的文件标签 */
+.msg-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.msg-file-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.2);
+  font-size: 11px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+/* 文件预览过渡动画 */
+.slide-up-enter-active,
+.slide-up-leave-active {
+  transition: all 0.25s ease;
+  overflow: hidden;
+}
+
+.slide-up-enter-from,
+.slide-up-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.file-item-enter-active,
+.file-item-leave-active {
+  transition: all 0.2s ease;
+}
+
+.file-item-enter-from {
+  opacity: 0;
+  transform: scale(0.8);
+}
+
+.file-item-leave-to {
+  opacity: 0;
+  transform: scale(0.8);
+}
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
 }
 </style>

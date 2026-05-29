@@ -1,10 +1,15 @@
 
-# AI Desktop Pet - Create Desktop Shortcut with Cute Icon
+# AI Desktop Pet - Build production app and create desktop shortcut with cute icon
 
-$AppExe    = "D:\ai-desktop-pet\src-tauri\target\release\ai-desktop-pet.exe"
-$IconDir   = "D:\ai-desktop-pet\src-tauri\icons"
-$IconPath  = "$IconDir\pet_shortcut.ico"
-$Desktop   = [Environment]::GetFolderPath("Desktop")
+$ErrorActionPreference = "Stop"
+
+$ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$BuildExe    = Join-Path $ProjectRoot "src-tauri\target\release\ai-desktop-pet.exe"
+$StableDir   = Join-Path $ProjectRoot "desktop-release"
+$AppExe      = Join-Path $StableDir "AI Desktop Pet.exe"
+$IconDir     = Join-Path $ProjectRoot "src-tauri\icons"
+$IconPath    = Join-Path $IconDir "pet_shortcut.ico"
+$Desktop     = [Environment]::GetFolderPath("Desktop")
 $ShortcutPath = Join-Path $Desktop "AI-Pet.lnk"
 
 Write-Host "Generating cute pet icon..."
@@ -198,12 +203,37 @@ public class IconMaker {
 [IconMaker]::MakeIco($IconPath)
 Write-Host "Icon created: $IconPath"
 
+Write-Host "Building production app..."
+Push-Location $ProjectRoot
+try {
+    & npm run tauri build
+    if ($LASTEXITCODE -ne 0) {
+        throw "Production build failed with exit code $LASTEXITCODE."
+    }
+}
+finally {
+    Pop-Location
+}
+
+if (!(Test-Path -LiteralPath $BuildExe)) {
+    throw "Build output not found: $BuildExe"
+}
+
+$BuildText = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($BuildExe))
+if (!$BuildText.Contains("/assets/index-")) {
+    throw "Production asset marker was not found in $BuildExe. The shortcut would still depend on the dev server."
+}
+
+New-Item -ItemType Directory -Force -Path $StableDir | Out-Null
+Copy-Item -LiteralPath $BuildExe -Destination $AppExe -Force
+Write-Host "Stable app copied to: $AppExe"
+
 # Create shortcut
 $WshShell  = New-Object -ComObject WScript.Shell
 $Shortcut  = $WshShell.CreateShortcut($ShortcutPath)
 $Shortcut.TargetPath       = $AppExe
 $Shortcut.IconLocation     = "$IconPath,0"
-$Shortcut.WorkingDirectory = "D:\ai-desktop-pet\src-tauri\target\release"
+$Shortcut.WorkingDirectory = $StableDir
 $Shortcut.Description      = "AI Desktop Pet - Your cute AI companion"
 $Shortcut.WindowStyle      = 1
 $Shortcut.Save()

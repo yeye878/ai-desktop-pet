@@ -1,6 +1,8 @@
 use serde::Serialize;
 use std::process::Stdio;
 use std::sync::Mutex;
+use std::path::PathBuf;
+use tauri::Manager;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::{Child, Command};
 
@@ -103,10 +105,43 @@ impl ClaudeAdapter {
     /// 启动 Claude CLI 子进程（stream-json 模式），返回 Child 供调用方逐行读取
     pub fn spawn_streaming(
         &self,
+        app_handle: &tauri::AppHandle,
         message: &str,
         system_prompt: &str,
     ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
-        let mut cmd = Command::new("claude.cmd");
+        let mut cmd_path = PathBuf::from("claude.cmd");
+        let mut extra_path = None;
+
+        // 尝试寻找内置在 resources 里的便携版 Node 和 Claude Code
+        if let Ok(resource_dir) = app_handle.path().resource_dir() {
+            let bundled_node_dir = resource_dir.join("node");
+            let path_options = vec![
+                bundled_node_dir.join("claude.cmd"),
+                bundled_node_dir.join("node_modules").join(".bin").join("claude.cmd"),
+            ];
+
+            for path in path_options {
+                if path.exists() {
+                    cmd_path = path;
+                    extra_path = Some(bundled_node_dir);
+                    break;
+                }
+            }
+        }
+
+        let mut cmd = Command::new(cmd_path);
+        
+        // 如果找到了内置的便携路径，将其临时注入子进程的 PATH 中
+        // 这样 claude.cmd 内部调用 node.exe 时就能成功执行了
+        if let Some(ref node_path) = extra_path {
+            if let Some(current_path) = std::env::var_os("PATH") {
+                let mut new_path = node_path.clone().into_os_string();
+                new_path.push(";");
+                new_path.push(current_path);
+                cmd.env("PATH", new_path);
+            }
+        }
+
         #[cfg(target_os = "windows")]
         cmd.creation_flags(CREATE_NO_WINDOW);
 
