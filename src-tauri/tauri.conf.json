@@ -12,15 +12,18 @@
     "windows": [
       {
         "label": "main",
-        "title": "AI Desktop Pet",
-        "width": 120,
-        "height": 140,
-        "transparent": true,
+        "title": "AI Desktop Pet - 控制台",
+        "width": 960,
+        "height": 640,
+        "minWidth": 800,
+        "minHeight": 560,
+        "transparent": false,
         "decorations": false,
-        "alwaysOnTop": true,
-        "resizable": false,
-        "skipTaskbar": true,
-        "shadow": false
+        "alwaysOnTop": false,
+        "resizable": true,
+        "skipTaskbar": false,
+        "shadow": true,
+        "center": true
       }
     ],
     "security": {
@@ -36,6 +39,29 @@
   "plugins": {
     "shell": {
       "open": true
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "resources": [
+      "../resources/**/*"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "both",
+        "languages": [
+          "SimpChinese",
+          "English"
+        ],
+        "displayLanguageSelector": true
+      }
     }
   }
 }

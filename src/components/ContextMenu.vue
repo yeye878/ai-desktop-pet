@@ -2,8 +2,9 @@
 import { useChatStore } from "../stores/chat";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 
-const emit = defineEmits<{ close: []; openSettings: [tab: string] }>();
+const emit = defineEmits<{ close: []; openSettings: [tab: string]; openDashboard: [] }>();
 const chat = useChatStore();
 const currentWindow = getCurrentWindow();
 
@@ -26,17 +27,16 @@ async function action(name: string) {
       chat.clearMessages();
       await currentWindow.emit("chat-history-cleared");
       break;
-    case "settings_appearance":
-      emit("openSettings", "appearance");
+    case "dashboard":
+      emit("openDashboard");
       return;
-    case "settings_voice":
-      emit("openSettings", "voice");
-      return;
-    case "settings_system":
-      emit("openSettings", "system");
-      return;
-    case "exit":
-      await invoke("exit_app");
+    case "hide":
+      // 收起桌宠（关闭 pet 窗口，控制台保留）
+      const petWin = await WebviewWindow.getByLabel("pet");
+      if (petWin) {
+        await currentWindow.emit("pet-window-closed");
+        await petWin.close();
+      }
       return;
   }
   emit("close");
@@ -66,22 +66,14 @@ async function action(name: string) {
       <span class="menu-icon">&#x1F5D1;&#xFE0F;</span>
       <span>清空对话</span>
     </div>
-    <div class="menu-item" @click="action('settings_appearance')">
-      <span class="menu-icon">&#x1F3A8;</span>
-      <span>个性外观</span>
-    </div>
-    <div class="menu-item" @click="action('settings_voice')">
-      <span class="menu-icon">&#x1F399;&#xFE0F;</span>
-      <span>语音设置</span>
-    </div>
-    <div class="menu-item" @click="action('settings_system')">
-      <span class="menu-icon">&#x2699;&#xFE0F;</span>
-      <span>系统设置</span>
-    </div>
     <div class="menu-divider" />
-    <div class="menu-item exit-item" @click="action('exit')">
-      <span class="menu-icon">&#x274C;</span>
-      <span>退出桌宠</span>
+    <div class="menu-item" @click="action('dashboard')">
+      <span class="menu-icon">🏠</span>
+      <span>打开控制台</span>
+    </div>
+    <div class="menu-item exit-item" @click="action('hide')">
+      <span class="menu-icon">👋</span>
+      <span>收起桌宠</span>
     </div>
   </div>
 </template>
@@ -144,8 +136,8 @@ async function action(name: string) {
 }
 
 .exit-item:hover {
-  background: linear-gradient(135deg, #f43f5e, #e11d48);
-  box-shadow: 0 8px 18px rgba(225, 29, 72, 0.3);
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  box-shadow: 0 8px 18px rgba(217, 119, 6, 0.3);
 }
 
 .menu-icon {

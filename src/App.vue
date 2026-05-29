@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Dashboard from "./components/Dashboard.vue";
 import PetCanvas from "./components/PetCanvas.vue";
 import ChatBubble from "./components/ChatBubble.vue";
 import ContextMenu from "./components/ContextMenu.vue";
@@ -19,15 +20,15 @@ import {
   type VoiceSettings,
 } from "./services/voice";
 
-type AppWindowLabel = "main" | "chat" | "context-menu" | "settings" | "voice";
-type PanelLabel = Exclude<AppWindowLabel, "main">;
+type AppWindowLabel = "main" | "pet" | "chat" | "context-menu" | "settings" | "voice";
+type PanelLabel = Exclude<AppWindowLabel, "main" | "pet">;
 type WindowHandle = ReturnType<typeof getCurrentWindow> | WebviewWindow;
 
 const PET_W = 120;
 const PANEL_GAP = 8;
 const PANEL_SPECS: Record<PanelLabel, { width: number; height: number; title: string }> = {
   chat: { width: 340, height: 400, title: "AI Desktop Pet Chat" },
-  "context-menu": { width: 170, height: 375, title: "AI Desktop Pet Menu" },
+  "context-menu": { width: 170, height: 300, title: "AI Desktop Pet Menu" },
   settings: { width: 380, height: 460, title: "AI Desktop Pet Settings" },
   voice: { width: 430, height: 520, title: "AI Desktop Pet Voice" },
 };
@@ -50,8 +51,8 @@ function panelUrl(label: PanelLabel) {
   return `${baseUrl}?window=${label}`;
 }
 
-async function getMainWindow() {
-  return (await WebviewWindow.getByLabel("main")) ?? currentWindow;
+async function getPetWindow(): Promise<WindowHandle | null> {
+  return await WebviewWindow.getByLabel("pet");
 }
 
 async function getLogicalOuterPosition(win: WindowHandle) {
@@ -63,8 +64,9 @@ async function getLogicalOuterPosition(win: WindowHandle) {
 }
 
 async function getPetAnchor() {
-  const mainWindow = await getMainWindow();
-  return getLogicalOuterPosition(mainWindow);
+  const petWindow = await getPetWindow();
+  if (!petWindow) return { x: 200, y: 200 };
+  return getLogicalOuterPosition(petWindow);
 }
 
 async function getCursorAnchor() {
@@ -107,7 +109,7 @@ async function openPanel(label: PanelLabel, x: number, y: number) {
     skipTaskbar: true,
     shadow: false,
     focus: true,
-    parent: "main",
+    parent: "pet",
   });
 }
 
@@ -170,7 +172,7 @@ async function openSettingsPanel(tab = "appearance") {
     skipTaskbar: true,
     shadow: false,
     focus: true,
-    parent: "main",
+    parent: "pet",
   });
 
   await closePanel("context-menu");
@@ -189,7 +191,7 @@ async function closeCurrentWindow() {
 }
 
 async function repositionOpenPanels() {
-  if (currentLabel !== "main") return;
+  if (currentLabel !== "pet") return;
 
   const pet = await getPetAnchor();
   const [chat, settings] = await Promise.all([
@@ -235,7 +237,7 @@ async function loadVoiceSettings(): Promise<VoiceSettings> {
 }
 
 async function registerVoiceShortcut() {
-  if (currentLabel !== "main") return;
+  if (currentLabel !== "main" && currentLabel !== "pet") return;
 
   const settings = await loadVoiceSettings();
   const shortcut = (settings.shortcut || DEFAULT_VOICE_SETTINGS.shortcut).trim();
@@ -305,7 +307,7 @@ function isPetBodyPoint(px: number, py: number) {
   return body || leftEar || rightEar || leftFoot || rightFoot;
 }
 
-async function setMainWindowIgnoresCursorEvents(ignore: boolean) {
+async function setPetWindowIgnoresCursorEvents(ignore: boolean) {
   if (lastIgnoreCursorEvents === ignore) return;
 
   try {
@@ -316,11 +318,11 @@ async function setMainWindowIgnoresCursorEvents(ignore: boolean) {
   }
 }
 
-async function updateMainWindowHitTest() {
-  if (currentLabel !== "main") return;
+async function updatePetWindowHitTest() {
+  if (currentLabel !== "pet") return;
 
   if (isDraggingPet.value) {
-    await setMainWindowIgnoresCursorEvents(false);
+    await setPetWindowIgnoresCursorEvents(false);
     return;
   }
 
@@ -328,12 +330,63 @@ async function updateMainWindowHitTest() {
   const [cursor, position] = await Promise.all([cursorPosition(), currentWindow.outerPosition()]);
   const px = (cursor.x - position.x) / scale;
   const py = (cursor.y - position.y) / scale;
-  await setMainWindowIgnoresCursorEvents(!isPetBodyPoint(px, py));
+  await setPetWindowIgnoresCursorEvents(!isPetBodyPoint(px, py));
 }
 
 function setPetDragging(dragging: boolean) {
   isDraggingPet.value = dragging;
-  updateMainWindowHitTest();
+  updatePetWindowHitTest();
+}
+
+// === 桌宠窗口管理 (从 Dashboard 触发) ===
+async function openPetWindow() {
+  const existing = await WebviewWindow.getByLabel("pet");
+  if (existing) {
+    await existing.show();
+    await existing.setFocus();
+    return;
+  }
+
+  const baseUrl = window.location.href.split("#")[0].split("?")[0];
+  const url = `${baseUrl}?window=pet`;
+
+  new WebviewWindow("pet", {
+    url,
+    width: 120,
+    height: 140,
+    transparent: true,
+    decorations: false,
+    alwaysOnTop: true,
+    resizable: false,
+    skipTaskbar: true,
+    shadow: false,
+    focus: false,
+    title: "AI Desktop Pet",
+  });
+}
+
+async function closePetWindow() {
+  // Close child panels first
+  await Promise.all([
+    closePanel("chat"),
+    closePanel("context-menu"),
+    closePanel("settings"),
+  ]);
+  const petWin = await WebviewWindow.getByLabel("pet");
+  if (petWin) {
+    await petWin.close();
+  }
+  // 通知控制台
+  await currentWindow.emit("pet-window-closed");
+}
+
+async function openDashboard() {
+  const mainWin = await WebviewWindow.getByLabel("main");
+  if (mainWin) {
+    await mainWin.show();
+    await mainWin.setFocus();
+  }
+  await closePanel("context-menu");
 }
 
 onMounted(async () => {
@@ -348,20 +401,33 @@ onMounted(async () => {
     });
   }
 
+  // Pet window: hit test + panel repositioning + voice shortcut
+  if (currentLabel === "pet") {
+    unlistenOpenVoice = await listen("open-voice-panel", () => {
+      void openVoicePanel();
+    });
+    window.addEventListener("voice-settings-changed", registerVoiceShortcut);
+    await registerVoiceShortcut();
+
+    unlistenMoved = await currentWindow.onMoved(() => {
+      repositionOpenPanels();
+    });
+    updatePetWindowHitTest();
+    cursorHitTestTimer = setInterval(updatePetWindowHitTest, 50);
+  }
+
+  // Main (Dashboard) window: voice shortcut registration
   if (currentLabel === "main") {
     unlistenOpenVoice = await listen("open-voice-panel", () => {
       void openVoicePanel();
     });
     window.addEventListener("voice-settings-changed", registerVoiceShortcut);
     await registerVoiceShortcut();
-  }
 
-  if (currentLabel === "main") {
-    unlistenMoved = await currentWindow.onMoved(() => {
-      repositionOpenPanels();
-    });
-    updateMainWindowHitTest();
-    cursorHitTestTimer = setInterval(updateMainWindowHitTest, 50);
+    // Auto-launch pet on startup
+    setTimeout(() => {
+      openPetWindow();
+    }, 500);
   }
 });
 
@@ -371,21 +437,31 @@ onUnmounted(() => {
   unlistenFocusChanged?.();
   unlistenMoved?.();
   unlistenOpenVoice?.();
-  if (currentLabel === "main") {
+  if (currentLabel === "pet" || currentLabel === "main") {
     window.removeEventListener("voice-settings-changed", registerVoiceShortcut);
     if (registeredVoiceShortcut) {
       void unregister(registeredVoiceShortcut);
       registeredVoiceShortcut = "";
     }
-    setMainWindowIgnoresCursorEvents(false);
+  }
+  if (currentLabel === "pet") {
+    setPetWindowIgnoresCursorEvents(false);
   }
 });
 </script>
 
 <template>
   <div :class="['window-root', `window-${currentLabel}`]">
-    <PetCanvas
+    <!-- Dashboard 控制台 (main 窗口) -->
+    <Dashboard
       v-if="currentLabel === 'main'"
+      @open-pet="openPetWindow"
+      @close-pet="closePetWindow"
+    />
+
+    <!-- 桌宠本体 (pet 子窗口) -->
+    <PetCanvas
+      v-else-if="currentLabel === 'pet'"
       @click="toggleChat"
       @contextmenu="openContextMenu"
       @dragging="setPetDragging"
@@ -400,6 +476,7 @@ onUnmounted(() => {
       v-else-if="currentLabel === 'context-menu'"
       @close="closeCurrentWindow"
       @open-settings="openSettingsPanel"
+      @open-dashboard="openDashboard"
     />
 
     <Settings
@@ -431,5 +508,10 @@ body,
   position: relative;
   user-select: none;
   overflow: hidden;
+}
+
+/* Dashboard 窗口不需要透明背景 */
+.window-main {
+  background: var(--dash-content-bg, #181615);
 }
 </style>
