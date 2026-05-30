@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from "vue";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -29,9 +29,56 @@ const chat = useChatStore();
 const currentWindow = getCurrentWindow();
 
 // === 导航 ===
-type NavPage = "home" | "chat" | "appearance" | "voice" | "system" | "about";
+type NavPage = "home" | "chat" | "memory" | "appearance" | "voice" | "system" | "about";
 const activePage = ref<NavPage>("home");
 const isPetActive = ref(false);
+
+type MemoryItem = {
+  id: number;
+  category: string;
+  key: string;
+  value: string;
+  created_at: number;
+};
+
+type ApiProfile = {
+  id: string;
+  name: string;
+  api_key?: string;
+  api_key_mask?: string;
+  has_api_key?: boolean;
+  base_url: string;
+  model: string;
+  confirm_enabled: boolean;
+  thinking_depth: string;
+  execution_mode: string;
+  auto_approved_tools: string[];
+};
+
+type ToolEvent = {
+  id: string;
+  tool_name: string;
+  status: string;
+  summary: string;
+  arguments: string;
+  command?: string | null;
+  path?: string | null;
+  output?: string | null;
+  approved?: boolean | null;
+};
+
+type ToolConfirmPayload = {
+  id: string;
+  tool_name: string;
+  arguments: string;
+  summary?: string;
+  command?: string | null;
+  path?: string | null;
+};
+
+type AnswerDeltaPayload = {
+  text: string;
+};
 
 // === 系统信息 ===
 const systemInfo = ref({ cpu: 0, memory: 0 });
@@ -44,15 +91,30 @@ const modelSaved = ref(false);
 // === 后端 ===
 const backendType = ref("claude_code");
 const apiConfig = ref({
+  id: "",
+  name: "",
   api_key: "",
+  api_key_mask: "",
+  has_api_key: false,
   base_url: "",
   model: "",
-  confirm_enabled: true
+  confirm_enabled: true,
+  thinking_depth: "auto",
+  execution_mode: "normal",
+  auto_approved_tools: [] as string[],
 });
+const apiProfiles = ref<ApiProfile[]>([]);
+const activeApiProfileId = ref("");
 const isTestingConnection = ref(false);
 const testResult = ref({ success: false, message: "" });
 const isSavingConfig = ref(false);
 const configSaved = ref(false);
+const profileDeletingId = ref("");
+const isFetchingModels = ref(false);
+const modelFetchResult = ref({ success: false, message: "" });
+const fetchedModels = ref<string[]>([]);
+const selectedFetchedModel = ref("");
+const isAddingFetchedModel = ref(false);
 
 // === Claude Code 状态 ===
 const claudeStatus = ref({
@@ -117,7 +179,15 @@ const professions = [
 
 const currentPersonality = ref("gentle");
 const currentProfession = ref("companion");
-const memories = ref<Array<{ key: string; value: string }>>([]);
+const memories = ref<MemoryItem[]>([]);
+const memoryDraft = ref({
+  key: "",
+  value: "",
+  category: "manual",
+});
+const isSavingMemory = ref(false);
+const memorySaved = ref(false);
+const memoryDeletingId = ref<number | null>(null);
 
 // === Computed ===
 const filteredEdgeVoices = computed(() => {
@@ -156,6 +226,73 @@ const petStateLabel = computed(() => {
 
 const happinessPercent = computed(() => Math.round((pet.happiness + 1) / 2 * 100));
 
+const thinkingDepthOptions = [
+  { value: "auto", label: "自动" },
+  { value: "low", label: "低" },
+  { value: "medium", label: "中" },
+  { value: "high", label: "高" },
+];
+
+const executionModeOptions = [
+  { value: "plan", label: "计划模式", desc: "只制定计划，不调用工具和改文件" },
+  { value: "normal", label: "普通模式", desc: "每类操作首次执行前需要确认" },
+  { value: "unreviewed", label: "无审查模式", desc: "所有工具直接执行" },
+  { value: "custom", label: "自定义模式", desc: "自行选择免确认工具" },
+];
+
+const toolPermissionOptions = [
+  { id: "read_file", label: "读取文件" },
+  { id: "write_file", label: "写入文件" },
+  { id: "list_directory", label: "列出目录" },
+  { id: "run_command", label: "执行命令" },
+  { id: "web_search", label: "网页搜索" },
+  { id: "open_app", label: "打开应用" },
+];
+
+const currentModelLabel = computed(() => {
+  if (backendType.value === "direct_api") {
+    return apiConfig.value.model || "未选择模型";
+  }
+  return currentModel.value || "Claude Code";
+});
+
+const currentExecutionModeLabel = computed(() => {
+  if (backendType.value !== "direct_api") return "Claude Code";
+  return executionModeOptions.find((item) => item.value === apiConfig.value.execution_mode)?.label || "普通模式";
+});
+
+const contextUsageLabel = computed(() => {
+  const chars = chat.messages.reduce((sum, msg) => {
+    return sum + msg.content.length + (msg.thinking?.length || 0);
+  }, thinkingContent.value.length + streamingAnswer.value.length);
+  if (chars === 0) return "0 字符";
+  const approxTokens = Math.max(1, Math.ceil(chars / 2));
+  return `${chars} 字符 / 约 ${approxTokens} tokens`;
+});
+
+function thinkingDepthLabel(value: string) {
+  return thinkingDepthOptions.find((item) => item.value === value)?.label || "自动";
+}
+
+const quickActions = [
+  { id: "wave", icon: "↗", label: "打招呼", desc: "挥挥手，进入陪伴状态", tone: "sky" },
+  { id: "happy", icon: "◎", label: "开心一下", desc: "给小家伙加一点元气", tone: "lemon" },
+  { id: "sleep", icon: "Zz", label: "去睡觉", desc: "切到安静休息状态", tone: "lavender" },
+  { id: "wake", icon: "⏱", label: "叫醒它", desc: "回到待命，随时响应", tone: "mint" },
+  { id: "new-chat", icon: "+", label: "新对话", desc: "保存摘要并重开上下文", tone: "mint" },
+  { id: "clear", icon: "⌫", label: "清空对话", desc: "整理上下文和记忆摘要", tone: "coral" },
+];
+
+const missionEntries = [
+  { page: "chat" as NavPage, icon: "💬", title: "对话舱", desc: "直接派发任务或闲聊" },
+  { page: "appearance" as NavPage, icon: "◐", title: "换装台", desc: "皮肤、字体和背景" },
+  { page: "voice" as NavPage, icon: "◌", title: "声线站", desc: "快捷键、语音和试听" },
+];
+
+const activeActionId = ref("");
+const actionFeedback = ref("点一下动作卡片，小家伙会在这里回应你。");
+let actionFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
+
 // === 预设 ===
 const PRESETS: Record<string, { base_url: string; model: string }> = {
   openai: { base_url: "https://api.openai.com/v1", model: "gpt-4o-mini" },
@@ -170,7 +307,7 @@ async function loadSystemInfo() {
 }
 
 async function loadMemories() {
-  try { memories.value = await invoke("get_memories", { category: "general" }); } catch {}
+  try { memories.value = await invoke<MemoryItem[]>("get_memories"); } catch {}
 }
 
 async function loadCurrentModel() {
@@ -227,18 +364,41 @@ async function loadBackendSettings() {
   try {
     backendType.value = await invoke("get_backend_type");
     const config = await invoke<any>("get_api_config");
-    apiConfig.value = {
-      api_key: config.api_key || "",
-      base_url: config.base_url || "https://api.openai.com/v1",
-      model: config.model || "gpt-4o-mini",
-      confirm_enabled: config.confirm_enabled !== false,
-    };
+    applyApiConfig(config);
+    await loadApiProfiles();
     if (backendType.value === "direct_api") {
       currentModel.value = `直连 API: ${apiConfig.value.model}`;
     } else {
       await loadClaudeStatus();
     }
   } catch {}
+}
+
+function applyApiConfig(config: Partial<ApiProfile>) {
+  apiConfig.value = {
+    id: config.id || "",
+    name: config.name || config.model || "",
+    api_key: "", // Keep empty to prevent browser autofill/overwrite bugs
+    api_key_mask: (config as any).api_key_mask || config.api_key || "",
+    has_api_key: (config as any).has_api_key || Boolean(config.api_key),
+    base_url: config.base_url || "https://api.openai.com/v1",
+    model: config.model || "gpt-4o-mini",
+    confirm_enabled: config.confirm_enabled !== false,
+    thinking_depth: config.thinking_depth || "auto",
+    execution_mode: config.execution_mode || (config.confirm_enabled === false ? "unreviewed" : "normal"),
+    auto_approved_tools: Array.isArray(config.auto_approved_tools) ? config.auto_approved_tools : [],
+  };
+  activeApiProfileId.value = apiConfig.value.id;
+}
+
+async function loadApiProfiles() {
+  try {
+    const result = await invoke<{ active_id: string; profiles: ApiProfile[] }>("list_api_profiles");
+    apiProfiles.value = result.profiles || [];
+    activeApiProfileId.value = result.active_id || apiConfig.value.id;
+  } catch {
+    apiProfiles.value = [];
+  }
 }
 
 // === 操作函数 ===
@@ -260,24 +420,67 @@ function applyPreset(key: string) {
   if (!preset) return;
   apiConfig.value.base_url = preset.base_url;
   apiConfig.value.model = preset.model;
+  if (!apiConfig.value.name.trim()) apiConfig.value.name = preset.model;
   testResult.value = { success: false, message: "" };
+  clearFetchedModels();
 }
 
-async function saveApiConfig() {
+type SaveApiConfigOptions = {
+  quiet?: boolean;
+  profileId?: string;
+  profileName?: string;
+  model?: string;
+};
+
+async function saveApiConfig(options: SaveApiConfigOptions = {}) {
   isSavingConfig.value = true;
   configSaved.value = false;
+  const model = options.model || apiConfig.value.model;
   try {
-    await invoke("set_api_config", {
+    apiConfig.value.confirm_enabled = apiConfig.value.execution_mode !== "unreviewed";
+    const saved = await invoke<ApiProfile>("set_api_config", {
       apiKey: apiConfig.value.api_key,
       baseUrl: apiConfig.value.base_url,
-      model: apiConfig.value.model,
+      model,
       confirmEnabled: apiConfig.value.confirm_enabled,
+      thinkingDepth: apiConfig.value.thinking_depth,
+      executionMode: apiConfig.value.execution_mode,
+      autoApprovedTools: apiConfig.value.auto_approved_tools,
+      profileId: options.profileId ?? apiConfig.value.id,
+      profileName: options.profileName ?? (apiConfig.value.name || model),
     });
+    applyApiConfig(saved);
+    await loadApiProfiles();
     configSaved.value = true;
     currentModel.value = `直连 API: ${apiConfig.value.model}`;
+    await currentWindow.emit("api-config-changed");
     setTimeout(() => { configSaved.value = false; }, 2000);
-  } catch (e) { alert("保存失败: " + e); }
+  } catch (e) {
+    if (!options.quiet) alert("保存失败: " + e);
+    if (options.quiet) throw e;
+  }
   finally { isSavingConfig.value = false; }
+}
+
+async function updateThinkingDepth(value: string) {
+  apiConfig.value.thinking_depth = value;
+  if (!apiConfig.value.id || !apiConfig.value.base_url || !apiConfig.value.model) return;
+  try {
+    await saveApiConfig({ quiet: true });
+  } catch (e) {
+    testResult.value = { success: false, message: "思考深度保存失败: " + e };
+  }
+}
+
+async function updateExecutionMode(value: string) {
+  apiConfig.value.execution_mode = value;
+  apiConfig.value.confirm_enabled = value !== "unreviewed";
+  if (!apiConfig.value.id || !apiConfig.value.base_url || !apiConfig.value.model) return;
+  try {
+    await saveApiConfig({ quiet: true });
+  } catch (e) {
+    testResult.value = { success: false, message: "执行模式保存失败: " + e };
+  }
 }
 
 async function testConnection() {
@@ -288,15 +491,137 @@ async function testConnection() {
       apiKey: apiConfig.value.api_key,
       baseUrl: apiConfig.value.base_url,
       model: apiConfig.value.model,
+      thinkingDepth: apiConfig.value.thinking_depth,
     });
     testResult.value = { success: true, message: res };
   } catch (e: any) { testResult.value = { success: false, message: e.toString() }; }
   finally { isTestingConnection.value = false; }
 }
 
+function clearFetchedModels() {
+  fetchedModels.value = [];
+  selectedFetchedModel.value = "";
+  modelFetchResult.value = { success: false, message: "" };
+}
+
+async function fetchApiModels() {
+  if (!apiConfig.value.base_url.trim() || isFetchingModels.value) return;
+  isFetchingModels.value = true;
+  modelFetchResult.value = { success: false, message: "" };
+  try {
+    const models = await invoke<string[]>("list_api_models", {
+      apiKey: apiConfig.value.api_key,
+      baseUrl: apiConfig.value.base_url,
+    });
+    fetchedModels.value = models;
+    selectedFetchedModel.value = models.includes(apiConfig.value.model)
+      ? apiConfig.value.model
+      : (models[0] || "");
+    if (selectedFetchedModel.value) {
+      apiConfig.value.model = selectedFetchedModel.value;
+      if (!apiConfig.value.name.trim() || apiConfig.value.name === "gpt-4o-mini") {
+        apiConfig.value.name = selectedFetchedModel.value;
+      }
+    }
+    modelFetchResult.value = {
+      success: true,
+      message: `已获取 ${models.length} 个模型，请选择后加入列表。`,
+    };
+  } catch (e: any) {
+    fetchedModels.value = [];
+    selectedFetchedModel.value = "";
+    modelFetchResult.value = { success: false, message: e.toString() };
+  } finally {
+    isFetchingModels.value = false;
+  }
+}
+
+function selectFetchedModel(model: string) {
+  selectedFetchedModel.value = model;
+  apiConfig.value.model = model;
+  if (!apiConfig.value.id && !apiConfig.value.name.trim()) {
+    apiConfig.value.name = model;
+  }
+}
+
+async function addFetchedModelProfile() {
+  const model = selectedFetchedModel.value || apiConfig.value.model;
+  if (!model || isAddingFetchedModel.value) return;
+  isAddingFetchedModel.value = true;
+  try {
+    apiConfig.value.model = model;
+    const profileName = apiConfig.value.id ? model : (apiConfig.value.name.trim() || model);
+    await saveApiConfig({
+      quiet: true,
+      profileId: "",
+      profileName,
+      model,
+    });
+    modelFetchResult.value = { success: true, message: `已将 ${model} 加入模型列表。` };
+  } catch (e: any) {
+    modelFetchResult.value = { success: false, message: "加入模型列表失败: " + e };
+  } finally {
+    isAddingFetchedModel.value = false;
+  }
+}
+
+function newApiProfileDraft() {
+  apiConfig.value = {
+    id: "",
+    name: "",
+    api_key: "",
+    api_key_mask: "",
+    has_api_key: false,
+    base_url: "https://api.openai.com/v1",
+    model: "gpt-4o-mini",
+    confirm_enabled: true,
+    thinking_depth: "auto",
+    execution_mode: "normal",
+    auto_approved_tools: [],
+  };
+  testResult.value = { success: false, message: "" };
+  clearFetchedModels();
+}
+
+async function activateApiProfile(id: string) {
+  if (!id) return;
+  try {
+    const profile = await invoke<ApiProfile>("set_active_api_profile", { id });
+    applyApiConfig(profile);
+    clearFetchedModels();
+    currentModel.value = `直连 API: ${apiConfig.value.model}`;
+    await currentWindow.emit("api-config-changed");
+    if (backendType.value !== "direct_api") {
+      await selectBackend("direct_api");
+    }
+  } catch (e) {
+    alert("切换模型配置失败: " + e);
+  }
+}
+
+async function deleteApiProfile(id: string) {
+  if (!id) return;
+  profileDeletingId.value = id;
+  try {
+    await invoke("delete_api_profile", { id });
+    await loadApiProfiles();
+    const config = await invoke<any>("get_api_config");
+    applyApiConfig(config);
+    currentModel.value = backendType.value === "direct_api" ? `直连 API: ${apiConfig.value.model}` : currentModel.value;
+    await currentWindow.emit("api-config-changed");
+  } catch (e) {
+    alert("删除模型配置失败: " + e);
+  } finally {
+    profileDeletingId.value = "";
+  }
+}
+
 async function resetModel() {
   try {
     await invoke("switch_model");
+    resetDashChatUi();
+    await loadMemories();
+    await currentWindow.emit("chat-history-cleared");
     await loadCurrentModel();
     modelSaved.value = true;
     setTimeout(() => (modelSaved.value = false), 2000);
@@ -399,6 +724,61 @@ async function selectProfession(profession: string) {
   catch (e) { alert("职业切换失败: " + e); }
 }
 
+async function saveMemoryDraft() {
+  const key = memoryDraft.value.key.trim();
+  const value = memoryDraft.value.value.trim();
+  if (!key || !value || isSavingMemory.value) return;
+
+  isSavingMemory.value = true;
+  memorySaved.value = false;
+  try {
+    const saved = await invoke<MemoryItem>("save_memory", {
+      category: memoryDraft.value.category || "manual",
+      key,
+      value,
+    });
+    memories.value = [saved, ...memories.value.filter((item) => item.id !== saved.id)];
+    memoryDraft.value.key = "";
+    memoryDraft.value.value = "";
+    memorySaved.value = true;
+    setTimeout(() => { memorySaved.value = false; }, 2000);
+  } catch (e) {
+    alert("保存记忆失败: " + e);
+  } finally {
+    isSavingMemory.value = false;
+  }
+}
+
+async function deleteMemoryItem(id: number) {
+  if (memoryDeletingId.value !== null) return;
+  memoryDeletingId.value = id;
+  try {
+    await invoke("delete_memory", { id });
+    // Optimistic update
+    memories.value = memories.value.filter((item) => item.id !== id);
+    // Verify deletion by reloading from backend
+    const fresh = await invoke<MemoryItem[]>("get_memories");
+    const stillExists = fresh.some((m) => m.id === id);
+    if (stillExists) {
+      alert("删除未生效，请重试");
+    }
+    memories.value = fresh;
+  } catch (e) {
+    alert("删除记忆失败: " + e);
+  } finally {
+    memoryDeletingId.value = null;
+  }
+}
+
+function memoryCategoryLabel(category: string) {
+  const map: Record<string, string> = {
+    manual: "手动",
+    conversation: "对话摘要",
+    general: "通用",
+  };
+  return map[category] || category;
+}
+
 async function updateTtsSettings(patch: Partial<TtsSettings>) {
   ttsSettings.value = { ...ttsSettings.value, ...patch };
   try {
@@ -424,7 +804,22 @@ async function updateVoiceSettings(patch: Partial<VoiceSettings>) {
 }
 
 // === 快捷操作 ===
+function showActionFeedback(actionId: string) {
+  const action = quickActions.find((item) => item.id === actionId);
+  activeActionId.value = actionId;
+  actionFeedback.value = action
+    ? `已触发「${action.label}」，桌宠正在同步状态。`
+    : "桌宠正在同步状态。";
+
+  if (actionFeedbackTimer) clearTimeout(actionFeedbackTimer);
+  actionFeedbackTimer = setTimeout(() => {
+    activeActionId.value = "";
+    actionFeedback.value = "点一下动作卡片，小家伙会在这里回应你。";
+  }, 2600);
+}
+
 async function petAction(name: string) {
+  showActionFeedback(name);
   const stateMap: Record<string, string> = {
     wave: "waving", happy: "happy", sleep: "sleeping", wake: "idle",
   };
@@ -432,10 +827,26 @@ async function petAction(name: string) {
   if (state) {
     try { await invoke("set_pet_state", { newState: state }); } catch {}
   }
+  if (name === "new-chat") {
+    try {
+      await invoke("start_new_conversation");
+      // 新对话：保留聊天记录显示，仅重置 AI 状态
+      chat.isLoading = false;
+      thinkingContent.value = "";
+      streamingAnswer.value = "";
+      pendingConfirm.value = null;
+      // 插入分割线，标记新对话开始
+      if (chat.messages.length > 0) {
+        chat.addSystemMessage("新对话");
+      }
+      await loadMemories();
+    } catch {}
+  }
   if (name === "clear") {
     try {
       await invoke("clear_chat_history");
-      chat.clearMessages();
+      resetDashChatUi();
+      await loadMemories();
       await currentWindow.emit("chat-history-cleared");
     } catch {}
   }
@@ -474,13 +885,228 @@ async function toggleMaximize() {
 // === 对话框与消息同步 ===
 const chatInput = ref("");
 const thinkingContent = ref("");
+const streamingAnswer = ref("");
+const toolEvents = ref<ToolEvent[]>([]);
+const pendingConfirm = ref<ToolConfirmPayload | null>(null);
 const dashChatMessagesRef = ref<HTMLDivElement | null>(null);
+const dashChatEndRef = ref<HTMLDivElement | null>(null);
+let dashChatScrollFrame: number | null = null;
+let dashChatScrollTimers: ReturnType<typeof setTimeout>[] = [];
 
 let unlistenThinking: UnlistenFn | null = null;
+let unlistenAnswerDelta: UnlistenFn | null = null;
 let unlistenAiFinished: UnlistenFn | null = null;
 let unlistenAiError: UnlistenFn | null = null;
 let unlistenChatCleared: UnlistenFn | null = null;
 let unlistenSyncMessage: UnlistenFn | null = null;
+let unlistenToolEvent: UnlistenFn | null = null;
+let unlistenToolConfirm: UnlistenFn | null = null;
+let unlistenToolConfirmResolved: UnlistenFn | null = null;
+let unlistenDragDrop: UnlistenFn | null = null;
+
+// === 文件拖拽与预加载相关数据 ===
+interface PendingFile {
+  id: string;
+  path: string;
+  name: string;
+  size: number;
+  extension: string;
+  isImage: boolean;
+  previewUrl: string;
+  status: "loading" | "ready" | "error";
+  errorMessage?: string;
+}
+interface RustFileMetadata {
+  path: string;
+  name: string;
+  size: number;
+  extension: string;
+  exists: boolean;
+  is_file: boolean;
+}
+const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"];
+const MAX_FILE_SIZE = 10 * 1024 * 1024;
+const MAX_FILES = 5;
+const pendingFiles = ref<PendingFile[]>([]);
+const fileValidationError = ref("");
+const isFileOver = ref(false);
+let fileErrorTimer: ReturnType<typeof setTimeout> | null = null;
+
+function showFileError(msg: string) {
+  fileValidationError.value = msg;
+  if (fileErrorTimer) clearTimeout(fileErrorTimer);
+  fileErrorTimer = setTimeout(() => {
+    fileValidationError.value = "";
+  }, 3000);
+}
+
+async function addToPendingFiles(paths: string[]) {
+  if (fileErrorTimer) clearTimeout(fileErrorTimer);
+  fileValidationError.value = "";
+
+  const hasLnk = paths.some(p => p.toLowerCase().endsWith(".lnk"));
+  if (hasLnk) {
+    for (const p of paths) {
+      if (p.toLowerCase().endsWith(".lnk")) {
+        try {
+          const res = await invoke<{ name: string; path: string }>("register_shortcut_file", { path: p });
+          const successMsg = `已自动记住应用「${res.name}」的启动路径：\n\`${res.path}\`\n\n下次你可以对我说：“打开 ${res.name}”啦！`;
+          
+          chat.addMessage("assistant", successMsg);
+          await currentWindow.emit("sync-chat-message", {
+            role: "assistant",
+            content: successMsg
+          });
+          
+          try {
+            await invoke("set_pet_state", { newState: "happy" });
+          } catch {}
+        } catch (err) {
+          showFileError(`注册快捷方式失败: ${err}`);
+        }
+      } else {
+        await processNormalFiles([p]);
+      }
+    }
+    return;
+  }
+
+  await processNormalFiles(paths);
+}
+
+async function processNormalFiles(paths: string[]) {
+  if (pendingFiles.value.length + paths.length > MAX_FILES) {
+    fileValidationError.value = `最多同时添加 ${MAX_FILES} 个文件`;
+    fileErrorTimer = setTimeout(() => {
+      fileValidationError.value = "";
+    }, 3000);
+    return;
+  }
+
+  try {
+    const metadataList = await invoke<RustFileMetadata[]>("get_file_metadata", { paths });
+
+    for (const meta of metadataList) {
+      if (!meta.exists || !meta.is_file) {
+        showFileError(`文件不存在或是目录: ${meta.name}`);
+        continue;
+      }
+      if (meta.size > MAX_FILE_SIZE) {
+        showFileError(`文件过大: ${meta.name} (最大 10MB)`);
+        continue;
+      }
+
+      const isImage = IMAGE_EXTENSIONS.includes(meta.extension);
+      let previewUrl = "";
+
+      if (isImage) {
+        previewUrl = convertFileSrc(meta.path);
+      }
+
+      pendingFiles.value.push({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        path: meta.path,
+        name: meta.name,
+        size: meta.size,
+        extension: meta.extension,
+        isImage,
+        previewUrl,
+        status: "ready",
+      });
+    }
+  } catch (err) {
+    showFileError(`获取文件信息失败: ${err}`);
+  }
+}
+
+function removePendingFile(id: string) {
+  pendingFiles.value = pendingFiles.value.filter((f) => f.id !== id);
+}
+
+function clearPendingFiles() {
+  pendingFiles.value = [];
+  fileValidationError.value = "";
+}
+
+async function handleImageError(file: PendingFile) {
+  try {
+    const dataUrl = await invoke<string>("read_file_as_data_url", { path: file.path });
+    file.previewUrl = dataUrl;
+  } catch {
+    file.status = "error";
+    file.errorMessage = "预览不可用";
+  }
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// 用 unicode 字符作为文件图标以兼容各平台
+function getFileIcon(ext: string): string {
+  const map: Record<string, string> = {
+    pdf: "\u{1F4C4}",
+    doc: "\u{1F4DD}",
+    docx: "\u{1F4DD}",
+    xls: "\u{1F4CA}",
+    xlsx: "\u{1F4CA}",
+    csv: "\u{1F4CA}",
+    ppt: "\u{1F4D1}",
+    pptx: "\u{1F4D1}",
+    zip: "\u{1F4E6}",
+    rar: "\u{1F4E6}",
+    "7z": "\u{1F4E6}",
+    mp3: "\u{1F3B5}",
+    wav: "\u{1F3B5}",
+    flac: "\u{1F3B5}",
+    mp4: "\u{1F3AC}",
+    avi: "\u{1F3AC}",
+    mkv: "\u{1F3AC}",
+    txt: "\u{1F4C3}",
+    md: "\u{1F4C3}",
+    json: "\u{1F4C3}",
+    js: "\u{1F4BB}",
+    ts: "\u{1F4BB}",
+    py: "\u{1F4BB}",
+    rs: "\u{1F4BB}",
+    go: "\u{1F4BB}",
+    java: "\u{1F4BB}",
+  };
+  return map[ext] || "\u{1F4CE}";
+}
+
+function buildMessageWithFiles(text: string, files: PendingFile[]): string {
+  if (files.length === 0) return text;
+
+  const fileLines = files
+    .map((f, i) => {
+      const typeLabel = f.isImage ? "图片" : "文件";
+      const icon = f.isImage ? "\u{1F4F7}" : getFileIcon(f.extension);
+      return `${i + 1}. ${icon} ${typeLabel}: "${f.name}" (路径: ${f.path}, 大小: ${formatFileSize(f.size)})`;
+    })
+    .join("\n");
+
+  const fileBlock = `\n\n---\n[用户附加了以下本地文件]\n${fileLines}\n\n提示: 你可以使用 read_file 工具读取上述文件的内容来帮助用户。`;
+
+  return text ? `${text}${fileBlock}` : `[用户附加了文件，但没有输入文字]${fileBlock}`;
+}
+
+function handleDragDropEvent(event: any) {
+  if (activePage.value !== "chat") {
+    isFileOver.value = false;
+    return;
+  }
+  if (event.type === "enter" || event.type === "over") {
+    isFileOver.value = true;
+    return;
+  }
+  isFileOver.value = false;
+  if (event.type === "drop" && event.paths.length > 0) {
+    void addToPendingFiles(event.paths);
+  }
+}
 
 async function refreshChatState() {
   try {
@@ -491,41 +1117,157 @@ async function refreshChatState() {
       thinking: item.thinking || undefined,
       timestamp: typeof item.created_at === 'number' ? item.created_at : new Date(item.created_at).getTime(),
     })));
+    scrollDashChatToBottom();
+  } catch {}
+}
+
+function resetDashChatUi() {
+  chat.clearMessages();
+  chat.isLoading = false;
+  thinkingContent.value = "";
+  streamingAnswer.value = "";
+  toolEvents.value = [];
+  pendingConfirm.value = null;
+}
+
+async function abortAi() {
+  chat.isLoading = false;
+  thinkingContent.value = "";
+  streamingAnswer.value = "";
+  try {
+    await invoke("abort_ai");
   } catch {}
 }
 
 async function sendDashboardMessage() {
-  const text = chatInput.value.trim();
-  if (!text || chat.isLoading) return;
 
-  chat.addMessage("user", text);
+  const text = chatInput.value.trim();
+  const files = [...pendingFiles.value];
+
+  if (!text && files.length === 0) return;
+  if (chat.isLoading) return;
+
+  const fullMessage = buildMessageWithFiles(text, files);
+
+  const fileAttachments =
+    files.length > 0
+      ? files.map((f) => ({ name: f.name, isImage: f.isImage, extension: f.extension }))
+      : undefined;
+
+  const displayText = text || "(已发送文件)";
+  chat.addMessage("user", displayText, undefined, fileAttachments);
   chatInput.value = "";
+  clearPendingFiles();
   chat.isLoading = true;
   thinkingContent.value = "";
+  streamingAnswer.value = "";
+  toolEvents.value = [];
+  pendingConfirm.value = null;
   pet.setState("thinking");
 
   // Broadcast user message to other windows (like the pet chat bubble)
-  await currentWindow.emit("sync-chat-message", { role: "user", content: text });
+  await currentWindow.emit("sync-chat-message", { role: "user", content: displayText, files: fileAttachments });
 
   try {
-    await invoke("send_to_ai", { message: text });
+    await invoke("send_to_ai", { message: fullMessage });
   } catch (err) {
     chat.isLoading = false;
+    streamingAnswer.value = "";
     chat.addMessage("assistant", `出错了: ${err}`);
     pet.setState("confused");
   }
 }
 
+function upsertToolEvent(event: ToolEvent) {
+  const index = toolEvents.value.findIndex((item) => item.id === event.id);
+  if (index >= 0) {
+    toolEvents.value[index] = { ...toolEvents.value[index], ...event };
+  } else {
+    toolEvents.value.push(event);
+  }
+}
+
+async function handleDashboardToolConfirm(approved: boolean) {
+  if (!pendingConfirm.value) return;
+  try {
+    await invoke("confirm_tool", {
+      id: pendingConfirm.value.id,
+      approved,
+    });
+  } catch (e) {
+    alert("确认工具操作失败: " + e);
+  } finally {
+    pendingConfirm.value = null;
+  }
+}
+
+function toolStatusLabel(status: string) {
+  const map: Record<string, string> = {
+    requested: "已请求",
+    waiting: "待确认",
+    approved: "已授权",
+    denied: "已拒绝",
+    running: "执行中",
+    completed: "已完成",
+    skipped: "已跳过",
+  };
+  return map[status] || status;
+}
+
+function toggleAutoApprovedTool(toolId: string, enabled: boolean) {
+  const current = new Set(apiConfig.value.auto_approved_tools);
+  if (enabled) current.add(toolId);
+  else current.delete(toolId);
+  apiConfig.value.auto_approved_tools = Array.from(current).sort();
+}
+
+function isToolAutoApproved(toolId: string) {
+  return apiConfig.value.auto_approved_tools.includes(toolId);
+}
+
 function scrollDashChatToBottom() {
-  nextTick(() => {
-    if (dashChatMessagesRef.value) {
-      dashChatMessagesRef.value.scrollTop = dashChatMessagesRef.value.scrollHeight;
+  void nextTick(() => {
+    runDashChatScroll();
+    if (dashChatScrollFrame !== null) {
+      cancelAnimationFrame(dashChatScrollFrame);
     }
+    dashChatScrollFrame = requestAnimationFrame(() => {
+      dashChatScrollFrame = null;
+      runDashChatScroll();
+    });
+
+    dashChatScrollTimers.forEach(clearTimeout);
+    dashChatScrollTimers = [80, 220].map((delay) =>
+      setTimeout(() => {
+        runDashChatScroll();
+      }, delay),
+    );
   });
 }
 
-watch(() => [chat.messages.length, thinkingContent.value], () => {
+function runDashChatScroll() {
+  const container = dashChatMessagesRef.value;
+  if (!container) return;
+
+  container.scrollTop = container.scrollHeight;
+  dashChatEndRef.value?.scrollIntoView({ block: "end" });
+}
+
+watch(() => [
+  chat.messages.length,
+  chat.isLoading,
+  thinkingContent.value,
+  streamingAnswer.value,
+  toolEvents.value.length,
+  pendingConfirm.value?.id || "",
+], () => {
   scrollDashChatToBottom();
+}, { flush: "post" });
+
+watch(activePage, (newPage) => {
+  if (newPage === 'chat') {
+    scrollDashChatToBottom();
+  }
 }, { flush: "post" });
 
 // === 生命周期 ===
@@ -557,6 +1299,11 @@ onMounted(async () => {
     thinkingContent.value += event.payload;
   });
 
+  unlistenAnswerDelta = await listen<AnswerDeltaPayload>("ai-answer-delta", (event) => {
+    chat.isLoading = true;
+    streamingAnswer.value += event.payload.text;
+  });
+
   unlistenAiFinished = await listen<any>("ai-finished", (event) => {
     const last = chat.messages[chat.messages.length - 1];
     if (!(last?.role === "assistant" && last.content === event.payload.text)) {
@@ -564,6 +1311,8 @@ onMounted(async () => {
     }
     chat.isLoading = false;
     thinkingContent.value = "";
+    streamingAnswer.value = "";
+    pendingConfirm.value = null;
   });
 
   unlistenAiError = await listen<any>("ai-error", (event) => {
@@ -574,12 +1323,13 @@ onMounted(async () => {
     }
     chat.isLoading = false;
     thinkingContent.value = "";
+    streamingAnswer.value = "";
+    pendingConfirm.value = null;
   });
 
   unlistenChatCleared = await listen("chat-history-cleared", () => {
-    chat.clearMessages();
-    chat.isLoading = false;
-    thinkingContent.value = "";
+    resetDashChatUi();
+    void loadMemories();
   });
 
   unlistenSyncMessage = await listen<any>("sync-chat-message", (event) => {
@@ -588,11 +1338,28 @@ onMounted(async () => {
     if (last && last.role === payload.role && last.content === payload.content) {
       return;
     }
-    chat.addMessage(payload.role, payload.content);
+    chat.addMessage(payload.role, payload.content, undefined, payload.files);
     if (payload.role === "user") {
       chat.isLoading = true;
       thinkingContent.value = "";
+      streamingAnswer.value = "";
+      toolEvents.value = [];
+      pendingConfirm.value = null;
       pet.setState("thinking");
+    }
+  });
+
+  unlistenToolEvent = await listen<ToolEvent>("ai-tool-event", (event) => {
+    upsertToolEvent(event.payload);
+  });
+
+  unlistenToolConfirm = await listen<ToolConfirmPayload>("ai-tool-confirm", (event) => {
+    pendingConfirm.value = event.payload;
+  });
+
+  unlistenToolConfirmResolved = await listen<{ id: string; approved: boolean }>("ai-tool-confirm-resolved", (event) => {
+    if (pendingConfirm.value?.id === event.payload.id) {
+      pendingConfirm.value = null;
     }
   });
 
@@ -604,18 +1371,31 @@ onMounted(async () => {
     isPetActive.value = false;
   });
 
+  // 注册控制台文件拖拽事件
+  unlistenDragDrop = await currentWindow.onDragDropEvent((event) => {
+    handleDragDropEvent(event.payload);
+  });
+
   await nextTick();
   scrollDashChatToBottom();
 });
 
 onUnmounted(() => {
   if (sysInfoTimer) clearInterval(sysInfoTimer);
+  if (actionFeedbackTimer) clearTimeout(actionFeedbackTimer);
+  if (dashChatScrollFrame !== null) cancelAnimationFrame(dashChatScrollFrame);
+  dashChatScrollTimers.forEach(clearTimeout);
   unlistenPetStatus?.();
   unlistenThinking?.();
+  unlistenAnswerDelta?.();
   unlistenAiFinished?.();
   unlistenAiError?.();
   unlistenChatCleared?.();
   unlistenSyncMessage?.();
+  unlistenToolEvent?.();
+  unlistenToolConfirm?.();
+  unlistenToolConfirmResolved?.();
+  unlistenDragDrop?.();
 });
 </script>
 
@@ -677,6 +1457,13 @@ onUnmounted(() => {
             <span>对话互动</span>
           </button>
           <button
+            :class="['sidebar-item', { active: activePage === 'memory' }]"
+            @click="activePage = 'memory'"
+          >
+            <span class="sidebar-item-icon">◫</span>
+            <span>记忆库</span>
+          </button>
+          <button
             :class="['sidebar-item', { active: activePage === 'appearance' }]"
             @click="activePage = 'appearance'"
           >
@@ -731,9 +1518,9 @@ onUnmounted(() => {
           <div v-if="activePage === 'home'" key="home">
             <div class="page-header home-header">
               <div>
-                <div class="page-kicker">Control Center</div>
-                <h1 class="page-title">桌宠控制台</h1>
-                <p class="page-subtitle">状态、外观 and 声音集中管理</p>
+                <div class="page-kicker">Mission Playground</div>
+                <h1 class="page-title">桌宠飞行舱</h1>
+                <p class="page-subtitle">用任务轨道、动作卡片和状态贴纸管理你的小伙伴</p>
               </div>
               <div :class="['status-pill', isPetActive ? 'live' : 'idle']">
                 <span class="status-pill-dot" />
@@ -745,6 +1532,10 @@ onUnmounted(() => {
               <!-- 宠物状态预览 -->
               <div class="dash-card pet-preview-card">
                 <div class="pet-preview-visual">
+                  <div class="pet-orbit-ring ring-a" />
+                  <div class="pet-orbit-ring ring-b" />
+                  <span class="pet-spark spark-a">✦</span>
+                  <span class="pet-spark spark-b">✧</span>
                   <div class="pet-preview-canvas-wrap">
                     <PetCanvas style="width: 140px; height: 140px; pointer-events: none;" />
                   </div>
@@ -755,6 +1546,11 @@ onUnmounted(() => {
                   <div class="pet-status-state">
                     <span class="pet-status-dot" />
                     <span>{{ petStateLabel }}</span>
+                  </div>
+                  <div class="pet-meta-pills">
+                    <button class="pet-meta-pill" @click="activePage = 'appearance'">换装</button>
+                    <button class="pet-meta-pill" @click="activePage = 'chat'">聊天</button>
+                    <button class="pet-meta-pill" @click="activePage = 'voice'">声音</button>
                   </div>
                   <div class="pet-stats">
                     <div class="pet-stat">
@@ -783,40 +1579,63 @@ onUnmounted(() => {
                     </div>
                   </div>
                 </div>
+                <div class="pet-action-feedback">
+                  <span class="pet-action-kicker">Action Echo</span>
+                  <strong>{{ activeActionId ? '收到指令' : '待机中' }}</strong>
+                  <p>{{ actionFeedback }}</p>
+                </div>
               </div>
 
 
               <!-- 快捷操作 -->
-              <div class="dash-card">
+              <div class="dash-card action-lab-card">
                 <div class="dash-card-title">
-                  <span class="card-icon">⌁</span> 快捷操作
+                  <span class="card-icon">⌁</span> 动作实验台
                 </div>
                 <div class="quick-actions">
-                  <button class="quick-action-btn" @click="petAction('wave')">
-                    <span class="quick-action-icon">↗</span>
-                    <span class="quick-action-label">打招呼</span>
-                  </button>
-                  <button class="quick-action-btn" @click="petAction('happy')">
-                    <span class="quick-action-icon">◎</span>
-                    <span class="quick-action-label">开心一下</span>
-                  </button>
-                  <button class="quick-action-btn" @click="petAction('sleep')">
-                    <span class="quick-action-icon">Zz</span>
-                    <span class="quick-action-label">去睡觉</span>
-                  </button>
-                  <button class="quick-action-btn" @click="petAction('wake')">
-                    <span class="quick-action-icon">⏱</span>
-                    <span class="quick-action-label">叫醒它</span>
-                  </button>
-                  <button class="quick-action-btn" @click="petAction('clear')">
-                    <span class="quick-action-icon">⌫</span>
-                    <span class="quick-action-label">清空对话</span>
+                  <button
+                    v-for="action in quickActions"
+                    :key="action.id"
+                    :class="['quick-action-btn', action.tone, { active: activeActionId === action.id }]"
+                    @click="petAction(action.id)"
+                  >
+                    <span class="quick-action-icon">{{ action.icon }}</span>
+                    <span class="quick-action-copy">
+                      <span class="quick-action-label">{{ action.label }}</span>
+                      <span class="quick-action-desc">{{ action.desc }}</span>
+                    </span>
                   </button>
                 </div>
               </div>
 
+              <!-- 任务轨道 -->
+              <div class="dash-card mission-rail-card">
+                <div class="dash-card-title">
+                  <span class="card-icon">⌘</span> 任务轨道
+                </div>
+                <div class="mission-rail">
+                  <button
+                    v-for="entry in missionEntries"
+                    :key="entry.page"
+                    class="mission-node"
+                    @click="activePage = entry.page"
+                  >
+                    <span class="mission-node-icon">{{ entry.icon }}</span>
+                    <span>
+                      <strong>{{ entry.title }}</strong>
+                      <small>{{ entry.desc }}</small>
+                    </span>
+                  </button>
+                </div>
+                <div class="mission-metrics">
+                  <span>模型 {{ currentModelLabel }}</span>
+                  <span>模式 {{ currentExecutionModeLabel }}</span>
+                  <span>{{ contextUsageLabel }}</span>
+                </div>
+              </div>
+
               <!-- 系统监控 -->
-              <div class="dash-card">
+              <div class="dash-card system-pulse-card">
                 <div class="dash-card-title">
                   <span class="card-icon">◷</span> 系统资源
                 </div>
@@ -846,6 +1665,14 @@ onUnmounted(() => {
 
           <!-- ========== 对话互动 (独立页面) ========== -->
           <div v-else-if="activePage === 'chat'" key="chat" class="dash-chat-page">
+            <!-- Glassmorphism drop zone overlay -->
+            <div v-if="isFileOver" class="dash-drop-overlay">
+              <div class="dash-drop-overlay-box">
+                <span class="dash-drop-icon">📂</span>
+                <span class="dash-drop-text">释放文件以添加为附件</span>
+              </div>
+            </div>
+
             <div class="dash-chat-messages" ref="dashChatMessagesRef">
               <div v-if="chat.messages.length === 0" class="dash-chat-empty">
                 🐾 暂无对话历史，跟小家伙说点什么吧！
@@ -855,7 +1682,13 @@ onUnmounted(() => {
                 v-for="msg in chat.messages" :key="msg.id"
                 :class="['dash-msg-wrapper', msg.role]"
               >
-                <div class="dash-msg-bubble">
+                <!-- 系统分割线 -->
+                <div v-if="msg.role === 'system'" class="dash-system-divider">
+                  <span class="dash-system-divider-line"></span>
+                  <span class="dash-system-divider-text">{{ msg.content }}</span>
+                  <span class="dash-system-divider-line"></span>
+                </div>
+                <div v-else class="dash-msg-bubble">
                   <div v-if="msg.thinking" class="dash-msg-thinking">
                     <details>
                       <summary>思考过程</summary>
@@ -863,18 +1696,81 @@ onUnmounted(() => {
                     </details>
                   </div>
                   <div class="dash-msg-text">{{ msg.content }}</div>
+
+                  <!-- 显示已发送的本地文件信息 -->
+                  <div v-if="msg.files && msg.files.length > 0" class="dash-msg-files">
+                    <div v-for="(file, fi) in msg.files" :key="fi" class="dash-msg-file-tag">
+                      <span>{{ file.isImage ? "\u{1F4F7}" : getFileIcon(file.extension) }}</span>
+                      <span>{{ file.name }}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div v-if="toolEvents.length > 0 || pendingConfirm" class="dash-msg-wrapper assistant">
+                <div class="dash-tool-trace-panel">
+                  <div class="dash-tool-trace-header">
+                    <span>执行轨迹</span>
+                    <small>{{ toolEvents.length }} 个工具事件</small>
+                  </div>
+                  <div class="dash-tool-trace-list">
+                    <div
+                      v-for="event in toolEvents"
+                      :key="event.id"
+                      :class="['dash-tool-event', event.status]"
+                    >
+                      <div class="dash-tool-event-head">
+                        <span class="dash-tool-status">{{ toolStatusLabel(event.status) }}</span>
+                        <span class="dash-tool-name">{{ event.tool_name }}</span>
+                      </div>
+                      <div class="dash-tool-summary">{{ event.summary }}</div>
+                      <div v-if="event.command" class="dash-tool-meta">命令：{{ event.command }}</div>
+                      <div v-if="event.path" class="dash-tool-meta">路径：{{ event.path }}</div>
+                      <details v-if="event.arguments" class="dash-tool-details">
+                        <summary>参数</summary>
+                        <pre>{{ event.arguments }}</pre>
+                      </details>
+                      <details v-if="event.output" class="dash-tool-details">
+                        <summary>输出</summary>
+                        <pre>{{ event.output }}</pre>
+                      </details>
+                    </div>
+                  </div>
+                  <div v-if="pendingConfirm" class="dash-tool-confirm-inline">
+                    <div>
+                      <strong>{{ pendingConfirm.summary || pendingConfirm.tool_name }}</strong>
+                      <p v-if="pendingConfirm.command">命令：{{ pendingConfirm.command }}</p>
+                      <p v-if="pendingConfirm.path">路径：{{ pendingConfirm.path }}</p>
+                    </div>
+                    <div class="dash-tool-confirm-actions">
+                      <button class="dash-btn secondary" @click="handleDashboardToolConfirm(false)">拒绝</button>
+                      <button class="dash-btn primary" @click="handleDashboardToolConfirm(true)">允许</button>
+                    </div>
+                  </div>
                 </div>
               </div>
               
               <!-- AI 实时打字状态 -->
               <div v-if="chat.isLoading" class="dash-msg-wrapper assistant loading">
                 <div class="dash-msg-bubble">
+                  <!-- 正在思考与停止按钮头部 -->
+                  <div class="dash-msg-thinking-header">
+                    <span>{{ thinkingContent ? "小家伙正在思考中..." : "等待思考输出..." }}</span>
+                    <button class="dash-stop-btn" title="停止思考与输出" @click.stop="abortAi">
+                      <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
+                        <rect width="10" height="10" rx="2"/>
+                      </svg>
+                      <span>停止</span>
+                    </button>
+                  </div>
+                  
                   <div v-if="thinkingContent" class="dash-msg-thinking">
                     <details open>
-                      <summary>正在思考...</summary>
+                      <summary>思维过程：</summary>
                       <p>{{ thinkingContent }}</p>
                     </details>
                   </div>
+                  <div v-if="streamingAnswer" class="dash-msg-text">{{ streamingAnswer }}</div>
                   <div class="dash-typing-dots">
                     <span class="dot"></span>
                     <span class="dot"></span>
@@ -882,24 +1778,175 @@ onUnmounted(() => {
                   </div>
                 </div>
               </div>
+              <div ref="dashChatEndRef" class="dash-chat-end" aria-hidden="true"></div>
             </div>
             
-            <div class="dash-chat-input-area">
-              <input
-                type="text"
-                v-model="chatInput"
-                @keydown.enter="sendDashboardMessage"
-                placeholder="发送消息给桌宠..."
-                :disabled="chat.isLoading"
-                class="dash-chat-input"
-              />
-              <button
-                @click="sendDashboardMessage"
-                :disabled="chat.isLoading || !chatInput.trim()"
-                class="dash-chat-send-btn"
-              >
-                发送
-              </button>
+            <div class="dash-chat-composer">
+              <!-- 文件校验错误提示 -->
+              <Transition name="fade">
+                <div v-if="fileValidationError" class="dash-file-validation-error">
+                  {{ fileValidationError }}
+                </div>
+              </Transition>
+
+              <!-- 文件预加载面板 -->
+              <Transition name="slide-up">
+                <div v-if="pendingFiles.length > 0" class="dash-file-preview-area">
+                  <div class="dash-file-preview-header">
+                    <span>{{ pendingFiles.length }} 个文件待发送</span>
+                    <button class="dash-clear-all-btn" @click="clearPendingFiles">全部移除</button>
+                  </div>
+                  <div class="dash-file-preview-list">
+                    <TransitionGroup name="file-item">
+                      <div
+                        v-for="file in pendingFiles"
+                        :key="file.id"
+                        class="dash-file-preview-item"
+                        :class="{ error: file.status === 'error' }"
+                      >
+                        <template v-if="file.isImage">
+                          <img
+                            v-if="file.previewUrl && file.status !== 'error'"
+                            :src="file.previewUrl"
+                            class="dash-preview-thumbnail"
+                            @error="handleImageError(file)"
+                          />
+                          <div v-else class="dash-preview-fallback">
+                            <span class="dash-file-icon">{{ getFileIcon(file.extension) }}</span>
+                            <span class="dash-fallback-text">预览不可用</span>
+                          </div>
+                        </template>
+                        <template v-else>
+                          <div class="dash-preview-file-card">
+                            <span class="dash-file-icon-lg">{{ getFileIcon(file.extension) }}</span>
+                            <span class="dash-file-name" :title="file.name">{{ file.name }}</span>
+                            <span class="dash-file-size">{{ formatFileSize(file.size) }}</span>
+                          </div>
+                        </template>
+                        <button class="dash-remove-file-btn" @click="removePendingFile(file.id)">&times;</button>
+                      </div>
+                    </TransitionGroup>
+                  </div>
+                </div>
+              </Transition>
+
+              <div class="dash-chat-input-area">
+                <input
+                  type="text"
+                  v-model="chatInput"
+                  @keydown.enter="sendDashboardMessage"
+                  placeholder="发送消息或拖入文件/应用快捷方式给桌宠..."
+                  :disabled="chat.isLoading"
+                  class="dash-chat-input"
+                />
+                <select
+                  v-if="apiProfiles.length > 0"
+                  class="dash-chat-model-select"
+                  :value="activeApiProfileId"
+                  title="切换直连 API 模型"
+                  @change="activateApiProfile(($event.target as HTMLSelectElement).value)"
+                >
+                  <option v-for="profile in apiProfiles" :key="profile.id" :value="profile.id">
+                    {{ profile.name || profile.model }}
+                  </option>
+                </select>
+                <button
+                  @click="sendDashboardMessage"
+                  :disabled="(!chatInput.trim() && pendingFiles.length === 0) || chat.isLoading"
+                  class="dash-chat-send-btn"
+                >
+                  发送
+                </button>
+              </div>
+              <div class="dash-chat-meta-row">
+                <span>模型：{{ currentModelLabel }}</span>
+                <span>上下文：{{ contextUsageLabel }}</span>
+                <select
+                  class="dash-thinking-select"
+                  :value="apiConfig.thinking_depth"
+                  title="思考深度"
+                  @change="updateThinkingDepth(($event.target as HTMLSelectElement).value)"
+                >
+                  <option v-for="opt in thinkingDepthOptions" :key="opt.value" :value="opt.value">
+                    思考：{{ opt.label }}
+                  </option>
+                </select>
+                <select
+                  class="dash-mode-select"
+                  :value="apiConfig.execution_mode"
+                  title="执行模式"
+                  @change="updateExecutionMode(($event.target as HTMLSelectElement).value)"
+                >
+                  <option v-for="mode in executionModeOptions" :key="mode.value" :value="mode.value">
+                    {{ mode.label }}
+                  </option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <!-- ========== 记忆库 ========== -->
+          <div v-else-if="activePage === 'memory'" key="memory">
+            <div class="page-header">
+              <div class="page-kicker">Memory</div>
+              <h1 class="page-title">长期记忆库</h1>
+              <p class="page-subtitle">保存稳定偏好、重要背景和重置对话前的摘要</p>
+            </div>
+
+            <div class="dash-memory-layout">
+              <div class="dash-card">
+                <div class="dash-card-title"><span class="card-icon">＋</span> 新建记忆</div>
+                <div class="dash-form-group">
+                  <label>标题</label>
+                  <input type="text" v-model="memoryDraft.key" placeholder="例如：沟通偏好" />
+                </div>
+                <div class="dash-form-group">
+                  <label>内容</label>
+                  <textarea
+                    class="dash-textarea"
+                    v-model="memoryDraft.value"
+                    rows="5"
+                    placeholder="写下希望 AI 长期记住的事实、偏好或背景"
+                  ></textarea>
+                </div>
+                <div class="dash-field-row">
+                  <span class="dash-field-label">分类</span>
+                  <select class="dash-select" v-model="memoryDraft.category">
+                    <option value="manual">手动</option>
+                    <option value="general">通用</option>
+                  </select>
+                </div>
+                <button
+                  class="dash-btn primary"
+                  :disabled="isSavingMemory || !memoryDraft.key.trim() || !memoryDraft.value.trim()"
+                  @click="saveMemoryDraft"
+                >
+                  {{ memorySaved ? '已保存' : (isSavingMemory ? '保存中...' : '保存记忆') }}
+                </button>
+              </div>
+
+              <div class="dash-memory-list">
+                <div v-if="memories.length === 0" class="dash-memory-empty">
+                  暂无长期记忆。清空一段对话后会自动生成摘要，也可以在左侧手动添加。
+                </div>
+                <div v-for="memory in memories" :key="memory.id" class="dash-memory-record">
+                  <div class="dash-memory-record-head">
+                    <div>
+                      <span class="dash-memory-category">{{ memoryCategoryLabel(memory.category) }}</span>
+                      <h3>{{ memory.key }}</h3>
+                    </div>
+                    <button
+                      class="dash-icon-btn danger"
+                      title="删除记忆"
+                      :disabled="memoryDeletingId === memory.id"
+                      @click="deleteMemoryItem(memory.id)"
+                    >
+                      ×
+                    </button>
+                  </div>
+                  <p>{{ memory.value }}</p>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -1241,17 +2288,130 @@ onUnmounted(() => {
               </template>
 
               <template v-else>
+                <div class="dash-profile-toolbar">
+                  <div>
+                    <div class="dash-profile-toolbar-title">已保存模型配置</div>
+                    <div class="dash-profile-toolbar-subtitle">保存后可在聊天输入框右下角一键切换</div>
+                  </div>
+                  <button class="dash-btn secondary" @click="newApiProfileDraft">新建模型</button>
+                </div>
+                <div v-if="apiProfiles.length > 0" class="dash-profile-list">
+                  <div
+                    v-for="profile in apiProfiles"
+                    :key="profile.id"
+                    :class="['dash-profile-item', { active: profile.id === activeApiProfileId }]"
+                  >
+                    <button class="dash-profile-main" @click="activateApiProfile(profile.id)">
+                      <span class="dash-profile-name">{{ profile.name || profile.model }}</span>
+                      <span class="dash-profile-meta">{{ profile.model }} · {{ profile.base_url }}</span>
+                      <span class="dash-profile-badges">
+                        <span>思考 {{ thinkingDepthLabel(profile.thinking_depth) }}</span>
+                        <span>{{ profile.has_api_key ? 'API Key 已隐藏' : '无 API Key' }}</span>
+                      </span>
+                    </button>
+                    <button
+                      class="dash-icon-btn danger"
+                      title="删除模型配置"
+                      :disabled="profileDeletingId === profile.id || apiProfiles.length <= 1"
+                      @click="deleteApiProfile(profile.id)"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+                <div class="dash-form-group">
+                  <label>配置名称</label>
+                  <input type="text" v-model="apiConfig.name" placeholder="例如：OpenAI 工作模型" />
+                </div>
                 <div class="dash-form-group">
                   <label>接口地址 (Base URL)</label>
-                  <input type="text" v-model="apiConfig.base_url" placeholder="https://api.openai.com/v1" />
+                  <div class="dash-inline-control">
+                    <input type="text" v-model="apiConfig.base_url" placeholder="https://api.openai.com/v1" @input="clearFetchedModels" />
+                    <button
+                      type="button"
+                      class="dash-btn secondary"
+                      :disabled="isFetchingModels || !apiConfig.base_url.trim()"
+                      @click="fetchApiModels"
+                    >
+                      {{ isFetchingModels ? '获取中...' : '获取模型' }}
+                    </button>
+                  </div>
                 </div>
                 <div class="dash-form-group">
                   <label>API 密钥 (API Key)</label>
-                  <input type="password" v-model="apiConfig.api_key" placeholder="sk-••••••••••••••••" />
+                  <input 
+                    type="password" 
+                    v-model="apiConfig.api_key" 
+                    :placeholder="apiConfig.has_api_key ? '•••••••••••••••• (已保存)' : '请输入 sk-... 格式的 API Key'" 
+                    autocomplete="new-password" 
+                    @input="clearFetchedModels" 
+                  />
+                  <p class="dash-hint compact">已保存配置只显示“API Key 已隐藏”，不会在模型列表里明文展示。</p>
                 </div>
                 <div class="dash-form-group">
                   <label>模型名称 (Model)</label>
                   <input type="text" v-model="apiConfig.model" placeholder="gpt-4o-mini" />
+                </div>
+                <div v-if="modelFetchResult.message" :class="['dash-test-result', 'compact', modelFetchResult.success ? 'success' : 'error']">
+                  {{ modelFetchResult.message }}
+                </div>
+                <div v-if="fetchedModels.length > 0" class="dash-model-picker">
+                  <div class="dash-field-row">
+                    <span class="dash-field-label">选择模型</span>
+                    <select
+                      class="dash-select"
+                      :value="selectedFetchedModel"
+                      @change="selectFetchedModel(($event.target as HTMLSelectElement).value)"
+                    >
+                      <option v-for="model in fetchedModels" :key="model" :value="model">{{ model }}</option>
+                    </select>
+                  </div>
+                  <button class="dash-btn primary" :disabled="isAddingFetchedModel || !selectedFetchedModel" @click="addFetchedModelProfile">
+                    {{ isAddingFetchedModel ? '加入中...' : '加入模型列表' }}
+                  </button>
+                </div>
+                <div class="dash-form-group">
+                  <label>思考深度</label>
+                  <div class="dash-thinking-switch">
+                    <button
+                      v-for="item in thinkingDepthOptions"
+                      :key="item.value"
+                      type="button"
+                      :class="['dash-thinking-option', { active: apiConfig.thinking_depth === item.value }]"
+                      @click="updateThinkingDepth(item.value)"
+                    >
+                      {{ item.label }}
+                    </button>
+                  </div>
+                  <p class="dash-hint compact">切换后会立即保存到当前模型配置，并在下一次直连 API 请求中生效。</p>
+                </div>
+                <div class="dash-form-group">
+                  <label>执行模式</label>
+                  <div class="dash-mode-grid">
+                    <button
+                      v-for="mode in executionModeOptions"
+                      :key="mode.value"
+                      type="button"
+                      :class="['dash-mode-option', { active: apiConfig.execution_mode === mode.value }]"
+                      @click="apiConfig.execution_mode = mode.value"
+                    >
+                      <span>{{ mode.label }}</span>
+                      <small>{{ mode.desc }}</small>
+                    </button>
+                  </div>
+                </div>
+                <div v-if="apiConfig.execution_mode === 'custom'" class="dash-form-group">
+                  <label>自定义免确认操作</label>
+                  <div class="dash-tool-permission-grid">
+                    <label v-for="tool in toolPermissionOptions" :key="tool.id" class="dash-tool-permission">
+                      <input
+                        type="checkbox"
+                        :checked="isToolAutoApproved(tool.id)"
+                        @change="toggleAutoApprovedTool(tool.id, ($event.target as HTMLInputElement).checked)"
+                      />
+                      <span>{{ tool.label }}</span>
+                    </label>
+                  </div>
                 </div>
                 <div class="dash-form-group">
                   <label>预设一键填充</label>
@@ -1265,18 +2425,23 @@ onUnmounted(() => {
 
                 <div class="dash-toggle-group">
                   <label>工具调用二次确认 (推荐)</label>
-                  <input type="checkbox" class="dash-toggle" v-model="apiConfig.confirm_enabled" />
+                  <input
+                    type="checkbox"
+                    class="dash-toggle"
+                    :checked="apiConfig.execution_mode !== 'unreviewed'"
+                    @change="apiConfig.execution_mode = ($event.target as HTMLInputElement).checked ? 'normal' : 'unreviewed'"
+                  />
                 </div>
-                <p class="dash-hint" style="margin-top:-4px;">开启后，敏感工具（如命令执行、文件写入）在运行前需要您手动允许。</p>
+                <p class="dash-hint" style="margin-top:-4px;">普通模式会在每类操作首次执行前请求确认；自定义模式按上方免确认列表执行。</p>
 
                 <div v-if="testResult.message" :class="['dash-test-result', testResult.success ? 'success' : 'error']">
                   {{ testResult.success ? '✅ 连接成功！' : '❌ ' + testResult.message }}
                 </div>
                 <div class="dash-api-actions">
-                  <button class="dash-btn" @click="testConnection" :disabled="isTestingConnection || !apiConfig.api_key">
+                  <button class="dash-btn" @click="testConnection" :disabled="isTestingConnection || !apiConfig.base_url || !apiConfig.model">
                     {{ isTestingConnection ? '测试中...' : '测试连接' }}
                   </button>
-                  <button class="dash-btn primary" @click="saveApiConfig" :disabled="isSavingConfig">
+                  <button class="dash-btn primary" @click="saveApiConfig()" :disabled="isSavingConfig">
                     {{ configSaved ? '保存成功' : (isSavingConfig ? '保存中...' : '保存配置') }}
                   </button>
                 </div>
@@ -1311,14 +2476,6 @@ onUnmounted(() => {
                   <span class="dash-option-name">{{ item.name }}</span>
                   <span class="dash-option-desc">{{ item.desc }}</span>
                 </button>
-              </div>
-            </div>
-
-            <!-- 记忆 -->
-            <div class="dash-card" v-if="memories.length > 0">
-              <div class="dash-card-title"><span class="card-icon">◫</span> 宠物记忆</div>
-              <div v-for="m in memories" :key="m.key" class="dash-memory-item">
-                <strong>{{ m.key }}:</strong> {{ m.value }}
               </div>
             </div>
           </div>

@@ -38,6 +38,7 @@ dependencies = [
  "dirs 5.0.1",
  "futures-util",
  "hex",
+ "keyring-core",
  "reqwest 0.11.27",
  "rusqlite",
  "serde",
@@ -1916,6 +1917,15 @@ dependencies = [
  "bitflags 2.11.1",
  "serde",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "keyring-core"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb1e621458ca9c51aa110bd0339d4751a056b9576bf1253aee1aa560dda0fc9d"
+dependencies = [
+ "log",
 ]
 
 [[package]]

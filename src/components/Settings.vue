@@ -24,23 +24,51 @@ const pet = usePetStore();
 const currentWindow = getCurrentWindow();
 
 const systemInfo = ref({ cpu: 0, memory: 0 });
-const memories = ref<Array<{ key: string; value: string }>>([]);
+
+type ApiConfig = {
+  id: string;
+  name: string;
+  api_key: string;
+  api_key_mask?: string;
+  has_api_key?: boolean;
+  base_url: string;
+  model: string;
+  confirm_enabled: boolean;
+  thinking_depth: string;
+  execution_mode: string;
+  auto_approved_tools: string[];
+};
+
+type ApiProfile = ApiConfig;
 
 // 模型
 const currentModel = ref("");
 const modelSaved = ref(false);
 
 const backendType = ref("claude_code");
-const apiConfig = ref({
+const apiConfig = ref<ApiConfig>({
+  id: "",
+  name: "",
   api_key: "",
   base_url: "",
   model: "",
-  confirm_enabled: true
+  confirm_enabled: true,
+  thinking_depth: "auto",
+  execution_mode: "normal",
+  auto_approved_tools: [],
 });
+const apiProfiles = ref<ApiProfile[]>([]);
+const activeApiProfileId = ref("");
 const isTestingConnection = ref(false);
 const testResult = ref({ success: false, message: "" });
 const isSavingConfig = ref(false);
 const configSaved = ref(false);
+const profileDeletingId = ref("");
+const isFetchingModels = ref(false);
+const modelFetchResult = ref({ success: false, message: "" });
+const fetchedModels = ref<string[]>([]);
+const selectedFetchedModel = ref("");
+const isAddingFetchedModel = ref(false);
 
 // 皮肤
 const currentSkin = ref("default");
@@ -114,15 +142,27 @@ const professions = [
 const currentPersonality = ref("gentle");
 const currentProfession = ref("companion");
 
+const thinkingDepthOptions = [
+  { value: "auto", label: "自动" },
+  { value: "low", label: "低" },
+  { value: "medium", label: "中" },
+  { value: "high", label: "高" },
+];
+
+const executionModeOptions = [
+  { value: "plan", label: "计划模式" },
+  { value: "normal", label: "普通模式" },
+  { value: "unreviewed", label: "无审查模式" },
+  { value: "custom", label: "自定义模式" },
+];
+
+function thinkingDepthLabel(value: string) {
+  return thinkingDepthOptions.find((item) => item.value === value)?.label || "自动";
+}
+
 async function loadSystemInfo() {
   try {
     systemInfo.value = await invoke("get_system_info");
-  } catch {}
-}
-
-async function loadMemories() {
-  try {
-    memories.value = await invoke("get_memories", { category: "general" });
   } catch {}
 }
 
@@ -200,17 +240,40 @@ async function loadBackendSettings() {
   try {
     backendType.value = await invoke("get_backend_type");
     const config = await invoke<any>("get_api_config");
-    apiConfig.value = {
-      api_key: config.api_key || "",
-      base_url: config.base_url || "https://api.openai.com/v1",
-      model: config.model || "gpt-4o-mini",
-      confirm_enabled: config.confirm_enabled !== false
-    };
+    applyApiConfig(config);
+    await loadApiProfiles();
     if (backendType.value === "direct_api") {
       currentModel.value = `直连 API: ${apiConfig.value.model}`;
     }
   } catch (e) {
     console.error("加载后端设置失败", e);
+  }
+}
+
+function applyApiConfig(config: Partial<ApiConfig>) {
+  apiConfig.value = {
+    id: config.id || "",
+    name: config.name || config.model || "",
+    api_key: "", // Keep empty to prevent browser autofill/overwrite bugs
+    api_key_mask: config.api_key_mask || "",
+    has_api_key: config.has_api_key || Boolean(config.api_key),
+    base_url: config.base_url || "https://api.openai.com/v1",
+    model: config.model || "gpt-4o-mini",
+    confirm_enabled: config.confirm_enabled !== false,
+    thinking_depth: config.thinking_depth || "auto",
+    execution_mode: config.execution_mode || (config.confirm_enabled === false ? "unreviewed" : "normal"),
+    auto_approved_tools: Array.isArray(config.auto_approved_tools) ? config.auto_approved_tools : [],
+  };
+  activeApiProfileId.value = apiConfig.value.id;
+}
+
+async function loadApiProfiles() {
+  try {
+    const result = await invoke<{ active_id: string; profiles: ApiProfile[] }>("list_api_profiles");
+    apiProfiles.value = result.profiles || [];
+    activeApiProfileId.value = result.active_id || apiConfig.value.id;
+  } catch {
+    apiProfiles.value = [];
   }
 }
 
@@ -251,28 +314,58 @@ function applyPreset(key: keyof typeof PRESETS) {
   const preset = PRESETS[key];
   apiConfig.value.base_url = preset.base_url;
   apiConfig.value.model = preset.model;
+  if (!apiConfig.value.name.trim()) apiConfig.value.name = preset.model;
   testResult.value = { success: false, message: "" };
+  clearFetchedModels();
 }
 
-async function saveApiConfig() {
+type SaveApiConfigOptions = {
+  quiet?: boolean;
+  profileId?: string;
+  profileName?: string;
+  model?: string;
+};
+
+async function saveApiConfig(options: SaveApiConfigOptions = {}) {
   isSavingConfig.value = true;
   configSaved.value = false;
+  const model = options.model || apiConfig.value.model;
   try {
-    await invoke("set_api_config", {
+    apiConfig.value.confirm_enabled = apiConfig.value.execution_mode !== "unreviewed";
+    const saved = await invoke<ApiConfig>("set_api_config", {
       apiKey: apiConfig.value.api_key,
       baseUrl: apiConfig.value.base_url,
-      model: apiConfig.value.model,
-      confirmEnabled: apiConfig.value.confirm_enabled
+      model,
+      confirmEnabled: apiConfig.value.confirm_enabled,
+      thinkingDepth: apiConfig.value.thinking_depth,
+      executionMode: apiConfig.value.execution_mode,
+      autoApprovedTools: apiConfig.value.auto_approved_tools,
+      profileId: options.profileId ?? apiConfig.value.id,
+      profileName: options.profileName ?? (apiConfig.value.name || model),
     });
+    applyApiConfig(saved);
+    await loadApiProfiles();
     configSaved.value = true;
     currentModel.value = `直连 API: ${apiConfig.value.model}`;
+    await currentWindow.emit("api-config-changed");
     setTimeout(() => {
       configSaved.value = false;
     }, 2000);
   } catch (e) {
-    alert("保存失败: " + e);
+    if (!options.quiet) alert("保存失败: " + e);
+    if (options.quiet) throw e;
   } finally {
     isSavingConfig.value = false;
+  }
+}
+
+async function updateThinkingDepth(value: string) {
+  apiConfig.value.thinking_depth = value;
+  if (!apiConfig.value.id || !apiConfig.value.base_url || !apiConfig.value.model) return;
+  try {
+    await saveApiConfig({ quiet: true });
+  } catch (e) {
+    testResult.value = { success: false, message: "思考深度保存失败: " + e };
   }
 }
 
@@ -283,13 +376,130 @@ async function testConnection() {
     const res = await invoke<string>("test_api_connection", {
       apiKey: apiConfig.value.api_key,
       baseUrl: apiConfig.value.base_url,
-      model: apiConfig.value.model
+      model: apiConfig.value.model,
+      thinkingDepth: apiConfig.value.thinking_depth,
     });
     testResult.value = { success: true, message: res };
   } catch (e: any) {
     testResult.value = { success: false, message: e.toString() };
   } finally {
     isTestingConnection.value = false;
+  }
+}
+
+function clearFetchedModels() {
+  fetchedModels.value = [];
+  selectedFetchedModel.value = "";
+  modelFetchResult.value = { success: false, message: "" };
+}
+
+async function fetchApiModels() {
+  if (!apiConfig.value.base_url.trim() || isFetchingModels.value) return;
+  isFetchingModels.value = true;
+  modelFetchResult.value = { success: false, message: "" };
+  try {
+    const models = await invoke<string[]>("list_api_models", {
+      apiKey: apiConfig.value.api_key,
+      baseUrl: apiConfig.value.base_url,
+    });
+    fetchedModels.value = models;
+    selectedFetchedModel.value = models.includes(apiConfig.value.model)
+      ? apiConfig.value.model
+      : (models[0] || "");
+    if (selectedFetchedModel.value) {
+      apiConfig.value.model = selectedFetchedModel.value;
+      if (!apiConfig.value.name.trim() || apiConfig.value.name === "gpt-4o-mini") {
+        apiConfig.value.name = selectedFetchedModel.value;
+      }
+    }
+    modelFetchResult.value = {
+      success: true,
+      message: `已获取 ${models.length} 个模型，请选择后加入模型列表。`,
+    };
+  } catch (e: any) {
+    fetchedModels.value = [];
+    selectedFetchedModel.value = "";
+    modelFetchResult.value = { success: false, message: e.toString() };
+  } finally {
+    isFetchingModels.value = false;
+  }
+}
+
+function selectFetchedModel(model: string) {
+  selectedFetchedModel.value = model;
+  apiConfig.value.model = model;
+  if (!apiConfig.value.id && !apiConfig.value.name.trim()) {
+    apiConfig.value.name = model;
+  }
+}
+
+async function addFetchedModelProfile() {
+  const model = selectedFetchedModel.value || apiConfig.value.model;
+  if (!model || isAddingFetchedModel.value) return;
+  isAddingFetchedModel.value = true;
+  try {
+    apiConfig.value.model = model;
+    const profileName = apiConfig.value.id ? model : (apiConfig.value.name.trim() || model);
+    await saveApiConfig({
+      quiet: true,
+      profileId: "",
+      profileName,
+      model,
+    });
+    modelFetchResult.value = { success: true, message: `已将 ${model} 加入模型列表。` };
+  } catch (e: any) {
+    modelFetchResult.value = { success: false, message: "加入模型列表失败: " + e };
+  } finally {
+    isAddingFetchedModel.value = false;
+  }
+}
+
+function newApiProfileDraft() {
+  apiConfig.value = {
+    id: "",
+    name: "",
+    api_key: "",
+    base_url: "https://api.openai.com/v1",
+    model: "gpt-4o-mini",
+    confirm_enabled: true,
+    thinking_depth: "auto",
+    execution_mode: "normal",
+    auto_approved_tools: [],
+  };
+  testResult.value = { success: false, message: "" };
+  clearFetchedModels();
+}
+
+async function activateApiProfile(id: string) {
+  if (!id) return;
+  try {
+    const profile = await invoke<ApiConfig>("set_active_api_profile", { id });
+    applyApiConfig(profile);
+    clearFetchedModels();
+    currentModel.value = `直连 API: ${apiConfig.value.model}`;
+    await currentWindow.emit("api-config-changed");
+    if (backendType.value !== "direct_api") {
+      await selectBackend("direct_api");
+    }
+  } catch (e) {
+    alert("切换模型配置失败: " + e);
+  }
+}
+
+async function deleteApiProfile(id: string) {
+  if (!id) return;
+  profileDeletingId.value = id;
+  try {
+    await invoke("delete_api_profile", { id });
+    await loadApiProfiles();
+    const config = await invoke<any>("get_api_config");
+    applyApiConfig(config);
+    currentModel.value = backendType.value === "direct_api" ? `直连 API: ${apiConfig.value.model}` : currentModel.value;
+    await currentWindow.emit("api-config-changed");
+  } catch (e) {
+    alert("删除模型配置失败: " + e);
+  } finally {
+    profileDeletingId.value = "";
   }
 }
 
@@ -489,7 +699,6 @@ let unlistenSwitchTab: UnlistenFn | null = null;
 
 onMounted(async () => {
   loadSystemInfo();
-  loadMemories();
   loadCurrentModel();
   loadCurrentSkin();
   loadCurrentFontColor();
@@ -924,14 +1133,69 @@ onUnmounted(() => {
 
           <!-- 直连 API Agent 模式 -->
           <template v-else>
+            <div class="profile-toolbar">
+              <div>
+                <div class="profile-toolbar-title">已保存模型配置</div>
+                <div class="profile-toolbar-subtitle">列表中隐藏 API Key，可点选后立即切换。</div>
+              </div>
+              <button class="mini-action-btn" type="button" @click="newApiProfileDraft">新建</button>
+            </div>
+
+            <div v-if="apiProfiles.length > 0" class="profile-list">
+              <div
+                v-for="profile in apiProfiles"
+                :key="profile.id"
+                class="profile-item"
+                :class="{ active: profile.id === activeApiProfileId }"
+              >
+                <button class="profile-main" type="button" @click="activateApiProfile(profile.id)">
+                  <span class="profile-name">{{ profile.name || profile.model }}</span>
+                  <span class="profile-meta">{{ profile.model }} · {{ profile.base_url }}</span>
+                  <span class="profile-badges">
+                    <span>思考 {{ thinkingDepthLabel(profile.thinking_depth) }}</span>
+                    <span>{{ profile.has_api_key ? 'API Key 已隐藏' : '无 API Key' }}</span>
+                  </span>
+                </button>
+                <button
+                  class="profile-delete-btn"
+                  type="button"
+                  title="删除模型配置"
+                  :disabled="profileDeletingId === profile.id || apiProfiles.length <= 1"
+                  @click="deleteApiProfile(profile.id)"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+
             <div class="api-form">
               <div class="form-group">
-                <label>接口地址 (Base URL)</label>
-                <input 
-                  type="text" 
-                  v-model="apiConfig.base_url" 
-                  placeholder="https://api.openai.com/v1" 
+                <label>配置名称</label>
+                <input
+                  type="text"
+                  v-model="apiConfig.name"
+                  placeholder="OpenAI 工作模型"
                 />
+              </div>
+
+              <div class="form-group">
+                <label>接口地址 (Base URL)</label>
+                <div class="inline-control">
+                  <input
+                    type="text"
+                    v-model="apiConfig.base_url"
+                    placeholder="https://api.openai.com/v1"
+                    @input="clearFetchedModels"
+                  />
+                  <button
+                    class="mini-action-btn"
+                    type="button"
+                    :disabled="isFetchingModels || !apiConfig.base_url.trim()"
+                    @click="fetchApiModels"
+                  >
+                    {{ isFetchingModels ? '获取中' : '获取模型' }}
+                  </button>
+                </div>
               </div>
 
               <div class="form-group">
@@ -939,8 +1203,11 @@ onUnmounted(() => {
                 <input 
                   type="password" 
                   v-model="apiConfig.api_key" 
-                  placeholder="sk-••••••••••••••••" 
+                  :placeholder="apiConfig.has_api_key ? '•••••••••••••••• (已保存)' : '请输入 sk-... 格式的 API Key'" 
+                  autocomplete="new-password"
+                  @input="clearFetchedModels"
                 />
+                <p class="hint compact">已保存模型列表只显示“API Key 已隐藏”，不会明文展示密钥。</p>
               </div>
 
               <div class="form-group">
@@ -950,6 +1217,65 @@ onUnmounted(() => {
                   v-model="apiConfig.model" 
                   placeholder="gpt-4o-mini" 
                 />
+              </div>
+
+              <div
+                v-if="modelFetchResult.message"
+                class="test-result compact"
+                :class="modelFetchResult.success ? 'success' : 'error'"
+              >
+                {{ modelFetchResult.message }}
+              </div>
+
+              <div v-if="fetchedModels.length > 0" class="model-picker">
+                <div class="model-picker-row">
+                  <span>选择模型</span>
+                  <select
+                    :value="selectedFetchedModel"
+                    @change="selectFetchedModel(($event.target as HTMLSelectElement).value)"
+                  >
+                    <option v-for="model in fetchedModels" :key="model" :value="model">
+                      {{ model }}
+                    </option>
+                  </select>
+                </div>
+                <button
+                  class="action-btn"
+                  type="button"
+                  :disabled="isAddingFetchedModel || !selectedFetchedModel"
+                  @click="addFetchedModelProfile"
+                >
+                  {{ isAddingFetchedModel ? '加入中...' : '加入模型列表' }}
+                </button>
+              </div>
+
+              <div class="form-group">
+                <label>思考深度</label>
+                <div class="thinking-switch">
+                  <button
+                    v-for="item in thinkingDepthOptions"
+                    :key="item.value"
+                    type="button"
+                    class="thinking-option"
+                    :class="{ active: apiConfig.thinking_depth === item.value }"
+                    @click="updateThinkingDepth(item.value)"
+                  >
+                    {{ item.label }}
+                  </button>
+                </div>
+                <p class="hint compact">切换后会保存到当前模型，并在下一次直连 API 请求中生效。</p>
+              </div>
+
+              <div class="form-group">
+                <label>执行模式</label>
+                <select
+                  v-model="apiConfig.execution_mode"
+                  @change="apiConfig.confirm_enabled = apiConfig.execution_mode !== 'unreviewed'"
+                >
+                  <option v-for="item in executionModeOptions" :key="item.value" :value="item.value">
+                    {{ item.label }}
+                  </option>
+                </select>
               </div>
 
               <div class="form-group">
@@ -967,7 +1293,8 @@ onUnmounted(() => {
                 <input 
                   type="checkbox" 
                   class="toggle-input" 
-                  v-model="apiConfig.confirm_enabled" 
+                  :checked="apiConfig.execution_mode !== 'unreviewed'"
+                  @change="apiConfig.execution_mode = ($event.target as HTMLInputElement).checked ? 'normal' : 'unreviewed'"
                 />
               </div>
               <p class="hint" style="margin-top: -4px;">开启后，敏感工具（如命令执行、文件写入）在运行前需要您手动允许。</p>
@@ -985,13 +1312,13 @@ onUnmounted(() => {
                 <button 
                   class="action-btn test-btn" 
                   @click="testConnection" 
-                  :disabled="isTestingConnection || !apiConfig.api_key"
+                  :disabled="isTestingConnection || !apiConfig.base_url || !apiConfig.model"
                 >
                   {{ isTestingConnection ? '⏳ 测试中...' : '🔌 测试连接' }}
                 </button>
                 <button 
                   class="action-btn" 
-                  @click="saveApiConfig"
+                  @click="saveApiConfig()"
                   :disabled="isSavingConfig"
                 >
                   {{ configSaved ? '✅ 保存成功' : (isSavingConfig ? '⏳ 保存中...' : '💾 保存配置') }}
@@ -1033,14 +1360,6 @@ onUnmounted(() => {
               <span class="option-name">{{ item.name }}</span>
               <span class="option-desc">{{ item.desc }}</span>
             </button>
-          </div>
-        </div>
-
-        <!-- 宠物记忆 -->
-        <div class="section" v-if="memories.length > 0">
-          <h3>&#x1F9E0; 宠物记忆</h3>
-          <div v-for="m in memories" :key="m.key" class="memory-item">
-            <strong>{{ m.key }}:</strong> {{ m.value }}
           </div>
         </div>
       </template>
@@ -1762,14 +2081,6 @@ onUnmounted(() => {
   transition: width 0.5s ease;
 }
 
-/* ===== 记忆 ===== */
-.memory-item {
-  font-size: 12px;
-  color: var(--pet-font-color, #666);
-  padding: 6px 0;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.04);
-}
-
 @keyframes softGradientShift {
   0%, 100% {
     background-position: 0% 50%;
@@ -1852,6 +2163,206 @@ onUnmounted(() => {
   box-shadow: 0 4px 12px rgba(255, 107, 107, 0.2);
 }
 
+.profile-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 2px 0 10px;
+}
+
+.profile-toolbar-title {
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.profile-toolbar-subtitle {
+  margin-top: 2px;
+  color: #94a3b8;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.profile-list {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.profile-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid rgba(15, 23, 42, 0.07);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.56);
+}
+
+.profile-item.active {
+  border-color: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.32);
+  background: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.07);
+}
+
+.profile-main {
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.profile-name {
+  overflow: hidden;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-meta {
+  overflow: hidden;
+  color: #94a3b8;
+  font-size: 10px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 3px;
+}
+
+.profile-badges span {
+  min-height: 20px;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.05);
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.profile-delete-btn,
+.mini-action-btn {
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #64748b;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.profile-delete-btn {
+  width: 28px;
+  height: 28px;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.mini-action-btn {
+  min-height: 30px;
+  padding: 6px 9px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.profile-delete-btn:hover:not(:disabled),
+.mini-action-btn:hover:not(:disabled) {
+  border-color: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.28);
+  background: white;
+  color: var(--pet-primary, #ff6b6b);
+  transform: translateY(-1px);
+}
+
+.profile-delete-btn:disabled,
+.mini-action-btn:disabled,
+.action-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+  transform: none;
+}
+
+.inline-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.inline-control input {
+  min-width: 0;
+  flex: 1;
+}
+
+.model-picker {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(56, 189, 248, 0.18);
+  border-radius: 9px;
+  background: rgba(240, 249, 255, 0.58);
+}
+
+.model-picker-row {
+  display: grid;
+  grid-template-columns: 66px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.model-picker-row span {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.thinking-switch {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+  padding: 4px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 9px;
+  background: rgba(15, 23, 42, 0.04);
+}
+
+.thinking-option {
+  min-height: 32px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  transition: all 0.2s;
+}
+
+.thinking-option:hover {
+  background: rgba(255, 255, 255, 0.72);
+  color: #475569;
+}
+
+.thinking-option.active {
+  border-color: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.32);
+  background: white;
+  color: var(--pet-primary, #ff6b6b);
+  box-shadow: 0 3px 10px rgba(var(--pet-primary-rgb, 255, 107, 107), 0.11);
+}
+
 .api-form {
   margin-top: 12px;
   display: flex;
@@ -1871,7 +2382,8 @@ onUnmounted(() => {
   font-weight: 600;
 }
 
-.form-group input {
+.form-group input,
+.form-group select {
   padding: 8px 10px;
   border-radius: 8px;
   border: 1px solid rgba(15, 23, 42, 0.12);
@@ -1882,7 +2394,8 @@ onUnmounted(() => {
   outline: none;
 }
 
-.form-group input:focus {
+.form-group input:focus,
+.form-group select:focus {
   border-color: var(--pet-primary, #ff6b6b);
   background: white;
   box-shadow: 0 0 0 2px rgba(255, 107, 107, 0.12);
@@ -1959,6 +2472,12 @@ onUnmounted(() => {
   border-radius: 8px;
   line-height: 1.4;
   margin-top: 4px;
+}
+
+.test-result.compact,
+.hint.compact {
+  margin-top: 2px;
+  margin-bottom: 0;
 }
 
 .test-result.success {

@@ -9,7 +9,7 @@ export interface FileAttachment {
 
 export interface Message {
   id: number;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "system";
   content: string;
   thinking?: string;
   timestamp: number;
@@ -24,7 +24,7 @@ export const useChatStore = defineStore("chat", () => {
   let nextId = 1;
 
   function addMessage(
-    role: "user" | "assistant",
+    role: "user" | "assistant" | "system",
     content: string,
     thinking?: string,
     files?: FileAttachment[],
@@ -41,6 +41,10 @@ export const useChatStore = defineStore("chat", () => {
     return message;
   }
 
+  function addSystemMessage(content: string) {
+    return addMessage("system", content);
+  }
+
   function setMessages(items: MessageDraft[]) {
     nextId = 1;
     messages.value = items.map((item) => ({
@@ -54,5 +58,5 @@ export const useChatStore = defineStore("chat", () => {
     nextId = 1;
   }
 
-  return { messages, isLoading, addMessage, setMessages, clearMessages };
+  return { messages, isLoading, addMessage, addSystemMessage, setMessages, clearMessages };
 });

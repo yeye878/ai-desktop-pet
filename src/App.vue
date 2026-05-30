@@ -28,7 +28,7 @@ const PET_W = 120;
 const PANEL_GAP = 8;
 const PANEL_SPECS: Record<PanelLabel, { width: number; height: number; title: string }> = {
   chat: { width: 340, height: 400, title: "AI Desktop Pet Chat" },
-  "context-menu": { width: 170, height: 300, title: "AI Desktop Pet Menu" },
+  "context-menu": { width: 170, height: 320, title: "AI Desktop Pet Menu" },
   settings: { width: 380, height: 460, title: "AI Desktop Pet Settings" },
   voice: { width: 430, height: 520, title: "AI Desktop Pet Voice" },
 };

@@ -1,3 +1,3 @@
 mod db;
 
-pub use db::{ChatMessage, ClipboardItem, Database};
+pub use db::{ChatMessage, ClipboardItem, Database, MemoryItem};

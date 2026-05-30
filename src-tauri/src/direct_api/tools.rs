@@ -6,7 +6,7 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "读取本地文件的内容（最大支持读取 64KB）",
+                "description": "读取本地文件的内容（最大支持读取 512KB）",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -49,7 +49,7 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
             "type": "function",
             "function": {
                 "name": "run_command",
-                "description": "执行本地 Shell 命令（Windows 下使用 cmd /C 执行）。此工具为敏感工具，执行前会弹窗让用户确认。",
+                "description": "执行本地 Shell 命令（Windows 下使用 cmd /C 执行），输出上限 64KB，超时 30 秒。此工具为敏感工具，执行前会弹窗让用户确认。",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -73,6 +73,21 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
                 }
             }
         }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "open_app",
+                "description": "打开本地应用程序。支持应用名称（如 notepad、chrome、vscode）或可执行文件的完整路径。不需要用户确认，启动后立即返回。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "app": { "type": "string", "description": "应用名称（如 notepad, chrome, vscode, calc, explorer）或可执行文件的完整路径" },
+                        "args": { "type": "string", "description": "传递给应用的可选参数（如要打开的文件路径）" }
+                    },
+                    "required": ["app"]
+                }
+            }
+        }),
     ]
 }
 
@@ -90,6 +105,7 @@ pub async fn execute_tool(name: &str, args: &serde_json::Value) -> String {
                 web_search(query).await.unwrap_or_else(|e| e)
             }
         }
+        "open_app" => exec_open_app(args).await.unwrap_or_else(|e| e),
         _ => format!("未知工具: {name}"),
     }
 }
@@ -105,10 +121,10 @@ async fn exec_read_file(args: &serde_json::Value) -> Result<String, String> {
         .await
         .map_err(|e| format!("读取文件失败: {e}"))?;
 
-    if content.len() > 65536 {
+    if content.len() > 524288 {
         Ok(format!(
-            "{}\n\n... [文件内容已截断，仅显示前 64KB]",
-            &content[..65536]
+            "{}\n\n... [文件内容已截断，仅显示前 512KB]",
+            &content[..524288]
         ))
     } else {
         Ok(content)
@@ -244,10 +260,10 @@ async fn exec_run_command(args: &serde_json::Value) -> Result<String, String> {
                 result.push_str(&format!("--- 标准错误 ---\n{}\n", stderr));
             }
 
-            if result.len() > 8192 {
+            if result.len() > 65536 {
                 result = format!(
-                    "{}\n\n... [输出已截断，仅保留前 8KB]",
-                    &result[..8192]
+                    "{}\n\n... [输出已截断，仅保留前 64KB]",
+                    &result[..65536]
                 );
             }
 
@@ -382,4 +398,98 @@ fn extract_actual_url(href: &str) -> String {
     } else {
         href.to_string()
     }
+}
+
+fn resolve_app_name(name: &str) -> String {
+    let lower = name.trim().to_lowercase();
+    let alias_map: &[(&str, &str)] = &[
+        // Windows 内置
+        ("notepad", "notepad.exe"),
+        ("\u{8BB0}\u{4E8B}\u{672C}", "notepad.exe"),
+        ("calculator", "calc.exe"),
+        ("\u{8BA1}\u{7B97}\u{5668}", "calc.exe"),
+        ("calc", "calc.exe"),
+        ("explorer", "explorer.exe"),
+        ("\u{6587}\u{4EF6}\u{7BA1}\u{7406}\u{5668}", "explorer.exe"),
+        ("mspaint", "mspaint.exe"),
+        ("\u{753B}\u{56FE}", "mspaint.exe"),
+        ("snippingtool", "snippingtool.exe"),
+        ("\u{622A}\u{56FE}", "snippingtool.exe"),
+        // 浏览器
+        ("chrome", "chrome"),
+        ("edge", "msedge"),
+        ("firefox", "firefox"),
+        // 开发工具
+        ("vscode", "code"),
+        ("code", "code"),
+        ("visual studio code", "code"),
+        ("cursor", "cursor"),
+        // 通讯工具
+        ("wechat", "WeChat"),
+        ("\u{5FAE}\u{4FE1}", "WeChat"),
+        ("qq", "QQ"),
+        ("dingtalk", "DingTalk"),
+        ("\u{9489}\u{9489}", "DingTalk"),
+        ("feishu", "Lark"),
+        ("\u{98DE}\u{4E66}", "Lark"),
+        ("teams", "ms-teams"),
+        // 办公
+        ("word", "winword"),
+        ("excel", "excel"),
+        ("ppt", "powerpnt"),
+        ("powerpoint", "powerpnt"),
+        // 其他
+        ("spotify", "spotify"),
+        ("obs", "obs64"),
+    ];
+    for (alias, executable) in alias_map {
+        if lower == *alias {
+            return executable.to_string();
+        }
+    }
+    name.to_string()
+}
+
+fn get_db_path_for_tools() -> Result<std::path::PathBuf, String> {
+    let mut path = dirs::data_dir().ok_or("无法获取数据目录")?;
+    path.push("ai-desktop-pet");
+    path.push("pet.db");
+    Ok(path)
+}
+
+async fn exec_open_app(args: &serde_json::Value) -> Result<String, String> {
+    let app = args["app"].as_str().ok_or("缺少 'app' 参数")?;
+    let app_args = args["args"].as_str().unwrap_or("");
+    let mut resolved = resolve_app_name(app);
+
+    // 检查数据库中是否存在用户拖入并注册的快捷方式应用路径
+    if let Ok(db_path) = get_db_path_for_tools() {
+        if let Ok(conn) = rusqlite::Connection::open(&db_path) {
+            let stmt = conn.prepare("SELECT value FROM pet_memory WHERE category = 'app_path' AND LOWER(key) = LOWER(?1)");
+            if let Ok(mut s) = stmt {
+                let rows = s.query_map([app], |row| row.get::<_, String>(0));
+                if let Ok(mut r) = rows {
+                    if let Some(Ok(val)) = r.next() {
+                        resolved = val;
+                    }
+                }
+            }
+        }
+    }
+
+    let mut cmd = tokio::process::Command::new("cmd");
+    cmd.args(["/C", "start", "", &resolved]);
+    if !app_args.is_empty() {
+        cmd.arg(app_args);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        #[allow(unused_imports)]
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+
+    cmd.spawn().map_err(|e| format!("启动应用失败: {e}"))?;
+    Ok(format!("已启动: {} ({})", app, resolved))
 }

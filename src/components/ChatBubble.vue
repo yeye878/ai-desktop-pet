@@ -48,6 +48,20 @@ type AiErrorPayload = {
   thinking: string | null;
   aborted: boolean;
 };
+type AnswerDeltaPayload = {
+  text: string;
+};
+type ApiProfile = {
+  id: string;
+  name: string;
+  api_key: string;
+  base_url: string;
+  model: string;
+  confirm_enabled: boolean;
+  thinking_depth: string;
+  execution_mode: string;
+  auto_approved_tools: string[];
+};
 
 const ACTIVE_TAB_KEY = "ai-desktop-pet.active-chat-tab";
 const currentWindow = getCurrentWindow();
@@ -72,19 +86,25 @@ const voiceSettings = ref<VoiceSettings>({ ...DEFAULT_VOICE_SETTINGS });
 let scrollFrame: number | null = null;
 let unlistenDragDrop: UnlistenFn | null = null;
 let unlistenThinking: UnlistenFn | null = null;
+let unlistenAnswerDelta: UnlistenFn | null = null;
 let unlistenAiFinished: UnlistenFn | null = null;
 let unlistenAiError: UnlistenFn | null = null;
 let unlistenChatCleared: UnlistenFn | null = null;
 let unlistenVoiceChanged: UnlistenFn | null = null;
 let unlistenSyncMessage: UnlistenFn | null = null;
+let unlistenApiConfigChanged: UnlistenFn | null = null;
 
 interface ToolConfirmPayload {
   id: string;
   tool_name: string;
   arguments: string;
+  summary?: string;
+  command?: string | null;
+  path?: string | null;
 }
 const pendingConfirm = ref<ToolConfirmPayload | null>(null);
 let unlistenToolConfirm: UnlistenFn | null = null;
+let unlistenToolConfirmResolved: UnlistenFn | null = null;
 
 interface PendingFile {
   id: string;
@@ -113,8 +133,13 @@ const fileValidationError = ref("");
 let fileErrorTimer: ReturnType<typeof setTimeout> | null = null;
 
 const thinkingContent = ref("");
+const streamingAnswer = ref("");
 const isThinkingCollapsed = ref(true);
 const expandedThinking = reactive(new Set<number>());
+const backendType = ref("claude_code");
+const currentApiProfile = ref<ApiProfile | null>(null);
+const apiProfiles = ref<ApiProfile[]>([]);
+const activeApiProfileId = ref("");
 const userAvatar = computed(() => {
   return pet.userAvatar.trim();
 });
@@ -148,10 +173,17 @@ onMounted(async () => {
     scrollToBottomAfterRender();
   });
 
+  unlistenAnswerDelta = await listen<AnswerDeltaPayload>("ai-answer-delta", (event) => {
+    chat.isLoading = true;
+    streamingAnswer.value += event.payload.text;
+    scrollToBottomAfterRender();
+  });
+
   unlistenAiFinished = await listen<AiFinishedPayload>("ai-finished", (event) => {
     appendAssistantOnce(event.payload.text, event.payload.thinking ?? undefined);
     chat.isLoading = false;
     thinkingContent.value = "";
+    streamingAnswer.value = "";
     isThinkingCollapsed.value = true;
     pendingConfirm.value = null;
     pet.setState("speaking");
@@ -168,16 +200,14 @@ onMounted(async () => {
     appendAssistantOnce(text, event.payload.thinking ?? (thinkingContent.value || undefined));
     chat.isLoading = false;
     thinkingContent.value = "";
+    streamingAnswer.value = "";
     isThinkingCollapsed.value = true;
     pendingConfirm.value = null;
     pet.setState(event.payload.aborted ? "idle" : "confused");
   });
 
   unlistenChatCleared = await listen("chat-history-cleared", () => {
-    chat.clearMessages();
-    chat.isLoading = false;
-    thinkingContent.value = "";
-    pendingConfirm.value = null;
+    resetChatUi();
   });
 
   unlistenSyncMessage = await listen<any>("sync-chat-message", (event) => {
@@ -186,10 +216,11 @@ onMounted(async () => {
     if (last && last.role === payload.role && last.content === payload.content) {
       return;
     }
-    chat.addMessage(payload.role, payload.content);
+    chat.addMessage(payload.role, payload.content, undefined, payload.files);
     if (payload.role === "user") {
       chat.isLoading = true;
       thinkingContent.value = "";
+      streamingAnswer.value = "";
       isThinkingCollapsed.value = false;
       pet.setState("thinking");
     }
@@ -201,8 +232,15 @@ onMounted(async () => {
     scrollToBottomAfterRender();
   });
 
+  unlistenToolConfirmResolved = await listen<{ id: string; approved: boolean }>("ai-tool-confirm-resolved", (event) => {
+    if (pendingConfirm.value?.id === event.payload.id) {
+      pendingConfirm.value = null;
+    }
+  });
+
   try {
     await loadVoiceSettings();
+    await loadApiState();
     await refreshChatState();
     if (!pet.userAvatar) {
       pet.userAvatar = await invoke<string>("get_user_avatar");
@@ -216,6 +254,9 @@ onMounted(async () => {
   window.addEventListener("voice-settings-changed", handleVoiceSettingsChanged);
   unlistenVoiceChanged = await listen("voice-settings-changed", () => {
     void loadVoiceSettings();
+  });
+  unlistenApiConfigChanged = await listen("api-config-changed", () => {
+    void loadApiState();
   });
   await scrollToBottomAfterRender();
 });
@@ -233,6 +274,10 @@ onBeforeUnmount(() => {
     unlistenThinking();
     unlistenThinking = null;
   }
+  if (unlistenAnswerDelta) {
+    unlistenAnswerDelta();
+    unlistenAnswerDelta = null;
+  }
   if (unlistenAiFinished) {
     unlistenAiFinished();
     unlistenAiFinished = null;
@@ -245,6 +290,10 @@ onBeforeUnmount(() => {
     unlistenToolConfirm();
     unlistenToolConfirm = null;
   }
+  if (unlistenToolConfirmResolved) {
+    unlistenToolConfirmResolved();
+    unlistenToolConfirmResolved = null;
+  }
   if (unlistenChatCleared) {
     unlistenChatCleared();
     unlistenChatCleared = null;
@@ -256,6 +305,10 @@ onBeforeUnmount(() => {
   if (unlistenVoiceChanged) {
     unlistenVoiceChanged();
     unlistenVoiceChanged = null;
+  }
+  if (unlistenApiConfigChanged) {
+    unlistenApiConfigChanged();
+    unlistenApiConfigChanged = null;
   }
   if (fileErrorTimer) {
     clearTimeout(fileErrorTimer);
@@ -365,6 +418,9 @@ async function speakAssistantReply(text: string) {
 }
 
 async function abortAi() {
+  chat.isLoading = false;
+  thinkingContent.value = "";
+  streamingAnswer.value = "";
   try {
     await invoke("abort_ai");
   } catch {
@@ -393,6 +449,19 @@ async function loadVoiceSettings() {
     }));
   } catch {
     voiceSettings.value = { ...DEFAULT_VOICE_SETTINGS };
+  }
+}
+
+async function loadApiState() {
+  try {
+    backendType.value = await invoke<string>("get_backend_type");
+    const config = await invoke<ApiProfile>("get_api_config");
+    currentApiProfile.value = config;
+    const result = await invoke<{ active_id: string; profiles: ApiProfile[] }>("list_api_profiles");
+    apiProfiles.value = result.profiles || [];
+    activeApiProfileId.value = result.active_id || config.id || "";
+  } catch {
+    apiProfiles.value = [];
   }
 }
 
@@ -509,12 +578,38 @@ async function clearClipboard() {
   }
 }
 
+function resetChatUi() {
+  chat.clearMessages();
+  chat.isLoading = false;
+  thinkingContent.value = "";
+  streamingAnswer.value = "";
+  isThinkingCollapsed.value = true;
+  pendingConfirm.value = null;
+}
+
+async function startNewConversation() {
+  try {
+    await invoke("start_new_conversation");
+    // 新对话：保留聊天记录显示，仅重置 AI 状态
+    chat.isLoading = false;
+    thinkingContent.value = "";
+    streamingAnswer.value = "";
+    isThinkingCollapsed.value = true;
+    pendingConfirm.value = null;
+    // 插入分割线，标记新对话开始
+    if (chat.messages.length > 0) {
+      chat.addSystemMessage("新对话");
+    }
+    await scrollToBottomAfterRender();
+  } catch (err) {
+    chat.addMessage("assistant", `新对话创建失败: ${err}`);
+  }
+}
+
 async function clearChat() {
   try {
     await invoke("clear_chat_history");
-    chat.clearMessages();
-    chat.isLoading = false;
-    thinkingContent.value = "";
+    resetChatUi();
     await currentWindow.emit("chat-history-cleared");
   } catch (err) {
     chat.addMessage("assistant", `对话清空失败: ${err}`);
@@ -563,6 +658,37 @@ async function addToPendingFiles(paths: string[]) {
   if (fileErrorTimer) clearTimeout(fileErrorTimer);
   fileValidationError.value = "";
 
+  const hasLnk = paths.some(p => p.toLowerCase().endsWith(".lnk"));
+  if (hasLnk) {
+    for (const p of paths) {
+      if (p.toLowerCase().endsWith(".lnk")) {
+        try {
+          const res = await invoke<{ name: string; path: string }>("register_shortcut_file", { path: p });
+          const successMsg = `已自动记住应用「${res.name}」的启动路径：\n\`${res.path}\`\n\n下次你可以对我说：“打开 ${res.name}”啦！`;
+          
+          chat.addMessage("assistant", successMsg);
+          await currentWindow.emit("sync-chat-message", {
+            role: "assistant",
+            content: successMsg
+          });
+          
+          try {
+            await invoke("set_pet_state", { newState: "happy" });
+          } catch {}
+        } catch (err) {
+          showFileError(`注册快捷方式失败: ${err}`);
+        }
+      } else {
+        await processNormalFiles([p]);
+      }
+    }
+    return;
+  }
+
+  await processNormalFiles(paths);
+}
+
+async function processNormalFiles(paths: string[]) {
   if (pendingFiles.value.length + paths.length > MAX_FILES) {
     fileValidationError.value = `最多同时添加 ${MAX_FILES} 个文件`;
     fileErrorTimer = setTimeout(() => {
@@ -797,6 +923,14 @@ function formatClipboardTime(value: string | number): string {
       <button
         v-if="activeTab === 'chat'"
         class="header-action-btn"
+        title="新对话"
+        @click="startNewConversation"
+      >
+        &#x2795;
+      </button>
+      <button
+        v-if="activeTab === 'chat'"
+        class="header-action-btn"
         title="清空对话"
         @click="clearChat"
       >
@@ -842,6 +976,14 @@ function formatClipboardTime(value: string | number): string {
           :key="msg.id"
           :class="['message', msg.role, { 'msg-enter': idx === chat.messages.length - 1 }]"
         >
+          <!-- 系统分割线 -->
+          <div v-if="msg.role === 'system'" class="system-divider">
+            <span class="system-divider-line"></span>
+            <span class="system-divider-text">{{ msg.content }}</span>
+            <span class="system-divider-line"></span>
+          </div>
+
+          <template v-else>
           <div v-if="msg.role === 'assistant'" class="avatar bot-avatar">
             <span>&#x1F43E;</span>
           </div>
@@ -873,6 +1015,7 @@ function formatClipboardTime(value: string | number): string {
             <img v-if="userAvatar" :src="userAvatar" alt="用户头像" />
             <span v-else>&#x1F464;</span>
           </div>
+          </template>
         </div>
 
         <div v-if="chat.isLoading" class="message assistant msg-enter">
@@ -901,6 +1044,9 @@ function formatClipboardTime(value: string | number): string {
                 等待思考输出...
               </div>
             </div>
+            <div v-if="streamingAnswer" class="bubble bot-bubble streaming-answer">
+              {{ streamingAnswer }}
+            </div>
 
             <Transition name="confirm-fade">
               <div v-if="pendingConfirm" class="tool-confirm-card">
@@ -912,7 +1058,15 @@ function formatClipboardTime(value: string | number): string {
                 <div class="confirm-card-body">
                   <div class="confirm-tool-info">
                     <span class="info-label">操作类别:</span>
-                    <span class="info-value">{{ pendingConfirm.tool_name === 'run_command' ? '🐚 运行命令行' : '📝 写入文件' }}</span>
+                    <span class="info-value">{{ pendingConfirm.summary || pendingConfirm.tool_name }}</span>
+                  </div>
+                  <div v-if="pendingConfirm.command" class="confirm-tool-info">
+                    <span class="info-label">命令:</span>
+                    <span class="info-value">{{ pendingConfirm.command }}</span>
+                  </div>
+                  <div v-if="pendingConfirm.path" class="confirm-tool-info">
+                    <span class="info-label">路径:</span>
+                    <span class="info-value">{{ pendingConfirm.path }}</span>
                   </div>
                   <div class="confirm-tool-args">
                     <span class="info-label">核心参数:</span>
@@ -1281,6 +1435,33 @@ function formatClipboardTime(value: string | number): string {
   justify-content: flex-end;
 }
 
+.message.system {
+  justify-content: center;
+  align-items: center;
+  gap: 0;
+}
+
+.system-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 4px 0;
+}
+
+.system-divider-line {
+  flex: 1;
+  height: 1px;
+  background: rgba(15, 23, 42, 0.08);
+}
+
+.system-divider-text {
+  font-size: 11px;
+  color: #94a3b8;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 @keyframes msgSlideIn {
   from {
     opacity: 0;
@@ -1389,6 +1570,11 @@ function formatClipboardTime(value: string | number): string {
   background: rgba(255, 255, 255, 0.45);
   z-index: -1;
   pointer-events: none;
+}
+
+.streaming-answer {
+  margin-top: 4px;
+  white-space: pre-wrap;
 }
 
 .msg-time {
@@ -1766,7 +1952,7 @@ function formatClipboardTime(value: string | number): string {
 
 .voice-status {
   padding: 0 14px 9px 52px;
-  margin-top: -4px;
+  margin-top: 0;
   min-height: 14px;
   color: var(--pet-primary, #ff6b6b);
   font-size: 11px;

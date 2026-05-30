@@ -22,6 +22,13 @@ async function action(name: string) {
     case "wave":
       await invoke("set_pet_state", { newState: "waving" });
       break;
+    case "new-chat":
+      await invoke("start_new_conversation");
+      chat.isLoading = false;
+      if (chat.messages.length > 0) {
+        chat.addSystemMessage("新对话");
+      }
+      break;
     case "clear":
       await invoke("clear_chat_history");
       chat.clearMessages();
@@ -62,6 +69,10 @@ async function action(name: string) {
       <span>叫醒它</span>
     </div>
     <div class="menu-divider" />
+    <div class="menu-item" @click="action('new-chat')">
+      <span class="menu-icon">＋</span>
+      <span>新对话</span>
+    </div>
     <div class="menu-item" @click="action('clear')">
       <span class="menu-icon">&#x1F5D1;&#xFE0F;</span>
       <span>清空对话</span>
@@ -101,6 +112,7 @@ async function action(name: string) {
   padding: 6px;
   z-index: 201;
   min-width: 150px;
+  overflow-y: auto;
   animation: menuPop 0.2s ease-out;
 }
 

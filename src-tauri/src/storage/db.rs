@@ -18,6 +18,15 @@ pub struct ClipboardItem {
     pub created_at: i64,
 }
 
+#[derive(Debug, Serialize, Clone)]
+pub struct MemoryItem {
+    pub id: i64,
+    pub category: String,
+    pub key: String,
+    pub value: String,
+    pub created_at: i64,
+}
+
 pub struct Database {
     conn: Connection,
 }
@@ -141,14 +150,50 @@ impl Database {
         Ok(())
     }
 
+    /// 只返回 id > after_id 的最近 limit 条消息（用于 AI 上下文隔离）
+    pub fn get_recent_messages_after(&self, after_id: i64, limit: u32) -> Result<Vec<ChatMessage>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT role, content, thinking, created_at
+             FROM chat_history
+             WHERE id > ?1
+             ORDER BY id DESC
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map([after_id, limit as i64], |row| {
+            Ok(ChatMessage {
+                role: row.get(0)?,
+                content: row.get(1)?,
+                thinking: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        })?;
+        let mut messages = Vec::new();
+        for row in rows {
+            messages.push(row?);
+        }
+        messages.reverse();
+        Ok(messages)
+    }
+
+    /// 返回 chat_history 表中最大的 id，无消息时返回 0
+    pub fn get_max_message_id(&self) -> Result<i64> {
+        self.conn
+            .query_row(
+                "SELECT COALESCE(MAX(id), 0) FROM chat_history",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.into())
+    }
+
     // ===== 宠物记忆 =====
 
-    pub fn save_memory(&self, category: &str, key: &str, value: &str) -> Result<()> {
+    pub fn save_memory(&self, category: &str, key: &str, value: &str) -> Result<i64> {
         self.conn.execute(
-            "INSERT OR REPLACE INTO pet_memory (category, key, value) VALUES (?1, ?2, ?3)",
+            "INSERT INTO pet_memory (category, key, value) VALUES (?1, ?2, ?3)",
             (category, key, value),
         )?;
-        Ok(())
+        Ok(self.conn.last_insert_rowid())
     }
 
     pub fn get_memory(&self, category: &str, key: &str) -> Result<Option<String>> {
@@ -162,16 +207,72 @@ impl Database {
         }
     }
 
-    pub fn get_memories_by_category(&self, category: &str) -> Result<Vec<(String, String)>> {
+    pub fn get_memory_by_id(&self, id: i64) -> Result<Option<MemoryItem>> {
         let mut stmt = self.conn.prepare(
-            "SELECT key, value FROM pet_memory WHERE category = ?1 ORDER BY created_at DESC",
+            "SELECT id, category, key, value, created_at FROM pet_memory WHERE id = ?1",
         )?;
-        let rows = stmt.query_map([category], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        let mut rows = stmt.query_map([id], |row| {
+            Ok(MemoryItem {
+                id: row.get(0)?,
+                category: row.get(1)?,
+                key: row.get(2)?,
+                value: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })?;
+        match rows.next() {
+            Some(Ok(item)) => Ok(Some(item)),
+            Some(Err(err)) => Err(err),
+            None => Ok(None),
+        }
+    }
+
+    pub fn get_all_memories(&self) -> Result<Vec<MemoryItem>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, category, key, value, created_at FROM pet_memory ORDER BY id DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(MemoryItem {
+                id: row.get(0)?,
+                category: row.get(1)?,
+                key: row.get(2)?,
+                value: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })?;
         let mut results = Vec::new();
         for row in rows {
             results.push(row?);
         }
         Ok(results)
+    }
+
+    pub fn get_memories_by_category(&self, category: &str) -> Result<Vec<MemoryItem>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, category, key, value, created_at
+             FROM pet_memory
+             WHERE category = ?1
+             ORDER BY id DESC",
+        )?;
+        let rows = stmt.query_map([category], |row| {
+            Ok(MemoryItem {
+                id: row.get(0)?,
+                category: row.get(1)?,
+                key: row.get(2)?,
+                value: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
+    pub fn delete_memory(&self, id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM pet_memory WHERE id = ?1", [id])?;
+        Ok(())
     }
 
     // ===== 剪切板 =====

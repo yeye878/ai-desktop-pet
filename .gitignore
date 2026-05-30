@@ -8,3 +8,5 @@ src-tauri/target/
 *.exe
 nul
 resources/
+.qoder/
+update_shortcut.ps1
