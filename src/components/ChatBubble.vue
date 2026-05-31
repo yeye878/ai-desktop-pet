@@ -219,6 +219,7 @@ onMounted(async () => {
     chat.addMessage(payload.role, payload.content, undefined, payload.files ?? payload.fileAttachments);
     if (payload.role === "user") {
       chat.isLoading = true;
+      pendingConfirm.value = null;  // Clear any pending tool confirmation
       thinkingContent.value = "";
       streamingAnswer.value = "";
       isThinkingCollapsed.value = false;
@@ -262,6 +263,11 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  // Reject any pending tool confirmation before closing
+  if (pendingConfirm.value) {
+    invoke("confirm_tool", { id: pendingConfirm.value.id, approved: false }).catch(() => {});
+    pendingConfirm.value = null;
+  }
   if (scrollFrame !== null) {
     cancelAnimationFrame(scrollFrame);
     scrollFrame = null;
@@ -382,6 +388,7 @@ async function sendMessage() {
   input.value = "";
   clearPendingFiles();
   chat.isLoading = true;
+  pendingConfirm.value = null;  // Clear any pending tool confirmation
   thinkingContent.value = "";
   isThinkingCollapsed.value = false;
   pet.setState("thinking");
@@ -425,6 +432,7 @@ async function abortAi() {
   chat.isLoading = false;
   thinkingContent.value = "";
   streamingAnswer.value = "";
+  pendingConfirm.value = null;  // Clear pending tool confirmation on abort
   try {
     await invoke("abort_ai");
   } catch {
@@ -1055,42 +1063,7 @@ function formatClipboardTime(value: string | number): string {
               {{ streamingAnswer }}
             </div>
 
-            <Transition name="confirm-fade">
-              <div v-if="pendingConfirm" class="tool-confirm-card">
-                <div class="confirm-card-header">
-                  <span class="confirm-card-icon">⚡</span>
-                  <span class="confirm-card-title">请求运行敏感操作</span>
-                </div>
 
-                <div class="confirm-card-body">
-                  <div class="confirm-tool-info">
-                    <span class="info-label">操作类别:</span>
-                    <span class="info-value">{{ pendingConfirm.summary || pendingConfirm.tool_name }}</span>
-                  </div>
-                  <div v-if="pendingConfirm.command" class="confirm-tool-info">
-                    <span class="info-label">命令:</span>
-                    <span class="info-value">{{ pendingConfirm.command }}</span>
-                  </div>
-                  <div v-if="pendingConfirm.path" class="confirm-tool-info">
-                    <span class="info-label">路径:</span>
-                    <span class="info-value">{{ pendingConfirm.path }}</span>
-                  </div>
-                  <div class="confirm-tool-args">
-                    <span class="info-label">核心参数:</span>
-                    <pre class="args-code"><code>{{ pendingConfirm.arguments }}</code></pre>
-                  </div>
-                </div>
-
-                <div class="confirm-card-actions">
-                  <button class="confirm-btn deny" @click="handleToolConfirm(false)">
-                    ❌ 拒绝
-                  </button>
-                  <button class="confirm-btn approve" @click="handleToolConfirm(true)">
-                    ✅ 允许
-                  </button>
-                </div>
-              </div>
-            </Transition>
           </div>
         </div>
       </template>
@@ -1166,6 +1139,45 @@ function formatClipboardTime(value: string | number): string {
     <Transition name="fade">
       <div v-if="fileValidationError" class="file-validation-error">
         {{ fileValidationError }}
+      </div>
+    </Transition>
+
+    <Transition name="slide-up">
+      <div v-if="pendingConfirm" class="floating-confirm-overlay">
+        <div class="tool-confirm-card">
+          <div class="confirm-card-header">
+            <span class="confirm-card-icon">⚡</span>
+            <span class="confirm-card-title">请求运行敏感操作</span>
+          </div>
+
+          <div class="confirm-card-body">
+            <div class="confirm-tool-info">
+              <span class="info-label">操作类别:</span>
+              <span class="info-value">{{ pendingConfirm.summary || pendingConfirm.tool_name }}</span>
+            </div>
+            <div v-if="pendingConfirm.command" class="confirm-tool-info">
+              <span class="info-label">命令:</span>
+              <span class="info-value">{{ pendingConfirm.command }}</span>
+            </div>
+            <div v-if="pendingConfirm.path" class="confirm-tool-info">
+              <span class="info-label">路径:</span>
+              <span class="info-value">{{ pendingConfirm.path }}</span>
+            </div>
+            <div class="confirm-tool-args">
+              <span class="info-label">核心参数:</span>
+              <pre class="args-code"><code>{{ pendingConfirm.arguments }}</code></pre>
+            </div>
+          </div>
+
+          <div class="confirm-card-actions">
+            <button class="confirm-btn deny" @click="handleToolConfirm(false)">
+              ❌ 拒绝
+            </button>
+            <button class="confirm-btn approve" @click="handleToolConfirm(true)">
+              ✅ 允许
+            </button>
+          </div>
+        </div>
       </div>
     </Transition>
 
@@ -2147,22 +2159,26 @@ function formatClipboardTime(value: string | number): string {
 }
 
 /* 交互式工具确认卡片样式 */
+.floating-confirm-overlay {
+  padding: 0 14px 10px;
+  position: relative;
+  z-index: 10;
+}
+
 .tool-confirm-card {
-  margin-top: 10px;
   background:
-    linear-gradient(145deg, rgba(255, 255, 255, 0.92), rgba(255, 249, 238, 0.80));
-  backdrop-filter: blur(10px);
-  border: 1px solid rgba(245, 158, 11, 0.28);
+    linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(255, 249, 238, 0.90));
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(245, 158, 11, 0.38);
   border-radius: 16px;
   padding: 12px;
   box-shadow:
-    0 3px 0 rgba(245, 158, 11, 0.08),
-    0 10px 25px rgba(245, 158, 11, 0.08),
-    inset 0 1px 0 rgba(255, 255, 255, 0.6);
+    0 4px 12px rgba(245, 158, 11, 0.12),
+    0 14px 30px rgba(24, 42, 72, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8);
   display: flex;
   flex-direction: column;
   gap: 10px;
-  animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .confirm-card-header {
@@ -2283,17 +2299,6 @@ function formatClipboardTime(value: string | number): string {
 @keyframes pulseLight {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.6; transform: scale(0.92); }
-}
-
-.confirm-fade-enter-active,
-.confirm-fade-leave-active {
-  transition: all 0.25s ease;
-}
-
-.confirm-fade-enter-from,
-.confirm-fade-leave-to {
-  opacity: 0;
-  transform: translateY(10px);
 }
 
 /* ===== 文件预览区 ===== */

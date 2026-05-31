@@ -1134,6 +1134,7 @@ async function abortAi() {
   chat.isLoading = false;
   thinkingContent.value = "";
   streamingAnswer.value = "";
+  pendingConfirm.value = null;  // Clear pending tool confirmation on abort
   try {
     await invoke("abort_ai");
   } catch {}
@@ -1195,7 +1196,11 @@ async function handleDashboardToolConfirm(approved: boolean) {
       approved,
     });
   } catch (e) {
-    alert("确认工具操作失败: " + e);
+    // Silently handle timeout/race condition errors
+    const errStr = String(e);
+    if (!errStr.includes("无效的确认请求 ID")) {
+      alert("确认工具操作失败: " + e);
+    }
   } finally {
     pendingConfirm.value = null;
   }
@@ -1407,6 +1412,12 @@ onUnmounted(() => {
         <span class="titlebar-mark">AP</span>
         <span>Desktop Pet</span>
       </div>
+      <div class="titlebar-charm-strip" aria-hidden="true">
+        <span class="titlebar-charm charm-dot"></span>
+        <span class="titlebar-charm charm-capsule"></span>
+        <span class="titlebar-charm charm-star"></span>
+        <span class="titlebar-charm charm-ring"></span>
+      </div>
       <div class="titlebar-controls">
         <button class="titlebar-btn" @click="minimizeWindow" title="最小化">
           <svg width="12" height="2" viewBox="0 0 12 2"><rect width="12" height="2" rx="1" fill="currentColor"/></svg>
@@ -1512,11 +1523,11 @@ onUnmounted(() => {
       </div>
 
       <!-- 内容区 -->
-      <div :class="['dashboard-content', { 'chat-page-active': activePage === 'chat' }]">
+      <div :class="['dashboard-content', `page-${activePage}`, { 'chat-page-active': activePage === 'chat' }]">
         <Transition name="page-fade" mode="out-in">
           <!-- ========== 首页 ========== -->
-          <div v-if="activePage === 'home'" key="home">
-            <div class="page-header home-header">
+          <div v-if="activePage === 'home'" key="home" class="home-studio-page">
+            <div class="page-header home-header studio-header">
               <div>
                 <div class="page-kicker">Mission Playground</div>
                 <h1 class="page-title">桌宠飞行舱</h1>
@@ -1530,7 +1541,7 @@ onUnmounted(() => {
 
             <div class="home-grid">
               <!-- 宠物状态预览 -->
-              <div class="dash-card pet-preview-card">
+              <div class="dash-card pet-preview-card studio-panel">
                 <div class="pet-preview-visual">
                   <div class="pet-orbit-ring ring-a" />
                   <div class="pet-orbit-ring ring-b" />
@@ -1588,7 +1599,7 @@ onUnmounted(() => {
 
 
               <!-- 快捷操作 -->
-              <div class="dash-card action-lab-card">
+              <div class="dash-card action-lab-card sticker-board-card">
                 <div class="dash-card-title">
                   <span class="card-icon">⌁</span> 动作实验台
                 </div>
@@ -1609,7 +1620,7 @@ onUnmounted(() => {
               </div>
 
               <!-- 任务轨道 -->
-              <div class="dash-card mission-rail-card">
+              <div class="dash-card mission-rail-card mission-ribbon-card">
                 <div class="dash-card-title">
                   <span class="card-icon">⌘</span> 任务轨道
                 </div>
@@ -1635,7 +1646,7 @@ onUnmounted(() => {
               </div>
 
               <!-- 系统监控 -->
-              <div class="dash-card system-pulse-card">
+              <div class="dash-card system-pulse-card resource-strip-card">
                 <div class="dash-card-title">
                   <span class="card-icon">◷</span> 系统资源
                 </div>
@@ -1707,7 +1718,7 @@ onUnmounted(() => {
                 </div>
               </div>
 
-              <div v-if="toolEvents.length > 0 || pendingConfirm" class="dash-msg-wrapper assistant">
+              <div v-if="toolEvents.length > 0" class="dash-msg-wrapper assistant">
                 <div class="dash-tool-trace-panel">
                   <div class="dash-tool-trace-header">
                     <span>执行轨迹</span>
@@ -1734,17 +1745,6 @@ onUnmounted(() => {
                         <summary>输出</summary>
                         <pre>{{ event.output }}</pre>
                       </details>
-                    </div>
-                  </div>
-                  <div v-if="pendingConfirm" class="dash-tool-confirm-inline">
-                    <div>
-                      <strong>{{ pendingConfirm.summary || pendingConfirm.tool_name }}</strong>
-                      <p v-if="pendingConfirm.command">命令：{{ pendingConfirm.command }}</p>
-                      <p v-if="pendingConfirm.path">路径：{{ pendingConfirm.path }}</p>
-                    </div>
-                    <div class="dash-tool-confirm-actions">
-                      <button class="dash-btn secondary" @click="handleDashboardToolConfirm(false)">拒绝</button>
-                      <button class="dash-btn primary" @click="handleDashboardToolConfirm(true)">允许</button>
                     </div>
                   </div>
                 </div>
@@ -1780,7 +1780,7 @@ onUnmounted(() => {
               </div>
               <div ref="dashChatEndRef" class="dash-chat-end" aria-hidden="true"></div>
             </div>
-            
+
             <div class="dash-chat-composer">
               <!-- 文件校验错误提示 -->
               <Transition name="fade">
@@ -1894,7 +1894,7 @@ onUnmounted(() => {
             </div>
 
             <div class="dash-memory-layout">
-              <div class="dash-card">
+              <div class="dash-card palette-panel skin-panel">
                 <div class="dash-card-title"><span class="card-icon">＋</span> 新建记忆</div>
                 <div class="dash-form-group">
                   <label>标题</label>
@@ -1951,15 +1951,16 @@ onUnmounted(() => {
           </div>
 
           <!-- ========== 外观 ========== -->
-          <div v-else-if="activePage === 'appearance'" key="appearance">
-            <div class="page-header">
+          <div v-else-if="activePage === 'appearance'" key="appearance" class="appearance-atelier-page">
+            <div class="page-header atelier-header">
               <div class="page-kicker">Appearance</div>
               <h1 class="page-title">个性外观</h1>
               <p class="page-subtitle">自定义桌宠的主题、字体和外观风格</p>
             </div>
 
             <!-- 主题皮肤 -->
-            <div class="dash-card">
+            <div class="appearance-atelier-layout">
+              <div class="dash-card palette-panel skin-panel">
               <div class="dash-card-title"><span class="card-icon">◐</span> 主题皮肤</div>
               <div class="dash-skin-grid">
                 <div
@@ -1977,7 +1978,7 @@ onUnmounted(() => {
             </div>
 
             <!-- 字体颜色 -->
-            <div class="dash-card">
+              <div class="dash-card sample-sheet font-panel">
               <div class="dash-card-title"><span class="card-icon">Aa</span> 字体颜色</div>
               <div class="dash-font-color-grid">
                 <div
@@ -1992,7 +1993,7 @@ onUnmounted(() => {
             </div>
 
             <!-- 对话背景 -->
-            <div class="dash-card">
+              <div class="dash-card film-strip-panel bg-panel">
               <div class="dash-card-title"><span class="card-icon">▧</span> 对话背景</div>
               <div class="dash-bg-grid">
                 <button :class="['dash-bg-opt', { active: chatBg === 'none' }]" @click="selectBg('none')">
@@ -2027,7 +2028,7 @@ onUnmounted(() => {
             </div>
 
             <!-- 用户头像 -->
-            <div class="dash-card">
+            <div class="dash-card portrait-frame-panel avatar-panel">
               <div class="dash-card-title"><span class="card-icon">◉</span> 用户头像</div>
               <div class="dash-avatar-section">
                 <div class="dash-avatar-preview">
@@ -2042,19 +2043,21 @@ onUnmounted(() => {
               </div>
             </div>
           </div>
+          </div>
 
           <!-- ========== 语音 ========== -->
-          <div v-else-if="activePage === 'voice'" key="voice">
-            <div class="page-header">
+          <div v-else-if="activePage === 'voice'" key="voice" class="voice-studio-page">
+            <div class="page-header sound-header">
               <div class="page-kicker">Voice</div>
               <h1 class="page-title">语音设置</h1>
               <p class="page-subtitle">配置语音交互和文字转语音引擎</p>
             </div>
 
-            <div class="dash-card">
+            <div class="dash-card sound-panel voice-interaction-panel">
               <div class="dash-card-title"><span class="card-icon">◌</span> 语音交互</div>
 
-              <div class="dash-switch-row">
+              <div class="voice-toggle-grid">
+              <div class="dash-switch-row sound-toggle-card">
                 <div class="dash-switch-info">
                   <span class="dash-switch-label">启用语音</span>
                   <span class="dash-switch-desc">允许麦克风输入和回复播报</span>
@@ -2066,7 +2069,7 @@ onUnmounted(() => {
                 />
               </div>
 
-              <div class="dash-switch-row">
+              <div class="dash-switch-row sound-toggle-card">
                 <div class="dash-switch-info">
                   <span class="dash-switch-label">识别后自动发送</span>
                   <span class="dash-switch-desc">关闭后会先填入输入框</span>
@@ -2078,7 +2081,7 @@ onUnmounted(() => {
                 />
               </div>
 
-              <div class="dash-switch-row">
+              <div class="dash-switch-row sound-toggle-card">
                 <div class="dash-switch-info">
                   <span class="dash-switch-label">自动朗读回复</span>
                   <span class="dash-switch-desc">AI 回复完成后直接播报</span>
@@ -2088,6 +2091,7 @@ onUnmounted(() => {
                   :checked="voiceSettings.autoSpeak"
                   @change="updateVoiceSettings({ autoSpeak: ($event.target as HTMLInputElement).checked })"
                 />
+              </div>
               </div>
 
               <div class="dash-field-row">
@@ -2114,7 +2118,7 @@ onUnmounted(() => {
               </div>
             </div>
 
-            <div class="dash-card">
+            <div class="dash-card mixer-panel voice-engine-panel">
               <div class="dash-card-title"><span class="card-icon">≋</span> 声音引擎</div>
 
               <div class="dash-field-row">
@@ -2157,7 +2161,7 @@ onUnmounted(() => {
                   没找到匹配的人声，可以清空搜索或打开"显示全部"。
                 </div>
 
-                <div class="dash-range-row">
+                <div class="dash-range-row mixer-control">
                   <div class="dash-range-header">
                     <span class="dash-range-label">语速</span>
                     <span class="dash-range-value">{{ ttsSettings.rate >= 0 ? '+' : '' }}{{ ttsSettings.rate }}%</span>
@@ -2165,7 +2169,7 @@ onUnmounted(() => {
                   <input class="dash-range" type="range" min="-50" max="100" step="10" :value="ttsSettings.rate"
                     @input="updateTtsSettings({ rate: Number(($event.target as HTMLInputElement).value) })" />
                 </div>
-                <div class="dash-range-row">
+                <div class="dash-range-row mixer-control">
                   <div class="dash-range-header">
                     <span class="dash-range-label">音调</span>
                     <span class="dash-range-value">{{ ttsSettings.pitch >= 0 ? '+' : '' }}{{ ttsSettings.pitch }}Hz</span>
@@ -2173,7 +2177,7 @@ onUnmounted(() => {
                   <input class="dash-range" type="range" min="-50" max="50" step="5" :value="ttsSettings.pitch"
                     @input="updateTtsSettings({ pitch: Number(($event.target as HTMLInputElement).value) })" />
                 </div>
-                <div class="dash-range-row">
+                <div class="dash-range-row mixer-control">
                   <div class="dash-range-header">
                     <span class="dash-range-label">音量</span>
                     <span class="dash-range-value">{{ ttsSettings.volume }}%</span>
@@ -2202,7 +2206,7 @@ onUnmounted(() => {
                     </option>
                   </select>
                 </div>
-                <div class="dash-range-row">
+                <div class="dash-range-row mixer-control">
                   <div class="dash-range-header">
                     <span class="dash-range-label">语速</span>
                     <span class="dash-range-value">{{ voiceSettings.rate.toFixed(1) }}</span>
@@ -2210,7 +2214,7 @@ onUnmounted(() => {
                   <input class="dash-range" type="range" min="0.6" max="1.5" step="0.1" :value="voiceSettings.rate"
                     @input="updateVoiceSettings({ rate: Number(($event.target as HTMLInputElement).value) })" />
                 </div>
-                <div class="dash-range-row">
+                <div class="dash-range-row mixer-control">
                   <div class="dash-range-header">
                     <span class="dash-range-label">音调</span>
                     <span class="dash-range-value">{{ voiceSettings.pitch.toFixed(1) }}</span>
@@ -2218,7 +2222,7 @@ onUnmounted(() => {
                   <input class="dash-range" type="range" min="0.6" max="1.6" step="0.1" :value="voiceSettings.pitch"
                     @input="updateVoiceSettings({ pitch: Number(($event.target as HTMLInputElement).value) })" />
                 </div>
-                <div class="dash-range-row">
+                <div class="dash-range-row mixer-control">
                   <div class="dash-range-header">
                     <span class="dash-range-label">音量</span>
                     <span class="dash-range-value">{{ Math.round(voiceSettings.volume * 100) }}%</span>
@@ -2231,15 +2235,15 @@ onUnmounted(() => {
           </div>
 
           <!-- ========== 系统 ========== -->
-          <div v-else-if="activePage === 'system'" key="system">
-            <div class="page-header">
+          <div v-else-if="activePage === 'system'" key="system" class="system-lab-page">
+            <div class="page-header lab-header">
               <div class="page-kicker">System</div>
               <h1 class="page-title">系统设置</h1>
               <p class="page-subtitle">配置 AI 后端、性格和职业定位</p>
             </div>
 
             <!-- AI 后端 -->
-            <div class="dash-card">
+            <div class="dash-card lab-module agent-backend-panel">
               <div class="dash-card-title"><span class="card-icon">⌘</span> AI 后端与模型</div>
 
               <div class="dash-backend-selector">
@@ -2449,7 +2453,8 @@ onUnmounted(() => {
             </div>
 
             <!-- 性格 -->
-            <div class="dash-card">
+            <div class="system-role-grid">
+            <div class="dash-card role-card personality-panel">
               <div class="dash-card-title"><span class="card-icon">✦</span> 性格</div>
               <div class="dash-option-grid">
                 <button
@@ -2465,7 +2470,7 @@ onUnmounted(() => {
             </div>
 
             <!-- 职业 -->
-            <div class="dash-card">
+            <div class="dash-card role-card profession-panel">
               <div class="dash-card-title"><span class="card-icon">◇</span> 职业</div>
               <div class="dash-option-grid">
                 <button
@@ -2477,6 +2482,7 @@ onUnmounted(() => {
                   <span class="dash-option-desc">{{ item.desc }}</span>
                 </button>
               </div>
+            </div>
             </div>
           </div>
 
@@ -2496,6 +2502,27 @@ onUnmounted(() => {
                 一个可爱的 AI 桌面伙伴，支持智能对话、语音交互、多主题皮肤和丰富的个性化设置。
                 基于 Tauri + Vue 3 构建，轻量高效。
               </p>
+            </div>
+          </div>
+        </Transition>
+
+        <!-- 工具确认悬浮层 (全局，任何页面可见) -->
+        <Transition name="slide-up">
+          <div v-if="pendingConfirm" class="dash-floating-confirm-overlay">
+            <div class="dash-tool-confirm-card">
+              <div>
+                <strong>{{ pendingConfirm.summary || pendingConfirm.tool_name }}</strong>
+                <p v-if="pendingConfirm.command">命令：{{ pendingConfirm.command }}</p>
+                <p v-if="pendingConfirm.path">路径：{{ pendingConfirm.path }}</p>
+                <div v-if="pendingConfirm.arguments" class="dash-tool-args">
+                  <span class="args-label">参数:</span>
+                  <pre class="args-code"><code>{{ pendingConfirm.arguments }}</code></pre>
+                </div>
+              </div>
+              <div class="dash-tool-confirm-actions">
+                <button class="dash-btn secondary" @click="handleDashboardToolConfirm(false)">拒绝</button>
+                <button class="dash-btn primary" @click="handleDashboardToolConfirm(true)">允许</button>
+              </div>
             </div>
           </div>
         </Transition>
