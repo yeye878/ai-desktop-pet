@@ -1,4 +1,108 @@
 use serde_json::json;
+use std::{
+    ffi::OsString,
+    path::{Path, PathBuf},
+};
+
+fn canonicalize_requested_path(path: &str) -> Result<PathBuf, String> {
+    let raw = PathBuf::from(path);
+    let absolute = if raw.is_absolute() {
+        raw
+    } else {
+        std::env::current_dir()
+            .map_err(|e| format!("获取当前目录失败: {e}"))?
+            .join(raw)
+    };
+
+    if absolute.exists() {
+        return absolute
+            .canonicalize()
+            .map_err(|e| format!("路径无效: {e}"));
+    }
+
+    let mut ancestor = absolute.as_path();
+    let mut missing_components: Vec<OsString> = Vec::new();
+
+    while !ancestor.exists() {
+        let name = ancestor
+            .file_name()
+            .ok_or_else(|| format!("路径不存在: {path}"))?;
+        missing_components.push(name.to_os_string());
+        ancestor = ancestor
+            .parent()
+            .ok_or_else(|| format!("路径不存在: {path}"))?;
+    }
+
+    let mut resolved = ancestor
+        .canonicalize()
+        .map_err(|e| format!("父目录无效: {e}"))?;
+
+    for component in missing_components.iter().rev() {
+        resolved.push(component);
+    }
+
+    Ok(resolved)
+}
+
+fn canonical_allowed_roots() -> Vec<PathBuf> {
+    [
+        dirs::document_dir(),
+        dirs::download_dir(),
+        dirs::desktop_dir(),
+        dirs::audio_dir(),
+        dirs::picture_dir(),
+        dirs::video_dir(),
+        Some(std::env::temp_dir()),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|root| root.canonicalize().ok())
+    .collect()
+}
+
+fn is_under_allowed_root(path: &Path, roots: &[PathBuf]) -> bool {
+    roots.iter().any(|root| path.starts_with(root))
+}
+
+/// 检查路径是否在允许的目录范围内
+fn is_path_allowed(path: &str) -> Result<PathBuf, String> {
+    let canonical = canonicalize_requested_path(path)?;
+    let allowed_roots = canonical_allowed_roots();
+
+    if is_under_allowed_root(&canonical, &allowed_roots) {
+        Ok(canonical)
+    } else {
+        Err(format!(
+            "路径不在允许范围内，仅可访问用户文档、桌面、下载、媒体和临时目录: {}",
+            path
+        ))
+    }
+}
+
+/// 检查命令是否包含危险操作
+fn is_command_safe(command: &str) -> Result<(), String> {
+    let dangerous_patterns = [
+        "rm -rf /",
+        "rmdir /s /q C:\\",
+        "format ",
+        "del /f /s /q C:\\",
+        "shutdown",
+        "restart",
+        "reg delete",
+        "reg add",
+        "net user",
+        "net localgroup",
+    ];
+
+    let cmd_lower = command.to_lowercase();
+    for pattern in &dangerous_patterns {
+        if cmd_lower.contains(&pattern.to_lowercase()) {
+            return Err(format!("命令包含危险操作，已被拦截: {}", pattern));
+        }
+    }
+
+    Ok(())
+}
 
 pub fn tool_definitions() -> Vec<serde_json::Value> {
     vec![
@@ -92,10 +196,22 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
 }
 
 pub async fn execute_tool(name: &str, args: &serde_json::Value) -> String {
+    let timeout_duration = std::time::Duration::from_secs(30);
     match name {
-        "read_file" => exec_read_file(args).await.unwrap_or_else(|e| e),
-        "write_file" => exec_write_file(args).await.unwrap_or_else(|e| e),
-        "list_directory" => exec_list_directory(args).await.unwrap_or_else(|e| e),
+        "read_file" => match tokio::time::timeout(timeout_duration, exec_read_file(args)).await {
+            Ok(result) => result.unwrap_or_else(|e| e),
+            Err(_) => "读取文件超时 (30秒)".to_string(),
+        },
+        "write_file" => match tokio::time::timeout(timeout_duration, exec_write_file(args)).await {
+            Ok(result) => result.unwrap_or_else(|e| e),
+            Err(_) => "写入文件超时 (30秒)".to_string(),
+        },
+        "list_directory" => {
+            match tokio::time::timeout(timeout_duration, exec_list_directory(args)).await {
+                Ok(result) => result.unwrap_or_else(|e| e),
+                Err(_) => "列出目录超时 (30秒)".to_string(),
+            }
+        }
         "run_command" => exec_run_command(args).await.unwrap_or_else(|e| e),
         "web_search" => {
             let query = args["query"].as_str().unwrap_or("");
@@ -112,7 +228,7 @@ pub async fn execute_tool(name: &str, args: &serde_json::Value) -> String {
 
 async fn exec_read_file(args: &serde_json::Value) -> Result<String, String> {
     let path = args["path"].as_str().ok_or("缺少 'path' 参数")?;
-    let path_buf = std::path::PathBuf::from(path);
+    let path_buf = is_path_allowed(path)?;
     if !path_buf.is_file() {
         return Err(format!("路径不是一个文件: {path}"));
     }
@@ -122,9 +238,10 @@ async fn exec_read_file(args: &serde_json::Value) -> Result<String, String> {
         .map_err(|e| format!("读取文件失败: {e}"))?;
 
     if content.len() > 524288 {
+        let safe_end = content.floor_char_boundary(524288);
         Ok(format!(
             "{}\n\n... [文件内容已截断，仅显示前 512KB]",
-            &content[..524288]
+            &content[..safe_end]
         ))
     } else {
         Ok(content)
@@ -134,7 +251,7 @@ async fn exec_read_file(args: &serde_json::Value) -> Result<String, String> {
 async fn exec_write_file(args: &serde_json::Value) -> Result<String, String> {
     let path = args["path"].as_str().ok_or("缺少 'path' 参数")?;
     let content = args["content"].as_str().ok_or("缺少 'content' 参数")?;
-    let path_buf = std::path::PathBuf::from(path);
+    let path_buf = is_path_allowed(path)?;
 
     if let Some(parent) = path_buf.parent() {
         tokio::fs::create_dir_all(parent)
@@ -146,16 +263,12 @@ async fn exec_write_file(args: &serde_json::Value) -> Result<String, String> {
         .await
         .map_err(|e| format!("写入文件失败: {e}"))?;
 
-    Ok(format!(
-        "文件写入成功: {} ({} 字节)",
-        path,
-        content.len()
-    ))
+    Ok(format!("文件写入成功: {} ({} 字节)", path, content.len()))
 }
 
 async fn exec_list_directory(args: &serde_json::Value) -> Result<String, String> {
     let path = args["path"].as_str().ok_or("缺少 'path' 参数")?;
-    let path_buf = std::path::PathBuf::from(path);
+    let path_buf = is_path_allowed(path)?;
     if !path_buf.is_dir() {
         return Err(format!("路径不是一个目录: {path}"));
     }
@@ -197,6 +310,9 @@ async fn exec_list_directory(args: &serde_json::Value) -> Result<String, String>
 
 async fn exec_run_command(args: &serde_json::Value) -> Result<String, String> {
     let command = args["command"].as_str().ok_or("缺少 'command' 参数")?;
+
+    // 检查命令安全性
+    is_command_safe(command)?;
 
     let mut cmd = if cfg!(target_os = "windows") {
         let mut c = tokio::process::Command::new("cmd");
@@ -261,10 +377,8 @@ async fn exec_run_command(args: &serde_json::Value) -> Result<String, String> {
             }
 
             if result.len() > 65536 {
-                result = format!(
-                    "{}\n\n... [输出已截断，仅保留前 64KB]",
-                    &result[..65536]
-                );
+                let safe_end = result.floor_char_boundary(65536);
+                result = format!("{}\n\n... [输出已截断，仅保留前 64KB]", &result[..safe_end]);
             }
 
             Ok(result)
@@ -326,13 +440,16 @@ pub async fn web_search(query: &str) -> Result<String, String> {
 
         // Find the snippet
         let next_snippet_start = tag_end + anchor_end_offset;
-        let snippet = if let Some(snippet_offset) = html[next_snippet_start..].find("class=\"result__snippet\"") {
+        let snippet = if let Some(snippet_offset) =
+            html[next_snippet_start..].find("class=\"result__snippet\"")
+        {
             let abs_snippet_class = next_snippet_start + snippet_offset;
             if abs_snippet_class - next_snippet_start < 1500 {
                 if let Some(snippet_tag_end_offset) = html[abs_snippet_class..].find('>') {
                     let snippet_content_start = abs_snippet_class + snippet_tag_end_offset + 1;
                     if let Some(snippet_end_offset) = html[snippet_content_start..].find("</") {
-                        let raw_snippet = &html[snippet_content_start..snippet_content_start + snippet_end_offset];
+                        let raw_snippet = &html
+                            [snippet_content_start..snippet_content_start + snippet_end_offset];
                         strip_html_tags(raw_snippet)
                     } else {
                         "无描述".to_string()
@@ -347,7 +464,10 @@ pub async fn web_search(query: &str) -> Result<String, String> {
             "无描述".to_string()
         };
 
-        results.push(format!("* 标题: {}\n  链接: {}\n  摘要: {}\n", title, url, snippet));
+        results.push(format!(
+            "* 标题: {}\n  链接: {}\n  摘要: {}\n",
+            title, url, snippet
+        ));
 
         search_pos = next_snippet_start;
         if results.len() >= 5 {
@@ -390,7 +510,10 @@ fn strip_html_tags(s: &str) -> String {
 fn extract_actual_url(href: &str) -> String {
     if let Some(pos) = href.find("uddg=") {
         let start = pos + 5;
-        let end = href[start..].find('&').map(|idx| start + idx).unwrap_or(href.len());
+        let end = href[start..]
+            .find('&')
+            .map(|idx| start + idx)
+            .unwrap_or(href.len());
         let encoded = &href[start..end];
         url::form_urlencoded::parse(encoded.as_bytes())
             .map(|(k, _)| k.into_owned())

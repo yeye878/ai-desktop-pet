@@ -100,14 +100,11 @@ impl SseParser {
 }
 
 pub async fn call_chat_completions_stream(
+    client: &reqwest::Client,
     config: &DirectApiConfig,
     messages: &Vec<serde_json::Value>,
     tools: Option<Vec<serde_json::Value>>,
 ) -> Result<reqwest::Response, String> {
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(15))
-        .build()
-        .map_err(|e| format!("创建 API 客户端失败: {e}"))?;
     let url = if config.base_url.ends_with("/chat/completions") {
         config.base_url.clone()
     } else {
@@ -158,16 +155,16 @@ pub async fn call_chat_completions_stream(
     Ok(res)
 }
 
-pub async fn list_models(api_key: &str, base_url: &str) -> Result<Vec<String>, String> {
+pub async fn list_models(
+    client: &reqwest::Client,
+    api_key: &str,
+    base_url: &str,
+) -> Result<Vec<String>, String> {
     let base_url = base_url.trim();
     if base_url.is_empty() {
         return Err("请先填写请求地址".to_string());
     }
 
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(15))
-        .build()
-        .map_err(|e| format!("创建 API 客户端失败: {e}"))?;
     let url = if base_url.ends_with("/models") {
         base_url.to_string()
     } else {
@@ -181,7 +178,9 @@ pub async fn list_models(api_key: &str, base_url: &str) -> Result<Vec<String>, S
 
     let res = tokio::time::timeout(Duration::from_secs(45), req.send())
         .await
-        .map_err(|_| "获取模型列表超过 45 秒没有响应，请检查网络、Base URL 或代理配置。".to_string())?
+        .map_err(|_| {
+            "获取模型列表超过 45 秒没有响应，请检查网络、Base URL 或代理配置。".to_string()
+        })?
         .map_err(|e| format!("获取模型列表失败: {e}"))?;
     let status = res.status();
     if !status.is_success() {

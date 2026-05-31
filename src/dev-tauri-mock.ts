@@ -273,7 +273,8 @@ export function installDevTauriMock() {
   if (typeof window === "undefined") return;
   if (window.__TAURI_INTERNALS__?.metadata) return;
 
-  mockWindows("main");
+  const previewWindow = new URLSearchParams(window.location.search).get("window") || "main";
+  mockWindows(previewWindow);
   mockIPC((cmd, args) => handleMockCommand(cmd, args as MockPayload), {
     shouldMockEvents: true,
   });

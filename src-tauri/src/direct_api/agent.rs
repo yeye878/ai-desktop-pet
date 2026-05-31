@@ -96,13 +96,16 @@ pub async fn run_direct_api_agent(
         } else {
             Some(tool_definitions())
         };
-        let res = match call_chat_completions_stream(&config, &api_messages, tools).await {
-            Ok(res) => res,
-            Err(e) => {
-                send_error(&app_handle, format!("API 请求失败: {e}"), &full_thinking).await;
-                return;
-            }
-        };
+        let res =
+            match call_chat_completions_stream(&state.http_client, &config, &api_messages, tools)
+                .await
+            {
+                Ok(res) => res,
+                Err(e) => {
+                    send_error(&app_handle, format!("API 请求失败: {e}"), &full_thinking).await;
+                    return;
+                }
+            };
 
         let mut stream = res.bytes_stream();
         let mut sse = SseParser::new();
@@ -116,7 +119,8 @@ pub async fn run_direct_api_agent(
                 return;
             }
 
-            let chunk_res = match tokio::time::timeout(Duration::from_secs(25), stream.next()).await {
+            let chunk_res = match tokio::time::timeout(Duration::from_secs(25), stream.next()).await
+            {
                 Ok(Some(chunk_res)) => chunk_res,
                 Ok(None) => break,
                 Err(_) => {
@@ -158,10 +162,8 @@ pub async fn run_direct_api_agent(
                         if let Some(ref text) = choice.delta.content {
                             turn_text.push_str(text);
                             full_text.push_str(text);
-                            let _ = app_handle.emit(
-                                "ai-answer-delta",
-                                AnswerDeltaPayload { text: text.clone() },
-                            );
+                            let _ = app_handle
+                                .emit("ai-answer-delta", AnswerDeltaPayload { text: text.clone() });
                         }
 
                         if let Some(ref tool_calls) = choice.delta.tool_calls {
@@ -236,7 +238,15 @@ pub async fn run_direct_api_agent(
             let pretty_args =
                 serde_json::to_string_pretty(&tc_args).unwrap_or_else(|_| tc_args_str.clone());
 
-            emit_tool_event(&app_handle, &tc_id, &tc_name, "requested", &tc_args, None, None);
+            emit_tool_event(
+                &app_handle,
+                &tc_id,
+                &tc_name,
+                "requested",
+                &tc_args,
+                None,
+                None,
+            );
             let starting_msg = format!(
                 "\n[调用工具] {}\n{}\n",
                 tool_summary(&tc_name, &tc_args),
@@ -314,20 +324,28 @@ pub async fn run_direct_api_agent(
                     } else {
                         format!("未能打开 {}：{}", app_name, output)
                     };
-                    
+
                     let _ = app_handle.emit(
                         "ai-finished",
                         crate::AiFinishedPayload {
                             text: reply_text.clone(),
-                            thinking: if full_thinking.is_empty() { None } else { Some(full_thinking.clone()) },
+                            thinking: if full_thinking.is_empty() {
+                                None
+                            } else {
+                                Some(full_thinking.clone())
+                            },
                         },
                     );
-                    
+
                     let db = state.db.lock().await;
                     let _ = db.save_message_with_thinking(
                         "assistant",
                         &reply_text,
-                        if full_thinking.is_empty() { None } else { Some(&full_thinking) },
+                        if full_thinking.is_empty() {
+                            None
+                        } else {
+                            Some(&full_thinking)
+                        },
                     );
                     drop(db);
 
@@ -354,6 +372,12 @@ pub async fn run_direct_api_agent(
             let _ = app_handle.emit("ai-thinking", &output_display);
             push_tool_message(&mut api_messages, &tc_id, &tc_name, &tool_output);
         }
+    }
+
+    // 保存前再次检查是否已取消
+    if is_cancelled(&state).await {
+        send_aborted(&app_handle, &full_thinking).await;
+        return;
     }
 
     if full_text.trim().is_empty() {
@@ -405,8 +429,7 @@ fn reasoning_delta_text(delta: &crate::direct_api::api_client::Delta) -> Option<
         }
     }
 
-    value_to_text(delta.reasoning.as_ref())
-        .or_else(|| value_to_text(delta.thinking.as_ref()))
+    value_to_text(delta.reasoning.as_ref()).or_else(|| value_to_text(delta.thinking.as_ref()))
 }
 
 fn value_to_text(value: Option<&Value>) -> Option<String> {
@@ -432,7 +455,10 @@ fn append_active_thinking(state: &tauri::State<'_, AppState>, text: &str) {
 
 async fn is_cancelled(state: &tauri::State<'_, AppState>) -> bool {
     let abort = state.abort_token.lock().await;
-    abort.as_ref().map(|token| token.is_cancelled()).unwrap_or(false)
+    abort
+        .as_ref()
+        .map(|token| token.is_cancelled())
+        .unwrap_or(false)
 }
 
 async fn request_tool_confirmation(
@@ -469,15 +495,23 @@ async fn request_tool_confirmation(
         },
     );
 
-    let approved_result = rx.await;
+    let approved_result = tokio::time::timeout(std::time::Duration::from_secs(120), rx).await;
 
     {
         let mut confirms = state.pending_confirms.lock().await;
         confirms.remove(&confirm_id);
     }
 
+    let emit_resolved = |approved: bool| {
+        let _ = app_handle.emit(
+            "ai-tool-confirm-resolved",
+            json!({ "id": confirm_id.clone(), "approved": approved }),
+        );
+    };
+
     match approved_result {
-        Ok(true) => {
+        Ok(Ok(true)) => {
+            emit_resolved(true);
             let approved_msg = "[用户已授权，开始执行]\n".to_string();
             full_thinking.push_str(&approved_msg);
             append_active_thinking(state, &approved_msg);
@@ -497,7 +531,8 @@ async fn request_tool_confirmation(
             );
             true
         }
-        Ok(false) => {
+        Ok(Ok(false)) => {
+            emit_resolved(false);
             let denied_msg = "[用户拒绝执行此操作]\n".to_string();
             full_thinking.push_str(&denied_msg);
             append_active_thinking(state, &denied_msg);
@@ -513,8 +548,9 @@ async fn request_tool_confirmation(
             );
             false
         }
-        Err(_) => {
-            let err_msg = "[授权通道失效或超时]\n".to_string();
+        Ok(Err(_)) => {
+            emit_resolved(false);
+            let err_msg = "[授权通道失效]\n".to_string();
             full_thinking.push_str(&err_msg);
             append_active_thinking(state, &err_msg);
             let _ = app_handle.emit("ai-thinking", &err_msg);
@@ -524,7 +560,24 @@ async fn request_tool_confirmation(
                 tool_name,
                 "denied",
                 args,
-                Some("授权通道失效或超时。"),
+                Some("授权通道失效。"),
+                Some(false),
+            );
+            false
+        }
+        Err(_) => {
+            emit_resolved(false);
+            let timeout_msg = "[确认超时 (120秒)，自动拒绝]\n".to_string();
+            full_thinking.push_str(&timeout_msg);
+            append_active_thinking(state, &timeout_msg);
+            let _ = app_handle.emit("ai-thinking", &timeout_msg);
+            emit_tool_event(
+                app_handle,
+                event_id,
+                tool_name,
+                "denied",
+                args,
+                Some("确认超时，自动拒绝。"),
                 Some(false),
             );
             false
@@ -561,7 +614,10 @@ fn mode_requires_confirmation(
     }
     match config.execution_mode.as_str() {
         "plan" | "unreviewed" => false,
-        "custom" => !config.auto_approved_tools.iter().any(|tool| tool == tool_name),
+        "custom" => !config
+            .auto_approved_tools
+            .iter()
+            .any(|tool| tool == tool_name),
         _ => true,
     }
 }
@@ -634,7 +690,10 @@ fn tool_summary(tool_name: &str, args: &serde_json::Value) -> String {
             format!("列出目录 {}", args["path"].as_str().unwrap_or("未知路径"))
         }
         "run_command" => {
-            format!("执行命令 {}", args["command"].as_str().unwrap_or("未知命令"))
+            format!(
+                "执行命令 {}",
+                args["command"].as_str().unwrap_or("未知命令")
+            )
         }
         "web_search" => format!("搜索网页 {}", args["query"].as_str().unwrap_or("未知查询")),
         "open_app" => format!("打开应用 {}", args["app"].as_str().unwrap_or("未知应用")),
@@ -651,11 +710,14 @@ async fn send_error(app_handle: &tauri::AppHandle, err_msg: String, full_thinkin
     behavior.set_state(crate::behavior::PetState::Confused);
     drop(behavior);
 
-    let _ = app_handle.emit("ai-error", json!({
-        "message": err_msg,
-        "thinking": if full_thinking.is_empty() { None } else { Some(full_thinking) },
-        "aborted": false
-    }));
+    let _ = app_handle.emit(
+        "ai-error",
+        json!({
+            "message": err_msg,
+            "thinking": if full_thinking.is_empty() { None } else { Some(full_thinking) },
+            "aborted": false
+        }),
+    );
 }
 
 async fn send_aborted(app_handle: &tauri::AppHandle, full_thinking: &str) {
@@ -667,9 +729,12 @@ async fn send_aborted(app_handle: &tauri::AppHandle, full_thinking: &str) {
     behavior.set_state(crate::behavior::PetState::Idle);
     drop(behavior);
 
-    let _ = app_handle.emit("ai-error", json!({
-        "message": "已中止",
-        "thinking": if full_thinking.is_empty() { None } else { Some(full_thinking) },
-        "aborted": true
-    }));
+    let _ = app_handle.emit(
+        "ai-error",
+        json!({
+            "message": "已中止",
+            "thinking": if full_thinking.is_empty() { None } else { Some(full_thinking) },
+            "aborted": true
+        }),
+    );
 }

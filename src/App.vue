@@ -520,6 +520,6 @@ body,
 
 /* Dashboard 窗口不需要透明背景 */
 .window-main {
-  background: var(--dash-sidebar-bg, #151312);
+  background: var(--dash-shell-bg, #f8fbff);
 }
 </style>

@@ -6,13 +6,13 @@ mod system;
 mod tts;
 
 use serde::{Deserialize, Serialize};
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::{
     path::PathBuf,
     sync::Mutex as StdMutex,
     time::{SystemTime, UNIX_EPOCH},
 };
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
 use tauri::{Emitter, Manager};
 
 #[cfg(target_os = "windows")]
@@ -68,10 +68,12 @@ pub struct AppState {
     pub tts: tts::TtsManager,
     pub backend_type: tokio::sync::Mutex<String>,
     pub direct_api_config: tokio::sync::Mutex<Option<direct_api::DirectApiConfig>>,
-    pub pending_confirms: tokio::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>>,
+    pub pending_confirms:
+        tokio::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>>,
     pub approved_tool_types: tokio::sync::Mutex<std::collections::HashSet<String>>,
     pub abort_token: tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>,
     pub chat_start_id: StdMutex<i64>,
+    pub http_client: reqwest::Client,
 }
 
 fn unix_now() -> i64 {
@@ -195,10 +197,8 @@ fn load_api_profiles(db: &storage::Database) -> Vec<direct_api::DirectApiConfig>
         })
         .unwrap_or_default();
 
-    let mut profiles: Vec<direct_api::DirectApiConfig> = stored
-        .into_iter()
-        .map(normalize_api_profile)
-        .collect();
+    let mut profiles: Vec<direct_api::DirectApiConfig> =
+        stored.into_iter().map(normalize_api_profile).collect();
 
     let mut migrated = false;
 
@@ -316,29 +316,35 @@ fn save_legacy_api_settings(
     db: &storage::Database,
     profile: &direct_api::DirectApiConfig,
 ) -> Result<(), String> {
-    db.save_setting("api_key", "")
-        .map_err(|e| e.to_string())?;
+    db.save_setting("api_key", "").map_err(|e| e.to_string())?;
     db.save_setting("api_base_url", &profile.base_url)
         .map_err(|e| e.to_string())?;
     db.save_setting("api_model", &profile.model)
         .map_err(|e| e.to_string())?;
     db.save_setting(
         "api_confirm_enabled",
-        if profile.confirm_enabled { "true" } else { "false" },
+        if profile.confirm_enabled {
+            "true"
+        } else {
+            "false"
+        },
     )
     .map_err(|e| e.to_string())?;
     db.save_setting(API_THINKING_DEPTH_KEY, &profile.thinking_depth)
         .map_err(|e| e.to_string())?;
     db.save_setting(API_EXECUTION_MODE_KEY, &profile.execution_mode)
         .map_err(|e| e.to_string())?;
-    let tools_json = serde_json::to_string(&profile.auto_approved_tools)
-        .map_err(|e| e.to_string())?;
+    let tools_json =
+        serde_json::to_string(&profile.auto_approved_tools).map_err(|e| e.to_string())?;
     db.save_setting(API_AUTO_APPROVED_TOOLS_KEY, &tools_json)
         .map_err(|e| e.to_string())?;
     Ok(())
 }
 
-fn attach_execution_mode_prompt(system_prompt: String, config: &direct_api::DirectApiConfig) -> String {
+fn attach_execution_mode_prompt(
+    system_prompt: String,
+    config: &direct_api::DirectApiConfig,
+) -> String {
     let mode_note = match config.execution_mode.as_str() {
         "plan" => {
             "当前执行模式：计划模式。你只能制定计划、说明将使用哪些工具和会修改哪些文件；不要调用任何工具，不要执行命令，不要写入文件。"
@@ -399,8 +405,14 @@ fn summarize_chat_messages(messages: &[storage::ChatMessage]) -> Option<(String,
         return None;
     }
 
-    let first_time = meaningful.first().map(|msg| msg.created_at).unwrap_or_default();
-    let last_time = meaningful.last().map(|msg| msg.created_at).unwrap_or_default();
+    let first_time = meaningful
+        .first()
+        .map(|msg| msg.created_at)
+        .unwrap_or_default();
+    let last_time = meaningful
+        .last()
+        .map(|msg| msg.created_at)
+        .unwrap_or_default();
 
     let mut user_points = meaningful
         .iter()
@@ -532,7 +544,10 @@ fn attach_memory_context(system_prompt: String, memory_context: Option<String>) 
     }
 }
 
-async fn attach_registered_apps_prompt(system_prompt: String, state: &tauri::State<'_, AppState>) -> String {
+async fn attach_registered_apps_prompt(
+    system_prompt: String,
+    state: &tauri::State<'_, AppState>,
+) -> String {
     let db = state.db.lock().await;
     if let Ok(memories) = db.get_memories_by_category("app_path") {
         if !memories.is_empty() {
@@ -540,7 +555,10 @@ async fn attach_registered_apps_prompt(system_prompt: String, state: &tauri::Sta
                 "\n\n【重要系统级信息】用户已经在系统中注册并保存了以下自定义应用程序（快捷方式路径）记忆：".to_string()
             ];
             for app in memories {
-                app_notes.push(format!("- 应用别名/名称: \"{}\", 对应执行文件物理路径: \"{}\"", app.key, app.value));
+                app_notes.push(format!(
+                    "- 应用别名/名称: \"{}\", 对应执行文件物理路径: \"{}\"",
+                    app.key, app.value
+                ));
             }
             app_notes.push("当用户要求你“打开”、“运行”、“启动”这些应用时，你拥有完整的预知记忆。请直接调用 `open_app` 工具，并以其对应的应用别名/名称（例如 \"微信\"、\"Chrome\" 等）作为 `app` 参数！底层已实现了对注册键名的自动匹配和物理路径运行，你不需要向用户询问其物理路径。".to_string());
             return format!("{}{}", system_prompt, app_notes.join("\n"));
@@ -548,7 +566,6 @@ async fn attach_registered_apps_prompt(system_prompt: String, state: &tauri::Sta
     }
     system_prompt
 }
-
 
 async fn memory_context_for_message(
     state: &tauri::State<'_, AppState>,
@@ -642,7 +659,9 @@ fn kill_process_tree(pid: u32) {
     {
         let mut command = std::process::Command::new("taskkill");
         command.creation_flags(CREATE_NO_WINDOW);
-        let _ = command.args(["/F", "/T", "/PID", &pid.to_string()]).output();
+        let _ = command
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .output();
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -790,9 +809,14 @@ async fn run_ai_message(app_handle: tauri::AppHandle, message: String) {
         };
 
         let chat_history = {
-            let start_id = *state.chat_start_id.lock().unwrap_or_else(|e| e.into_inner());
+            let start_id = *state
+                .chat_start_id
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let db = state.db.lock().await;
-            let mut history = db.get_recent_messages_after(start_id, 10).unwrap_or_default();
+            let mut history = db
+                .get_recent_messages_after(start_id, 10)
+                .unwrap_or_default();
             if history
                 .last()
                 .map(|msg| msg.role == "user" && msg.content == message)
@@ -1029,7 +1053,10 @@ async fn abort_ai(state: tauri::State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn set_backend_type(backend: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
+async fn set_backend_type(
+    backend: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
     stop_active_response(&state).await;
 
     {
@@ -1037,7 +1064,8 @@ async fn set_backend_type(backend: String, state: tauri::State<'_, AppState>) ->
         *backend_type = backend.clone();
     }
     let db = state.db.lock().await;
-    db.save_setting("backend_type", &backend).map_err(|e| e.to_string())?;
+    db.save_setting("backend_type", &backend)
+        .map_err(|e| e.to_string())?;
 
     state.approved_tool_types.lock().await.clear();
     Ok(())
@@ -1093,7 +1121,7 @@ async fn set_api_config(
             .find(|profile| profile.id == resolved_profile_id)
             .unwrap_or_else(|| active_api_profile(&db))
     };
-    
+
     let final_api_key = if api_key.trim().is_empty() {
         existing_profile.api_key.clone()
     } else if is_masked_api_key(&api_key) {
@@ -1112,7 +1140,8 @@ async fn set_api_config(
             model,
             confirm_enabled,
             thinking_depth: thinking_depth.unwrap_or_else(|| "auto".to_string()),
-            execution_mode: execution_mode.unwrap_or_else(|| existing_profile.execution_mode.clone()),
+            execution_mode: execution_mode
+                .unwrap_or_else(|| existing_profile.execution_mode.clone()),
             auto_approved_tools: auto_approved_tools
                 .unwrap_or_else(|| existing_profile.auto_approved_tools.clone()),
         },
@@ -1225,17 +1254,14 @@ async fn test_api_connection(
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
     let resolved_key = resolve_masked_api_key(&*state.db.lock().await, &api_key);
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|e| format!("创建 API 客户端失败: {e}"))?;
     let url = if base_url.ends_with("/chat/completions") {
         base_url.clone()
     } else {
         format!("{}/chat/completions", base_url.trim_end_matches('/'))
     };
 
-    let normalized_depth = normalize_thinking_depth(&thinking_depth.unwrap_or_else(|| "auto".to_string()));
+    let normalized_depth =
+        normalize_thinking_depth(&thinking_depth.unwrap_or_else(|| "auto".to_string()));
     let mut body = serde_json::json!({
         "model": model,
         "messages": [
@@ -1244,12 +1270,14 @@ async fn test_api_connection(
         "max_tokens": 5
     });
     if matches!(normalized_depth.as_str(), "low" | "medium" | "high") {
-        body.as_object_mut()
-            .unwrap()
-            .insert("reasoning_effort".to_string(), serde_json::json!(normalized_depth));
+        body.as_object_mut().unwrap().insert(
+            "reasoning_effort".to_string(),
+            serde_json::json!(normalized_depth),
+        );
     }
 
-    let mut req = client
+    let mut req = state
+        .http_client
         .post(&url)
         .header("Content-Type", "application/json")
         .json(&body);
@@ -1281,7 +1309,7 @@ async fn list_api_models(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<String>, String> {
     let resolved_key = resolve_masked_api_key(&*state.db.lock().await, &api_key);
-    direct_api::list_models(&resolved_key, &base_url).await
+    direct_api::list_models(&state.http_client, &resolved_key, &base_url).await
 }
 
 #[tauri::command]
@@ -1362,7 +1390,9 @@ async fn get_active_chat(
 }
 
 #[tauri::command]
-async fn clear_chat_history(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
+async fn clear_chat_history(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
     let saved_memory_id = reset_conversation(&state, false).await?;
     Ok(serde_json::json!({ "saved_memory_id": saved_memory_id }))
 }
@@ -1635,26 +1665,25 @@ async fn eat_files(paths: Vec<String>) -> Result<(), String> {
 async fn get_shortcut_target_path(lnk_path: &str) -> Result<String, String> {
     #[cfg(target_os = "windows")]
     {
-        
         let script = format!(
             "$sh = New-Object -ComObject WScript.Shell; \
              $target = $sh.CreateShortcut('{}').TargetPath; \
              Write-Output $target",
             lnk_path.replace('\'', "''")
         );
-        
+
         let output = tokio::process::Command::new("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command", &script])
             .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
             .output()
             .await
             .map_err(|e| format!("执行 PowerShell 失败: {e}"))?;
-            
+
         if !output.status.success() {
             let err_text = String::from_utf8_lossy(&output.stderr);
             return Err(format!("PowerShell 错误: {}", err_text.trim()));
         }
-        
+
         let target = String::from_utf8_lossy(&output.stdout).trim().to_string();
         Ok(target)
     }
@@ -1674,28 +1703,30 @@ async fn register_shortcut_file(
     if !p.exists() || !p.is_file() {
         return Err("快捷方式文件不存在".to_string());
     }
-    
-    let app_name = p.file_stem()
+
+    let app_name = p
+        .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "未知应用".to_string());
-        
-    let extension = p.extension()
+
+    let extension = p
+        .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-        
+
     if extension != "lnk" {
         return Err("仅支持 Windows 快捷方式 (.lnk) 文件".to_string());
     }
-    
+
     let target_path = get_shortcut_target_path(&path).await?;
     if target_path.trim().is_empty() {
         return Err("解析快捷方式目标路径失败或目标路径为空".to_string());
     }
-    
+
     let db = state.db.lock().await;
     db.save_memory("app_path", &app_name, &target_path)
         .map_err(|e| format!("保存到数据库失败: {e}"))?;
-        
+
     Ok(serde_json::json!({
         "name": app_name,
         "path": target_path,
@@ -1771,7 +1802,7 @@ async fn open_claude_config(app_handle: tauri::AppHandle) -> Result<(), String> 
     #[cfg(target_os = "windows")]
     {
         use std::path::PathBuf;
-        
+
         let mut cmd_path = PathBuf::from("claude.cmd");
         let mut node_dir = None;
 
@@ -1779,7 +1810,10 @@ async fn open_claude_config(app_handle: tauri::AppHandle) -> Result<(), String> 
             let bundled_node_dir = resource_dir.join("node");
             let path_options = vec![
                 bundled_node_dir.join("claude.cmd"),
-                bundled_node_dir.join("node_modules").join(".bin").join("claude.cmd"),
+                bundled_node_dir
+                    .join("node_modules")
+                    .join(".bin")
+                    .join("claude.cmd"),
             ];
 
             for path in path_options {
@@ -1815,7 +1849,7 @@ async fn open_claude_config(app_handle: tauri::AppHandle) -> Result<(), String> 
             .args(["-NoExit", "-Command", &script])
             .spawn()
             .map_err(|e| format!("Failed to spawn PowerShell: {}", e))?;
-        
+
         Ok(())
     }
     #[cfg(not(target_os = "windows"))]
@@ -1852,16 +1886,24 @@ async fn check_claude_status() -> Result<ClaudeStatus, String> {
         });
     }
 
-    let content = std::fs::read_to_string(&path)
-        .map_err(|e| format!("无法读取 Claude 配置文件: {e}"))?;
+    let content =
+        std::fs::read_to_string(&path).map_err(|e| format!("无法读取 Claude 配置文件: {e}"))?;
 
-    let json: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| format!("解析 Claude 配置文件失败: {e}"))?;
+    let json: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("解析 Claude 配置文件失败: {e}"))?;
 
     let env = json.get("env");
-    let token = env.and_then(|e| e.get("ANTHROPIC_AUTH_TOKEN")).and_then(|t| t.as_str());
-    let model = env.and_then(|e| e.get("ANTHROPIC_MODEL")).and_then(|m| m.as_str()).map(|s| s.to_string());
-    let base_url = env.and_then(|e| e.get("ANTHROPIC_BASE_URL")).and_then(|u| u.as_str()).map(|s| s.to_string());
+    let token = env
+        .and_then(|e| e.get("ANTHROPIC_AUTH_TOKEN"))
+        .and_then(|t| t.as_str());
+    let model = env
+        .and_then(|e| e.get("ANTHROPIC_MODEL"))
+        .and_then(|m| m.as_str())
+        .map(|s| s.to_string());
+    let base_url = env
+        .and_then(|e| e.get("ANTHROPIC_BASE_URL"))
+        .and_then(|u| u.as_str())
+        .map(|s| s.to_string());
 
     if let Some(tok) = token {
         if !tok.trim().is_empty() {
@@ -1920,10 +1962,11 @@ fn get_db_path() -> PathBuf {
 }
 
 fn tts_cache_dir(app: &tauri::App) -> PathBuf {
-    let mut path = app
-        .path()
-        .app_data_dir()
-        .unwrap_or_else(|_| dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("ai-desktop-pet"));
+    let mut path = app.path().app_data_dir().unwrap_or_else(|_| {
+        dirs::data_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("ai-desktop-pet")
+    });
     path.push("tts_cache");
     path
 }
@@ -1974,6 +2017,11 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(move |app| {
+            let http_client = reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(15))
+                .build()
+                .expect("Failed to create HTTP client");
+
             let app_state = AppState {
                 ai: tokio::sync::Mutex::new(openclaw::ClaudeAdapter::new()),
                 behavior: tokio::sync::Mutex::new(behavior::BehaviorEngine::new()),
@@ -1993,6 +2041,7 @@ pub fn run() {
                 approved_tool_types: tokio::sync::Mutex::new(std::collections::HashSet::new()),
                 abort_token: tokio::sync::Mutex::new(None),
                 chat_start_id: StdMutex::new(chat_start_id),
+                http_client,
             };
             app.manage(app_state);
 

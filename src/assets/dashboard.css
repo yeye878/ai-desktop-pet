@@ -45,10 +45,11 @@
   color-scheme: light;
 
   /* surfaces */
-  --dash-sidebar-bg: #242333;
-  --dash-sidebar-bg-2: #173f45;
+  --dash-sidebar-bg: #fff8ed;
+  --dash-sidebar-bg-2: #eaf8ff;
+  --dash-shell-bg: #f8fbff;
   --dash-content-bg: #f7fbff;
-  --dash-panel-bg: rgba(255, 255, 255, 0.78);
+  --dash-panel-bg: rgba(255, 255, 255, 0.82);
   --dash-panel-solid: #fffefa;
   --dash-panel-soft: #edf8ff;
   --dash-card-secondary: #fff1ba;
@@ -87,7 +88,7 @@
   --dash-text-primary: #1d2536;
   --dash-text-secondary: #546173;
   --dash-text-muted: #8993a5;
-  --dash-text-inverse: #fffdf4;
+  --dash-text-inverse: #273244;
 
   --dash-focus: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.18);
   --dash-sidebar-width: 252px;
@@ -130,7 +131,12 @@ button {
   height: 100vh;
   display: flex;
   flex-direction: column;
-  background: var(--dash-sidebar-bg);
+  background:
+    url("./art/paper-grain.webp"),
+    linear-gradient(135deg, rgba(255, 216, 92, 0.16), transparent 30%),
+    linear-gradient(225deg, rgba(102, 200, 255, 0.18), transparent 32%),
+    var(--dash-shell-bg);
+  background-size: 520px 520px, auto, auto, auto;
   color: var(--dash-text-primary);
   font-family: "Nunito", "Inter", "SF Pro Display", ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   letter-spacing: 0;
@@ -145,9 +151,12 @@ button {
   justify-content: space-between;
   padding: 0 12px 0 16px;
   background:
-    linear-gradient(90deg, rgba(102, 200, 255, 0.14), rgba(255, 216, 92, 0.10), rgba(255, 147, 199, 0.12)),
-    linear-gradient(180deg, #2b2a40, var(--dash-sidebar-bg));
-  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+    url("./art/paper-grain.webp"),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.88), rgba(239, 251, 255, 0.88)),
+    linear-gradient(135deg, rgba(255, 216, 92, 0.20), rgba(102, 200, 255, 0.16), rgba(255, 147, 199, 0.14));
+  background-size: 420px 420px, auto, auto;
+  border-bottom: 1px solid rgba(24, 42, 72, 0.08);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.82), 0 8px 24px rgba(24, 42, 72, 0.05);
   -webkit-app-region: drag;
   user-select: none;
   flex-shrink: 0;
@@ -158,7 +167,7 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  color: rgba(247, 242, 234, 0.68);
+  color: var(--dash-text-secondary);
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0;
@@ -179,8 +188,8 @@ button {
   font-style: italic;
   font-family: "Cinzel", "Georgia", "Times New Roman", serif;
   letter-spacing: 0;
-  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.16), 0 8px 18px rgba(255, 122, 102, 0.26);
-  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 3px 0 rgba(216, 143, 72, 0.18), 0 8px 18px rgba(255, 122, 102, 0.20);
+  text-shadow: 0 1px 1px rgba(130, 78, 38, 0.18);
 }
 
 .titlebar-controls {
@@ -198,20 +207,20 @@ button {
   justify-content: center;
   border: 0;
   border-radius: 8px;
-  background: transparent;
-  color: rgba(247, 242, 234, 0.50);
+  background: rgba(255, 255, 255, 0.56);
+  color: var(--dash-text-muted);
   cursor: pointer;
   transition: background var(--dash-transition), color var(--dash-transition), transform var(--dash-transition);
 }
 
 .titlebar-btn:hover {
-  background: rgba(255, 255, 255, 0.09);
-  color: #fffaf2;
+  background: rgba(255, 255, 255, 0.96);
+  color: var(--dash-text-primary);
   transform: scale(1.06);
 }
 
 .titlebar-btn.close:hover {
-  background: rgba(216, 92, 73, 0.85);
+  background: rgba(216, 92, 73, 0.90);
   color: #fff;
 }
 
@@ -222,8 +231,11 @@ button {
   min-height: 0;
   overflow: hidden;
   background:
-    linear-gradient(135deg, rgba(142, 230, 168, 0.12), transparent 45%),
-    var(--dash-sidebar-bg);
+    url("./art/paper-grain.webp"),
+    linear-gradient(135deg, rgba(142, 230, 168, 0.16), transparent 42%),
+    linear-gradient(225deg, rgba(255, 147, 199, 0.10), transparent 44%),
+    var(--dash-shell-bg);
+  background-size: 540px 540px, auto, auto, auto;
 }
 
 /* ---------- sidebar ---------- */
@@ -234,13 +246,32 @@ button {
   flex-shrink: 0;
   padding: 20px 14px 16px;
   background:
-    repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.045) 0 1px, transparent 1px 16px),
-    linear-gradient(180deg, var(--dash-sidebar-bg), var(--dash-sidebar-bg-2) 76%, #243037);
-  /* soft gradient divider instead of hard border-right */
-  border-right: none;
-  box-shadow: 1px 0 0 rgba(255, 255, 255, 0.10);
+    url("./art/paper-grain.webp"),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(255, 248, 237, 0.80)),
+    repeating-linear-gradient(135deg, rgba(24, 42, 72, 0.035) 0 1px, transparent 1px 18px),
+    linear-gradient(180deg, var(--dash-sidebar-bg), var(--dash-sidebar-bg-2) 92%);
+  background-size: 460px 460px, auto, auto, auto;
+  border-right: 1px solid rgba(24, 42, 72, 0.08);
+  box-shadow:
+    1px 0 0 rgba(255, 255, 255, 0.80),
+    14px 0 34px rgba(24, 42, 72, 0.05);
   color: var(--dash-text-inverse);
   position: relative;
+  overflow: hidden;
+}
+
+.dashboard-sidebar::before {
+  content: "";
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 122px;
+  height: 118px;
+  background: url("./art/sidebar-mascot.png") center bottom / contain no-repeat;
+  opacity: 0.92;
+  pointer-events: none;
+  filter: drop-shadow(0 10px 18px rgba(24, 42, 72, 0.10));
+  transform: rotate(-2deg);
 }
 
 /* subtle edge glow between sidebar and content */
@@ -251,12 +282,14 @@ button {
   right: -1px;
   bottom: 10%;
   width: 1px;
-  background: linear-gradient(180deg, transparent, rgba(255, 255, 255, 0.07) 30%, rgba(255, 255, 255, 0.07) 70%, transparent);
+  background: linear-gradient(180deg, transparent, rgba(var(--pet-primary-rgb, 204, 112, 82), 0.18) 30%, rgba(102, 200, 255, 0.18) 70%, transparent);
   pointer-events: none;
 }
 
 .sidebar-header {
   padding: 6px 8px 22px;
+  position: relative;
+  z-index: 1;
 }
 
 .sidebar-brand {
@@ -276,15 +309,15 @@ button {
     linear-gradient(135deg, var(--dash-candy-sky), var(--dash-candy-mint));
   color: #fff9f1;
   box-shadow:
-    0 4px 0 rgba(0, 0, 0, 0.18),
-    0 10px 22px rgba(102, 200, 255, 0.22),
-    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+    0 4px 0 rgba(73, 151, 156, 0.16),
+    0 10px 22px rgba(102, 200, 255, 0.20),
+    inset 0 1px 0 rgba(255, 255, 255, 0.36);
   font-size: 20px;
   font-weight: 700;
   font-style: italic;
   font-family: "Cinzel", "Georgia", "Times New Roman", serif;
   letter-spacing: 0;
-  text-shadow: 0 1.5px 3px rgba(0, 0, 0, 0.18);
+  text-shadow: 0 1.5px 3px rgba(44, 90, 99, 0.16);
 }
 
 .brand-title-group {
@@ -295,7 +328,7 @@ button {
 }
 
 .brand-name {
-  color: #fffaf4;
+  color: var(--dash-text-primary);
   font-size: 14.5px;
   font-weight: 700;
   line-height: 1.2;
@@ -303,7 +336,7 @@ button {
 }
 
 .brand-tag {
-  color: rgba(247, 242, 234, 0.42);
+  color: var(--dash-text-muted);
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 0;
@@ -315,6 +348,8 @@ button {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  position: relative;
+  z-index: 1;
 }
 
 .sidebar-item {
@@ -327,7 +362,7 @@ button {
   border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
-  color: rgba(247, 242, 234, 0.56);
+  color: var(--dash-text-secondary);
   cursor: pointer;
   font-size: 13.5px;
   font-weight: 560;
@@ -341,20 +376,22 @@ button {
 }
 
 .sidebar-item:hover {
-  background: rgba(255, 255, 255, 0.10);
-  color: rgba(255, 250, 244, 0.88);
+  background: rgba(255, 255, 255, 0.78);
+  border-color: rgba(24, 42, 72, 0.07);
+  color: var(--dash-text-primary);
   transform: translateX(4px) rotate(-1deg);
 }
 
 .sidebar-item.active {
   background:
-    linear-gradient(135deg, rgba(255, 216, 92, 0.22), rgba(102, 200, 255, 0.14)),
-    rgba(255, 255, 255, 0.10);
-  border-color: rgba(255, 255, 255, 0.14);
-  color: #fffaf4;
+    linear-gradient(135deg, rgba(var(--pet-primary-rgb, 204, 112, 82), 0.12), rgba(102, 200, 255, 0.14)),
+    rgba(255, 255, 255, 0.92);
+  border-color: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.22);
+  color: var(--dash-text-primary);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.12),
-    0 3px 0 rgba(0, 0, 0, 0.14);
+    inset 0 1px 0 rgba(255, 255, 255, 0.70),
+    0 3px 0 rgba(var(--pet-primary-rgb, 204, 112, 82), 0.08),
+    0 14px 26px rgba(24, 42, 72, 0.07);
 }
 
 .sidebar-item.active::before {
@@ -375,16 +412,25 @@ button {
   justify-content: center;
   flex-shrink: 0;
   border-radius: 7px;
-  background: rgba(255, 255, 255, 0.08);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(255, 248, 237, 0.78));
   color: inherit;
   font-size: 13px;
   font-weight: 700;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.75),
+    0 3px 8px rgba(24, 42, 72, 0.05);
+  transform: rotate(-2deg);
+}
+
+.sidebar-item:nth-child(2n) .sidebar-item-icon {
+  transform: rotate(2deg);
 }
 
 .sidebar-divider {
   height: 1px;
   margin: 14px 10px;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.07), transparent);
+  background: linear-gradient(90deg, transparent, rgba(24, 42, 72, 0.10), transparent);
 }
 
 /* --- sidebar footer --- */
@@ -393,6 +439,8 @@ button {
   flex-direction: column;
   gap: 9px;
   padding-top: 14px;
+  position: relative;
+  z-index: 1;
 }
 
 .sidebar-action-btn {
@@ -425,7 +473,7 @@ button {
   background: linear-gradient(135deg, var(--dash-candy-coral), var(--dash-candy-lemon));
   color: #fffaf4;
   box-shadow:
-    0 4px 0 rgba(0, 0, 0, 0.16),
+    0 4px 0 rgba(178, 94, 60, 0.18),
     0 12px 24px rgba(255, 122, 102, 0.22),
     inset 0 1px 0 rgba(255, 255, 255, 0.15);
 }
@@ -445,15 +493,15 @@ button {
 }
 
 .sidebar-action-btn.danger {
-  background: rgba(255, 255, 255, 0.03);
-  border-color: rgba(255, 255, 255, 0.05);
-  color: rgba(247, 242, 234, 0.52);
+  background: rgba(255, 255, 255, 0.58);
+  border-color: rgba(24, 42, 72, 0.07);
+  color: var(--dash-text-muted);
 }
 
 .sidebar-action-btn.danger:hover {
-  background: rgba(216, 92, 73, 0.12);
+  background: rgba(216, 92, 73, 0.10);
   border-color: rgba(216, 92, 73, 0.22);
-  color: #ffd4cd;
+  color: #b84f3f;
   transform: translateY(-1px);
 }
 
@@ -464,12 +512,14 @@ button {
   overflow-y: auto;
   padding: 34px 48px 52px;
   background:
+    url("./art/paper-grain.webp"),
     linear-gradient(135deg, rgba(102, 200, 255, 0.16) 0 18%, transparent 18% 100%),
     linear-gradient(225deg, rgba(255, 216, 92, 0.20) 0 14%, transparent 14% 100%),
     repeating-linear-gradient(90deg, rgba(24, 42, 72, 0.035) 0 1px, transparent 1px 32px),
     repeating-linear-gradient(0deg, rgba(24, 42, 72, 0.03) 0 1px, transparent 1px 32px),
     linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0) 320px),
     var(--dash-content-bg);
+  background-size: 620px 620px, auto, auto, auto, auto, auto, auto;
   scrollbar-width: thin;
   scrollbar-color: rgba(35, 31, 28, 0.18) transparent;
 
@@ -485,6 +535,38 @@ button {
   /* Ensure scrolling content respects rounded corners */
   isolation: isolate;
   position: relative;
+}
+
+.dashboard-content::before {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: min(44vw, 560px);
+  aspect-ratio: 863 / 540;
+  background: url("./art/dashboard-corner.webp") right bottom / contain no-repeat;
+  opacity: 0.46;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.dashboard-content::after {
+  content: "";
+  position: absolute;
+  top: 20px;
+  right: 26px;
+  width: 190px;
+  height: 76px;
+  background: url("./art/chat-tape.png") center / contain no-repeat;
+  opacity: 0.34;
+  pointer-events: none;
+  z-index: 0;
+  transform: rotate(5deg);
+}
+
+.dashboard-content > * {
+  position: relative;
+  z-index: 1;
 }
 
 .dashboard-content::-webkit-scrollbar {
@@ -771,7 +853,7 @@ button {
 }
 
 .dash-msg-thinking {
-  background: rgba(0, 0, 0, 0.035);
+  background: rgba(255, 255, 255, 0.58);
   border-radius: var(--dash-radius-sm);
   padding: 6px 10px;
   margin-bottom: 8px;
@@ -2451,7 +2533,7 @@ button {
   color: rgb(var(--pet-primary-rgb, 204, 112, 82));
   font-size: 13px;
   font-weight: 900;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 2px 8px rgba(24, 42, 72, 0.10);
 }
 
 .dash-skin-name {
@@ -2712,7 +2794,7 @@ button {
   font-style: italic;
   font-family: "Cinzel", "Georgia", "Times New Roman", serif;
   letter-spacing: 0;
-  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.18);
+  text-shadow: 0 2px 4px rgba(130, 78, 38, 0.18);
 }
 
 .about-name {
@@ -2882,7 +2964,7 @@ button {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  background: rgba(24, 42, 72, 0.45);
+  background: rgba(255, 250, 241, 0.72);
   backdrop-filter: blur(12px);
   z-index: 1000;
   border-radius: var(--dash-radius-md);
@@ -2899,17 +2981,17 @@ button {
   width: 90%;
   max-width: 420px;
   height: 240px;
-  border: 3px dashed rgba(255, 255, 255, 0.65);
+  border: 3px dashed rgba(var(--pet-primary-rgb, 204, 112, 82), 0.34);
   border-radius: 16px;
-  color: #ffffff;
-  background: rgba(255, 255, 255, 0.08);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.15);
+  color: var(--dash-text-primary);
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 12px 40px rgba(24, 42, 72, 0.10);
   animation: dashScaleIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .dash-drop-icon {
   font-size: 52px;
-  filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.1));
+  filter: drop-shadow(0 4px 12px rgba(var(--pet-primary-rgb, 204, 112, 82), 0.14));
   animation: dashDropBounce 0.8s ease infinite alternate;
 }
 
@@ -2917,7 +2999,7 @@ button {
   font-size: 16px;
   font-weight: 700;
   letter-spacing: 0.5px;
-  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
 @keyframes dashFadeIn {
@@ -3186,4 +3268,3 @@ button {
 .dash-stop-btn svg {
   flex-shrink: 0;
 }
-

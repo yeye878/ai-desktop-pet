@@ -1338,7 +1338,7 @@ onMounted(async () => {
     if (last && last.role === payload.role && last.content === payload.content) {
       return;
     }
-    chat.addMessage(payload.role, payload.content, undefined, payload.files);
+    chat.addMessage(payload.role, payload.content, undefined, payload.files ?? payload.fileAttachments);
     if (payload.role === "user") {
       chat.isLoading = true;
       thinkingContent.value = "";

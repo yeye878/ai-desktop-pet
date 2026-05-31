@@ -189,6 +189,14 @@ onMounted(async () => {
   await currentWindow.center();
   await currentWindow.setFocus();
 
+  // 自动开始语音识别（如果条件允许）
+  if (canListen.value) {
+    // 短暂延时确保UI渲染完成
+    setTimeout(() => {
+      startListening();
+    }, 300);
+  }
+
   // Start canvas fluid animation loop
   const canvas = fluidCanvasRef.value;
   if (canvas) {

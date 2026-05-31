@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { usePetStore, THEMES, FONT_COLORS, resolveSkinId } from "../stores/pet";
 import {
@@ -527,7 +528,9 @@ async function selectSkin(skinId: string) {
     await invoke("set_skin", { skin: skinId });
     currentSkin.value = skinId;
     pet.skin = skinId;
-    await currentWindow.emit("appearance-changed");
+    // 发送到宠物窗口
+    const petWin = await WebviewWindow.getByLabel("pet");
+    if (petWin) await petWin.emit("appearance-changed");
   } catch (e) {
     alert("皮肤切换失败: " + e);
   }
@@ -538,7 +541,9 @@ async function selectFontColor(value: string) {
     await invoke("set_font_color", { fontColor: value });
     currentFontColor.value = value;
     pet.fontColor = value;
-    await currentWindow.emit("appearance-changed");
+    // 发送到宠物窗口
+    const petWin = await WebviewWindow.getByLabel("pet");
+    if (petWin) await petWin.emit("appearance-changed");
   } catch (e) {
     alert("字体颜色保存失败: " + e);
   }
@@ -563,7 +568,9 @@ async function onAvatarSelected(event: Event) {
   try {
     await invoke("set_user_avatar", { avatar });
     pet.userAvatar = avatar;
-    await currentWindow.emit("appearance-changed");
+    // 发送到宠物窗口
+    const petWin = await WebviewWindow.getByLabel("pet");
+    if (petWin) await petWin.emit("appearance-changed");
   } catch (e) {
     alert("头像保存失败: " + e);
   }
@@ -573,7 +580,9 @@ async function clearAvatar() {
   try {
     await invoke("set_user_avatar", { avatar: "" });
     pet.userAvatar = "";
-    await currentWindow.emit("appearance-changed");
+    // 发送到宠物窗口
+    const petWin = await WebviewWindow.getByLabel("pet");
+    if (petWin) await petWin.emit("appearance-changed");
   } catch (e) {
     alert("头像清除失败: " + e);
   }
