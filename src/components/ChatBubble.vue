@@ -60,6 +60,7 @@ type ApiProfile = {
   confirm_enabled: boolean;
   thinking_depth: string;
   execution_mode: string;
+  search_provider: string;
   auto_approved_tools: string[];
 };
 
@@ -374,6 +375,16 @@ async function sendMessage() {
     files.length > 0
       ? files.map((f) => ({ name: f.name, isImage: f.isImage, extension: f.extension }))
       : undefined;
+  const aiAttachments =
+    files.length > 0
+      ? files.map((f) => ({
+          path: f.path,
+          name: f.name,
+          size: f.size,
+          extension: f.extension,
+          isImage: f.isImage,
+        }))
+      : [];
 
   const displayText = text || "(已发送文件)";
   chat.addMessage("user", displayText, undefined, fileAttachments);
@@ -399,6 +410,7 @@ async function sendMessage() {
   try {
     await invoke<{ started: boolean }>("send_to_ai", {
       message: fullMessage,
+      attachments: aiAttachments,
     });
   } catch (err) {
     chat.isLoading = false;
@@ -808,6 +820,8 @@ function getFileIcon(ext: string): string {
 function buildMessageWithFiles(text: string, files: PendingFile[]): string {
   if (files.length === 0) return text;
 
+  const imageCount = files.filter((f) => f.isImage).length;
+  const regularFileCount = files.length - imageCount;
   const fileLines = files
     .map((f, i) => {
       const typeLabel = f.isImage ? "图片" : "文件";
@@ -816,7 +830,11 @@ function buildMessageWithFiles(text: string, files: PendingFile[]): string {
     })
     .join("\n");
 
-  const fileBlock = `\n\n---\n[用户附加了以下本地文件]\n${fileLines}\n\n提示: 你可以使用 read_file 工具读取上述文件的内容来帮助用户。`;
+  const hints = [
+    imageCount > 0 ? "图片会随消息作为视觉输入发送，请直接观察图片内容。" : "",
+    regularFileCount > 0 ? "普通文件可使用 read_file 工具读取内容。" : "",
+  ].filter(Boolean).join(" ");
+  const fileBlock = `\n\n---\n[用户附加了以下本地文件]\n${fileLines}\n\n提示: ${hints}`;
 
   return text ? `${text}${fileBlock}` : `[用户附加了文件，但没有输入文字]${fileBlock}`;
 }

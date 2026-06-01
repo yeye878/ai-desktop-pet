@@ -27,6 +27,7 @@ type MockApiProfile = {
   confirm_enabled: boolean;
   thinking_depth: string;
   execution_mode: string;
+  search_provider: string;
   auto_approved_tools: string[];
 };
 
@@ -64,6 +65,7 @@ let apiProfiles: MockApiProfile[] = [
     confirm_enabled: true,
     thinking_depth: "auto",
     execution_mode: "normal",
+    search_provider: "bing",
     auto_approved_tools: [],
   },
   {
@@ -75,6 +77,7 @@ let apiProfiles: MockApiProfile[] = [
     confirm_enabled: true,
     thinking_depth: "low",
     execution_mode: "custom",
+    search_provider: "bing",
     auto_approved_tools: ["read_file", "list_directory"],
   },
 ];
@@ -145,6 +148,7 @@ function upsertMockApiProfile(args: MockPayload) {
     confirm_enabled: Boolean(args?.confirmEnabled ?? args?.confirm_enabled ?? true),
     thinking_depth: readArg(args, "thinkingDepth", "thinking_depth", "auto"),
     execution_mode: readArg(args, "executionMode", "execution_mode", getActiveApiProfile()?.execution_mode || "normal"),
+    search_provider: readArg(args, "searchProvider", "search_provider", getActiveApiProfile()?.search_provider || "bing"),
     auto_approved_tools: Array.isArray(args?.autoApprovedTools)
       ? (args?.autoApprovedTools as string[])
       : Array.isArray(args?.auto_approved_tools)

@@ -52,6 +52,7 @@ type ApiProfile = {
   confirm_enabled: boolean;
   thinking_depth: string;
   execution_mode: string;
+  search_provider: string;
   auto_approved_tools: string[];
 };
 
@@ -101,6 +102,7 @@ const apiConfig = ref({
   confirm_enabled: true,
   thinking_depth: "auto",
   execution_mode: "normal",
+  search_provider: "bing",
   auto_approved_tools: [] as string[],
 });
 const apiProfiles = ref<ApiProfile[]>([]);
@@ -240,6 +242,11 @@ const executionModeOptions = [
   { value: "custom", label: "自定义模式", desc: "自行选择免确认工具" },
 ];
 
+const searchProviderOptions = [
+  { value: "bing", label: "Bing", desc: "国内网络推荐使用" },
+  { value: "duckduckgo", label: "DuckDuckGo", desc: "海外网络可选" },
+];
+
 const toolPermissionOptions = [
   { id: "read_file", label: "读取文件" },
   { id: "write_file", label: "写入文件" },
@@ -272,6 +279,10 @@ const contextUsageLabel = computed(() => {
 
 function thinkingDepthLabel(value: string) {
   return thinkingDepthOptions.find((item) => item.value === value)?.label || "自动";
+}
+
+function searchProviderLabel(value: string) {
+  return searchProviderOptions.find((item) => item.value === value)?.label || "Bing";
 }
 
 const quickActions = [
@@ -386,6 +397,7 @@ function applyApiConfig(config: Partial<ApiProfile>) {
     confirm_enabled: config.confirm_enabled !== false,
     thinking_depth: config.thinking_depth || "auto",
     execution_mode: config.execution_mode || (config.confirm_enabled === false ? "unreviewed" : "normal"),
+    search_provider: (config as any).search_provider || "bing",
     auto_approved_tools: Array.isArray(config.auto_approved_tools) ? config.auto_approved_tools : [],
   };
   activeApiProfileId.value = apiConfig.value.id;
@@ -445,6 +457,7 @@ async function saveApiConfig(options: SaveApiConfigOptions = {}) {
       confirmEnabled: apiConfig.value.confirm_enabled,
       thinkingDepth: apiConfig.value.thinking_depth,
       executionMode: apiConfig.value.execution_mode,
+      searchProvider: apiConfig.value.search_provider,
       autoApprovedTools: apiConfig.value.auto_approved_tools,
       profileId: options.profileId ?? apiConfig.value.id,
       profileName: options.profileName ?? (apiConfig.value.name || model),
@@ -480,6 +493,16 @@ async function updateExecutionMode(value: string) {
     await saveApiConfig({ quiet: true });
   } catch (e) {
     testResult.value = { success: false, message: "执行模式保存失败: " + e };
+  }
+}
+
+async function updateSearchProvider(value: string) {
+  apiConfig.value.search_provider = value;
+  if (!apiConfig.value.id || !apiConfig.value.base_url || !apiConfig.value.model) return;
+  try {
+    await saveApiConfig({ quiet: true });
+  } catch (e) {
+    testResult.value = { success: false, message: "搜索源保存失败: " + e };
   }
 }
 
@@ -577,6 +600,7 @@ function newApiProfileDraft() {
     confirm_enabled: true,
     thinking_depth: "auto",
     execution_mode: "normal",
+    search_provider: "bing",
     auto_approved_tools: [],
   };
   testResult.value = { success: false, message: "" };
@@ -1080,6 +1104,8 @@ function getFileIcon(ext: string): string {
 function buildMessageWithFiles(text: string, files: PendingFile[]): string {
   if (files.length === 0) return text;
 
+  const imageCount = files.filter((f) => f.isImage).length;
+  const regularFileCount = files.length - imageCount;
   const fileLines = files
     .map((f, i) => {
       const typeLabel = f.isImage ? "图片" : "文件";
@@ -1088,7 +1114,11 @@ function buildMessageWithFiles(text: string, files: PendingFile[]): string {
     })
     .join("\n");
 
-  const fileBlock = `\n\n---\n[用户附加了以下本地文件]\n${fileLines}\n\n提示: 你可以使用 read_file 工具读取上述文件的内容来帮助用户。`;
+  const hints = [
+    imageCount > 0 ? "图片会随消息作为视觉输入发送，请直接观察图片内容。" : "",
+    regularFileCount > 0 ? "普通文件可使用 read_file 工具读取内容。" : "",
+  ].filter(Boolean).join(" ");
+  const fileBlock = `\n\n---\n[用户附加了以下本地文件]\n${fileLines}\n\n提示: ${hints}`;
 
   return text ? `${text}${fileBlock}` : `[用户附加了文件，但没有输入文字]${fileBlock}`;
 }
@@ -1154,6 +1184,16 @@ async function sendDashboardMessage() {
     files.length > 0
       ? files.map((f) => ({ name: f.name, isImage: f.isImage, extension: f.extension }))
       : undefined;
+  const aiAttachments =
+    files.length > 0
+      ? files.map((f) => ({
+          path: f.path,
+          name: f.name,
+          size: f.size,
+          extension: f.extension,
+          isImage: f.isImage,
+        }))
+      : [];
 
   const displayText = text || "(已发送文件)";
   chat.addMessage("user", displayText, undefined, fileAttachments);
@@ -1170,7 +1210,7 @@ async function sendDashboardMessage() {
   await currentWindow.emit("sync-chat-message", { role: "user", content: displayText, files: fileAttachments });
 
   try {
-    await invoke("send_to_ai", { message: fullMessage });
+    await invoke("send_to_ai", { message: fullMessage, attachments: aiAttachments });
   } catch (err) {
     chat.isLoading = false;
     streamingAnswer.value = "";
@@ -2310,6 +2350,7 @@ onUnmounted(() => {
                       <span class="dash-profile-meta">{{ profile.model }} · {{ profile.base_url }}</span>
                       <span class="dash-profile-badges">
                         <span>思考 {{ thinkingDepthLabel(profile.thinking_depth) }}</span>
+                        <span>搜索 {{ searchProviderLabel(profile.search_provider) }}</span>
                         <span>{{ profile.has_api_key ? 'API Key 已隐藏' : '无 API Key' }}</span>
                       </span>
                     </button>
@@ -2388,6 +2429,19 @@ onUnmounted(() => {
                     </button>
                   </div>
                   <p class="dash-hint compact">切换后会立即保存到当前模型配置，并在下一次直连 API 请求中生效。</p>
+                </div>
+                <div class="dash-form-group">
+                  <label>优先搜索源</label>
+                  <select
+                    class="dash-select"
+                    :value="apiConfig.search_provider"
+                    @change="updateSearchProvider(($event.target as HTMLSelectElement).value)"
+                  >
+                    <option v-for="item in searchProviderOptions" :key="item.value" :value="item.value">
+                      {{ item.label }} - {{ item.desc }}
+                    </option>
+                  </select>
+                  <p class="dash-hint compact">国内网络推荐使用 Bing；DuckDuckGo 在国内网络下容易超时。</p>
                 </div>
                 <div class="dash-form-group">
                   <label>执行模式</label>

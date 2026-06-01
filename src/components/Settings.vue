@@ -37,6 +37,7 @@ type ApiConfig = {
   confirm_enabled: boolean;
   thinking_depth: string;
   execution_mode: string;
+  search_provider: string;
   auto_approved_tools: string[];
 };
 
@@ -56,6 +57,7 @@ const apiConfig = ref<ApiConfig>({
   confirm_enabled: true,
   thinking_depth: "auto",
   execution_mode: "normal",
+  search_provider: "bing",
   auto_approved_tools: [],
 });
 const apiProfiles = ref<ApiProfile[]>([]);
@@ -157,8 +159,17 @@ const executionModeOptions = [
   { value: "custom", label: "自定义模式" },
 ];
 
+const searchProviderOptions = [
+  { value: "bing", label: "Bing", desc: "国内网络推荐使用" },
+  { value: "duckduckgo", label: "DuckDuckGo", desc: "海外网络可选" },
+];
+
 function thinkingDepthLabel(value: string) {
   return thinkingDepthOptions.find((item) => item.value === value)?.label || "自动";
+}
+
+function searchProviderLabel(value: string) {
+  return searchProviderOptions.find((item) => item.value === value)?.label || "Bing";
 }
 
 async function loadSystemInfo() {
@@ -263,6 +274,7 @@ function applyApiConfig(config: Partial<ApiConfig>) {
     confirm_enabled: config.confirm_enabled !== false,
     thinking_depth: config.thinking_depth || "auto",
     execution_mode: config.execution_mode || (config.confirm_enabled === false ? "unreviewed" : "normal"),
+    search_provider: config.search_provider || "bing",
     auto_approved_tools: Array.isArray(config.auto_approved_tools) ? config.auto_approved_tools : [],
   };
   activeApiProfileId.value = apiConfig.value.id;
@@ -340,6 +352,7 @@ async function saveApiConfig(options: SaveApiConfigOptions = {}) {
       confirmEnabled: apiConfig.value.confirm_enabled,
       thinkingDepth: apiConfig.value.thinking_depth,
       executionMode: apiConfig.value.execution_mode,
+      searchProvider: apiConfig.value.search_provider,
       autoApprovedTools: apiConfig.value.auto_approved_tools,
       profileId: options.profileId ?? apiConfig.value.id,
       profileName: options.profileName ?? (apiConfig.value.name || model),
@@ -367,6 +380,16 @@ async function updateThinkingDepth(value: string) {
     await saveApiConfig({ quiet: true });
   } catch (e) {
     testResult.value = { success: false, message: "思考深度保存失败: " + e };
+  }
+}
+
+async function updateSearchProvider(value: string) {
+  apiConfig.value.search_provider = value;
+  if (!apiConfig.value.id || !apiConfig.value.base_url || !apiConfig.value.model) return;
+  try {
+    await saveApiConfig({ quiet: true });
+  } catch (e) {
+    testResult.value = { success: false, message: "搜索源保存失败: " + e };
   }
 }
 
@@ -465,6 +488,7 @@ function newApiProfileDraft() {
     confirm_enabled: true,
     thinking_depth: "auto",
     execution_mode: "normal",
+    search_provider: "bing",
     auto_approved_tools: [],
   };
   testResult.value = { success: false, message: "" };
@@ -1162,6 +1186,7 @@ onUnmounted(() => {
                   <span class="profile-meta">{{ profile.model }} · {{ profile.base_url }}</span>
                   <span class="profile-badges">
                     <span>思考 {{ thinkingDepthLabel(profile.thinking_depth) }}</span>
+                    <span>搜索 {{ searchProviderLabel(profile.search_provider) }}</span>
                     <span>{{ profile.has_api_key ? 'API Key 已隐藏' : '无 API Key' }}</span>
                   </span>
                 </button>
@@ -1273,6 +1298,19 @@ onUnmounted(() => {
                   </button>
                 </div>
                 <p class="hint compact">切换后会保存到当前模型，并在下一次直连 API 请求中生效。</p>
+              </div>
+
+              <div class="form-group">
+                <label>优先搜索源</label>
+                <select
+                  :value="apiConfig.search_provider"
+                  @change="updateSearchProvider(($event.target as HTMLSelectElement).value)"
+                >
+                  <option v-for="item in searchProviderOptions" :key="item.value" :value="item.value">
+                    {{ item.label }} - {{ item.desc }}
+                  </option>
+                </select>
+                <p class="hint compact">国内网络推荐使用 Bing；DuckDuckGo 在国内网络下容易超时。</p>
               </div>
 
               <div class="form-group">

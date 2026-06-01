@@ -87,6 +87,7 @@ const API_PROFILES_KEY: &str = "api_model_profiles";
 const ACTIVE_API_PROFILE_KEY: &str = "active_api_profile_id";
 const API_THINKING_DEPTH_KEY: &str = "api_thinking_depth";
 const API_EXECUTION_MODE_KEY: &str = "api_execution_mode";
+const API_SEARCH_PROVIDER_KEY: &str = "api_search_provider";
 const API_AUTO_APPROVED_TOOLS_KEY: &str = "api_auto_approved_tools";
 const MEMORY_CATEGORY_MANUAL: &str = "manual";
 const MEMORY_CATEGORY_CONVERSATION: &str = "conversation";
@@ -107,6 +108,13 @@ fn normalize_execution_mode(value: &str) -> String {
     match value.trim().to_lowercase().as_str() {
         "plan" | "normal" | "unreviewed" | "custom" => value.trim().to_lowercase(),
         _ => "normal".to_string(),
+    }
+}
+
+fn normalize_search_provider(value: &str) -> String {
+    match value.trim().to_lowercase().as_str() {
+        "duckduckgo" | "duck" | "ddg" => "duckduckgo".to_string(),
+        _ => "bing".to_string(),
     }
 }
 
@@ -150,6 +158,7 @@ fn public_api_profile(profile: &direct_api::DirectApiConfig) -> serde_json::Valu
         "confirm_enabled": profile.confirm_enabled,
         "thinking_depth": profile.thinking_depth.clone(),
         "execution_mode": profile.execution_mode.clone(),
+        "search_provider": profile.search_provider.clone(),
         "auto_approved_tools": profile.auto_approved_tools.clone(),
     })
 }
@@ -166,6 +175,7 @@ fn normalize_api_profile(mut profile: direct_api::DirectApiConfig) -> direct_api
     profile.api_key = profile.api_key.trim().to_string();
     profile.thinking_depth = normalize_thinking_depth(&profile.thinking_depth);
     profile.execution_mode = normalize_execution_mode(&profile.execution_mode);
+    profile.search_provider = normalize_search_provider(&profile.search_provider);
     profile.auto_approved_tools = normalize_tool_list(&profile.auto_approved_tools);
 
     if profile.model.is_empty() {
@@ -242,6 +252,11 @@ fn load_api_profiles(db: &storage::Database) -> Vec<direct_api::DirectApiConfig>
             .flatten()
             .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
             .unwrap_or_default();
+        let search_provider = db
+            .get_setting(API_SEARCH_PROVIDER_KEY)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "bing".to_string());
 
         let default_profile = normalize_api_profile(direct_api::DirectApiConfig {
             id: "default".to_string(),
@@ -252,6 +267,7 @@ fn load_api_profiles(db: &storage::Database) -> Vec<direct_api::DirectApiConfig>
             confirm_enabled,
             thinking_depth,
             execution_mode,
+            search_provider,
             auto_approved_tools,
         });
 
@@ -334,6 +350,8 @@ fn save_legacy_api_settings(
         .map_err(|e| e.to_string())?;
     db.save_setting(API_EXECUTION_MODE_KEY, &profile.execution_mode)
         .map_err(|e| e.to_string())?;
+    db.save_setting(API_SEARCH_PROVIDER_KEY, &profile.search_provider)
+        .map_err(|e| e.to_string())?;
     let tools_json =
         serde_json::to_string(&profile.auto_approved_tools).map_err(|e| e.to_string())?;
     db.save_setting(API_AUTO_APPROVED_TOOLS_KEY, &tools_json)
@@ -360,6 +378,30 @@ fn attach_execution_mode_prompt(
         }
     };
     format!("{}\n\n{}", system_prompt, mode_note)
+}
+
+fn attach_runtime_identity_prompt(
+    system_prompt: String,
+    config: &direct_api::DirectApiConfig,
+) -> String {
+    let model = config.model.trim();
+    if model.is_empty() {
+        return system_prompt;
+    }
+
+    let profile_name = config.name.trim();
+    let profile_note = if !profile_name.is_empty() && profile_name != model {
+        format!("，配置名称是「{}」", profile_name)
+    } else {
+        String::new()
+    };
+
+    let identity_note = format!(
+        "当前运行环境：你正在通过本应用的直连 API 配置响应用户。请求使用的模型 ID 是「{}」{}。如果用户询问“你是什么模型”或类似问题，请回答这个模型 ID；同时说明这代表应用请求的模型配置，不保证服务商内部没有路由或别名映射。不要主动透露 API Key 或完整接口地址。",
+        model, profile_note
+    );
+
+    format!("{}\n\n{}", system_prompt, identity_note)
 }
 
 fn upsert_api_profile(
@@ -641,6 +683,7 @@ mod tests {
             confirm_enabled: true,
             thinking_depth: "HIGH".to_string(),
             execution_mode: "custom".to_string(),
+            search_provider: "DuckDuckGo".to_string(),
             auto_approved_tools: vec!["write_file".to_string(), "write_file".to_string()],
         });
 
@@ -650,7 +693,31 @@ mod tests {
         assert_eq!(profile.base_url, "https://api.example.com/v1");
         assert_eq!(profile.thinking_depth, "high");
         assert_eq!(profile.execution_mode, "custom");
+        assert_eq!(profile.search_provider, "duckduckgo");
         assert_eq!(profile.auto_approved_tools, vec!["write_file"]);
+    }
+
+    #[test]
+    fn runtime_identity_prompt_exposes_model_without_secrets() {
+        let profile = direct_api::DirectApiConfig {
+            id: "auto-code".to_string(),
+            name: "Auto Code".to_string(),
+            api_key: "sk-secret-value".to_string(),
+            base_url: "https://api.secret.example/v1".to_string(),
+            model: "auto-code-v1".to_string(),
+            confirm_enabled: true,
+            thinking_depth: "auto".to_string(),
+            execution_mode: "normal".to_string(),
+            search_provider: "bing".to_string(),
+            auto_approved_tools: Vec::new(),
+        };
+
+        let prompt = attach_runtime_identity_prompt("base prompt".to_string(), &profile);
+
+        assert!(prompt.contains("auto-code-v1"));
+        assert!(prompt.contains("Auto Code"));
+        assert!(!prompt.contains("sk-secret-value"));
+        assert!(!prompt.contains("api.secret.example"));
     }
 }
 
@@ -728,6 +795,7 @@ async fn reset_conversation(
 #[tauri::command]
 async fn send_to_ai(
     message: String,
+    attachments: Option<Vec<direct_api::UserAttachment>>,
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
@@ -768,12 +836,20 @@ async fn send_to_ai(
     }
 
     let _ = app_handle.emit("ai-started", &message);
-    tauri::async_runtime::spawn(run_ai_message(app_handle, message));
+    tauri::async_runtime::spawn(run_ai_message(
+        app_handle,
+        message,
+        attachments.unwrap_or_default(),
+    ));
 
     Ok(serde_json::json!({ "started": true }))
 }
 
-async fn run_ai_message(app_handle: tauri::AppHandle, message: String) {
+async fn run_ai_message(
+    app_handle: tauri::AppHandle,
+    message: String,
+    attachments: Vec<direct_api::UserAttachment>,
+) {
     let state = app_handle.state::<AppState>();
     let backend = state.backend_type.lock().await.clone();
 
@@ -802,6 +878,7 @@ async fn run_ai_message(app_handle: tauri::AppHandle, message: String) {
             let personality = state.personality.lock().await.clone();
             let profession = state.profession.lock().await.clone();
             let base = openclaw::build_system_prompt(&personality, &profession);
+            let base = attach_runtime_identity_prompt(base, &config);
             let base = attach_execution_mode_prompt(base, &config);
             let memory_context = memory_context_for_message(&state, &message).await;
             let base = attach_memory_context(base, memory_context);
@@ -840,6 +917,7 @@ async fn run_ai_message(app_handle: tauri::AppHandle, message: String) {
             config,
             system_prompt,
             chat_history,
+            attachments,
         )
         .await;
 
@@ -1099,6 +1177,7 @@ async fn set_api_config(
     confirm_enabled: bool,
     thinking_depth: Option<String>,
     execution_mode: Option<String>,
+    search_provider: Option<String>,
     auto_approved_tools: Option<Vec<String>>,
     profile_id: Option<String>,
     profile_name: Option<String>,
@@ -1142,6 +1221,8 @@ async fn set_api_config(
             thinking_depth: thinking_depth.unwrap_or_else(|| "auto".to_string()),
             execution_mode: execution_mode
                 .unwrap_or_else(|| existing_profile.execution_mode.clone()),
+            search_provider: search_provider
+                .unwrap_or_else(|| existing_profile.search_provider.clone()),
             auto_approved_tools: auto_approved_tools
                 .unwrap_or_else(|| existing_profile.auto_approved_tools.clone()),
         },
@@ -1172,6 +1253,7 @@ async fn get_api_config(state: tauri::State<'_, AppState>) -> Result<serde_json:
         "confirm_enabled": profile.confirm_enabled,
         "thinking_depth": profile.thinking_depth,
         "execution_mode": profile.execution_mode,
+        "search_provider": profile.search_provider,
         "auto_approved_tools": profile.auto_approved_tools,
     }))
 }

@@ -1,15 +1,21 @@
 use crate::direct_api::api_client::{
-    call_chat_completions_stream, ChatCompletionChunk, DirectApiConfig, SseParser,
+    call_chat_completions_stream, ChatCompletionChunk, DirectApiConfig, SseParser, UserAttachment,
 };
 use crate::direct_api::tools::{execute_tool, tool_definitions};
 use crate::storage::ChatMessage;
 use crate::AppState;
+use base64::Engine;
 use futures_util::StreamExt;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::path::Path;
 use std::time::Duration;
 use tauri::{Emitter, Manager};
+
+const MAX_AGENT_TURNS: u32 = 24;
+const MAX_VISION_IMAGES: usize = 5;
+const MAX_VISION_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
 
 #[derive(Clone, Serialize)]
 struct ToolConfirmPayload {
@@ -51,6 +57,7 @@ pub async fn run_direct_api_agent(
     config: DirectApiConfig,
     system_prompt: String,
     chat_history: Vec<ChatMessage>,
+    attachments: Vec<UserAttachment>,
 ) {
     let state = app_handle.state::<AppState>();
 
@@ -69,20 +76,19 @@ pub async fn run_direct_api_agent(
 
     api_messages.push(json!({
         "role": "user",
-        "content": message
+        "content": build_user_content(&message, &attachments).await
     }));
 
     let mut current_turn = 0;
-    let max_turns = 10;
     let mut full_text = String::new();
     let mut full_thinking = String::new();
 
     loop {
         current_turn += 1;
-        if current_turn > max_turns {
-            let limit_msg = "\n[已达到最大迭代限制 10 轮]";
-            full_text.push_str(limit_msg);
-            let _ = app_handle.emit("ai-thinking", limit_msg);
+        if current_turn > MAX_AGENT_TURNS {
+            let limit_msg = format!("\n[已达到最大迭代限制 {MAX_AGENT_TURNS} 轮]");
+            full_text.push_str(&limit_msg);
+            let _ = app_handle.emit("ai-thinking", &limit_msg);
             break;
         }
 
@@ -305,7 +311,7 @@ pub async fn run_direct_api_agent(
                     None,
                     Some(true),
                 );
-                let output = execute_tool(&tc_name, &tc_args).await;
+                let output = execute_tool(&tc_name, &tc_args, &config.search_provider).await;
                 emit_tool_event(
                     &app_handle,
                     &tc_id,
@@ -420,6 +426,127 @@ pub async fn run_direct_api_agent(
             "thinking": if full_thinking.is_empty() { None } else { Some(full_thinking) }
         }),
     );
+}
+
+async fn build_user_content(message: &str, attachments: &[UserAttachment]) -> Value {
+    let image_attachments = attachments.iter().filter(|attachment| {
+        attachment.is_image || image_mime_for_attachment(attachment).is_some()
+    });
+    let mut image_parts = Vec::new();
+    let mut warnings = Vec::new();
+
+    for attachment in image_attachments {
+        if image_parts.len() >= MAX_VISION_IMAGES {
+            warnings.push(format!(
+                "{} 未作为视觉输入发送：最多支持同时识别 {MAX_VISION_IMAGES} 张图片",
+                attachment_display_name(attachment)
+            ));
+            continue;
+        }
+
+        match attachment_to_image_url(attachment).await {
+            Ok(url) => {
+                image_parts.push(json!({
+                    "type": "image_url",
+                    "image_url": { "url": url }
+                }));
+            }
+            Err(warning) => warnings.push(warning),
+        }
+    }
+
+    let text = append_attachment_warnings(message, &warnings);
+    if image_parts.is_empty() {
+        return Value::String(text);
+    }
+
+    let mut content = vec![json!({
+        "type": "text",
+        "text": text
+    })];
+    content.extend(image_parts);
+    Value::Array(content)
+}
+
+fn append_attachment_warnings(message: &str, warnings: &[String]) -> String {
+    if warnings.is_empty() {
+        return message.to_string();
+    }
+
+    format!("{}\n\n[系统提示：{}]", message, warnings.join("；"))
+}
+
+async fn attachment_to_image_url(attachment: &UserAttachment) -> Result<String, String> {
+    let mime = image_mime_for_attachment(attachment).ok_or_else(|| {
+        format!(
+            "{} 未作为视觉输入发送：当前仅支持 PNG、JPEG、WEBP、GIF 图片",
+            attachment_display_name(attachment)
+        )
+    })?;
+
+    if attachment.path.trim().is_empty() {
+        return Err(format!(
+            "{} 未作为视觉输入发送：缺少本地路径",
+            attachment_display_name(attachment)
+        ));
+    }
+
+    let metadata = tokio::fs::metadata(&attachment.path)
+        .await
+        .map_err(|e| format!("{} 无法读取：{e}", attachment_display_name(attachment)))?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "{} 未作为视觉输入发送：路径不是文件",
+            attachment_display_name(attachment)
+        ));
+    }
+    if metadata.len() > MAX_VISION_IMAGE_BYTES {
+        return Err(format!(
+            "{} 未作为视觉输入发送：图片超过 10MB",
+            attachment_display_name(attachment)
+        ));
+    }
+
+    let bytes = tokio::fs::read(&attachment.path)
+        .await
+        .map_err(|e| format!("{} 读取失败：{e}", attachment_display_name(attachment)))?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(format!("data:{mime};base64,{encoded}"))
+}
+
+fn image_mime_for_attachment(attachment: &UserAttachment) -> Option<&'static str> {
+    match attachment_extension(attachment).as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "webp" => Some("image/webp"),
+        "gif" => Some("image/gif"),
+        _ => None,
+    }
+}
+
+fn attachment_extension(attachment: &UserAttachment) -> String {
+    let explicit = attachment.extension.trim().trim_start_matches('.');
+    if !explicit.is_empty() {
+        return explicit.to_lowercase();
+    }
+
+    Path::new(&attachment.path)
+        .extension()
+        .map(|value| value.to_string_lossy().to_lowercase())
+        .unwrap_or_default()
+}
+
+fn attachment_display_name(attachment: &UserAttachment) -> String {
+    let name = attachment.name.trim();
+    if !name.is_empty() {
+        return name.to_string();
+    }
+
+    Path::new(&attachment.path)
+        .file_name()
+        .map(|value| value.to_string_lossy().into_owned())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "图片附件".to_string())
 }
 
 fn reasoning_delta_text(delta: &crate::direct_api::api_client::Delta) -> Option<String> {
@@ -737,4 +864,77 @@ async fn send_aborted(app_handle: &tauri::AppHandle, full_thinking: &str) {
             "aborted": true
         }),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_attachment(path: String, extension: &str, is_image: bool) -> UserAttachment {
+        UserAttachment {
+            path,
+            name: format!("sample.{extension}"),
+            extension: extension.to_string(),
+            is_image,
+        }
+    }
+
+    fn temp_image_path(extension: &str) -> String {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!("ai-desktop-pet-vision-{nonce}.{extension}"))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    #[tokio::test]
+    async fn keeps_plain_text_without_image_attachments() {
+        let content = build_user_content("hello", &[]).await;
+        assert_eq!(content, Value::String("hello".to_string()));
+    }
+
+    #[tokio::test]
+    async fn builds_multimodal_content_for_supported_image_attachment() {
+        let path = temp_image_path("png");
+        tokio::fs::write(&path, b"fake-png-bytes").await.unwrap();
+
+        let content = build_user_content(
+            "describe this",
+            &[test_attachment(path.clone(), "png", true)],
+        )
+        .await;
+        let parts = content.as_array().expect("multimodal content");
+
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[0]["text"], "describe this");
+        assert_eq!(parts[1]["type"], "image_url");
+        assert!(parts[1]["image_url"]["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
+
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn warns_without_multimodal_content_for_unsupported_image_format() {
+        let path = temp_image_path("svg");
+        tokio::fs::write(&path, b"<svg />").await.unwrap();
+
+        let content = build_user_content(
+            "describe this",
+            &[test_attachment(path.clone(), "svg", true)],
+        )
+        .await;
+        let text = content.as_str().expect("plain text fallback");
+
+        assert!(text.contains("describe this"));
+        assert!(text.contains("当前仅支持 PNG、JPEG、WEBP、GIF 图片"));
+
+        let _ = tokio::fs::remove_file(path).await;
+    }
 }

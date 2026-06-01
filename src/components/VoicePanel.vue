@@ -155,7 +155,7 @@ async function sendTranscript() {
   pet.setState("thinking");
 
   try {
-    await invoke<{ started: boolean }>("send_to_ai", { message });
+    await invoke<{ started: boolean }>("send_to_ai", { message, attachments: [] });
     await currentWindow.emit("voice-message-sent", message);
   } catch (err) {
     chat.isLoading = false;

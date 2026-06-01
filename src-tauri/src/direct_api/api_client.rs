@@ -13,7 +13,20 @@ pub struct DirectApiConfig {
     pub confirm_enabled: bool,
     pub thinking_depth: String,
     pub execution_mode: String,
+    pub search_provider: String,
     pub auto_approved_tools: Vec<String>,
+}
+
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct UserAttachment {
+    pub path: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub extension: String,
+    #[serde(default)]
+    pub is_image: bool,
 }
 
 impl Default for DirectApiConfig {
@@ -27,6 +40,7 @@ impl Default for DirectApiConfig {
             confirm_enabled: true,
             thinking_depth: "auto".to_string(),
             execution_mode: "normal".to_string(),
+            search_provider: "bing".to_string(),
             auto_approved_tools: Vec::new(),
         }
     }
