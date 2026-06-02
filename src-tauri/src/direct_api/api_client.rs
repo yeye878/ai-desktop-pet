@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::time::Duration;
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -15,6 +16,7 @@ pub struct DirectApiConfig {
     pub execution_mode: String,
     pub search_provider: String,
     pub auto_approved_tools: Vec<String>,
+    pub stream_mode: String,
 }
 
 #[derive(Clone, Deserialize, Debug)]
@@ -42,6 +44,7 @@ impl Default for DirectApiConfig {
             execution_mode: "normal".to_string(),
             search_provider: "bing".to_string(),
             auto_approved_tools: Vec::new(),
+            stream_mode: "auto".to_string(),
         }
     }
 }
@@ -80,6 +83,33 @@ pub struct ChatCompletionChunk {
     pub choices: Vec<Choice>,
 }
 
+/// 非流式响应的工具调用
+#[derive(Debug, Deserialize, Clone)]
+pub struct NonStreamToolCall {
+    pub id: Option<String>,
+    #[serde(default = "default_tool_type")]
+    pub r#type: String,
+    pub function: NonStreamFunctionCall,
+}
+
+fn default_tool_type() -> String {
+    "function".to_string()
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct NonStreamFunctionCall {
+    pub name: String,
+    pub arguments: String,
+}
+
+/// 非流式响应的解析结果
+#[derive(Debug, Default)]
+pub struct NonStreamResult {
+    pub content: Option<String>,
+    pub tool_calls: Vec<NonStreamToolCall>,
+    pub finish_reason: Option<String>,
+}
+
 pub struct SseParser {
     buffer: String,
 }
@@ -113,17 +143,51 @@ impl SseParser {
     }
 }
 
+/// 智能构建 chat completions URL
+/// - 已包含 /chat/completions → 直接使用
+/// - 已包含版本路径（/v1, /v2 等）→ 追加 /chat/completions
+/// - 仅域名 → 追加 /v1/chat/completions
+pub fn build_chat_completions_url(base_url: &str) -> String {
+    let url = base_url.trim().trim_end_matches('/');
+
+    if url.ends_with("/chat/completions") {
+        return url.to_string();
+    }
+
+    // 检测是否已包含版本路径
+    let lower = url.to_lowercase();
+    if lower.contains("/v1") || lower.contains("/v2") || lower.contains("/v3") {
+        return format!("{}/chat/completions", url);
+    }
+
+    // 默认追加 /v1/chat/completions（OpenAI 兼容格式）
+    format!("{}/v1/chat/completions", url)
+}
+
+/// 智能构建 models URL
+pub fn build_models_url(base_url: &str) -> String {
+    let url = base_url.trim().trim_end_matches('/');
+
+    if url.ends_with("/models") {
+        return url.to_string();
+    }
+
+    // 检测是否已包含版本路径
+    let lower = url.to_lowercase();
+    if lower.contains("/v1") || lower.contains("/v2") || lower.contains("/v3") {
+        return format!("{}/models", url);
+    }
+
+    format!("{}/v1/models", url)
+}
+
 pub async fn call_chat_completions_stream(
     client: &reqwest::Client,
     config: &DirectApiConfig,
     messages: &Vec<serde_json::Value>,
     tools: Option<Vec<serde_json::Value>>,
 ) -> Result<reqwest::Response, String> {
-    let url = if config.base_url.ends_with("/chat/completions") {
-        config.base_url.clone()
-    } else {
-        format!("{}/chat/completions", config.base_url.trim_end_matches('/'))
-    };
+    let url = build_chat_completions_url(&config.base_url);
 
     let mut body = json!({
         "model": config.model,
@@ -169,6 +233,184 @@ pub async fn call_chat_completions_stream(
     Ok(res)
 }
 
+pub async fn call_chat_completions_non_stream(
+    client: &reqwest::Client,
+    config: &DirectApiConfig,
+    messages: &Vec<serde_json::Value>,
+    tools: Option<Vec<serde_json::Value>>,
+) -> Result<NonStreamResult, String> {
+    let url = build_chat_completions_url(&config.base_url);
+
+    let mut body = json!({
+        "model": config.model,
+        "messages": messages,
+        "stream": false,
+    });
+
+    if matches!(config.thinking_depth.as_str(), "low" | "medium" | "high") {
+        body.as_object_mut()
+            .unwrap()
+            .insert("reasoning_effort".to_string(), json!(config.thinking_depth));
+    }
+
+    if let Some(t) = tools {
+        if !t.is_empty() {
+            body.as_object_mut()
+                .unwrap()
+                .insert("tools".to_string(), json!(t));
+        }
+    }
+
+    let mut req = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .json(&body);
+    if !config.api_key.trim().is_empty() {
+        req = req.header("Authorization", format!("Bearer {}", config.api_key.trim()));
+    }
+
+    let res = tokio::time::timeout(Duration::from_secs(45), req.send())
+        .await
+        .map_err(|_| "API 请求超过 45 秒没有响应，请检查网络、Base URL 或代理配置。".to_string())?
+        .map_err(|e| format!("API 请求失败: {e}"))?;
+
+    if !res.status().is_success() {
+        let err_text = res
+            .text()
+            .await
+            .unwrap_or_else(|_| "无法读取错误详情".to_string());
+        return Err(format!("API 返回错误 ({}): {}", url, err_text));
+    }
+
+    // 先读取响应体为文本，以便调试和兼容多种格式
+    let response_text = res
+        .text()
+        .await
+        .map_err(|e| format!("读取响应内容失败: {e}"))?;
+
+    // 空响应体检测
+    if response_text.trim().is_empty() {
+        return Err("API 返回了 HTTP 200，但响应体为空。可能原因：API 服务端错误、Base URL 配置错误、或请求被中间代理拦截。".to_string());
+    }
+
+    // HTML 响应检测（API 返回了登录页面或错误页面）
+    let trimmed = response_text.trim();
+    if trimmed.starts_with("<!DOCTYPE") || trimmed.starts_with("<!doctype")
+        || trimmed.starts_with("<html") || trimmed.starts_with("<HTML")
+    {
+        return Err("API 返回了 HTML 页面而非 JSON 响应。这通常意味着：\n\
+            1. Base URL 配置不正确（应指向 API 端点，而非网关首页）\n\
+            2. API Key 无效或已过期\n\n\
+            请检查 Base URL 和 API Key 配置。".to_string());
+    }
+
+    // 策略1: 直接 JSON 解析
+    if let Ok(value) = serde_json::from_str::<Value>(&response_text) {
+        let content = ContentExtractor::extract_content(&value);
+        let tool_calls = ContentExtractor::extract_tool_calls(&value);
+        let finish_reason = ContentExtractor::extract_finish_reason(&value);
+        
+        if content.is_some() || !tool_calls.is_empty() {
+            return Ok(NonStreamResult {
+                content,
+                tool_calls,
+                finish_reason,
+            });
+        }
+        
+        // 检查是否只有 reasoning
+        if ContentExtractor::extract_reasoning(&value).is_some() {
+            return Err("接口只返回了 reasoning（思考过程），没有返回正文内容。请检查模型是否支持内容输出。".to_string());
+        }
+    }
+
+    // 策略2: 如果看起来像SSE格式，尝试SSE解析（包含 tool_calls 支持）
+    if response_text.contains("data:") {
+        let mut sse = SseParser::new();
+        let data_lines = sse.push(&response_text);
+        let mut combined_content = String::new();
+        let mut accumulated_tool_calls: HashMap<usize, NonStreamToolCall> = HashMap::new();
+
+        for data in data_lines {
+            if data == "[DONE]" {
+                continue;
+            }
+            if let Ok(chunk) = serde_json::from_str::<ChatCompletionChunk>(&data) {
+                if let Some(choice) = chunk.choices.first() {
+                    if let Some(ref text) = choice.delta.content {
+                        combined_content.push_str(text);
+                    }
+                    
+                    // 处理 SSE 格式的 tool_calls
+                    if let Some(ref tc_deltas) = choice.delta.tool_calls {
+                        for tc in tc_deltas {
+                            let entry = accumulated_tool_calls.entry(tc.index).or_insert_with(|| {
+                                NonStreamToolCall {
+                                    id: None,
+                                    r#type: "function".to_string(),
+                                    function: NonStreamFunctionCall {
+                                        name: String::new(),
+                                        arguments: String::new(),
+                                    },
+                                }
+                            });
+                            
+                            if let Some(ref id) = tc.id {
+                                entry.id = Some(id.clone());
+                            }
+                            if let Some(ref func) = tc.function {
+                                if let Some(ref name) = func.name {
+                                    entry.function.name.push_str(name);
+                                }
+                                if let Some(ref args) = func.arguments {
+                                    entry.function.arguments.push_str(args);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if !combined_content.is_empty() || !accumulated_tool_calls.is_empty() {
+            let mut tool_calls: Vec<NonStreamToolCall> = accumulated_tool_calls
+                .into_iter()
+                .map(|(_, tc)| tc)
+                .collect();
+            // 按 id 排序（如果有的话）
+            tool_calls.sort_by(|a, b| a.id.cmp(&b.id));
+            
+            return Ok(NonStreamResult {
+                content: if combined_content.is_empty() { None } else { Some(combined_content) },
+                tool_calls,
+                finish_reason: None,
+            });
+        }
+    }
+
+    // 策略3: 检查是否是纯文本响应（某些API可能返回纯文本）
+    if !response_text.trim().is_empty() 
+        && !response_text.trim().starts_with('{') 
+        && !response_text.trim().starts_with('[') 
+    {
+        return Ok(NonStreamResult {
+            content: Some(response_text.trim().to_string()),
+            tool_calls: Vec::new(),
+            finish_reason: None,
+        });
+    }
+
+    // 所有策略失败，返回详细错误
+    Err(format!(
+        "接口返回了HTTP 200，但响应不是有效的JSON格式。响应内容预览: {}",
+        if response_text.len() > 200 {
+            format!("{}...", &response_text[..200])
+        } else {
+            response_text.clone()
+        }
+    ))
+}
+
 pub async fn list_models(
     client: &reqwest::Client,
     api_key: &str,
@@ -179,11 +421,7 @@ pub async fn list_models(
         return Err("请先填写请求地址".to_string());
     }
 
-    let url = if base_url.ends_with("/models") {
-        base_url.to_string()
-    } else {
-        format!("{}/models", base_url.trim_end_matches('/'))
-    };
+    let url = build_models_url(base_url);
 
     let mut req = client.get(&url).header("Accept", "application/json");
     if !api_key.trim().is_empty() {
@@ -260,5 +498,173 @@ fn push_model_id(id: &str, out: &mut Vec<String>) {
     let id = id.trim();
     if !id.is_empty() {
         out.push(id.to_string());
+    }
+}
+
+/// 规范化stream_mode值
+pub fn normalize_stream_mode(value: &str) -> String {
+    match value.to_lowercase().as_str() {
+        "auto" | "stream" | "non_stream" => value.to_lowercase(),
+        "non-stream" => "non_stream".to_string(),
+        _ => "auto".to_string(),
+    }
+}
+
+/// 内容提取器 - 兼容多种响应格式
+pub struct ContentExtractor;
+
+impl ContentExtractor {
+    /// 从API响应中提取内容文本
+    /// 优先级：
+    /// 1. choices[0].delta.content（标准流式）
+    /// 2. choices[0].message.content（非流式）
+    /// 3. choices[0].text（其他格式）
+    /// 4. content数组中的text块
+    pub fn extract_content(value: &Value) -> Option<String> {
+        // 尝试choices数组
+        if let Some(choices) = value.get("choices") {
+            if let Some(first_choice) = choices.as_array().and_then(|arr| arr.first()) {
+                // 1. delta.content
+                if let Some(content) = first_choice
+                    .get("delta")
+                    .and_then(|d| d.get("content"))
+                    .and_then(|c| c.as_str())
+                {
+                    if !content.is_empty() {
+                        return Some(content.to_string());
+                    }
+                }
+
+                // 2. message.content
+                if let Some(content) = first_choice
+                    .get("message")
+                    .and_then(|m| m.get("content"))
+                    .and_then(|c| c.as_str())
+                {
+                    if !content.is_empty() {
+                        return Some(content.to_string());
+                    }
+                }
+
+                // 3. text
+                if let Some(text) = first_choice.get("text").and_then(|t| t.as_str()) {
+                    if !text.is_empty() {
+                        return Some(text.to_string());
+                    }
+                }
+
+                // 4. content as array with text blocks
+                if let Some(content_arr) = first_choice
+                    .get("message")
+                    .or_else(|| first_choice.get("delta"))
+                    .and_then(|m| m.get("content"))
+                    .and_then(|c| c.as_array())
+                {
+                    for item in content_arr {
+                        if item.get("type").and_then(|t| t.as_str()) == Some("text") {
+                            if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
+                                if !text.is_empty() {
+                                    return Some(text.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 直接content字段
+        if let Some(content) = value.get("content").and_then(|c| c.as_str()) {
+            if !content.is_empty() {
+                return Some(content.to_string());
+            }
+        }
+
+        None
+    }
+
+    /// 提取reasoning内容
+    pub fn extract_reasoning(value: &Value) -> Option<String> {
+        if let Some(choices) = value.get("choices") {
+            if let Some(first_choice) = choices.as_array().and_then(|arr| arr.first()) {
+                // reasoning_content
+                if let Some(reasoning) = first_choice
+                    .get("delta")
+                    .and_then(|d| d.get("reasoning_content"))
+                    .and_then(|r| r.as_str())
+                {
+                    if !reasoning.is_empty() {
+                        return Some(reasoning.to_string());
+                    }
+                }
+
+                // reasoning object
+                if let Some(reasoning_obj) = first_choice
+                    .get("delta")
+                    .and_then(|d| d.get("reasoning"))
+                    .or_else(|| first_choice.get("delta").and_then(|d| d.get("thinking")))
+                {
+                    if let Some(text) = reasoning_obj
+                        .get("content")
+                        .or_else(|| reasoning_obj.get("text"))
+                        .and_then(|t| t.as_str())
+                    {
+                        if !text.is_empty() {
+                            return Some(text.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// 提取工具调用（支持流式和非流式格式）
+    pub fn extract_tool_calls(value: &Value) -> Vec<NonStreamToolCall> {
+        let mut tool_calls = Vec::new();
+        
+        if let Some(choices) = value.get("choices") {
+            if let Some(first_choice) = choices.as_array().and_then(|arr| arr.first()) {
+                // 尝试 message.tool_calls（非流式格式）
+                if let Some(tc_array) = first_choice
+                    .get("message")
+                    .and_then(|m| m.get("tool_calls"))
+                    .and_then(|tc| tc.as_array())
+                {
+                    for tc in tc_array {
+                        if let Ok(tool_call) = serde_json::from_value::<NonStreamToolCall>(tc.clone()) {
+                            tool_calls.push(tool_call);
+                        }
+                    }
+                }
+                
+                // 尝试 delta.tool_calls（流式格式，某些API可能在非流式中使用）
+                if tool_calls.is_empty() {
+                    if let Some(tc_array) = first_choice
+                        .get("delta")
+                        .and_then(|d| d.get("tool_calls"))
+                        .and_then(|tc| tc.as_array())
+                    {
+                        for tc in tc_array {
+                            if let Ok(tool_call) = serde_json::from_value::<NonStreamToolCall>(tc.clone()) {
+                                tool_calls.push(tool_call);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        tool_calls
+    }
+
+    /// 提取 finish_reason
+    pub fn extract_finish_reason(value: &Value) -> Option<String> {
+        value.get("choices")
+            .and_then(|c| c.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|choice| choice.get("finish_reason"))
+            .and_then(|fr| fr.as_str())
+            .map(|s| s.to_string())
     }
 }

@@ -54,6 +54,7 @@ type ApiProfile = {
   execution_mode: string;
   search_provider: string;
   auto_approved_tools: string[];
+  stream_mode: string;
 };
 
 type ToolEvent = {
@@ -104,6 +105,7 @@ const apiConfig = ref({
   execution_mode: "normal",
   search_provider: "bing",
   auto_approved_tools: [] as string[],
+  stream_mode: "auto",
 });
 const apiProfiles = ref<ApiProfile[]>([]);
 const activeApiProfileId = ref("");
@@ -399,6 +401,7 @@ function applyApiConfig(config: Partial<ApiProfile>) {
     execution_mode: config.execution_mode || (config.confirm_enabled === false ? "unreviewed" : "normal"),
     search_provider: (config as any).search_provider || "bing",
     auto_approved_tools: Array.isArray(config.auto_approved_tools) ? config.auto_approved_tools : [],
+    stream_mode: (config as any).stream_mode || "auto",
   };
   activeApiProfileId.value = apiConfig.value.id;
 }
@@ -459,6 +462,7 @@ async function saveApiConfig(options: SaveApiConfigOptions = {}) {
       executionMode: apiConfig.value.execution_mode,
       searchProvider: apiConfig.value.search_provider,
       autoApprovedTools: apiConfig.value.auto_approved_tools,
+      streamMode: apiConfig.value.stream_mode,
       profileId: options.profileId ?? apiConfig.value.id,
       profileName: options.profileName ?? (apiConfig.value.name || model),
     });
@@ -519,6 +523,40 @@ async function testConnection() {
     testResult.value = { success: true, message: res };
   } catch (e: any) { testResult.value = { success: false, message: e.toString() }; }
   finally { isTestingConnection.value = false; }
+}
+
+async function updateStreamMode(value: string) {
+  apiConfig.value.stream_mode = value;
+  if (!apiConfig.value.id || !apiConfig.value.base_url || !apiConfig.value.model) return;
+  try {
+    await saveApiConfig({ quiet: true });
+  } catch (e) {
+    testResult.value = { success: false, message: "流式模式保存失败: " + e };
+  }
+}
+
+const isTestingCompatibility = ref(false);
+const compatibilityResult = ref<any>(null);
+
+async function testCompatibility() {
+  isTestingCompatibility.value = true;
+  compatibilityResult.value = null;
+  try {
+    const res = await invoke<any>("test_api_compatibility", {
+      apiKey: apiConfig.value.api_key,
+      baseUrl: apiConfig.value.base_url,
+      model: apiConfig.value.model,
+      thinkingDepth: apiConfig.value.thinking_depth,
+    });
+    compatibilityResult.value = res;
+  } catch (e: any) {
+    compatibilityResult.value = {
+      http_ok: false,
+      errors: [e.toString()]
+    };
+  } finally {
+    isTestingCompatibility.value = false;
+  }
 }
 
 function clearFetchedModels() {
@@ -602,6 +640,7 @@ function newApiProfileDraft() {
     execution_mode: "normal",
     search_provider: "bing",
     auto_approved_tools: [],
+    stream_mode: "auto",
   };
   testResult.value = { success: false, message: "" };
   clearFetchedModels();
@@ -1282,7 +1321,7 @@ function scrollDashChatToBottom() {
     });
 
     dashChatScrollTimers.forEach(clearTimeout);
-    dashChatScrollTimers = [80, 220].map((delay) =>
+    dashChatScrollTimers = [80, 220, 420].map((delay) =>
       setTimeout(() => {
         runDashChatScroll();
       }, delay),
@@ -1314,6 +1353,12 @@ watch(activePage, (newPage) => {
     scrollDashChatToBottom();
   }
 }, { flush: "post" });
+
+function handlePageEntered() {
+  if (activePage.value === "chat") {
+    scrollDashChatToBottom();
+  }
+}
 
 // === 生命周期 ===
 let unlistenPetStatus: UnlistenFn | null = null;
@@ -1564,7 +1609,7 @@ onUnmounted(() => {
 
       <!-- 内容区 -->
       <div :class="['dashboard-content', `page-${activePage}`, { 'chat-page-active': activePage === 'chat' }]">
-        <Transition name="page-fade" mode="out-in">
+        <Transition name="page-fade" mode="out-in" @after-enter="handlePageEntered">
           <!-- ========== 首页 ========== -->
           <div v-if="activePage === 'home'" key="home" class="home-studio-page">
             <div class="page-header home-header studio-header">
@@ -2472,6 +2517,36 @@ onUnmounted(() => {
                   </div>
                 </div>
                 <div class="dash-form-group">
+                  <label>流式模式</label>
+                  <div class="dash-mode-grid">
+                    <button
+                      type="button"
+                      :class="['dash-mode-option', { active: apiConfig.stream_mode === 'auto' }]"
+                      @click="updateStreamMode('auto')"
+                    >
+                      <span>自动检测</span>
+                      <small>先 SSE 后 JSON</small>
+                    </button>
+                    <button
+                      type="button"
+                      :class="['dash-mode-option', { active: apiConfig.stream_mode === 'stream' }]"
+                      @click="updateStreamMode('stream')"
+                    >
+                      <span>流式 SSE</span>
+                      <small>OpenAI 标准</small>
+                    </button>
+                    <button
+                      type="button"
+                      :class="['dash-mode-option', { active: apiConfig.stream_mode === 'non_stream' }]"
+                      @click="updateStreamMode('non_stream')"
+                    >
+                      <span>非流式 JSON</span>
+                      <small>Auto Code 等</small>
+                    </button>
+                  </div>
+                  <p class="dash-hint">自动：先尝试 SSE，失败则回退到 JSON。Auto Code 等非标准接口选"非流式"。</p>
+                </div>
+                <div class="dash-form-group">
                   <label>预设一键填充</label>
                   <div class="dash-presets">
                     <button class="dash-preset-badge" @click="applyPreset('openai')">OpenAI</button>
@@ -2502,6 +2577,65 @@ onUnmounted(() => {
                   <button class="dash-btn primary" @click="saveApiConfig()" :disabled="isSavingConfig">
                     {{ configSaved ? '保存成功' : (isSavingConfig ? '保存中...' : '保存配置') }}
                   </button>
+                </div>
+                <div class="dash-api-actions" style="margin-top: 8px;">
+                  <button class="dash-btn deep-test-btn" @click="testCompatibility" :disabled="isTestingCompatibility || !apiConfig.base_url || !apiConfig.model">
+                    {{ isTestingCompatibility ? '检测中...' : '🔬 深度测试兼容性' }}
+                  </button>
+                </div>
+
+                <!-- 深度测试结果 -->
+                <div
+                  v-if="compatibilityResult"
+                  class="dash-compat-result"
+                  :class="compatibilityResult.http_ok ? 'success' : 'error'"
+                >
+                  <h4>兼容性检测报告</h4>
+                  <div class="compat-grid">
+                    <div class="compat-item">
+                      <span class="compat-label">HTTP 状态:</span>
+                      <span :class="compatibilityResult.http_ok ? 'pass' : 'fail'">
+                        {{ compatibilityResult.http_ok ? '✅' : '❌' }} {{ compatibilityResult.http_status }}
+                      </span>
+                    </div>
+                    <div class="compat-item">
+                      <span class="compat-label">SSE 格式:</span>
+                      <span :class="compatibilityResult.is_sse_format ? 'pass' : 'fail'">
+                        {{ compatibilityResult.is_sse_format ? '✅' : '❌' }}
+                      </span>
+                    </div>
+                    <div class="compat-item">
+                      <span class="compat-label">JSON 格式:</span>
+                      <span :class="compatibilityResult.is_json_format ? 'pass' : 'fail'">
+                        {{ compatibilityResult.is_json_format ? '✅' : '❌' }}
+                      </span>
+                    </div>
+                    <div class="compat-item">
+                      <span class="compat-label">内容提取:</span>
+                      <span :class="compatibilityResult.content_extracted ? 'pass' : 'fail'">
+                        {{ compatibilityResult.content_extracted ? '✅ 成功' : '❌ 失败' }}
+                      </span>
+                    </div>
+                    <div class="compat-item" v-if="compatibilityResult.content_extracted">
+                      <span class="compat-label">提取内容:</span>
+                      <span class="compat-content">{{ compatibilityResult.content_extracted }}</span>
+                    </div>
+                    <div class="compat-item" v-if="compatibilityResult.recommended_mode">
+                      <span class="compat-label">推荐模式:</span>
+                      <span class="compat-recommend">{{ compatibilityResult.recommended_mode === 'stream' ? '流式 (SSE)' : compatibilityResult.recommended_mode === 'non_stream' ? '非流式 (JSON)' : '自动' }}</span>
+                    </div>
+                    <div class="compat-item" v-if="compatibilityResult.errors && compatibilityResult.errors.length > 0">
+                      <span class="compat-label">错误:</span>
+                      <ul class="compat-errors">
+                        <li v-for="(err, idx) in compatibilityResult.errors" :key="idx">{{ err }}</li>
+                      </ul>
+                    </div>
+                  </div>
+                  <details v-if="compatibilityResult.raw_preview" class="compat-raw">
+                    <summary>查看原始响应 (前500字符)</summary>
+                    <pre>{{ compatibilityResult.raw_preview }}</pre>
+                  </details>
+                  <p class="compat-time">响应时间: {{ compatibilityResult.response_time_ms }} ms</p>
                 </div>
               </template>
             </div>

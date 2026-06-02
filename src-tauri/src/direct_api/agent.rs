@@ -1,5 +1,6 @@
 use crate::direct_api::api_client::{
-    call_chat_completions_stream, ChatCompletionChunk, DirectApiConfig, SseParser, UserAttachment,
+    call_chat_completions_non_stream, call_chat_completions_stream, ChatCompletionChunk,
+    DirectApiConfig, SseParser, UserAttachment,
 };
 use crate::direct_api::tools::{execute_tool, tool_definitions};
 use crate::storage::ChatMessage;
@@ -102,24 +103,74 @@ pub async fn run_direct_api_agent(
         } else {
             Some(tool_definitions())
         };
-        let res =
-            match call_chat_completions_stream(&state.http_client, &config, &api_messages, tools)
-                .await
-            {
-                Ok(res) => res,
-                Err(e) => {
-                    send_error(&app_handle, format!("API 请求失败: {e}"), &full_thinking).await;
-                    return;
-                }
-            };
 
-        let mut stream = res.bytes_stream();
-        let mut sse = SseParser::new();
         let mut accumulated_tool_calls: HashMap<usize, AccumulatedToolCall> = HashMap::new();
         let mut turn_text = String::new();
 
-        let mut done = false;
-        loop {
+        // 根据stream_mode选择不同的调用方式
+        match config.stream_mode.as_str() {
+            "non_stream" => {
+                // 非流式解析：直接调用non-stream函数
+                match call_chat_completions_non_stream(
+                    &state.http_client,
+                    &config,
+                    &api_messages,
+                    tools,
+                )
+                .await
+                {
+                    Ok(result) => {
+                        // 处理文本内容
+                        if let Some(ref content) = result.content {
+                            if !content.is_empty() {
+                                turn_text.push_str(content);
+                                full_text.push_str(content);
+                                let _ = app_handle.emit(
+                                    "ai-answer-delta",
+                                    AnswerDeltaPayload { text: content.clone() },
+                                );
+                            }
+                        }
+                        
+                        // 处理工具调用 - 填充 accumulated_tool_calls
+                        // 这样现有的工具执行循环会处理它们
+                        for (i, tc) in result.tool_calls.iter().enumerate() {
+                            accumulated_tool_calls.insert(i, AccumulatedToolCall {
+                                id: tc.id.clone().unwrap_or_default(),
+                                name: tc.function.name.clone(),
+                                arguments: tc.function.arguments.clone(),
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        send_error(&app_handle, format!("API 请求失败: {e}"), &full_thinking).await;
+                        return;
+                    }
+                }
+            }
+            "auto" | _ => {
+                // 自动模式或流式模式：使用流式调用
+                let res = match call_chat_completions_stream(
+                    &state.http_client,
+                    &config,
+                    &api_messages,
+                    tools,
+                )
+                .await
+                {
+                    Ok(res) => res,
+                    Err(e) => {
+                        send_error(&app_handle, format!("API 请求失败: {e}"), &full_thinking).await;
+                        return;
+                    }
+                };
+
+                let mut stream = res.bytes_stream();
+                let mut sse = SseParser::new();
+                let mut raw_buffer = String::new();
+
+                let mut done = false;
+                loop {
             if is_cancelled(&state).await {
                 send_aborted(&app_handle, &full_thinking).await;
                 return;
@@ -143,12 +194,20 @@ pub async fn run_direct_api_agent(
             let chunk_bytes = match chunk_res {
                 Ok(bytes) => bytes,
                 Err(e) => {
-                    send_error(&app_handle, format!("流式读取失败: {e}"), &full_thinking).await;
+                    let message = e.to_string();
+                    if is_recoverable_stream_eof(&message)
+                        && !turn_text.trim().is_empty()
+                        && accumulated_tool_calls.is_empty()
+                    {
+                        break;
+                    }
+                    send_error(&app_handle, format!("流式读取失败: {message}"), &full_thinking).await;
                     return;
                 }
             };
 
             let chunk_str = String::from_utf8_lossy(&chunk_bytes);
+            raw_buffer.push_str(&chunk_str);
             let data_lines = sse.push(&chunk_str);
 
             for data in data_lines {
@@ -202,6 +261,55 @@ pub async fn run_direct_api_agent(
             if done {
                 break;
             }
+        }
+
+            // auto fallback: 如果 SSE 解析无内容，尝试将原始响应当作 JSON 解析
+            if turn_text.is_empty() && accumulated_tool_calls.is_empty() && !raw_buffer.is_empty() {
+                // HTML 响应检测
+                let buf_trimmed = raw_buffer.trim();
+                if buf_trimmed.starts_with("<!DOCTYPE") || buf_trimmed.starts_with("<!doctype")
+                    || buf_trimmed.starts_with("<html") || buf_trimmed.starts_with("<HTML")
+                {
+                    send_error(
+                        &app_handle,
+                        "API 返回了 HTML 页面而非 JSON 响应。请检查 Base URL 是否指向了正确的 API 端点（而非网关首页），以及 API Key 是否有效。".to_string(),
+                        &full_thinking,
+                    ).await;
+                    return;
+                }
+
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw_buffer) {
+                    use crate::direct_api::api_client::ContentExtractor;
+                    
+                    // 提取内容
+                    if let Some(content) = ContentExtractor::extract_content(&value) {
+                        turn_text.push_str(&content);
+                        full_text.push_str(&content);
+                        let _ = app_handle.emit(
+                            "ai-answer-delta",
+                            AnswerDeltaPayload { text: content },
+                        );
+                    }
+                    
+                    // 提取工具调用
+                    let tool_calls = ContentExtractor::extract_tool_calls(&value);
+                    for (i, tc) in tool_calls.iter().enumerate() {
+                        accumulated_tool_calls.insert(i, AccumulatedToolCall {
+                            id: tc.id.clone().unwrap_or_default(),
+                            name: tc.function.name.clone(),
+                            arguments: tc.function.arguments.clone(),
+                        });
+                    }
+                    
+                    // 提取 reasoning
+                    if turn_text.is_empty() && accumulated_tool_calls.is_empty() {
+                        if let Some(reasoning) = ContentExtractor::extract_reasoning(&value) {
+                            full_thinking.push_str(&reasoning);
+                        }
+                    }
+                }
+            }
+            } // end of "auto" | _ branch
         }
 
         if !turn_text.is_empty() && !accumulated_tool_calls.is_empty() {
@@ -387,12 +495,16 @@ pub async fn run_direct_api_agent(
     }
 
     if full_text.trim().is_empty() {
-        send_error(
-            &app_handle,
-            "API 请求结束了，但没有返回可显示的回复内容。".to_string(),
-            &full_thinking,
-        )
-        .await;
+        // 根据配置和响应情况提供更具体的错误信息
+        let error_msg = if config.stream_mode == "non_stream" {
+            // 非流式模式已经经过ContentExtractor，错误信息已经具体化
+            "API 请求结束了，但没有返回可显示的回复内容。请检查模型配置和接口返回。".to_string()
+        } else {
+            // 流式/auto模式：可能是SSE格式问题
+            "接口返回了HTTP 200，但响应不是OpenAI SSE格式。如果使用的是Auto Code等非标准接口，请在设置中将流式模式改为non_stream。".to_string()
+        };
+
+        send_error(&app_handle, error_msg, &full_thinking).await;
         return;
     }
 
@@ -570,6 +682,11 @@ fn value_to_text(value: Option<&Value>) -> Option<String> {
             .map(|text| text.to_string()),
         _ => None,
     }
+}
+
+fn is_recoverable_stream_eof(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("unexpected eof") && message.contains("chunk")
 }
 
 fn append_active_thinking(state: &tauri::State<'_, AppState>, text: &str) {
@@ -936,5 +1053,17 @@ mod tests {
         assert!(text.contains("当前仅支持 PNG、JPEG、WEBP、GIF 图片"));
 
         let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[test]
+    fn treats_chunked_unexpected_eof_as_recoverable() {
+        assert!(is_recoverable_stream_eof(
+            "request or response body error: error reading a body from connection: unexpected EOF during chunk size line"
+        ));
+    }
+
+    #[test]
+    fn keeps_non_chunked_stream_errors_fatal() {
+        assert!(!is_recoverable_stream_eof("connection reset by peer"));
     }
 }

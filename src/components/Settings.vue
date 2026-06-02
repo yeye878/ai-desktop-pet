@@ -39,6 +39,7 @@ type ApiConfig = {
   execution_mode: string;
   search_provider: string;
   auto_approved_tools: string[];
+  stream_mode: string;
 };
 
 type ApiProfile = ApiConfig;
@@ -59,6 +60,7 @@ const apiConfig = ref<ApiConfig>({
   execution_mode: "normal",
   search_provider: "bing",
   auto_approved_tools: [],
+  stream_mode: "auto",
 });
 const apiProfiles = ref<ApiProfile[]>([]);
 const activeApiProfileId = ref("");
@@ -276,6 +278,7 @@ function applyApiConfig(config: Partial<ApiConfig>) {
     execution_mode: config.execution_mode || (config.confirm_enabled === false ? "unreviewed" : "normal"),
     search_provider: config.search_provider || "bing",
     auto_approved_tools: Array.isArray(config.auto_approved_tools) ? config.auto_approved_tools : [],
+    stream_mode: config.stream_mode || "auto",
   };
   activeApiProfileId.value = apiConfig.value.id;
 }
@@ -354,6 +357,7 @@ async function saveApiConfig(options: SaveApiConfigOptions = {}) {
       executionMode: apiConfig.value.execution_mode,
       searchProvider: apiConfig.value.search_provider,
       autoApprovedTools: apiConfig.value.auto_approved_tools,
+      streamMode: apiConfig.value.stream_mode,
       profileId: options.profileId ?? apiConfig.value.id,
       profileName: options.profileName ?? (apiConfig.value.name || model),
     });
@@ -408,6 +412,38 @@ async function testConnection() {
     testResult.value = { success: false, message: e.toString() };
   } finally {
     isTestingConnection.value = false;
+  }
+}
+
+async function saveStreamMode() {
+  try {
+    await saveApiConfig({ quiet: true });
+  } catch (e) {
+    console.error("流式模式保存失败:", e);
+  }
+}
+
+const isTestingCompatibility = ref(false);
+const compatibilityResult = ref<any>(null);
+
+async function testCompatibility() {
+  isTestingCompatibility.value = true;
+  compatibilityResult.value = null;
+  try {
+    const res = await invoke<any>("test_api_compatibility", {
+      apiKey: apiConfig.value.api_key,
+      baseUrl: apiConfig.value.base_url,
+      model: apiConfig.value.model,
+      thinkingDepth: apiConfig.value.thinking_depth,
+    });
+    compatibilityResult.value = res;
+  } catch (e: any) {
+    compatibilityResult.value = {
+      http_ok: false,
+      errors: [e.toString()]
+    };
+  } finally {
+    isTestingCompatibility.value = false;
   }
 }
 
@@ -490,6 +526,7 @@ function newApiProfileDraft() {
     execution_mode: "normal",
     search_provider: "bing",
     auto_approved_tools: [],
+    stream_mode: "auto",
   };
   testResult.value = { success: false, message: "" };
   clearFetchedModels();
@@ -1326,6 +1363,21 @@ onUnmounted(() => {
               </div>
 
               <div class="form-group">
+                <label>流式模式 (Stream Mode)</label>
+                <select
+                  v-model="apiConfig.stream_mode"
+                  @change="saveStreamMode"
+                >
+                  <option value="auto">自动检测（推荐）</option>
+                  <option value="stream">强制流式 (SSE)</option>
+                  <option value="non_stream">非流式 (JSON)</option>
+                </select>
+                <p class="hint">
+                  自动：先尝试SSE，失败则回退到JSON解析。Auto Code等非标准接口选"非流式"。
+                </p>
+              </div>
+
+              <div class="form-group">
                 <label>预设一键填充</label>
                 <div class="presets-container">
                   <span class="preset-badge" @click="applyPreset('openai')">OpenAI</span>
@@ -1370,6 +1422,70 @@ onUnmounted(() => {
                 >
                   {{ configSaved ? '✅ 保存成功' : (isSavingConfig ? '⏳ 保存中...' : '💾 保存配置') }}
                 </button>
+              </div>
+
+              <div class="api-actions" style="margin-top: 8px;">
+                <button 
+                  class="action-btn deep-test-btn" 
+                  @click="testCompatibility" 
+                  :disabled="isTestingCompatibility || !apiConfig.base_url || !apiConfig.model"
+                >
+                  {{ isTestingCompatibility ? '🔬 检测中...' : '🔬 深度测试兼容性' }}
+                </button>
+              </div>
+
+              <!-- 深度测试结果 -->
+              <div 
+                v-if="compatibilityResult" 
+                class="compatibility-result"
+                :class="compatibilityResult.http_ok ? 'success' : 'error'"
+              >
+                <h4>兼容性检测报告</h4>
+                <div class="result-grid">
+                  <div class="result-item">
+                    <span class="result-label">HTTP 状态:</span>
+                    <span :class="compatibilityResult.http_ok ? 'pass' : 'fail'">
+                      {{ compatibilityResult.http_ok ? '✅' : '❌' }} {{ compatibilityResult.http_status }}
+                    </span>
+                  </div>
+                  <div class="result-item">
+                    <span class="result-label">SSE 格式:</span>
+                    <span :class="compatibilityResult.is_sse_format ? 'pass' : 'fail'">
+                      {{ compatibilityResult.is_sse_format ? '✅' : '❌' }}
+                    </span>
+                  </div>
+                  <div class="result-item">
+                    <span class="result-label">JSON 格式:</span>
+                    <span :class="compatibilityResult.is_json_format ? 'pass' : 'fail'">
+                      {{ compatibilityResult.is_json_format ? '✅' : '❌' }}
+                    </span>
+                  </div>
+                  <div class="result-item">
+                    <span class="result-label">内容提取:</span>
+                    <span :class="compatibilityResult.content_extracted ? 'pass' : 'fail'">
+                      {{ compatibilityResult.content_extracted ? '✅ 成功' : '❌ 失败' }}
+                    </span>
+                  </div>
+                  <div class="result-item" v-if="compatibilityResult.content_extracted">
+                    <span class="result-label">提取内容:</span>
+                    <span class="content-preview">{{ compatibilityResult.content_extracted }}</span>
+                  </div>
+                  <div class="result-item" v-if="compatibilityResult.recommended_mode">
+                    <span class="result-label">推荐模式:</span>
+                    <span class="recommendation">{{ compatibilityResult.recommended_mode === 'stream' ? '流式 (SSE)' : compatibilityResult.recommended_mode === 'non_stream' ? '非流式 (JSON)' : '自动' }}</span>
+                  </div>
+                  <div class="result-item" v-if="compatibilityResult.errors && compatibilityResult.errors.length > 0">
+                    <span class="result-label">错误信息:</span>
+                    <ul class="error-list">
+                      <li v-for="(err, idx) in compatibilityResult.errors" :key="idx">{{ err }}</li>
+                    </ul>
+                  </div>
+                </div>
+                <details v-if="compatibilityResult.raw_preview" class="raw-preview">
+                  <summary>查看原始响应 (前500字符)</summary>
+                  <pre>{{ compatibilityResult.raw_preview }}</pre>
+                </details>
+                <p class="response-time">响应时间: {{ compatibilityResult.response_time_ms }} ms</p>
               </div>
             </div>
           </template>
@@ -2511,6 +2627,120 @@ onUnmounted(() => {
 
 .test-btn:hover:not(:disabled) {
   background: rgba(15, 23, 42, 0.1);
+}
+
+.deep-test-btn {
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(139, 92, 246, 0.1));
+  color: #6366f1;
+  box-shadow: none;
+  border: 1px solid rgba(99, 102, 241, 0.2);
+}
+
+.deep-test-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.15), rgba(139, 92, 246, 0.15));
+}
+
+.compatibility-result {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.03);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.compatibility-result.success {
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.compatibility-result.error {
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.compatibility-result h4 {
+  margin: 0 0 10px 0;
+  font-size: 13px;
+  color: var(--color-text-primary);
+}
+
+.result-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.result-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.result-label {
+  color: var(--color-text-secondary);
+  min-width: 80px;
+}
+
+.pass {
+  color: #10b981;
+}
+
+.fail {
+  color: #ef4444;
+}
+
+.content-preview {
+  color: var(--color-text-primary);
+  font-style: italic;
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recommendation {
+  color: #6366f1;
+  font-weight: 500;
+}
+
+.error-list {
+  margin: 4px 0 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+  color: #ef4444;
+}
+
+.error-list li {
+  margin-bottom: 2px;
+}
+
+.raw-preview {
+  margin-top: 10px;
+  font-size: 11px;
+}
+
+.raw-preview summary {
+  cursor: pointer;
+  color: var(--color-text-secondary);
+  margin-bottom: 6px;
+}
+
+.raw-preview pre {
+  background: rgba(0, 0, 0, 0.05);
+  padding: 8px;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 10px;
+  line-height: 1.4;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.response-time {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  text-align: right;
 }
 
 .test-result {

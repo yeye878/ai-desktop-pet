@@ -160,6 +160,7 @@ fn public_api_profile(profile: &direct_api::DirectApiConfig) -> serde_json::Valu
         "execution_mode": profile.execution_mode.clone(),
         "search_provider": profile.search_provider.clone(),
         "auto_approved_tools": profile.auto_approved_tools.clone(),
+        "stream_mode": profile.stream_mode.clone(),
     })
 }
 
@@ -177,6 +178,7 @@ fn normalize_api_profile(mut profile: direct_api::DirectApiConfig) -> direct_api
     profile.execution_mode = normalize_execution_mode(&profile.execution_mode);
     profile.search_provider = normalize_search_provider(&profile.search_provider);
     profile.auto_approved_tools = normalize_tool_list(&profile.auto_approved_tools);
+    profile.stream_mode = direct_api::api_client::normalize_stream_mode(&profile.stream_mode);
 
     if profile.model.is_empty() {
         profile.model = "gpt-4o-mini".to_string();
@@ -269,6 +271,7 @@ fn load_api_profiles(db: &storage::Database) -> Vec<direct_api::DirectApiConfig>
             execution_mode,
             search_provider,
             auto_approved_tools,
+            stream_mode: "auto".to_string(),
         });
 
         profiles.push(default_profile);
@@ -1179,6 +1182,7 @@ async fn set_api_config(
     execution_mode: Option<String>,
     search_provider: Option<String>,
     auto_approved_tools: Option<Vec<String>>,
+    stream_mode: Option<String>,
     profile_id: Option<String>,
     profile_name: Option<String>,
     state: tauri::State<'_, AppState>,
@@ -1225,6 +1229,8 @@ async fn set_api_config(
                 .unwrap_or_else(|| existing_profile.search_provider.clone()),
             auto_approved_tools: auto_approved_tools
                 .unwrap_or_else(|| existing_profile.auto_approved_tools.clone()),
+            stream_mode: stream_mode
+                .unwrap_or_else(|| existing_profile.stream_mode.clone()),
         },
         true,
     )?;
@@ -1336,11 +1342,8 @@ async fn test_api_connection(
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
     let resolved_key = resolve_masked_api_key(&*state.db.lock().await, &api_key);
-    let url = if base_url.ends_with("/chat/completions") {
-        base_url.clone()
-    } else {
-        format!("{}/chat/completions", base_url.trim_end_matches('/'))
-    };
+    let url = direct_api::api_client::build_chat_completions_url(&base_url);
+
 
     let normalized_depth =
         normalize_thinking_depth(&thinking_depth.unwrap_or_else(|| "auto".to_string()));
@@ -1382,6 +1385,168 @@ async fn test_api_connection(
             .unwrap_or_else(|_| "无法读取错误详情".to_string());
         Err(format!("连接失败 ({}): {}", status, err_text))
     }
+}
+
+#[tauri::command]
+async fn test_api_compatibility(
+    api_key: String,
+    base_url: String,
+    model: String,
+    thinking_depth: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    use direct_api::ContentExtractor;
+    use std::time::Instant;
+
+    let resolved_key = resolve_masked_api_key(&*state.db.lock().await, &api_key);
+    let url = direct_api::api_client::build_chat_completions_url(&base_url);
+
+
+    let normalized_depth =
+        normalize_thinking_depth(&thinking_depth.unwrap_or_else(|| "auto".to_string()));
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [
+            { "role": "user", "content": "请回复一个简短的问候语" }
+        ],
+        "stream": true,
+        "max_tokens": 50
+    });
+    if matches!(normalized_depth.as_str(), "low" | "medium" | "high") {
+        // reasoning_effort 只在 body 上设置，这里我们不需要修改
+    }
+
+    let mut req = state
+        .http_client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .json(&body);
+    if !resolved_key.trim().is_empty() {
+        req = req.header("Authorization", format!("Bearer {}", resolved_key.trim()));
+    }
+
+    let start_time = Instant::now();
+    let res = tokio::time::timeout(std::time::Duration::from_secs(45), req.send())
+        .await
+        .map_err(|_| "连接测试超过 45 秒没有响应，请检查网络、Base URL 或代理配置。".to_string())?
+        .map_err(|e| format!("连接请求发送失败: {e}"))?;
+
+    let elapsed_ms = start_time.elapsed().as_millis();
+    let status = res.status().as_u16();
+    let http_ok = res.status().is_success();
+
+    if !http_ok {
+        let err_text = res
+            .text()
+            .await
+            .unwrap_or_else(|_| "无法读取错误详情".to_string());
+        return Ok(serde_json::json!({
+            "http_ok": false,
+            "http_status": status,
+            "response_time_ms": elapsed_ms,
+            "is_sse_format": false,
+            "is_json_format": false,
+            "content_extracted": null,
+            "content_field_path": null,
+            "has_reasoning": false,
+            "has_tool_calls": false,
+            "recommended_mode": null,
+            "raw_preview": err_text.chars().take(500).collect::<String>(),
+            "errors": [format!("HTTP 错误: {}", status)]
+        }));
+    }
+
+    // 尝试读取响应内容
+    let full_text = res
+        .text()
+        .await
+        .unwrap_or_default();
+
+    // 分析响应格式
+    let is_sse = full_text.contains("data:") || full_text.contains("event:");
+    let is_json = full_text.trim().starts_with('{') || full_text.trim().starts_with('[');
+
+    let mut content_extracted: Option<String> = None;
+    let mut content_field_path: Option<String> = None;
+    let mut has_reasoning = false;
+    let mut has_tool_calls = false;
+    let mut recommended_mode: Option<String> = None;
+    let mut errors = Vec::new();
+
+    if is_json {
+        // 尝试解析为JSON
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&full_text) {
+            if let Some(content) = ContentExtractor::extract_content(&value) {
+                content_extracted = Some(content);
+                content_field_path = Some("choices[0].delta.content 或 choices[0].message.content".to_string());
+                recommended_mode = Some("non_stream".to_string());
+            }
+
+            has_reasoning = ContentExtractor::extract_reasoning(&value).is_some();
+
+            // 检查tool calls
+            if let Some(choices) = value.get("choices") {
+                if let Some(first) = choices.as_array().and_then(|arr| arr.first()) {
+                    has_tool_calls = first.get("delta").and_then(|d| d.get("tool_calls")).is_some()
+                        || first.get("message").and_then(|m| m.get("tool_calls")).is_some();
+                }
+            }
+
+            if content_extracted.is_none() {
+                errors.push("JSON 中未找到 content 字段".to_string());
+                recommended_mode = Some("non_stream".to_string());
+            }
+        } else {
+            errors.push("响应以JSON开头但解析失败".to_string());
+        }
+    } else if is_sse {
+        // SSE格式：尝试解析第一个data行
+        let mut found_content = false;
+        for line in full_text.lines() {
+            if let Some(data) = line.strip_prefix("data:") {
+                let data = data.trim();
+                if data == "[DONE]" {
+                    continue;
+                }
+                if !data.is_empty() {
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
+                        if let Some(content) = ContentExtractor::extract_content(&value) {
+                            content_extracted = Some(content);
+                            content_field_path = Some("SSE data行中的delta.content".to_string());
+                            found_content = true;
+                            break;
+                        }
+                        has_reasoning = ContentExtractor::extract_reasoning(&value).is_some();
+                    }
+                }
+            }
+        }
+
+        if found_content {
+            recommended_mode = Some("stream".to_string());
+        } else {
+            errors.push("SSE data行中未找到content字段".to_string());
+            recommended_mode = Some("non_stream".to_string());
+        }
+    } else {
+        errors.push("响应既不是SSE格式也不是JSON格式".to_string());
+        recommended_mode = Some("non_stream".to_string());
+    }
+
+    Ok(serde_json::json!({
+        "http_ok": true,
+        "http_status": status,
+        "response_time_ms": elapsed_ms,
+        "is_sse_format": is_sse,
+        "is_json_format": is_json,
+        "content_extracted": content_extracted,
+        "content_field_path": content_field_path,
+        "has_reasoning": has_reasoning,
+        "has_tool_calls": has_tool_calls,
+        "recommended_mode": recommended_mode,
+        "raw_preview": full_text.chars().take(500).collect::<String>(),
+        "errors": errors
+    }))
 }
 
 #[tauri::command]
@@ -2180,6 +2345,7 @@ pub fn run() {
             set_active_api_profile,
             delete_api_profile,
             test_api_connection,
+            test_api_compatibility,
             list_api_models,
             confirm_tool,
             check_claude_status,

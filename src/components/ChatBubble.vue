@@ -72,6 +72,7 @@ const clipboardItems = ref<ClipboardItem[]>([]);
 const clipboardSearch = ref("");
 const chatBubbleRef = ref<HTMLDivElement | null>(null);
 const messagesRef = ref<HTMLDivElement | null>(null);
+const chatEndRef = ref<HTMLDivElement | null>(null);
 const isFileOver = ref(false);
 const BG_KEY = "ai-desktop-pet.chat-bg";
 const CUSTOM_BG_KEY = "ai-desktop-pet.chat-bg-custom";
@@ -85,6 +86,7 @@ const voiceInterimText = ref("");
 const voiceError = ref("");
 const voiceSettings = ref<VoiceSettings>({ ...DEFAULT_VOICE_SETTINGS });
 let scrollFrame: number | null = null;
+let scrollTimers: ReturnType<typeof setTimeout>[] = [];
 let unlistenDragDrop: UnlistenFn | null = null;
 let unlistenThinking: UnlistenFn | null = null;
 let unlistenAnswerDelta: UnlistenFn | null = null;
@@ -273,6 +275,8 @@ onBeforeUnmount(() => {
     cancelAnimationFrame(scrollFrame);
     scrollFrame = null;
   }
+  scrollTimers.forEach(clearTimeout);
+  scrollTimers = [];
   if (unlistenDragDrop) {
     unlistenDragDrop();
     unlistenDragDrop = null;
@@ -644,12 +648,14 @@ async function clearChat() {
 }
 
 function scrollToBottom() {
-  if (messagesRef.value) {
-    if (activeTab.value === "chat") {
-      messagesRef.value.scrollTop = messagesRef.value.scrollHeight;
-    } else {
-      messagesRef.value.scrollTop = 0;
-    }
+  const container = messagesRef.value;
+  if (!container) return;
+
+  if (activeTab.value === "chat") {
+    container.scrollTop = container.scrollHeight;
+    chatEndRef.value?.scrollIntoView({ block: "end" });
+  } else {
+    container.scrollTop = 0;
   }
 }
 
@@ -841,6 +847,7 @@ function buildMessageWithFiles(text: string, files: PendingFile[]): string {
 
 async function scrollToBottomAfterRender() {
   await nextTick();
+  scrollToBottom();
   if (scrollFrame !== null) {
     cancelAnimationFrame(scrollFrame);
   }
@@ -848,6 +855,12 @@ async function scrollToBottomAfterRender() {
     scrollFrame = null;
     scrollToBottom();
   });
+  scrollTimers.forEach(clearTimeout);
+  scrollTimers = [80, 220, 420].map((delay) =>
+    setTimeout(() => {
+      scrollToBottom();
+    }, delay),
+  );
 }
 
 function onBgMouseMove(e: MouseEvent) {
@@ -1084,6 +1097,7 @@ function formatClipboardTime(value: string | number): string {
 
           </div>
         </div>
+        <div ref="chatEndRef" class="chat-end" aria-hidden="true"></div>
       </template>
 
       <template v-else>
@@ -1517,6 +1531,12 @@ function formatClipboardTime(value: string | number): string {
 .chat-messages::-webkit-scrollbar-thumb {
   background: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.20);
   border-radius: 4px;
+}
+
+.chat-end {
+  width: 100%;
+  height: 1px;
+  flex: 0 0 1px;
 }
 
 .empty-hint {

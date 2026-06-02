@@ -2840,6 +2840,119 @@ button {
   color: #b84f3f;
 }
 
+/* ---------- deep test compatibility ---------- */
+.deep-test-btn {
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(139, 92, 246, 0.1));
+  color: #6366f1;
+  border: 1px solid rgba(99, 102, 241, 0.2);
+}
+
+.deep-test-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.15), rgba(139, 92, 246, 0.15));
+}
+
+.dash-compat-result {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.03);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  font-size: 12px;
+}
+
+.dash-compat-result.success {
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.dash-compat-result.error {
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.dash-compat-result h4 {
+  margin: 0 0 10px 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.compat-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.compat-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.compat-label {
+  color: var(--text-secondary, #64748b);
+  min-width: 80px;
+}
+
+.pass {
+  color: #10b981;
+}
+
+.fail {
+  color: #ef4444;
+}
+
+.compat-content {
+  font-style: italic;
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compat-recommend {
+  color: #6366f1;
+  font-weight: 500;
+}
+
+.compat-errors {
+  margin: 4px 0 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+  color: #ef4444;
+}
+
+.compat-errors li {
+  margin-bottom: 2px;
+}
+
+.compat-raw {
+  margin-top: 10px;
+  font-size: 11px;
+}
+
+.compat-raw summary {
+  cursor: pointer;
+  color: var(--text-secondary, #64748b);
+  margin-bottom: 6px;
+}
+
+.compat-raw pre {
+  background: rgba(0, 0, 0, 0.05);
+  padding: 8px;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 10px;
+  line-height: 1.4;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.compat-time {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-secondary, #64748b);
+  text-align: right;
+}
+
 /* ---------- option / skin / color grids ---------- */
 .dash-option-grid,
 .dash-skin-grid {
