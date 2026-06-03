@@ -1,4 +1,4 @@
-use crate::direct_api::api_client::{
+﻿use crate::direct_api::api_client::{
     call_chat_completions_non_stream, call_chat_completions_stream, ChatCompletionChunk,
     DirectApiConfig, SseParser, UserAttachment,
 };
@@ -149,122 +149,259 @@ pub async fn run_direct_api_agent(
                 }
             }
             "auto" | _ => {
-                // 自动模式或流式模式：使用流式调用
-                let res = match call_chat_completions_stream(
-                    &state.http_client,
-                    &config,
-                    &api_messages,
-                    tools,
-                )
-                .await
-                {
-                    Ok(res) => res,
-                    Err(e) => {
-                        send_error(&app_handle, format!("API 请求失败: {e}"), &full_thinking).await;
-                        return;
-                    }
-                };
-
-                let mut stream = res.bytes_stream();
-                let mut sse = SseParser::new();
+                // 自动模式或流式模式：使用流式调用，支持重试
+                const MAX_STREAM_RETRIES: u32 = 3;
+                let mut stream_success = false;
                 let mut raw_buffer = String::new();
 
-                let mut done = false;
-                loop {
-            if is_cancelled(&state).await {
-                send_aborted(&app_handle, &full_thinking).await;
-                return;
-            }
-
-            let chunk_res = match tokio::time::timeout(Duration::from_secs(25), stream.next()).await
-            {
-                Ok(Some(chunk_res)) => chunk_res,
-                Ok(None) => break,
-                Err(_) => {
-                    send_error(
-                        &app_handle,
-                        "API 超过 25 秒没有返回新内容，已停止等待。".to_string(),
-                        &full_thinking,
-                    )
-                    .await;
-                    return;
-                }
-            };
-
-            let chunk_bytes = match chunk_res {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    let message = e.to_string();
-                    if is_recoverable_stream_eof(&message)
-                        && !turn_text.trim().is_empty()
-                        && accumulated_tool_calls.is_empty()
-                    {
-                        break;
+                for attempt in 0..MAX_STREAM_RETRIES {
+                    if attempt > 0 {
+                        let delay = Duration::from_secs(2u64.pow(attempt as u32));
+                        let _ = app_handle.emit(
+                            "ai-thinking",
+                            format!("\n[连接中断，{}秒后重试 ({}/{})]\n", delay.as_secs(), attempt, MAX_STREAM_RETRIES),
+                        );
+                        tokio::time::sleep(delay).await;
                     }
-                    send_error(&app_handle, format!("流式读取失败: {message}"), &full_thinking).await;
-                    return;
-                }
-            };
 
-            let chunk_str = String::from_utf8_lossy(&chunk_bytes);
-            raw_buffer.push_str(&chunk_str);
-            let data_lines = sse.push(&chunk_str);
+                    let res = match call_chat_completions_stream(
+                        &state.http_client,
+                        &config,
+                        &api_messages,
+                        tools.clone(),
+                    )
+                    .await
+                    {
+                        Ok(res) => res,
+                        Err(e) => {
+                            if attempt < MAX_STREAM_RETRIES - 1 { continue; }
+                            send_error(&app_handle, format!("API 请求失败: {e}"), &full_thinking).await;
+                            return;
+                        }
+                    };
 
-            for data in data_lines {
-                if data == "[DONE]" {
-                    done = true;
-                    break;
-                }
+                    let mut stream = res.bytes_stream();
+                    let mut sse = SseParser::new();
+                    raw_buffer.clear(); // 清空上次重试的缓冲区
+                    let mut done = false;
+                    let mut stream_eof = false;
 
-                if let Ok(parsed) = serde_json::from_str::<ChatCompletionChunk>(&data) {
-                    if let Some(choice) = parsed.choices.first() {
-                        if let Some(reasoning) = reasoning_delta_text(&choice.delta) {
-                            full_thinking.push_str(&reasoning);
-                            append_active_thinking(&state, &reasoning);
-                            let _ = app_handle.emit("ai-thinking", reasoning);
+                    loop {
+                        if is_cancelled(&state).await {
+                            send_aborted(&app_handle, &full_thinking).await;
+                            return;
                         }
 
-                        if let Some(ref text) = choice.delta.content {
-                            turn_text.push_str(text);
-                            full_text.push_str(text);
-                            let _ = app_handle
-                                .emit("ai-answer-delta", AnswerDeltaPayload { text: text.clone() });
-                        }
-
-                        if let Some(ref tool_calls) = choice.delta.tool_calls {
-                            for tc in tool_calls {
-                                let entry = accumulated_tool_calls.entry(tc.index).or_insert(
-                                    AccumulatedToolCall {
-                                        id: String::new(),
-                                        name: String::new(),
-                                        arguments: String::new(),
-                                    },
-                                );
-
-                                if let Some(ref id) = tc.id {
-                                    entry.id.push_str(id);
+                        let chunk_res = match tokio::time::timeout(Duration::from_secs(25), stream.next()).await {
+                            Ok(Some(chunk_res)) => chunk_res,
+                            Ok(None) => break,
+                            Err(_) => {
+                                // 超时：如果有部分内容，保留它而非丢弃
+                                if !turn_text.trim().is_empty() || !full_thinking.trim().is_empty() {
+                                    break;
                                 }
-                                if let Some(ref func) = tc.function {
-                                    if let Some(ref name) = func.name {
-                                        entry.name.push_str(name);
+                                send_error(
+                                    &app_handle,
+                                    "API 超过 25 秒没有返回新内容，已停止等待。".to_string(),
+                                    &full_thinking,
+                                )
+                                .await;
+                                return;
+                            }
+                        };
+
+                        let chunk_bytes = match chunk_res {
+                            Ok(bytes) => bytes,
+                            Err(e) => {
+                                let message = e.to_string();
+                                if is_recoverable_stream_error(&message) {
+                                    if !turn_text.trim().is_empty() || !full_thinking.trim().is_empty() {
+                                        // 有内容 -> 恢复
+                                        break;
                                     }
-                                    if let Some(ref args) = func.arguments {
-                                        entry.arguments.push_str(args);
+                                    // 无内容 -> 标记 EOF，让外层重试
+                                    stream_eof = true;
+                                    break;
+                                }
+                                // 非可恢复错误：如果有部分内容，保留它而非丢弃
+                                if !turn_text.trim().is_empty() || !full_thinking.trim().is_empty() {
+                                    break;
+                                }
+                                send_error(&app_handle, format!("流式读取失败: {message}"), &full_thinking).await;
+                                return;
+                            }
+                        };
+
+                        let chunk_str = String::from_utf8_lossy(&chunk_bytes);
+                        raw_buffer.push_str(&chunk_str);
+                        let data_lines = sse.push(&chunk_str);
+
+                        for (event_type, data) in data_lines {
+                            if data == "[DONE]" {
+                                done = true;
+                                break;
+                            }
+
+                            if config.api_mode == "responses" {
+                                // ===== Responses API 流式解析 =====
+                                let data_value: serde_json::Value = match serde_json::from_str(&data) {
+                                    Ok(v) => v,
+                                    Err(_) => continue,
+                                };
+                                match event_type.as_str() {
+                                    "response.output_item.added" => {
+                                        // 记录输出项类型（保留用于后续扩展）
+                                    }
+                                    "response.output_text.delta" => {
+                                        if let Some(text) = data_value.get("delta").and_then(|d| d.as_str()) {
+                                            if !text.is_empty() {
+                                                turn_text.push_str(text);
+                                                full_text.push_str(text);
+                                                let _ = app_handle.emit(
+                                                    "ai-answer-delta",
+                                                    AnswerDeltaPayload { text: text.to_string() },
+                                                );
+                                            }
+                                        }
+                                    }
+                                    "response.reasoning_summary_text.delta" => {
+                                        if let Some(text) = data_value.get("delta").and_then(|d| d.as_str()) {
+                                            if !text.is_empty() {
+                                                full_thinking.push_str(text);
+                                                append_active_thinking(&state, text);
+                                                let _ = app_handle.emit("ai-thinking", text);
+                                            }
+                                        }
+                                    }
+                                    "response.function_call_arguments.delta" => {
+                                        let idx = data_value.get("output_index")
+                                            .and_then(|i| i.as_u64())
+                                            .unwrap_or(0) as usize;
+                                        if let Some(delta) = data_value.get("delta").and_then(|d| d.as_str()) {
+                                            let entry = accumulated_tool_calls.entry(idx).or_insert(
+                                                AccumulatedToolCall {
+                                                    id: String::new(),
+                                                    name: String::new(),
+                                                    arguments: String::new(),
+                                                },
+                                            );
+                                            entry.arguments.push_str(delta);
+                                        }
+                                    }
+                                    "response.function_call_arguments.done" => {
+                                        let idx = data_value.get("output_index")
+                                            .and_then(|i| i.as_u64())
+                                            .unwrap_or(0) as usize;
+                                        if let Some(args) = data_value.get("arguments").and_then(|a| a.as_str()) {
+                                            let entry = accumulated_tool_calls.entry(idx).or_insert(
+                                                AccumulatedToolCall {
+                                                    id: String::new(),
+                                                    name: String::new(),
+                                                    arguments: String::new(),
+                                                },
+                                            );
+                                            // done 事件包含完整参数，覆盖累积值
+                                            entry.arguments = args.to_string();
+                                        }
+                                    }
+                                    "response.output_item.done" => {
+                                        let idx = data_value.get("output_index")
+                                            .and_then(|i| i.as_u64())
+                                            .unwrap_or(0) as usize;
+                                        if let Some(item) = data_value.get("item") {
+                                            let item_type = item.get("type")
+                                                .and_then(|t| t.as_str())
+                                                .unwrap_or("");
+                                            if item_type == "function_call" {
+                                                let entry = accumulated_tool_calls.entry(idx).or_insert(
+                                                    AccumulatedToolCall {
+                                                        id: String::new(),
+                                                        name: String::new(),
+                                                        arguments: String::new(),
+                                                    },
+                                                );
+                                                if let Some(id) = item.get("call_id").and_then(|c| c.as_str())
+                                                    .or_else(|| item.get("id").and_then(|i| i.as_str())) {
+                                                    entry.id = id.to_string();
+                                                }
+                                                if let Some(name) = item.get("name").and_then(|n| n.as_str()) {
+                                                    entry.name = name.to_string();
+                                                }
+                                                if let Some(args) = item.get("arguments").and_then(|a| a.as_str()) {
+                                                    entry.arguments = args.to_string();
+                                                }
+                                            }
+                                        }
+                                    }
+                                    "response.completed" | "response.done" | "response.failed" => {
+                                        done = true;
+                                    }
+                                    _ => {}
+                                }
+                            } else {
+                                // ===== Chat Completions 流式解析 =====
+                                if let Ok(parsed) = serde_json::from_str::<ChatCompletionChunk>(&data) {
+                                    if let Some(choice) = parsed.choices.first() {
+                                        if let Some(reasoning) = reasoning_delta_text(&choice.delta) {
+                                            full_thinking.push_str(&reasoning);
+                                            append_active_thinking(&state, &reasoning);
+                                            let _ = app_handle.emit("ai-thinking", reasoning);
+                                        }
+
+                                        if let Some(ref text) = choice.delta.content {
+                                            turn_text.push_str(text);
+                                            full_text.push_str(text);
+                                            let _ = app_handle
+                                                .emit("ai-answer-delta", AnswerDeltaPayload { text: text.clone() });
+                                        }
+
+                                        if let Some(ref tool_calls) = choice.delta.tool_calls {
+                                            for tc in tool_calls {
+                                                let entry = accumulated_tool_calls.entry(tc.index).or_insert(
+                                                    AccumulatedToolCall {
+                                                        id: String::new(),
+                                                        name: String::new(),
+                                                        arguments: String::new(),
+                                                    },
+                                                );
+
+                                                if let Some(ref id) = tc.id {
+                                                    entry.id.push_str(id);
+                                                }
+                                                if let Some(ref func) = tc.function {
+                                                    if let Some(ref name) = func.name {
+                                                        entry.name.push_str(name);
+                                                    }
+                                                    if let Some(ref args) = func.arguments {
+                                                        entry.arguments.push_str(args);
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
+
+                        if done {
+                            break;
+                        }
                     }
+
+                    if done || !stream_eof {
+                        stream_success = true;
+                        break;
+                    }
+                    // stream_eof 且无内容 -> 继续重试
                 }
-            }
 
-            if done {
-                break;
-            }
-        }
+                if !stream_success && turn_text.is_empty() && accumulated_tool_calls.is_empty() {
+                    send_error(&app_handle, "流式连接多次中断，无法获取响应".to_string(), &full_thinking).await;
+                    return;
+                }
 
-            // auto fallback: 如果 SSE 解析无内容，尝试将原始响应当作 JSON 解析
-            if turn_text.is_empty() && accumulated_tool_calls.is_empty() && !raw_buffer.is_empty() {
+                // auto fallback: 如果 SSE 解析无内容，尝试将原始响应当作 JSON 解析
+                if turn_text.is_empty() && accumulated_tool_calls.is_empty() && !raw_buffer.is_empty() {
                 // HTML 响应检测
                 let buf_trimmed = raw_buffer.trim();
                 if buf_trimmed.starts_with("<!DOCTYPE") || buf_trimmed.starts_with("<!doctype")
@@ -306,6 +443,51 @@ pub async fn run_direct_api_agent(
                         if let Some(reasoning) = ContentExtractor::extract_reasoning(&value) {
                             full_thinking.push_str(&reasoning);
                         }
+                    }
+                }
+                
+                // 如果 JSON 解析也失败了，尝试从 raw_buffer 中提取 SSE data 行的文本内容
+                if turn_text.is_empty() && accumulated_tool_calls.is_empty() {
+                    let mut extracted_text = String::new();
+                    for line in raw_buffer.lines() {
+                        let line = line.trim();
+                        if let Some(data) = line.strip_prefix("data:") {
+                            let data = data.trim();
+                            if data == "[DONE]" { continue; }
+                            // 尝试解析 JSON，如果失败则跳过
+                            if let Ok(parsed) = serde_json::from_str::<ChatCompletionChunk>(data) {
+                                if let Some(choice) = parsed.choices.first() {
+                                    if let Some(ref text) = choice.delta.content {
+                                        extracted_text.push_str(text);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if !extracted_text.is_empty() {
+                        turn_text = extracted_text.clone();
+                        full_text.push_str(&extracted_text);
+                        let _ = app_handle.emit(
+                            "ai-answer-delta",
+                            AnswerDeltaPayload { text: extracted_text },
+                        );
+                    }
+                }
+
+                // 策略4: 纯文本 fallback（raw_buffer 非空、非 HTML、非 JSON、且前面所有策略都没提取到内容）
+                if turn_text.is_empty() && accumulated_tool_calls.is_empty() {
+                    let buf_trimmed = raw_buffer.trim();
+                    if !buf_trimmed.is_empty()
+                        && !buf_trimmed.starts_with('<')
+                        && !buf_trimmed.starts_with('{')
+                        && !buf_trimmed.starts_with('[')
+                    {
+                        turn_text = buf_trimmed.to_string();
+                        full_text.push_str(buf_trimmed);
+                        let _ = app_handle.emit(
+                            "ai-answer-delta",
+                            AnswerDeltaPayload { text: buf_trimmed.to_string() },
+                        );
                     }
                 }
             }
@@ -684,9 +866,20 @@ fn value_to_text(value: Option<&Value>) -> Option<String> {
     }
 }
 
-fn is_recoverable_stream_eof(message: &str) -> bool {
-    let message = message.to_ascii_lowercase();
-    message.contains("unexpected eof") && message.contains("chunk")
+fn is_recoverable_stream_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    // 原有的 chunk EOF 匹配
+    (lower.contains("unexpected eof") && lower.contains("chunk"))
+        // 连接被对端重置
+        || lower.contains("connection reset")
+        // 管道断裂
+        || lower.contains("broken pipe")
+        // 连接被关闭
+        || lower.contains("connection closed")
+        // 通用 EOF (body 相关)
+        || (lower.contains("unexpected eof") && lower.contains("body"))
+        // TLS 握手阶段 EOF
+        || (lower.contains("unexpected eof") && lower.contains("handshake"))
 }
 
 fn append_active_thinking(state: &tauri::State<'_, AppState>, text: &str) {
@@ -1057,13 +1250,13 @@ mod tests {
 
     #[test]
     fn treats_chunked_unexpected_eof_as_recoverable() {
-        assert!(is_recoverable_stream_eof(
+        assert!(is_recoverable_stream_error(
             "request or response body error: error reading a body from connection: unexpected EOF during chunk size line"
         ));
     }
 
     #[test]
-    fn keeps_non_chunked_stream_errors_fatal() {
-        assert!(!is_recoverable_stream_eof("connection reset by peer"));
+    fn connection_reset_is_recoverable() {
+        assert!(is_recoverable_stream_error("connection reset by peer"));
     }
 }
