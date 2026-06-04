@@ -14,6 +14,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{Emitter, Manager};
+use futures_util::FutureExt;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -41,6 +42,12 @@ struct AiErrorPayload {
     message: String,
     thinking: Option<String>,
     aborted: bool,
+}
+
+#[derive(Clone, Serialize)]
+struct ScheduledTaskTriggeredPayload {
+    task: storage::ScheduledTask,
+    message: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -91,6 +98,12 @@ const API_SEARCH_PROVIDER_KEY: &str = "api_search_provider";
 const API_AUTO_APPROVED_TOOLS_KEY: &str = "api_auto_approved_tools";
 const MEMORY_CATEGORY_MANUAL: &str = "manual";
 const MEMORY_CATEGORY_CONVERSATION: &str = "conversation";
+const SCHEDULE_REPEAT_ONCE: &str = "once";
+const SCHEDULE_REPEAT_DAILY: &str = "daily";
+const SCHEDULE_REPEAT_WEEKLY: &str = "weekly";
+const SCHEDULE_REPEAT_MONTHLY: &str = "monthly";
+const SCHEDULE_MIN_DUE_OFFSET_SECS: i64 = 5;
+const SECS_PER_DAY: i64 = 86_400;
 
 #[derive(Debug, Deserialize)]
 struct ApiProfileStore {
@@ -116,6 +129,285 @@ fn normalize_search_provider(value: &str) -> String {
         "duckduckgo" | "duck" | "ddg" => "duckduckgo".to_string(),
         _ => "bing".to_string(),
     }
+}
+
+fn normalize_task_repeat(value: &str) -> storage::TaskRepeat {
+    storage::TaskRepeat::from_str(value)
+}
+
+fn validate_schedule_input(title: &str, due_at: i64) -> Result<(), String> {
+    if title.trim().is_empty() {
+        return Err("任务标题不能为空".to_string());
+    }
+    if due_at < unix_now() + SCHEDULE_MIN_DUE_OFFSET_SECS {
+        return Err("提醒时间必须晚于当前时间至少 5 秒".to_string());
+    }
+    Ok(())
+}
+
+fn next_due_at_for_repeat(repeat: &str, previous_due_at: i64, now: i64) -> Option<i64> {
+    let interval = match repeat {
+        SCHEDULE_REPEAT_DAILY => SECS_PER_DAY,
+        SCHEDULE_REPEAT_WEEKLY => SECS_PER_DAY * 7,
+        SCHEDULE_REPEAT_MONTHLY => SECS_PER_DAY * 30,
+        _ => return None,
+    };
+
+    let mut next = previous_due_at.saturating_add(interval);
+    while next <= now {
+        next = next.saturating_add(interval);
+    }
+    Some(next)
+}
+
+fn scheduled_task_message(task: &storage::ScheduledTask) -> String {
+    let note = task.note.trim();
+    if note.is_empty() {
+        format!("定时任务提醒：{}", task.title)
+    } else {
+        format!("定时任务提醒：{}\n{}", task.title, note)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ParsedScheduleRequest {
+    title: String,
+    note: String,
+    due_at: i64,
+    repeat: storage::TaskRepeat,
+}
+
+fn parse_schedule_request(message: &str, now: i64) -> Option<ParsedScheduleRequest> {
+    let trimmed = message.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let lower = trimmed.to_lowercase();
+    let has_schedule_intent = [
+        "提醒",
+        "叫我",
+        "定时",
+        "闹钟",
+        "remind",
+        "timer",
+        "alarm",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+    if !has_schedule_intent {
+        return None;
+    }
+
+    let (due_at, matched_time) = parse_relative_due_at(trimmed, now)?;
+    let repeat = if lower.contains("每天") || lower.contains("每日") || lower.contains("daily") {
+        storage::TaskRepeat::Daily
+    } else if lower.contains("每周") || lower.contains("weekly") {
+        storage::TaskRepeat::Weekly
+    } else if lower.contains("每月") || lower.contains("monthly") {
+        storage::TaskRepeat::Monthly
+    } else {
+        storage::TaskRepeat::Once
+    };
+
+    let title = extract_schedule_title(trimmed, &matched_time);
+    Some(ParsedScheduleRequest {
+        title,
+        note: trimmed.to_string(),
+        due_at,
+        repeat,
+    })
+}
+
+fn parse_relative_due_at(message: &str, now: i64) -> Option<(i64, String)> {
+    if let Some(index) = message.find("半小时后") {
+        return Some((now.saturating_add(30 * 60), message[index..index + "半小时后".len()].to_string()));
+    }
+
+    let candidates = [
+        ("分钟后", 60.0),
+        ("分后", 60.0),
+        ("小时后", 3600.0),
+        ("个小时后", 3600.0),
+        ("天后", SECS_PER_DAY as f64),
+    ];
+
+    for (marker, seconds) in candidates {
+        if let Some((value, matched)) = number_before_marker(message, marker) {
+            if value > 0.0 && value.is_finite() {
+                let offset = (value * seconds).round() as i64;
+                return Some((now.saturating_add(offset), matched));
+            }
+        }
+    }
+
+    None
+}
+
+fn number_before_marker(message: &str, marker: &str) -> Option<(f64, String)> {
+    let marker_start = message.find(marker)?;
+    let before = &message[..marker_start];
+    let mut number_start = before.len();
+    for (idx, ch) in before.char_indices().rev() {
+        if ch.is_ascii_digit() || ch == '.' || ch.is_whitespace() {
+            number_start = idx;
+        } else {
+            break;
+        }
+    }
+
+    let raw_number = before[number_start..].trim();
+    if !raw_number.is_empty() {
+        let value = raw_number.parse::<f64>().ok()?;
+        let matched = message[number_start..marker_start + marker.len()]
+            .trim()
+            .to_string();
+        return Some((value, matched));
+    }
+
+    let mut chinese_start = before.len();
+    for (idx, ch) in before.char_indices().rev() {
+        if is_chinese_number_char(ch) {
+            chinese_start = idx;
+        } else if idx < chinese_start {
+            break;
+        }
+    }
+    let raw_chinese = before[chinese_start..].trim();
+    let value = parse_simple_chinese_number(raw_chinese)?;
+    let matched = message[chinese_start..marker_start + marker.len()]
+        .trim()
+        .to_string();
+    Some((value, matched))
+}
+
+fn is_chinese_number_char(ch: char) -> bool {
+    matches!(ch, '零' | '一' | '二' | '两' | '三' | '四' | '五' | '六' | '七' | '八' | '九' | '十' | '百')
+}
+
+fn chinese_digit_value(ch: char) -> Option<i64> {
+    match ch {
+        '零' => Some(0),
+        '一' => Some(1),
+        '二' | '两' => Some(2),
+        '三' => Some(3),
+        '四' => Some(4),
+        '五' => Some(5),
+        '六' => Some(6),
+        '七' => Some(7),
+        '八' => Some(8),
+        '九' => Some(9),
+        _ => None,
+    }
+}
+
+fn parse_simple_chinese_number(value: &str) -> Option<f64> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if let Some((head, tail)) = value.split_once('百') {
+        let hundreds = if head.is_empty() {
+            1
+        } else {
+            parse_simple_chinese_number(head)? as i64
+        };
+        let rest = if tail.is_empty() {
+            0
+        } else {
+            parse_simple_chinese_number(tail)? as i64
+        };
+        return Some((hundreds * 100 + rest) as f64);
+    }
+    if let Some((head, tail)) = value.split_once('十') {
+        let tens = if head.is_empty() {
+            1
+        } else {
+            parse_simple_chinese_number(head)? as i64
+        };
+        let ones = if tail.is_empty() {
+            0
+        } else {
+            parse_simple_chinese_number(tail)? as i64
+        };
+        return Some((tens * 10 + ones) as f64);
+    }
+
+    let mut total = 0i64;
+    for ch in value.chars() {
+        total = total * 10 + chinese_digit_value(ch)?;
+    }
+    Some(total as f64)
+}
+
+fn extract_schedule_title(message: &str, matched_time: &str) -> String {
+    let mut title = message.replace(matched_time, " ");
+    for phrase in [
+        "请",
+        "帮我",
+        "给我",
+        "设置",
+        "创建",
+        "一个",
+        "定时任务",
+        "定时提醒",
+        "提醒我",
+        "提醒",
+        "叫我",
+        "闹钟",
+        "每天",
+        "每日",
+        "每周",
+        "每月",
+        "remind me to",
+        "remind me",
+        "timer",
+        "alarm",
+    ] {
+        title = title.replace(phrase, " ");
+    }
+
+    let title = title
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_matches(['：', ':', ',', '，', '。', '.', '；', ';', ' ', '\n', '\t'])
+        .to_string();
+
+    if title.is_empty() {
+        "提醒".to_string()
+    } else {
+        compact_text(&title, 80)
+    }
+}
+
+fn schedule_delay_label(due_at: i64, now: i64) -> String {
+    let delta = due_at.saturating_sub(now);
+    if delta < 3600 {
+        format!("{} 分钟后", (delta + 59) / 60)
+    } else if delta < SECS_PER_DAY {
+        format!("{} 小时后", (delta + 3599) / 3600)
+    } else {
+        format!("{} 天后", (delta + SECS_PER_DAY - 1) / SECS_PER_DAY)
+    }
+}
+
+fn task_repeat_label(repeat: storage::TaskRepeat) -> &'static str {
+    match repeat {
+        storage::TaskRepeat::Once => "仅一次",
+        storage::TaskRepeat::Daily => "每天",
+        storage::TaskRepeat::Weekly => "每周",
+        storage::TaskRepeat::Monthly => "每月",
+    }
+}
+
+fn schedule_confirmation_text(task: &storage::ScheduledTask, now: i64) -> String {
+    format!(
+        "已设置定时任务「{}」，{}提醒你。重复规则：{}。",
+        task.title,
+        schedule_delay_label(task.due_at, now),
+        task_repeat_label(storage::TaskRepeat::from_str(&task.repeat))
+    )
 }
 
 fn normalize_tool_list(values: &[String]) -> Vec<String> {
@@ -179,6 +471,7 @@ fn normalize_api_profile(mut profile: direct_api::DirectApiConfig) -> direct_api
     profile.search_provider = normalize_search_provider(&profile.search_provider);
     profile.auto_approved_tools = normalize_tool_list(&profile.auto_approved_tools);
     profile.stream_mode = direct_api::api_client::normalize_stream_mode(&profile.stream_mode);
+    profile.api_mode = direct_api::api_client::normalize_api_mode(&profile.api_mode);
 
     if profile.model.is_empty() {
         profile.model = "gpt-4o-mini".to_string();
@@ -272,6 +565,7 @@ fn load_api_profiles(db: &storage::Database) -> Vec<direct_api::DirectApiConfig>
             search_provider,
             auto_approved_tools,
             stream_mode: "auto".to_string(),
+            api_mode: "chat_completions".to_string(),
         });
 
         profiles.push(default_profile);
@@ -676,6 +970,21 @@ mod tests {
     }
 
     #[test]
+    fn parses_relative_schedule_requests() {
+        let task = parse_schedule_request("10分钟后提醒我喝水", 1_000).expect("task");
+        assert_eq!(task.title, "喝水");
+        assert_eq!(task.due_at, 1_600);
+        assert_eq!(task.repeat, storage::TaskRepeat::Once);
+
+        let task = parse_schedule_request("每天十分钟后提醒我站起来", 1_000).expect("task");
+        assert_eq!(task.title, "站起来");
+        assert_eq!(task.due_at, 1_600);
+        assert_eq!(task.repeat, storage::TaskRepeat::Daily);
+
+        assert!(parse_schedule_request("帮我整理一下计划", 1_000).is_none());
+    }
+
+    #[test]
     fn normalizes_api_profile_defaults() {
         let profile = normalize_api_profile(direct_api::DirectApiConfig {
             id: "work".to_string(),
@@ -688,6 +997,8 @@ mod tests {
             execution_mode: "custom".to_string(),
             search_provider: "DuckDuckGo".to_string(),
             auto_approved_tools: vec!["write_file".to_string(), "write_file".to_string()],
+            stream_mode: "auto".to_string(),
+            api_mode: "chat_completions".to_string(),
         });
 
         assert_eq!(profile.id, "work");
@@ -713,6 +1024,8 @@ mod tests {
             execution_mode: "normal".to_string(),
             search_provider: "bing".to_string(),
             auto_approved_tools: Vec::new(),
+            stream_mode: "auto".to_string(),
+            api_mode: "chat_completions".to_string(),
         };
 
         let prompt = attach_runtime_identity_prompt("base prompt".to_string(), &profile);
@@ -831,6 +1144,51 @@ async fn send_to_ai(
         }
     }
 
+    if let Some(parsed_task) = parse_schedule_request(&message, unix_now()) {
+        let saved_task = {
+            let db = state.db.lock().await;
+            let id = db
+                .save_scheduled_task(storage::NewScheduledTask {
+                    title: &parsed_task.title,
+                    note: &parsed_task.note,
+                    due_at: parsed_task.due_at,
+                    repeat: parsed_task.repeat,
+                    enabled: true,
+                })
+                .map_err(|e| e.to_string())?;
+            let task = db
+                .get_scheduled_task_by_id(id)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "定时任务保存后读取失败".to_string())?;
+            let reply = schedule_confirmation_text(&task, unix_now());
+            db.save_message("assistant", &reply)
+                .map_err(|e| e.to_string())?;
+            (task, reply)
+        };
+
+        if let Ok(mut active) = state.active_chat.lock() {
+            active.active = None;
+        }
+        {
+            let mut behavior = state.behavior.lock().await;
+            behavior.set_state(behavior::PetState::Speaking);
+            behavior.mood.update(Some(0.05), None);
+        }
+
+        let _ = app_handle.emit("scheduled-tasks-changed", serde_json::json!({}));
+        let _ = app_handle.emit(
+            "ai-finished",
+            AiFinishedPayload {
+                text: saved_task.1,
+                thinking: Some(format!(
+                    "已通过本地定时任务解析器创建任务 #{}。",
+                    saved_task.0.id
+                )),
+            },
+        );
+        return Ok(serde_json::json!({ "started": true, "scheduled_task_id": saved_task.0.id }));
+    }
+
     // 用户交互 + 切换到思考状态
     {
         let mut behavior = state.behavior.lock().await;
@@ -839,11 +1197,32 @@ async fn send_to_ai(
     }
 
     let _ = app_handle.emit("ai-started", &message);
-    tauri::async_runtime::spawn(run_ai_message(
-        app_handle,
-        message,
-        attachments.unwrap_or_default(),
-    ));
+    let app_handle_clone = app_handle.clone();
+    let msg_clone = message.clone();
+    let att_clone = attachments.unwrap_or_default();
+    tauri::async_runtime::spawn(async move {
+        let result = std::panic::AssertUnwindSafe(run_ai_message(
+            app_handle_clone.clone(),
+            msg_clone,
+            att_clone,
+        ))
+        .catch_unwind()
+        .await;
+        if let Err(panic) = result {
+            let panic_msg = if let Some(s) = panic.downcast_ref::<String>() {
+                s.clone()
+            } else if let Some(s) = panic.downcast_ref::<&str>() {
+                s.to_string()
+            } else {
+                "未知内部错误".to_string()
+            };
+            let _ = app_handle_clone.emit("ai-error", serde_json::json!({
+                "message": format!("内部错误: {}", panic_msg),
+                "thinking": null,
+                "aborted": false
+            }));
+        }
+    });
 
     Ok(serde_json::json!({ "started": true }))
 }
@@ -895,7 +1274,7 @@ async fn run_ai_message(
                 .unwrap_or_else(|e| e.into_inner());
             let db = state.db.lock().await;
             let mut history = db
-                .get_recent_messages_after(start_id, 10)
+                .get_recent_messages_after(start_id, 25)
                 .unwrap_or_default();
             if history
                 .last()
@@ -1183,6 +1562,7 @@ async fn set_api_config(
     search_provider: Option<String>,
     auto_approved_tools: Option<Vec<String>>,
     stream_mode: Option<String>,
+    api_mode: Option<String>,
     profile_id: Option<String>,
     profile_name: Option<String>,
     state: tauri::State<'_, AppState>,
@@ -1231,6 +1611,8 @@ async fn set_api_config(
                 .unwrap_or_else(|| existing_profile.auto_approved_tools.clone()),
             stream_mode: stream_mode
                 .unwrap_or_else(|| existing_profile.stream_mode.clone()),
+            api_mode: api_mode
+                .unwrap_or_else(|| existing_profile.api_mode.clone()),
         },
         true,
     )?;
@@ -1339,21 +1721,34 @@ async fn test_api_connection(
     base_url: String,
     model: String,
     thinking_depth: Option<String>,
+    api_mode: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
     let resolved_key = resolve_masked_api_key(&*state.db.lock().await, &api_key);
-    let url = direct_api::api_client::build_chat_completions_url(&base_url);
-
+    let effective_api_mode = api_mode.unwrap_or_else(|| "chat_completions".to_string());
+    let url = direct_api::api_client::build_chat_completions_url(&base_url, &effective_api_mode);
 
     let normalized_depth =
         normalize_thinking_depth(&thinking_depth.unwrap_or_else(|| "auto".to_string()));
-    let mut body = serde_json::json!({
-        "model": model,
-        "messages": [
-            { "role": "user", "content": "ping" }
-        ],
-        "max_tokens": 5
-    });
+    let body = if effective_api_mode == "responses" {
+        let input = direct_api::api_client::convert_messages_to_responses_input(
+            &[serde_json::json!({ "role": "user", "content": "ping" })]
+        );
+        serde_json::json!({
+            "model": model,
+            "input": input,
+            "max_tokens": 5
+        })
+    } else {
+        serde_json::json!({
+            "model": model,
+            "messages": [
+                { "role": "user", "content": "ping" }
+            ],
+            "max_tokens": 5
+        })
+    };
+    let mut body = body;
     if matches!(normalized_depth.as_str(), "low" | "medium" | "high") {
         body.as_object_mut().unwrap().insert(
             "reasoning_effort".to_string(),
@@ -1393,27 +1788,45 @@ async fn test_api_compatibility(
     base_url: String,
     model: String,
     thinking_depth: Option<String>,
+    api_mode: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
     use direct_api::ContentExtractor;
     use std::time::Instant;
 
     let resolved_key = resolve_masked_api_key(&*state.db.lock().await, &api_key);
-    let url = direct_api::api_client::build_chat_completions_url(&base_url);
+    let effective_api_mode = api_mode.unwrap_or_else(|| "chat_completions".to_string());
+    let url = direct_api::api_client::build_chat_completions_url(&base_url, &effective_api_mode);
 
 
     let normalized_depth =
         normalize_thinking_depth(&thinking_depth.unwrap_or_else(|| "auto".to_string()));
-    let body = serde_json::json!({
-        "model": model,
-        "messages": [
-            { "role": "user", "content": "请回复一个简短的问候语" }
-        ],
-        "stream": true,
-        "max_tokens": 50
-    });
+    let body = if effective_api_mode == "responses" {
+        let input = direct_api::api_client::convert_messages_to_responses_input(
+            &[serde_json::json!({ "role": "user", "content": "请回复一个简短的问候语" })]
+        );
+        serde_json::json!({
+            "model": model,
+            "input": input,
+            "stream": true,
+            "max_tokens": 50
+        })
+    } else {
+        serde_json::json!({
+            "model": model,
+            "messages": [
+                { "role": "user", "content": "请回复一个简短的问候语" }
+            ],
+            "stream": true,
+            "max_tokens": 50
+        })
+    };
+    let mut body = body;
     if matches!(normalized_depth.as_str(), "low" | "medium" | "high") {
-        // reasoning_effort 只在 body 上设置，这里我们不需要修改
+        body.as_object_mut().unwrap().insert(
+            "reasoning_effort".to_string(),
+            serde_json::json!(normalized_depth),
+        );
     }
 
     let mut req = state
@@ -1710,6 +2123,115 @@ async fn get_memories(
 async fn delete_memory(id: i64, state: tauri::State<'_, AppState>) -> Result<(), String> {
     let db = state.db.lock().await;
     db.delete_memory(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn save_scheduled_task(
+    title: String,
+    note: Option<String>,
+    due_at: i64,
+    repeat: Option<String>,
+    enabled: Option<bool>,
+    state: tauri::State<'_, AppState>,
+) -> Result<storage::ScheduledTask, String> {
+    let title = title.trim().to_string();
+    validate_schedule_input(&title, due_at)?;
+
+    let note = note.unwrap_or_default().trim().to_string();
+    let repeat = normalize_task_repeat(repeat.as_deref().unwrap_or(SCHEDULE_REPEAT_ONCE));
+    let enabled = enabled.unwrap_or(true);
+
+    let db = state.db.lock().await;
+    let id = db
+        .save_scheduled_task(storage::NewScheduledTask {
+            title: &title,
+            note: &note,
+            due_at,
+            repeat,
+            enabled,
+        })
+        .map_err(|e| e.to_string())?;
+    db.get_scheduled_task_by_id(id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "定时任务保存后读取失败".to_string())
+}
+
+#[tauri::command]
+async fn get_scheduled_tasks(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<storage::ScheduledTask>, String> {
+    let db = state.db.lock().await;
+    db.get_all_scheduled_tasks().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn set_scheduled_task_enabled(
+    id: i64,
+    enabled: bool,
+    state: tauri::State<'_, AppState>,
+) -> Result<storage::ScheduledTask, String> {
+    let db = state.db.lock().await;
+    db.set_scheduled_task_enabled(id, enabled)
+        .map_err(|e| e.to_string())?;
+    db.get_scheduled_task_by_id(id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "未找到定时任务".to_string())
+}
+
+#[tauri::command]
+async fn delete_scheduled_task(id: i64, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.delete_scheduled_task(id).map_err(|e| e.to_string())
+}
+
+async fn process_due_scheduled_tasks(app_handle: &tauri::AppHandle) {
+    let now = unix_now();
+    let state = app_handle.state::<AppState>();
+    let due_tasks = {
+        let db = state.db.lock().await;
+        db.get_due_scheduled_tasks(now).unwrap_or_default()
+    };
+
+    if due_tasks.is_empty() {
+        return;
+    }
+
+    for task in due_tasks {
+        let message = scheduled_task_message(&task);
+        {
+            let db = state.db.lock().await;
+            let next_due = next_due_at_for_repeat(&task.repeat, task.due_at, now);
+            let _ = db.reschedule_triggered_task(task.id, next_due, now);
+            let _ = db.save_message("system", &message);
+        }
+
+        let _ = app_handle.emit(
+            "scheduled-task-triggered",
+            ScheduledTaskTriggeredPayload {
+                task: task.clone(),
+                message: message.clone(),
+            },
+        );
+        let _ = app_handle.emit(
+            "sync-chat-message",
+            serde_json::json!({
+                "role": "system",
+                "content": message,
+            }),
+        );
+    }
+}
+
+fn start_scheduled_task_runner(app_handle: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            interval.tick().await;
+            process_due_scheduled_tasks(&app_handle).await;
+        }
+    });
 }
 
 #[tauri::command]
@@ -2266,6 +2788,8 @@ pub fn run() {
         .setup(move |app| {
             let http_client = reqwest::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(15))
+                .tcp_keepalive(std::time::Duration::from_secs(60))
+                .pool_idle_timeout(std::time::Duration::from_secs(90))
                 .build()
                 .expect("Failed to create HTTP client");
 
@@ -2291,6 +2815,7 @@ pub fn run() {
                 http_client,
             };
             app.manage(app_state);
+            start_scheduled_task_runner(app.handle().clone());
 
             // main 窗口现在是控制台，无需置顶
 
@@ -2309,6 +2834,10 @@ pub fn run() {
             save_memory,
             get_memories,
             delete_memory,
+            save_scheduled_task,
+            get_scheduled_tasks,
+            set_scheduled_task_enabled,
+            delete_scheduled_task,
             save_clipboard_item,
             get_clipboard_items,
             delete_clipboard_item,

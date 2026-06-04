@@ -5,6 +5,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, currentMonitor } from "@tauri-apps/api/window";
 import { LogicalPosition } from "@tauri-apps/api/dpi";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import {
+  DAIMAO_BATIAO_STILLS,
+  DAIMAO_BATIAO_VIDEO_URL,
+  PET_CHARACTER_SETTING_KEY,
+  resolvePetCharacterId,
+  type PetCharacterId,
+} from "../services/petCharacters";
 
 const emit = defineEmits<{
   click: [];
@@ -12,6 +19,7 @@ const emit = defineEmits<{
   dragging: [dragging: boolean];
 }>();
 const pet = usePetStore();
+const props = defineProps<{ character?: PetCharacterId; preview?: boolean }>();
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 let frameCount = 0;
 let mouseDownScreen = { x: 0, y: 0 };
@@ -28,6 +36,22 @@ let squashAmt = 1;       // squash scale
 let longPressTimer: ReturnType<typeof setTimeout> | null = null;
 let tiltAngle = 0;       // body tilt toward mouse
 let unlistenDragDrop: UnlistenFn | null = null;
+
+type DaimaoMedia = { type: "image"; image: HTMLImageElement } | { type: "video" };
+const daimaoStillImages = DAIMAO_BATIAO_STILLS.map((src) => {
+  const image = new Image();
+  image.decoding = "async";
+  image.src = src;
+  return image;
+});
+const daimaoMedia: DaimaoMedia[] = [
+  ...daimaoStillImages.map((image) => ({ type: "image" as const, image })),
+  { type: "video" },
+];
+let daimaoMediaIndex = 0;
+let daimaoNextSwitchFrame = 0;
+let daimaoVideo: HTMLVideoElement | null = null;
+let daimaoVideoCanvas: HTMLCanvasElement | null = null;
 
 // ===== 粒子系统 =====
 interface Particle {
@@ -251,8 +275,136 @@ async function loadFontColor() {
   } catch {}
 }
 
+async function loadCharacter() {
+  if (props.character) return;
+
+  try {
+    pet.character = resolvePetCharacterId(await invoke<string>("get_setting_value", {
+      key: PET_CHARACTER_SETTING_KEY,
+    }));
+  } catch {}
+}
+
+function ensureDaimaoVideo() {
+  if (daimaoVideo) return daimaoVideo;
+
+  daimaoVideo = document.createElement("video");
+  daimaoVideo.src = DAIMAO_BATIAO_VIDEO_URL;
+  daimaoVideo.muted = true;
+  daimaoVideo.loop = true;
+  daimaoVideo.playsInline = true;
+  daimaoVideo.preload = "auto";
+  return daimaoVideo;
+}
+
+function pickDaimaoMedia() {
+  if (daimaoMedia.length === 0) return null;
+
+  if (frameCount >= daimaoNextSwitchFrame) {
+    let nextIndex = Math.floor(Math.random() * daimaoMedia.length);
+    if (daimaoMedia.length > 1 && nextIndex === daimaoMediaIndex) {
+      nextIndex = (nextIndex + 1) % daimaoMedia.length;
+    }
+    daimaoMediaIndex = nextIndex;
+    daimaoNextSwitchFrame = frameCount + 480 + Math.floor(Math.random() * 480);
+  }
+
+  return daimaoMedia[daimaoMediaIndex];
+}
+
+function drawDaimaoVideo(
+  ctx: CanvasRenderingContext2D,
+  video: HTMLVideoElement,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+) {
+  if (!daimaoVideoCanvas) daimaoVideoCanvas = document.createElement("canvas");
+  const canvas = daimaoVideoCanvas;
+  canvas.width = 160;
+  canvas.height = 180;
+  const videoCtx = canvas.getContext("2d");
+  if (!videoCtx || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return false;
+
+  videoCtx.clearRect(0, 0, canvas.width, canvas.height);
+  const scale = Math.min(canvas.width / video.videoWidth, canvas.height / video.videoHeight);
+  const drawW = video.videoWidth * scale;
+  const drawH = video.videoHeight * scale;
+  videoCtx.drawImage(video, (canvas.width - drawW) / 2, canvas.height - drawH - 4, drawW, drawH);
+
+  const frame = videoCtx.getImageData(0, 0, canvas.width, canvas.height);
+  const data = frame.data;
+  const imgW = canvas.width;
+  const imgH = canvas.height;
+
+  for (let i = 0; i < data.length; i += 4) {
+    const pixelIndex = i / 4;
+    const px = pixelIndex % imgW;
+    const py = Math.floor(pixelIndex / imgW);
+
+    // 只处理边缘区域（上下左右各20像素）
+    const isEdge = px < 20 || px >= imgW - 20 || py < 20 || py >= imgH - 20;
+    if (!isEdge) continue;
+
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+
+    // 计算与纯白色的欧氏距离
+    // 纯白色: RGB(255, 255, 255)
+    const distance = Math.sqrt(
+      Math.pow(255 - r, 2) +
+      Math.pow(255 - g, 2) +
+      Math.pow(255 - b, 2)
+    );
+
+    // 边缘区域的白色像素透明化
+    // 距离越小，颜色越接近白色
+    // 阈值设为15，只透明化非常接近白色的像素
+    if (distance < 15) {
+      data[i + 3] = 0;
+    }
+  }
+  videoCtx.putImageData(frame, 0, 0);
+  ctx.drawImage(canvas, x, y, width, height);
+  return true;
+}
+
+function drawDaimaoPet(ctx: CanvasRenderingContext2D) {
+  ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+  const media = pickDaimaoMedia();
+  const bob = Math.sin(frameCount * 0.04) * 2;
+  const drawW = 112;
+  const drawH = 126;
+  const drawX = (ctx.canvas.width - drawW) / 2;
+  const drawY = ctx.canvas.height - drawH - 5 + bob;
+
+  ctx.fillStyle = "rgba(15, 23, 42, 0.12)";
+  ctx.beginPath();
+  ctx.ellipse(ctx.canvas.width / 2, ctx.canvas.height - 12, 36, 5.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  if (media?.type === "video") {
+    const video = ensureDaimaoVideo();
+    if (video.paused) void video.play().catch(() => {});
+    if (drawDaimaoVideo(ctx, video, drawX, drawY, drawW, drawH)) return;
+  }
+
+  const fallbackImage =
+    media?.type === "image" ? media.image : daimaoStillImages[daimaoMediaIndex % daimaoStillImages.length];
+  if (fallbackImage?.complete) {
+    ctx.drawImage(fallbackImage, drawX, drawY, drawW, drawH);
+  }
+}
+
 // ===== 绘制桌宠 =====
 function draw(ctx: CanvasRenderingContext2D) {
+  if ((props.character || pet.character) === "daimao-batiao") {
+    drawDaimaoPet(ctx);
+    return;
+  }
+
   const { x, y } = pet.position;
   const size = 80;
   // Update bounce physics
@@ -742,6 +894,10 @@ function isPetHit(e: MouseEvent) {
   const padding = 5;
   const size = 80;
 
+  if ((props.character || pet.character) === "daimao-batiao") {
+    return isInRoundedRect(px, py, 8, 12, 104, 122, 20);
+  }
+
   const body = isInRoundedRect(
     px,
     py,
@@ -856,25 +1012,38 @@ onMounted(async () => {
   if (canvas) {
     canvas.width = 120;
     canvas.height = 140;
-    window.addEventListener("mousemove", onMouseMove);
-    window.addEventListener("mouseup", onMouseUp);
-    canvas.addEventListener("dblclick", resetPosition);
-    canvas.addEventListener("mouseleave", () => { petMx = -999; petMy = -999; isHovering = false; });
     animate();
-    tickTimer = setInterval(syncState, 1000);
-    loadSkin();
-    loadFontColor();
+    if (!props.preview) {
+      window.addEventListener("mousemove", onMouseMove);
+      window.addEventListener("mouseup", onMouseUp);
+      canvas.addEventListener("dblclick", resetPosition);
+      canvas.addEventListener("mouseleave", () => { petMx = -999; petMy = -999; isHovering = false; });
+      tickTimer = setInterval(syncState, 1000);
+      loadSkin();
+      loadFontColor();
+      loadCharacter();
+    }
   }
 
+  if (props.preview) return;
+
   unlistenDragDrop = await getCurrentWindow().onDragDropEvent((e) => {
-    if (e.payload.type === "enter" || e.payload.type === "over") {
+    if (e.payload.type === "enter") {
+      // .lnk 文件由 ChatBubble 处理注册，不“吃”
+      const hasLnk = e.payload.paths.some((p: string) => p.toLowerCase().endsWith(".lnk"));
+      if (hasLnk) return;
       pet.setState("hungry");
       invoke("set_pet_state", { newState: "hungry" });
+    } else if (e.payload.type === "over") {
+      // over 事件不携带 paths，保持当前状态
     } else if (e.payload.type === "leave") {
       pet.setState("idle");
       invoke("set_pet_state", { newState: "idle" });
     } else if (e.payload.type === "drop") {
       const paths = e.payload.paths;
+      // .lnk 文件由 ChatBubble 处理注册，不“吃”
+      const hasLnk = paths.some((p: string) => p.toLowerCase().endsWith(".lnk"));
+      if (hasLnk) return;
       eatFiles(paths);
     }
   });

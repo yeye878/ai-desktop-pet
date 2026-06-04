@@ -8,6 +8,12 @@ import PetCanvas from "./PetCanvas.vue";
 import { usePetStore, THEMES, FONT_COLORS, resolveSkinId } from "../stores/pet";
 import { useChatStore } from "../stores/chat";
 import {
+  PET_CHARACTERS,
+  PET_CHARACTER_SETTING_KEY,
+  resolvePetCharacterId,
+  type PetCharacterId,
+} from "../services/petCharacters";
+import {
   DEFAULT_VOICE_SETTINGS,
   getAvailableVoices,
   parseVoiceSettings,
@@ -41,6 +47,18 @@ type MemoryItem = {
   created_at: number;
 };
 
+type ScheduledTask = {
+  id: number;
+  title: string;
+  note: string;
+  due_at: number;
+  repeat: "once" | "daily" | "weekly" | "monthly" | string;
+  enabled: boolean;
+  last_triggered_at?: number | null;
+  created_at: number;
+  updated_at: number;
+};
+
 type ApiProfile = {
   id: string;
   name: string;
@@ -55,6 +73,7 @@ type ApiProfile = {
   search_provider: string;
   auto_approved_tools: string[];
   stream_mode: string;
+  api_mode: string;
 };
 
 type ToolEvent = {
@@ -106,6 +125,7 @@ const apiConfig = ref({
   search_provider: "bing",
   auto_approved_tools: [] as string[],
   stream_mode: "auto",
+  api_mode: "chat_completions",
 });
 const apiProfiles = ref<ApiProfile[]>([]);
 const activeApiProfileId = ref("");
@@ -139,6 +159,8 @@ async function loadClaudeStatus() {
 // === 皮肤 ===
 const currentSkin = ref("default");
 const themes = Object.values(THEMES);
+const petCharacters = PET_CHARACTERS;
+const currentCharacter = ref<PetCharacterId>("classic");
 
 // === 字体颜色 ===
 const currentFontColor = ref("");
@@ -192,6 +214,18 @@ const memoryDraft = ref({
 const isSavingMemory = ref(false);
 const memorySaved = ref(false);
 const memoryDeletingId = ref<number | null>(null);
+const scheduledTasks = ref<ScheduledTask[]>([]);
+const taskDraft = ref({
+  title: "",
+  note: "",
+  dueAtLocal: "",
+  repeat: "once",
+});
+const isSavingTask = ref(false);
+const taskSaved = ref(false);
+const taskDeletingId = ref<number | null>(null);
+const taskTogglingId = ref<number | null>(null);
+const taskError = ref("");
 
 // === Computed ===
 const filteredEdgeVoices = computed(() => {
@@ -256,6 +290,7 @@ const toolPermissionOptions = [
   { id: "run_command", label: "执行命令" },
   { id: "web_search", label: "网页搜索" },
   { id: "open_app", label: "打开应用" },
+  { id: "create_scheduled_task", label: "创建定时任务" },
 ];
 
 const currentModelLabel = computed(() => {
@@ -323,6 +358,10 @@ async function loadMemories() {
   try { memories.value = await invoke<MemoryItem[]>("get_memories"); } catch {}
 }
 
+async function loadScheduledTasks() {
+  try { scheduledTasks.value = await invoke<ScheduledTask[]>("get_scheduled_tasks"); } catch {}
+}
+
 async function loadCurrentModel() {
   try { currentModel.value = await invoke("get_current_model"); } catch {}
 }
@@ -332,6 +371,17 @@ async function loadCurrentSkin() {
     currentSkin.value = resolveSkinId(await invoke<string>("get_skin"));
     pet.skin = currentSkin.value;
   } catch {}
+}
+
+async function loadCurrentCharacter() {
+  try {
+    currentCharacter.value = resolvePetCharacterId(await invoke<string>("get_setting_value", {
+      key: PET_CHARACTER_SETTING_KEY,
+    }));
+    pet.character = currentCharacter.value;
+  } catch {
+    currentCharacter.value = pet.character;
+  }
 }
 
 async function loadCurrentFontColor() {
@@ -402,6 +452,7 @@ function applyApiConfig(config: Partial<ApiProfile>) {
     search_provider: (config as any).search_provider || "bing",
     auto_approved_tools: Array.isArray(config.auto_approved_tools) ? config.auto_approved_tools : [],
     stream_mode: (config as any).stream_mode || "auto",
+    api_mode: (config as any).api_mode || "chat_completions",
   };
   activeApiProfileId.value = apiConfig.value.id;
 }
@@ -463,6 +514,7 @@ async function saveApiConfig(options: SaveApiConfigOptions = {}) {
       searchProvider: apiConfig.value.search_provider,
       autoApprovedTools: apiConfig.value.auto_approved_tools,
       streamMode: apiConfig.value.stream_mode,
+      apiMode: apiConfig.value.api_mode,
       profileId: options.profileId ?? apiConfig.value.id,
       profileName: options.profileName ?? (apiConfig.value.name || model),
     });
@@ -532,6 +584,16 @@ async function updateStreamMode(value: string) {
     await saveApiConfig({ quiet: true });
   } catch (e) {
     testResult.value = { success: false, message: "流式模式保存失败: " + e };
+  }
+}
+
+async function updateApiMode(value: string) {
+  apiConfig.value.api_mode = value;
+  if (!apiConfig.value.id || !apiConfig.value.base_url || !apiConfig.value.model) return;
+  try {
+    await saveApiConfig({ quiet: true });
+  } catch (e) {
+    testResult.value = { success: false, message: "API 模式保存失败: " + e };
   }
 }
 
@@ -641,6 +703,7 @@ function newApiProfileDraft() {
     search_provider: "bing",
     auto_approved_tools: [],
     stream_mode: "auto",
+    api_mode: "chat_completions",
   };
   testResult.value = { success: false, message: "" };
   clearFetchedModels();
@@ -704,6 +767,19 @@ async function selectSkin(skinId: string) {
     const petWin = await WebviewWindow.getByLabel("pet");
     if (petWin) await petWin.emit("appearance-changed");
   } catch (e) { alert("皮肤切换失败: " + e); }
+}
+
+async function selectCharacter(characterId: PetCharacterId) {
+  try {
+    await invoke("set_setting_value", {
+      key: PET_CHARACTER_SETTING_KEY,
+      value: characterId,
+    });
+    currentCharacter.value = characterId;
+    pet.character = characterId;
+    const petWin = await WebviewWindow.getByLabel("pet");
+    if (petWin) await petWin.emit("appearance-changed");
+  } catch (e) { alert("本体形象切换失败: " + e); }
 }
 
 async function selectFontColor(value: string) {
@@ -842,6 +918,147 @@ function memoryCategoryLabel(category: string) {
   return map[category] || category;
 }
 
+function pad2(value: number) {
+  return String(value).padStart(2, "0");
+}
+
+function toDatetimeLocalValue(date: Date) {
+  return [
+    date.getFullYear(),
+    pad2(date.getMonth() + 1),
+    pad2(date.getDate()),
+  ].join("-") + `T${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+}
+
+function resetTaskDraftTime() {
+  const date = new Date(Date.now() + 60 * 60 * 1000);
+  date.setMinutes(0, 0, 0);
+  taskDraft.value.dueAtLocal = toDatetimeLocalValue(date);
+}
+
+function parseTaskDueAt() {
+  if (!taskDraft.value.dueAtLocal) return 0;
+  const time = new Date(taskDraft.value.dueAtLocal).getTime();
+  return Number.isFinite(time) ? Math.floor(time / 1000) : 0;
+}
+
+async function saveTaskDraft() {
+  const title = taskDraft.value.title.trim();
+  const dueAt = parseTaskDueAt();
+  taskError.value = "";
+  if (!title || !dueAt || isSavingTask.value) return;
+  if (dueAt <= Math.floor(Date.now() / 1000) + 5) {
+    taskError.value = "提醒时间需要晚于当前时间。";
+    return;
+  }
+
+  isSavingTask.value = true;
+  taskSaved.value = false;
+  try {
+    const saved = await invoke<ScheduledTask>("save_scheduled_task", {
+      title,
+      note: taskDraft.value.note.trim(),
+      dueAt,
+      repeat: taskDraft.value.repeat,
+      enabled: true,
+    });
+    scheduledTasks.value = [
+      saved,
+      ...scheduledTasks.value.filter((item) => item.id !== saved.id),
+    ].sort(compareScheduledTasks);
+    taskDraft.value.title = "";
+    taskDraft.value.note = "";
+    taskDraft.value.repeat = "once";
+    resetTaskDraftTime();
+    taskSaved.value = true;
+    setTimeout(() => { taskSaved.value = false; }, 2000);
+  } catch (e) {
+    taskError.value = `保存定时任务失败: ${e}`;
+  } finally {
+    isSavingTask.value = false;
+  }
+}
+
+async function toggleScheduledTask(task: ScheduledTask) {
+  if (taskTogglingId.value !== null) return;
+  taskTogglingId.value = task.id;
+  taskError.value = "";
+  try {
+    const updated = await invoke<ScheduledTask>("set_scheduled_task_enabled", {
+      id: task.id,
+      enabled: !task.enabled,
+    });
+    scheduledTasks.value = scheduledTasks.value
+      .map((item) => item.id === updated.id ? updated : item)
+      .sort(compareScheduledTasks);
+  } catch (e) {
+    taskError.value = `更新定时任务失败: ${e}`;
+  } finally {
+    taskTogglingId.value = null;
+  }
+}
+
+async function deleteScheduledTask(id: number) {
+  if (taskDeletingId.value !== null) return;
+  taskDeletingId.value = id;
+  taskError.value = "";
+  try {
+    await invoke("delete_scheduled_task", { id });
+    scheduledTasks.value = scheduledTasks.value.filter((item) => item.id !== id);
+  } catch (e) {
+    taskError.value = `删除定时任务失败: ${e}`;
+  } finally {
+    taskDeletingId.value = null;
+  }
+}
+
+function compareScheduledTasks(a: ScheduledTask, b: ScheduledTask) {
+  if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
+  return a.due_at - b.due_at || b.id - a.id;
+}
+
+function taskRepeatLabel(repeat: string) {
+  const map: Record<string, string> = {
+    once: "一次",
+    daily: "每天",
+    weekly: "每周",
+    monthly: "每月",
+  };
+  return map[repeat] || repeat;
+}
+
+function formatTaskTime(timestamp: number) {
+  const date = new Date(timestamp * 1000);
+  if (Number.isNaN(date.getTime())) return "时间无效";
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function formatTaskFullTime(timestamp: number) {
+  const date = new Date(timestamp * 1000);
+  if (Number.isNaN(date.getTime())) return "时间无效";
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function taskStatusLabel(task: ScheduledTask) {
+  if (!task.enabled) return "已暂停";
+  const delta = task.due_at - Math.floor(Date.now() / 1000);
+  if (delta <= 0) return "即将提醒";
+  if (delta < 3600) return `${Math.ceil(delta / 60)} 分钟后`;
+  if (delta < 86400) return `${Math.ceil(delta / 3600)} 小时后`;
+  return `${Math.ceil(delta / 86400)} 天后`;
+}
+
 async function updateTtsSettings(patch: Partial<TtsSettings>) {
   ttsSettings.value = { ...ttsSettings.value, ...patch };
   try {
@@ -965,6 +1182,8 @@ let unlistenSyncMessage: UnlistenFn | null = null;
 let unlistenToolEvent: UnlistenFn | null = null;
 let unlistenToolConfirm: UnlistenFn | null = null;
 let unlistenToolConfirmResolved: UnlistenFn | null = null;
+let unlistenScheduledTasksChanged: UnlistenFn | null = null;
+let unlistenScheduledTaskTriggered: UnlistenFn | null = null;
 let unlistenDragDrop: UnlistenFn | null = null;
 
 // === 文件拖拽与预加载相关数据 ===
@@ -988,7 +1207,7 @@ interface RustFileMetadata {
   is_file: boolean;
 }
 const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"];
-const MAX_FILE_SIZE = 10 * 1024 * 1024;
+const MAX_FILE_SIZE = 50 * 1024 * 1024;
 const MAX_FILES = 5;
 const pendingFiles = ref<PendingFile[]>([]);
 const fileValidationError = ref("");
@@ -1055,7 +1274,7 @@ async function processNormalFiles(paths: string[]) {
         continue;
       }
       if (meta.size > MAX_FILE_SIZE) {
-        showFileError(`文件过大: ${meta.name} (最大 10MB)`);
+        showFileError(`文件过大: ${meta.name} (最大 50MB)`);
         continue;
       }
 
@@ -1163,7 +1382,10 @@ function buildMessageWithFiles(text: string, files: PendingFile[]): string {
 }
 
 function handleDragDropEvent(event: any) {
-  if (activePage.value !== "chat") {
+  // 检查是否是 .lnk 文件（快捷方式在任何页面都可注册）
+  const hasLnk = event.type === "drop" && event.paths?.some((p: string) => p.toLowerCase().endsWith(".lnk"));
+
+  if (activePage.value !== "chat" && !hasLnk) {
     isFileOver.value = false;
     return;
   }
@@ -1172,7 +1394,7 @@ function handleDragDropEvent(event: any) {
     return;
   }
   isFileOver.value = false;
-  if (event.type === "drop" && event.paths.length > 0) {
+  if (event.type === "drop" && event.paths?.length > 0) {
     void addToPendingFiles(event.paths);
   }
 }
@@ -1239,6 +1461,7 @@ async function sendDashboardMessage() {
   chatInput.value = "";
   clearPendingFiles();
   chat.isLoading = true;
+  resetLoadingTimeout(); // 启动超时保底
   thinkingContent.value = "";
   streamingAnswer.value = "";
   toolEvents.value = [];
@@ -1352,6 +1575,10 @@ watch(activePage, (newPage) => {
   if (newPage === 'chat') {
     scrollDashChatToBottom();
   }
+  if (newPage === 'memory') {
+    void loadMemories();
+    void loadScheduledTasks();
+  }
 }, { flush: "post" });
 
 function handlePageEntered() {
@@ -1363,11 +1590,39 @@ function handlePageEntered() {
 // === 生命周期 ===
 let unlistenPetStatus: UnlistenFn | null = null;
 
+// Loading 超时保底机制
+let loadingTimeout: ReturnType<typeof setTimeout> | null = null;
+function resetLoadingTimeout() {
+  if (loadingTimeout) clearTimeout(loadingTimeout);
+  loadingTimeout = setTimeout(() => {
+    if (chat.isLoading) {
+      chat.isLoading = false;
+      const last = chat.messages[chat.messages.length - 1];
+      const timeoutMsg = "⚠️ 响应超时，请重试";
+      if (!(last?.role === "assistant" && last.content === timeoutMsg)) {
+        chat.addMessage("assistant", timeoutMsg, thinkingContent.value || undefined);
+      }
+      thinkingContent.value = "";
+      streamingAnswer.value = "";
+      pendingConfirm.value = null;
+    }
+  }, 90000); // 90 秒超时
+}
+function clearLoadingTimeout() {
+  if (loadingTimeout) {
+    clearTimeout(loadingTimeout);
+    loadingTimeout = null;
+  }
+}
+
 onMounted(async () => {
+  resetTaskDraftTime();
   loadSystemInfo();
   loadMemories();
+  loadScheduledTasks();
   loadCurrentModel();
   loadCurrentSkin();
+  loadCurrentCharacter();
   loadCurrentFontColor();
   loadUserAvatar();
   loadPersonality();
@@ -1386,15 +1641,18 @@ onMounted(async () => {
 
   unlistenThinking = await listen<string>("ai-thinking", (event) => {
     chat.isLoading = true;
+    resetLoadingTimeout(); // 重置超时
     thinkingContent.value += event.payload;
   });
 
   unlistenAnswerDelta = await listen<AnswerDeltaPayload>("ai-answer-delta", (event) => {
     chat.isLoading = true;
+    resetLoadingTimeout(); // 重置超时
     streamingAnswer.value += event.payload.text;
   });
 
   unlistenAiFinished = await listen<any>("ai-finished", (event) => {
+    clearLoadingTimeout(); // 清除超时
     const last = chat.messages[chat.messages.length - 1];
     if (!(last?.role === "assistant" && last.content === event.payload.text)) {
       chat.addMessage("assistant", event.payload.text, event.payload.thinking || undefined);
@@ -1406,7 +1664,17 @@ onMounted(async () => {
   });
 
   unlistenAiError = await listen<any>("ai-error", (event) => {
-    const text = event.payload.aborted ? "已中止" : `出错了: ${event.payload.message}`;
+    clearLoadingTimeout(); // 清除超时
+    // 区分可恢复中断和致命错误
+    let text: string;
+    if (event.payload.aborted) {
+      text = "已中止";
+    } else if (streamingAnswer.value || thinkingContent.value) {
+      // 有部分内容时，显示警告而非错误
+      text = `⚠️ ${event.payload.message}`;
+    } else {
+      text = `出错了: ${event.payload.message}`;
+    }
     const last = chat.messages[chat.messages.length - 1];
     if (!(last?.role === "assistant" && last.content === text)) {
       chat.addMessage("assistant", text, event.payload.thinking || undefined);
@@ -1453,6 +1721,14 @@ onMounted(async () => {
     }
   });
 
+  unlistenScheduledTasksChanged = await listen("scheduled-tasks-changed", () => {
+    void loadScheduledTasks();
+  });
+
+  unlistenScheduledTaskTriggered = await listen<{ message: string }>("scheduled-task-triggered", () => {
+    void loadScheduledTasks();
+  });
+
   // 检查桌宠窗口是否已存在
   const existing = await WebviewWindow.getByLabel("pet");
   isPetActive.value = !!existing;
@@ -1485,6 +1761,8 @@ onUnmounted(() => {
   unlistenToolEvent?.();
   unlistenToolConfirm?.();
   unlistenToolConfirmResolved?.();
+  unlistenScheduledTasksChanged?.();
+  unlistenScheduledTaskTriggered?.();
   unlistenDragDrop?.();
 });
 </script>
@@ -1633,7 +1911,7 @@ onUnmounted(() => {
                   <span class="pet-spark spark-a">✦</span>
                   <span class="pet-spark spark-b">✧</span>
                   <div class="pet-preview-canvas-wrap">
-                    <PetCanvas style="width: 140px; height: 140px; pointer-events: none;" />
+                    <PetCanvas preview style="width: 140px; height: 140px; pointer-events: none;" />
                   </div>
                 </div>
                 <div class="pet-info">
@@ -1803,6 +2081,7 @@ onUnmounted(() => {
                 </div>
               </div>
 
+              <!-- 工具执行轨迹（用户消息与 AI 回复之间） -->
               <div v-if="toolEvents.length > 0" class="dash-msg-wrapper assistant">
                 <div class="dash-tool-trace-panel">
                   <div class="dash-tool-trace-header">
@@ -1834,7 +2113,7 @@ onUnmounted(() => {
                   </div>
                 </div>
               </div>
-              
+
               <!-- AI 实时打字状态 -->
               <div v-if="chat.isLoading" class="dash-msg-wrapper assistant loading">
                 <div class="dash-msg-bubble">
@@ -1975,62 +2254,162 @@ onUnmounted(() => {
             <div class="page-header">
               <div class="page-kicker">Memory</div>
               <h1 class="page-title">长期记忆库</h1>
-              <p class="page-subtitle">保存稳定偏好、重要背景和重置对话前的摘要</p>
+              <p class="page-subtitle">保存稳定偏好、重要背景，并管理 AI 的定时提醒</p>
             </div>
 
             <div class="dash-memory-layout">
-              <div class="dash-card palette-panel skin-panel">
-                <div class="dash-card-title"><span class="card-icon">＋</span> 新建记忆</div>
-                <div class="dash-form-group">
-                  <label>标题</label>
-                  <input type="text" v-model="memoryDraft.key" placeholder="例如：沟通偏好" />
+              <div class="dash-memory-editor-stack">
+                <div class="dash-card palette-panel skin-panel">
+                  <div class="dash-card-title"><span class="card-icon">＋</span> 新建记忆</div>
+                  <div class="dash-form-group">
+                    <label>标题</label>
+                    <input type="text" v-model="memoryDraft.key" placeholder="例如：沟通偏好" />
+                  </div>
+                  <div class="dash-form-group">
+                    <label>内容</label>
+                    <textarea
+                      class="dash-textarea"
+                      v-model="memoryDraft.value"
+                      rows="5"
+                      placeholder="写下希望 AI 长期记住的事实、偏好或背景"
+                    ></textarea>
+                  </div>
+                  <div class="dash-field-row">
+                    <span class="dash-field-label">分类</span>
+                    <select class="dash-select" v-model="memoryDraft.category">
+                      <option value="manual">手动</option>
+                      <option value="general">通用</option>
+                    </select>
+                  </div>
+                  <button
+                    class="dash-btn primary"
+                    :disabled="isSavingMemory || !memoryDraft.key.trim() || !memoryDraft.value.trim()"
+                    @click="saveMemoryDraft"
+                  >
+                    {{ memorySaved ? '已保存' : (isSavingMemory ? '保存中...' : '保存记忆') }}
+                  </button>
                 </div>
-                <div class="dash-form-group">
-                  <label>内容</label>
-                  <textarea
-                    class="dash-textarea"
-                    v-model="memoryDraft.value"
-                    rows="5"
-                    placeholder="写下希望 AI 长期记住的事实、偏好或背景"
-                  ></textarea>
+
+                <div class="dash-card dash-task-composer">
+                  <div class="dash-card-title"><span class="card-icon">时</span> 新建定时任务</div>
+                  <div class="dash-form-group">
+                    <label>任务</label>
+                    <input type="text" v-model="taskDraft.title" placeholder="例如：提醒我喝水" />
+                  </div>
+                  <div class="dash-form-group">
+                    <label>时间</label>
+                    <input type="datetime-local" v-model="taskDraft.dueAtLocal" />
+                  </div>
+                  <div class="dash-field-row">
+                    <span class="dash-field-label">重复</span>
+                    <select class="dash-select" v-model="taskDraft.repeat">
+                      <option value="once">仅一次</option>
+                      <option value="daily">每天</option>
+                      <option value="weekly">每周</option>
+                      <option value="monthly">每月</option>
+                    </select>
+                  </div>
+                  <div class="dash-form-group">
+                    <label>备注</label>
+                    <textarea
+                      class="dash-textarea"
+                      v-model="taskDraft.note"
+                      rows="3"
+                      placeholder="可选：补充提醒内容"
+                    ></textarea>
+                  </div>
+                  <div v-if="taskError" class="dash-test-result compact error">{{ taskError }}</div>
+                  <button
+                    class="dash-btn primary"
+                    :disabled="isSavingTask || !taskDraft.title.trim() || !taskDraft.dueAtLocal"
+                    @click="saveTaskDraft"
+                  >
+                    {{ taskSaved ? '已创建' : (isSavingTask ? '创建中...' : '创建任务') }}
+                  </button>
                 </div>
-                <div class="dash-field-row">
-                  <span class="dash-field-label">分类</span>
-                  <select class="dash-select" v-model="memoryDraft.category">
-                    <option value="manual">手动</option>
-                    <option value="general">通用</option>
-                  </select>
-                </div>
-                <button
-                  class="dash-btn primary"
-                  :disabled="isSavingMemory || !memoryDraft.key.trim() || !memoryDraft.value.trim()"
-                  @click="saveMemoryDraft"
-                >
-                  {{ memorySaved ? '已保存' : (isSavingMemory ? '保存中...' : '保存记忆') }}
-                </button>
               </div>
 
               <div class="dash-memory-list">
-                <div v-if="memories.length === 0" class="dash-memory-empty">
-                  暂无长期记忆。清空一段对话后会自动生成摘要，也可以在左侧手动添加。
-                </div>
-                <div v-for="memory in memories" :key="memory.id" class="dash-memory-record">
-                  <div class="dash-memory-record-head">
+                <section class="dash-memory-section">
+                  <div class="dash-memory-section-head">
                     <div>
-                      <span class="dash-memory-category">{{ memoryCategoryLabel(memory.category) }}</span>
-                      <h3>{{ memory.key }}</h3>
+                      <span class="dash-section-kicker">Schedule</span>
+                      <h2>定时任务</h2>
                     </div>
-                    <button
-                      class="dash-icon-btn danger"
-                      title="删除记忆"
-                      :disabled="memoryDeletingId === memory.id"
-                      @click="deleteMemoryItem(memory.id)"
-                    >
-                      ×
-                    </button>
+                    <span class="dash-memory-count">{{ scheduledTasks.length }} 项</span>
                   </div>
-                  <p>{{ memory.value }}</p>
-                </div>
+                  <div v-if="scheduledTasks.length === 0" class="dash-memory-empty">
+                    暂无定时任务。可以在左侧创建，也可以在对话框里让 AI 帮你设置提醒。
+                  </div>
+                  <div
+                    v-for="task in scheduledTasks"
+                    :key="task.id"
+                    :class="['dash-task-record', { disabled: !task.enabled }]"
+                  >
+                    <div class="dash-task-time-block">
+                      <strong>{{ formatTaskTime(task.due_at) }}</strong>
+                      <span>{{ taskRepeatLabel(task.repeat) }}</span>
+                    </div>
+                    <div class="dash-task-main">
+                      <div class="dash-memory-record-head">
+                        <div>
+                          <span class="dash-memory-category">{{ taskStatusLabel(task) }}</span>
+                          <h3>{{ task.title }}</h3>
+                        </div>
+                        <div class="dash-task-actions">
+                          <button
+                            class="dash-icon-btn"
+                            :title="task.enabled ? '暂停任务' : '启用任务'"
+                            :disabled="taskTogglingId === task.id"
+                            @click="toggleScheduledTask(task)"
+                          >
+                            {{ task.enabled ? 'Ⅱ' : '▶' }}
+                          </button>
+                          <button
+                            class="dash-icon-btn danger"
+                            title="删除任务"
+                            :disabled="taskDeletingId === task.id"
+                            @click="deleteScheduledTask(task.id)"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      </div>
+                      <p v-if="task.note">{{ task.note }}</p>
+                      <div class="dash-task-meta">下次提醒：{{ formatTaskFullTime(task.due_at) }}</div>
+                    </div>
+                  </div>
+                </section>
+
+                <section class="dash-memory-section">
+                  <div class="dash-memory-section-head">
+                    <div>
+                      <span class="dash-section-kicker">Memory</span>
+                      <h2>记忆条目</h2>
+                    </div>
+                    <span class="dash-memory-count">{{ memories.length }} 条</span>
+                  </div>
+                  <div v-if="memories.length === 0" class="dash-memory-empty">
+                    暂无长期记忆。清空一段对话后会自动生成摘要，也可以在左侧手动添加。
+                  </div>
+                  <div v-for="memory in memories" :key="memory.id" class="dash-memory-record">
+                    <div class="dash-memory-record-head">
+                      <div>
+                        <span class="dash-memory-category">{{ memoryCategoryLabel(memory.category) }}</span>
+                        <h3>{{ memory.key }}</h3>
+                      </div>
+                      <button
+                        class="dash-icon-btn danger"
+                        title="删除记忆"
+                        :disabled="memoryDeletingId === memory.id"
+                        @click="deleteMemoryItem(memory.id)"
+                      >
+                        ×
+                      </button>
+                    </div>
+                    <p>{{ memory.value }}</p>
+                  </div>
+                </section>
               </div>
             </div>
           </div>
@@ -2045,6 +2424,25 @@ onUnmounted(() => {
 
             <!-- 主题皮肤 -->
             <div class="appearance-atelier-layout">
+              <div class="dash-card character-panel">
+              <div class="dash-card-title"><span class="card-icon">形</span> 本体形象</div>
+              <div class="dash-character-grid">
+                <button
+                  v-for="character in petCharacters"
+                  :key="character.id"
+                  :class="['dash-character-item', { active: currentCharacter === character.id }]"
+                  @click="selectCharacter(character.id)"
+                >
+                  <div class="dash-character-preview">
+                    <PetCanvas v-if="character.id === 'classic'" preview character="classic" style="width: 88px; height: 102px; pointer-events: none;" />
+                    <img v-else src="../assets/pets/daimao-batiao/stills/still-03.png" alt="" />
+                  </div>
+                  <span class="dash-character-name">{{ character.name }}</span>
+                  <span class="dash-character-desc">{{ character.description }}</span>
+                </button>
+              </div>
+            </div>
+
               <div class="dash-card palette-panel skin-panel">
               <div class="dash-card-title"><span class="card-icon">◐</span> 主题皮肤</div>
               <div class="dash-skin-grid">
@@ -2545,6 +2943,28 @@ onUnmounted(() => {
                     </button>
                   </div>
                   <p class="dash-hint">自动：先尝试 SSE，失败则回退到 JSON。Auto Code 等非标准接口选"非流式"。</p>
+                </div>
+                <div class="dash-form-group">
+                  <label>API 格式</label>
+                  <div class="dash-mode-grid">
+                    <button
+                      type="button"
+                      :class="['dash-mode-option', { active: apiConfig.api_mode === 'chat_completions' }]"
+                      @click="updateApiMode('chat_completions')"
+                    >
+                      <span>Chat Completions</span>
+                      <small>传统兼容格式 /v1/chat/completions</small>
+                    </button>
+                    <button
+                      type="button"
+                      :class="['dash-mode-option', { active: apiConfig.api_mode === 'responses' }]"
+                      @click="updateApiMode('responses')"
+                    >
+                      <span>Responses</span>
+                      <small>OpenAI 新格式 /v1/responses</small>
+                    </button>
+                  </div>
+                  <p class="dash-hint">Chat Completions 是主流兼容格式，Responses 是 OpenAI 2025 年推出的新格式。大多数情况选 Chat Completions。</p>
                 </div>
                 <div class="dash-form-group">
                   <label>预设一键填充</label>

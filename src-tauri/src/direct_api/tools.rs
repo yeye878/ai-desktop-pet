@@ -2,7 +2,7 @@ use serde_json::json;
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,7 +157,7 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "读取本地文件的内容（最大支持读取 512KB）",
+                "description": "读取本地文件的内容（最大 512KB），支持文本文件和 .docx 格式",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -227,6 +227,20 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
         json!({
             "type": "function",
             "function": {
+                "name": "read_webpage",
+                "description": "读取指定网页的正文内容，支持从搜索结果中的链接获取详细信息。最大返回 32KB 文本内容，超时 15 秒。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": { "type": "string", "description": "要读取的网页 URL（必须是 http 或 https 链接）" }
+                    },
+                    "required": ["url"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
                 "name": "open_app",
                 "description": "打开本地应用程序。支持应用名称（如 notepad、chrome、vscode）或可执行文件的完整路径。启动后立即返回。",
                 "parameters": {
@@ -236,6 +250,37 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
                         "args": { "type": "string", "description": "传递给应用的可选参数（如要打开的文件路径）" }
                     },
                     "required": ["app"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "create_scheduled_task",
+                "description": "创建一个本地定时提醒任务。适合用户要求“稍后提醒我”“每天提醒我”“定时任务”等场景。需要明确标题和提醒时间；可以用 due_at Unix 秒，或 delay_minutes/小时/天这样的相对时间。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string", "description": "任务标题，例如：提交周报" },
+                        "note": { "type": "string", "description": "可选备注或提醒详情" },
+                        "due_at": { "type": "integer", "description": "可选，Unix 秒时间戳，表示第一次提醒时间" },
+                        "delay_minutes": { "type": "number", "description": "可选，从现在开始多少分钟后提醒；当没有 due_at 时使用" },
+                        "delay_hours": { "type": "number", "description": "可选，从现在开始多少小时后提醒；当没有 due_at/delay_minutes 时使用" },
+                        "delay_days": { "type": "number", "description": "可选，从现在开始多少天后提醒；当没有更精确字段时使用" },
+                        "repeat": { "type": "string", "enum": ["once", "daily", "weekly", "monthly"], "description": "重复规则，默认 once" }
+                    },
+                    "required": ["title"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "list_scheduled_tasks",
+                "description": "列出用户已经设置的本地定时提醒任务。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {}
                 }
             }
         }),
@@ -274,7 +319,24 @@ pub async fn execute_tool(
                     .unwrap_or_else(|e| e)
             }
         }
+        "read_webpage" => {
+            let url = args["url"].as_str().unwrap_or("");
+            if url.is_empty() {
+                "URL 不能为空".to_string()
+            } else {
+                match tokio::time::timeout(std::time::Duration::from_secs(15), read_webpage(url)).await {
+                    Ok(result) => result.unwrap_or_else(|e| e),
+                    Err(_) => "读取网页超时 (15秒)".to_string(),
+                }
+            }
+        }
         "open_app" => exec_open_app(args).await.unwrap_or_else(|e| e),
+        "create_scheduled_task" => exec_create_scheduled_task(args)
+            .await
+            .unwrap_or_else(|e| e),
+        "list_scheduled_tasks" => exec_list_scheduled_tasks()
+            .await
+            .unwrap_or_else(|e| e),
         _ => format!("未知工具: {name}"),
     }
 }
@@ -284,6 +346,15 @@ async fn exec_read_file(args: &serde_json::Value) -> Result<String, String> {
     let path_buf = is_path_allowed(path)?;
     if !path_buf.is_file() {
         return Err(format!("路径不是一个文件: {path}"));
+    }
+
+    // .docx 是二进制 ZIP 格式，需要特殊处理
+    if path_buf
+        .extension()
+        .map(|ext| ext.eq_ignore_ascii_case("docx"))
+        .unwrap_or(false)
+    {
+        return read_docx_text(&path_buf);
     }
 
     let content = tokio::fs::read_to_string(&path_buf)
@@ -298,6 +369,74 @@ async fn exec_read_file(args: &serde_json::Value) -> Result<String, String> {
         ))
     } else {
         Ok(content)
+    }
+}
+
+/// 从 .docx 文件中提取纯文本内容
+fn read_docx_text(path: &Path) -> Result<String, String> {
+    use std::io::Read;
+
+    let file = std::fs::File::open(path).map_err(|e| format!("打开 docx 文件失败: {e}"))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("解析 docx 压缩包失败: {e}"))?;
+
+    let mut xml_content = String::new();
+    {
+        let mut entry = archive
+            .by_name("word/document.xml")
+            .map_err(|_| "docx 文件中未找到 word/document.xml".to_string())?;
+        entry
+            .read_to_string(&mut xml_content)
+            .map_err(|e| format!("读取 document.xml 失败: {e}"))?;
+    }
+
+    // 从 XML 中提取 <w:t> 标签之间的文本，在段落边界插入换行
+    let mut text = String::new();
+    let mut in_wt = false;
+    let mut segment = String::new();
+    let mut chars = xml_content.chars().peekable();
+
+    while let Some(&c) = chars.peek() {
+        if c == '<' {
+            let mut tag = String::new();
+            while let Some(&ch) = chars.peek() {
+                tag.push(ch);
+                chars.next();
+                if ch == '>' {
+                    break;
+                }
+            }
+            if tag.starts_with("<w:t") && !tag.starts_with("</w:t") {
+                in_wt = true;
+                segment.clear();
+            } else if tag.starts_with("</w:t") {
+                in_wt = false;
+                text.push_str(&segment);
+                segment.clear();
+            } else if tag.starts_with("</w:p") {
+                text.push('\n');
+            }
+        } else {
+            chars.next();
+            if in_wt {
+                segment.push(c);
+            }
+        }
+    }
+
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return Err("docx 文件中未提取到文本内容".to_string());
+    }
+
+    if text.len() > 524288 {
+        let safe_end = text.floor_char_boundary(524288);
+        Ok(format!(
+            "{}\n\n... [docx 内容已截断，仅显示前 512KB]",
+            &text[..safe_end]
+        ))
+    } else {
+        Ok(text)
     }
 }
 
@@ -469,6 +608,191 @@ pub async fn web_search(query: &str, preferred_provider: &str) -> Result<String,
         "所有搜索源都未返回可用结果：{}。建议稍后重试，或提供一个可直接访问的数据源链接。",
         failures.join("；")
     ))
+}
+
+/// 读取网页正文内容
+async fn read_webpage(url: &str) -> Result<String, String> {
+    // 验证 URL 格式
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err("URL 必须以 http:// 或 https:// 开头".to_string());
+    }
+
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(12))
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+
+    let res = client
+        .get(url)
+        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.7")
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .send()
+        .await
+        .map_err(|e| format!("请求失败: {e}"))?;
+
+    let status = res.status();
+    if !status.is_success() {
+        return Err(format!("HTTP 错误: {}", status));
+    }
+
+    let content_type = res
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_lowercase();
+
+    // 检查是否为 HTML 内容
+    if !content_type.contains("text/html") && !content_type.contains("text/plain") {
+        return Err(format!("不支持的内容类型: {}。此工具仅支持 HTML 和纯文本网页。", content_type));
+    }
+
+    let body = res
+        .text()
+        .await
+        .map_err(|e| format!("读取响应失败: {e}"))?;
+
+    // 提取正文内容
+    let text = html_to_text(&body);
+
+    // 限制输出大小
+    if text.len() > 32768 {
+        let safe_end = text.floor_char_boundary(32768);
+        Ok(format!(
+            "{}\n\n... [内容已截断，仅显示前 32KB]",
+            &text[..safe_end]
+        ))
+    } else {
+        Ok(text)
+    }
+}
+
+/// 将 HTML 转换为纯文本
+fn html_to_text(html: &str) -> String {
+    let mut result = String::new();
+    let mut in_script = false;
+    let mut in_style = false;
+    let mut in_tag = false;
+    let mut last_was_space = false;
+    let chars: Vec<char> = html.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        let c = chars[i];
+
+        if c == '<' {
+            // 检查是否是 script 或 style 标签
+            let remaining: String = chars[i..].iter().take(20).collect();
+            let lower = remaining.to_lowercase();
+            if lower.starts_with("<script") {
+                in_script = true;
+            } else if lower.starts_with("</script") {
+                in_script = false;
+                // 跳过 </script> 标签
+                while i < chars.len() && chars[i] != '>' {
+                    i += 1;
+                }
+                i += 1;
+                continue;
+            } else if lower.starts_with("<style") {
+                in_style = true;
+            } else if lower.starts_with("</style") {
+                in_style = false;
+                while i < chars.len() && chars[i] != '>' {
+                    i += 1;
+                }
+                i += 1;
+                continue;
+            }
+            in_tag = true;
+            i += 1;
+            continue;
+        }
+
+        if c == '>' {
+            in_tag = false;
+            // 在某些标签后添加换行
+            if i > 0 {
+                let prev_tag = chars[..i].iter().rev().take(20).collect::<String>();
+                let prev_lower = prev_tag.to_lowercase();
+                if prev_lower.contains("/p") || prev_lower.contains("/div") 
+                    || prev_lower.contains("/li") || prev_lower.contains("/tr")
+                    || prev_lower.contains("/h1") || prev_lower.contains("/h2")
+                    || prev_lower.contains("/h3") || prev_lower.contains("/h4")
+                    || prev_lower.contains("/h5") || prev_lower.contains("/h6")
+                    || prev_lower.contains("br") {
+                    if !last_was_space {
+                        result.push('\n');
+                        last_was_space = true;
+                    }
+                }
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_tag || in_script || in_style {
+            i += 1;
+            continue;
+        }
+
+        // 处理 HTML 实体
+        if c == '&' {
+            let remaining: String = chars[i..].iter().take(10).collect();
+            if let Some(end) = remaining.find(';') {
+                let entity = &remaining[..=end];
+                let decoded = match entity.to_lowercase().as_str() {
+                    "&nbsp;" => " ",
+                    "&lt;" => "<",
+                    "&gt;" => ">",
+                    "&amp;" => "&",
+                    "&quot;" => "\"",
+                    "&apos;" => "'",
+                    "&#39;" => "'",
+                    _ => entity,
+                };
+                result.push_str(decoded);
+                i += entity.len();
+                last_was_space = decoded == " ";
+                continue;
+            }
+        }
+
+        // 处理空白字符
+        if c.is_whitespace() {
+            if !last_was_space {
+                result.push(' ');
+                last_was_space = true;
+            }
+        } else {
+            result.push(c);
+            last_was_space = false;
+        }
+
+        i += 1;
+    }
+
+    // 清理多余的空行
+    let mut cleaned = String::new();
+    let mut prev_empty = false;
+    for line in result.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            if !prev_empty {
+                cleaned.push('\n');
+                prev_empty = true;
+            }
+        } else {
+            cleaned.push_str(trimmed);
+            cleaned.push('\n');
+            prev_empty = false;
+        }
+    }
+
+    cleaned.trim().to_string()
 }
 
 async fn search_with_provider(
@@ -841,6 +1165,150 @@ fn get_db_path_for_tools() -> Result<std::path::PathBuf, String> {
     path.push("ai-desktop-pet");
     path.push("pet.db");
     Ok(path)
+}
+
+fn unix_now_for_tools() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or_default()
+}
+
+fn normalize_task_repeat_for_tools(value: &str) -> &'static str {
+    match value.trim().to_lowercase().as_str() {
+        "daily" | "day" | "每天" => "daily",
+        "weekly" | "week" | "每周" => "weekly",
+        "monthly" | "month" | "每月" => "monthly",
+        _ => "once",
+    }
+}
+
+fn ensure_scheduled_tasks_table(conn: &rusqlite::Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS scheduled_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            due_at INTEGER NOT NULL,
+            repeat TEXT NOT NULL DEFAULT 'once',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            last_triggered_at INTEGER,
+            created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+            updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+        );",
+    )
+    .map_err(|e| format!("初始化定时任务表失败: {e}"))
+}
+
+fn due_at_from_tool_args(args: &serde_json::Value) -> Result<i64, String> {
+    let now = unix_now_for_tools();
+    if let Some(due_at) = args["due_at"].as_i64() {
+        return Ok(due_at);
+    }
+
+    let relative_seconds = args["delay_minutes"]
+        .as_f64()
+        .map(|value| value * 60.0)
+        .or_else(|| args["delay_hours"].as_f64().map(|value| value * 3600.0))
+        .or_else(|| args["delay_days"].as_f64().map(|value| value * 86_400.0));
+
+    match relative_seconds {
+        Some(seconds) if seconds.is_finite() && seconds > 0.0 => {
+            Ok(now.saturating_add(seconds.round() as i64))
+        }
+        _ => Err("缺少有效提醒时间，请提供 due_at 或 delay_minutes/delay_hours/delay_days".to_string()),
+    }
+}
+
+async fn exec_create_scheduled_task(args: &serde_json::Value) -> Result<String, String> {
+    let title = args["title"]
+        .as_str()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if title.is_empty() {
+        return Err("缺少任务标题 title".to_string());
+    }
+
+    let note = args["note"].as_str().unwrap_or("").trim().to_string();
+    let due_at = due_at_from_tool_args(args)?;
+    if due_at < unix_now_for_tools() + 5 {
+        return Err("提醒时间必须晚于当前时间至少 5 秒".to_string());
+    }
+    let repeat = normalize_task_repeat_for_tools(args["repeat"].as_str().unwrap_or("once"));
+
+    let db_path = get_db_path_for_tools()?;
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| format!("打开数据库失败: {e}"))?;
+    ensure_scheduled_tasks_table(&conn)?;
+    conn.execute(
+        "INSERT INTO scheduled_tasks (title, note, due_at, repeat, enabled, updated_at)
+         VALUES (?1, ?2, ?3, ?4, 1, strftime('%s', 'now'))",
+        (&title, &note, due_at, repeat),
+    )
+    .map_err(|e| format!("保存定时任务失败: {e}"))?;
+
+    let id = conn.last_insert_rowid();
+    Ok(format!(
+        "定时任务已创建: #{} {}，首次提醒 Unix 秒: {}，重复: {}",
+        id, title, due_at, repeat
+    ))
+}
+
+async fn exec_list_scheduled_tasks() -> Result<String, String> {
+    let db_path = get_db_path_for_tools()?;
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| format!("打开数据库失败: {e}"))?;
+    ensure_scheduled_tasks_table(&conn)?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, title, note, due_at, repeat, enabled, last_triggered_at
+             FROM scheduled_tasks
+             ORDER BY enabled DESC, due_at ASC, id DESC
+             LIMIT 50",
+        )
+        .map_err(|e| format!("读取定时任务失败: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)? != 0,
+                row.get::<_, Option<i64>>(6)?,
+            ))
+        })
+        .map_err(|e| format!("读取定时任务失败: {e}"))?;
+
+    let mut lines = Vec::new();
+    for row in rows {
+        let (id, title, note, due_at, repeat, enabled, last_triggered_at) =
+            row.map_err(|e| format!("读取定时任务失败: {e}"))?;
+        lines.push(format!(
+            "#{} [{}] {} | due_at={} | repeat={} | last={}",
+            id,
+            if enabled { "启用" } else { "停用" },
+            if note.trim().is_empty() {
+                title
+            } else {
+                format!("{title} - {note}")
+            },
+            due_at,
+            repeat,
+            last_triggered_at
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "未触发".to_string())
+        ));
+    }
+
+    if lines.is_empty() {
+        Ok("当前没有定时任务。".to_string())
+    } else {
+        Ok(lines.join("\n"))
+    }
 }
 
 async fn exec_open_app(args: &serde_json::Value) -> Result<String, String> {

@@ -18,6 +18,17 @@ type MockMemory = {
   value: string;
   created_at: number;
 };
+type MockScheduledTask = {
+  id: number;
+  title: string;
+  note: string;
+  due_at: number;
+  repeat: string;
+  enabled: boolean;
+  last_triggered_at: number | null;
+  created_at: number;
+  updated_at: number;
+};
 type MockApiProfile = {
   id: string;
   name: string;
@@ -38,6 +49,7 @@ const settingStore = new Map<string, string>([
 
 let backendType = "claude_code";
 let nextMemoryId = 3;
+let nextScheduledTaskId = 2;
 const memories: MockMemory[] = [
   {
     id: 1,
@@ -52,6 +64,19 @@ const memories: MockMemory[] = [
     key: "对话摘要",
     value: "希望控制台像原生桌面软件一样可靠，并保留关键上下文。",
     created_at: 2,
+  },
+];
+const scheduledTasks: MockScheduledTask[] = [
+  {
+    id: 1,
+    title: "整理今日待办",
+    note: "预览数据：打开任务面板时可以看到这条定时任务。",
+    due_at: Math.floor(Date.now() / 1000) + 3600,
+    repeat: "daily",
+    enabled: true,
+    last_triggered_at: null,
+    created_at: Math.floor(Date.now() / 1000),
+    updated_at: Math.floor(Date.now() / 1000),
   },
 ];
 let activeApiProfileId = "mock-openai";
@@ -239,6 +264,41 @@ function handleMockCommand(cmd: string, args: MockPayload) {
       const id = Number(args?.id || 0);
       const index = memories.findIndex((item) => item.id === id);
       if (index >= 0) memories.splice(index, 1);
+      return null;
+    }
+    case "get_scheduled_tasks":
+      return scheduledTasks
+        .slice()
+        .sort((a, b) => Number(b.enabled) - Number(a.enabled) || a.due_at - b.due_at);
+    case "save_scheduled_task": {
+      const now = Math.floor(Date.now() / 1000);
+      const item: MockScheduledTask = {
+        id: nextScheduledTaskId++,
+        title: readArg(args, "title", "title", "新任务"),
+        note: readArg(args, "note", "note"),
+        due_at: Number(args?.dueAt ?? args?.due_at ?? now + 3600),
+        repeat: readArg(args, "repeat", "repeat", "once"),
+        enabled: Boolean(args?.enabled ?? true),
+        last_triggered_at: null,
+        created_at: now,
+        updated_at: now,
+      };
+      scheduledTasks.unshift(item);
+      return item;
+    }
+    case "set_scheduled_task_enabled": {
+      const id = Number(args?.id || 0);
+      const task = scheduledTasks.find((item) => item.id === id);
+      if (task) {
+        task.enabled = Boolean(args?.enabled);
+        task.updated_at = Math.floor(Date.now() / 1000);
+      }
+      return task;
+    }
+    case "delete_scheduled_task": {
+      const id = Number(args?.id || 0);
+      const index = scheduledTasks.findIndex((item) => item.id === id);
+      if (index >= 0) scheduledTasks.splice(index, 1);
       return null;
     }
     case "clear_chat_history":

@@ -6,6 +6,12 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { usePetStore, THEMES, FONT_COLORS, resolveSkinId } from "../stores/pet";
 import {
+  PET_CHARACTERS,
+  PET_CHARACTER_SETTING_KEY,
+  resolvePetCharacterId,
+  type PetCharacterId,
+} from "../services/petCharacters";
+import {
   DEFAULT_VOICE_SETTINGS,
   getAvailableVoices,
   parseVoiceSettings,
@@ -40,6 +46,7 @@ type ApiConfig = {
   search_provider: string;
   auto_approved_tools: string[];
   stream_mode: string;
+  api_mode: string;
 };
 
 type ApiProfile = ApiConfig;
@@ -61,6 +68,7 @@ const apiConfig = ref<ApiConfig>({
   search_provider: "bing",
   auto_approved_tools: [],
   stream_mode: "auto",
+  api_mode: "chat_completions",
 });
 const apiProfiles = ref<ApiProfile[]>([]);
 const activeApiProfileId = ref("");
@@ -78,6 +86,8 @@ const isAddingFetchedModel = ref(false);
 // 皮肤
 const currentSkin = ref("default");
 const themes = Object.values(THEMES);
+const petCharacters = PET_CHARACTERS;
+const currentCharacter = ref<PetCharacterId>("classic");
 
 // 字体颜色
 const currentFontColor = ref("");
@@ -193,6 +203,17 @@ async function loadCurrentSkin() {
   } catch {}
 }
 
+async function loadCurrentCharacter() {
+  try {
+    currentCharacter.value = resolvePetCharacterId(await invoke<string>("get_setting_value", {
+      key: PET_CHARACTER_SETTING_KEY,
+    }));
+    pet.character = currentCharacter.value;
+  } catch {
+    currentCharacter.value = pet.character;
+  }
+}
+
 async function loadCurrentFontColor() {
   try {
     currentFontColor.value = await invoke("get_font_color");
@@ -279,6 +300,7 @@ function applyApiConfig(config: Partial<ApiConfig>) {
     search_provider: config.search_provider || "bing",
     auto_approved_tools: Array.isArray(config.auto_approved_tools) ? config.auto_approved_tools : [],
     stream_mode: config.stream_mode || "auto",
+    api_mode: config.api_mode || "chat_completions",
   };
   activeApiProfileId.value = apiConfig.value.id;
 }
@@ -358,6 +380,7 @@ async function saveApiConfig(options: SaveApiConfigOptions = {}) {
       searchProvider: apiConfig.value.search_provider,
       autoApprovedTools: apiConfig.value.auto_approved_tools,
       streamMode: apiConfig.value.stream_mode,
+      apiMode: apiConfig.value.api_mode,
       profileId: options.profileId ?? apiConfig.value.id,
       profileName: options.profileName ?? (apiConfig.value.name || model),
     });
@@ -420,6 +443,14 @@ async function saveStreamMode() {
     await saveApiConfig({ quiet: true });
   } catch (e) {
     console.error("流式模式保存失败:", e);
+  }
+}
+
+async function saveApiMode() {
+  try {
+    await saveApiConfig({ quiet: true });
+  } catch (e) {
+    console.error("API 模式保存失败:", e);
   }
 }
 
@@ -527,6 +558,7 @@ function newApiProfileDraft() {
     search_provider: "bing",
     auto_approved_tools: [],
     stream_mode: "auto",
+    api_mode: "chat_completions",
   };
   testResult.value = { success: false, message: "" };
   clearFetchedModels();
@@ -594,6 +626,21 @@ async function selectSkin(skinId: string) {
     if (petWin) await petWin.emit("appearance-changed");
   } catch (e) {
     alert("皮肤切换失败: " + e);
+  }
+}
+
+async function selectCharacter(characterId: PetCharacterId) {
+  try {
+    await invoke("set_setting_value", {
+      key: PET_CHARACTER_SETTING_KEY,
+      value: characterId,
+    });
+    currentCharacter.value = characterId;
+    pet.character = characterId;
+    const petWin = await WebviewWindow.getByLabel("pet");
+    if (petWin) await petWin.emit("appearance-changed");
+  } catch (e) {
+    alert("本体形象切换失败: " + e);
   }
 }
 
@@ -771,6 +818,7 @@ onMounted(async () => {
   loadSystemInfo();
   loadCurrentModel();
   loadCurrentSkin();
+  loadCurrentCharacter();
   loadCurrentFontColor();
   loadUserAvatar();
   loadPersonality();
@@ -823,6 +871,26 @@ onUnmounted(() => {
     <div class="settings-body">
       <!-- APPEARANCE TAB -->
       <template v-if="activeTab === 'appearance'">
+        <div class="section">
+          <h3>本体形象</h3>
+          <div class="character-grid">
+            <button
+              v-for="character in petCharacters"
+              :key="character.id"
+              class="character-item"
+              :class="{ active: currentCharacter === character.id }"
+              @click="selectCharacter(character.id)"
+            >
+              <div class="character-preview">
+                <span v-if="character.id === 'classic'">●</span>
+                <img v-else src="../assets/pets/daimao-batiao/stills/still-03.png" alt="" />
+              </div>
+              <span>{{ character.name }}</span>
+              <small>{{ character.description }}</small>
+            </button>
+          </div>
+        </div>
+
         <!-- 主题皮肤 -->
         <div class="section">
           <h3>&#x1F3A8; 主题皮肤</h3>
@@ -1378,6 +1446,20 @@ onUnmounted(() => {
               </div>
 
               <div class="form-group">
+                <label>API 格式</label>
+                <select
+                  v-model="apiConfig.api_mode"
+                  @change="saveApiMode"
+                >
+                  <option value="chat_completions">Chat Completions（传统兼容）</option>
+                  <option value="responses">Responses（OpenAI 新格式）</option>
+                </select>
+                <p class="hint">
+                  Chat Completions 是主流兼容格式，Responses 是 OpenAI 2025 年推出的新格式。大多数情况选 Chat Completions。
+                </p>
+              </div>
+
+              <div class="form-group">
                 <label>预设一键填充</label>
                 <div class="presets-container">
                   <span class="preset-badge" @click="applyPreset('openai')">OpenAI</span>
@@ -1918,6 +2000,84 @@ onUnmounted(() => {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 8px;
+}
+
+.character-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.character-item {
+  min-height: 126px;
+  padding: 8px 6px;
+  border: 2px solid transparent;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.38);
+  color: #64748b;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  transition: all 0.25s;
+}
+
+.character-item:hover {
+  border-color: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.25);
+  background: rgba(255, 255, 255, 0.72);
+  transform: translateY(-2px);
+}
+
+.character-item.active {
+  border-color: var(--pet-primary, #ff6b6b);
+  background: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.09);
+}
+
+.character-preview {
+  width: 74px;
+  height: 82px;
+  display: grid;
+  place-items: center;
+}
+
+.character-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.character-preview span {
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  background: var(--pet-header-gradient, linear-gradient(135deg, #ff6b6b, #ff8e53));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  color: white;
+  display: grid;
+  place-items: center;
+  font-size: 18px;
+}
+
+.character-item span {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.character-item small {
+  color: #94a3b8;
+  font-size: 9px;
+  line-height: 1.25;
+  text-align: center;
+}
+
+.character-item.active span {
+  color: var(--pet-primary, #ff6b6b);
 }
 
 .skin-item {

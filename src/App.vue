@@ -19,6 +19,7 @@ import {
   parseVoiceSettings,
   type VoiceSettings,
 } from "./services/voice";
+import { PET_CHARACTER_SETTING_KEY, resolvePetCharacterId } from "./services/petCharacters";
 
 type AppWindowLabel = "main" | "pet" | "chat" | "context-menu" | "settings" | "voice";
 type PanelLabel = Exclude<AppWindowLabel, "main" | "pet">;
@@ -232,6 +233,14 @@ async function hydrateAppearance() {
   } catch {
     // Keep local defaults if persisted settings are unavailable.
   }
+
+  try {
+    petStore.character = resolvePetCharacterId(await invoke<string>("get_setting_value", {
+      key: PET_CHARACTER_SETTING_KEY,
+    }));
+  } catch {
+    // Keep local defaults if persisted settings are unavailable.
+  }
 }
 
 async function loadVoiceSettings(): Promise<VoiceSettings> {
@@ -294,6 +303,10 @@ function isInRoundedRect(
 }
 
 function isPetBodyPoint(px: number, py: number) {
+  if (petStore.character === "daimao-batiao") {
+    return isInRoundedRect(px, py, 8, 12, 104, 122, 20);
+  }
+
   const x = 60;
   const y = 60;
   const padding = 5;

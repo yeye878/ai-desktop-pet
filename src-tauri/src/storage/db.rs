@@ -1,5 +1,5 @@
 use rusqlite::{Connection, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[derive(Debug, Serialize)]
@@ -25,6 +25,57 @@ pub struct MemoryItem {
     pub key: String,
     pub value: String,
     pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskRepeat {
+    Once,
+    Daily,
+    Weekly,
+    Monthly,
+}
+
+impl TaskRepeat {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TaskRepeat::Once => "once",
+            TaskRepeat::Daily => "daily",
+            TaskRepeat::Weekly => "weekly",
+            TaskRepeat::Monthly => "monthly",
+        }
+    }
+
+    pub fn from_str(value: &str) -> Self {
+        match value.trim().to_lowercase().as_str() {
+            "daily" | "day" | "每天" => TaskRepeat::Daily,
+            "weekly" | "week" | "每周" => TaskRepeat::Weekly,
+            "monthly" | "month" | "每月" => TaskRepeat::Monthly,
+            _ => TaskRepeat::Once,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct ScheduledTask {
+    pub id: i64,
+    pub title: String,
+    pub note: String,
+    pub due_at: i64,
+    pub repeat: String,
+    pub enabled: bool,
+    pub last_triggered_at: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewScheduledTask<'a> {
+    pub title: &'a str,
+    pub note: &'a str,
+    pub due_at: i64,
+    pub repeat: TaskRepeat,
+    pub enabled: bool,
 }
 
 pub struct Database {
@@ -64,10 +115,22 @@ impl Database {
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL,
                 updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+            );
+            CREATE TABLE IF NOT EXISTS scheduled_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                due_at INTEGER NOT NULL,
+                repeat TEXT NOT NULL DEFAULT 'once',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                last_triggered_at INTEGER,
+                created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+                updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
             );",
         )?;
         self.ensure_chat_thinking_column()?;
         self.ensure_clipboard_pinned_column()?;
+        self.ensure_scheduled_tasks_columns()?;
         Ok(())
     }
 
@@ -100,6 +163,35 @@ impl Database {
             "ALTER TABLE clipboard_items ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
             [],
         )?;
+        Ok(())
+    }
+
+    fn ensure_scheduled_tasks_columns(&self) -> Result<()> {
+        let mut stmt = self.conn.prepare("PRAGMA table_info(scheduled_tasks)")?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>>>()?;
+
+        let required = [
+            ("title", "TEXT NOT NULL DEFAULT ''"),
+            ("note", "TEXT NOT NULL DEFAULT ''"),
+            ("due_at", "INTEGER NOT NULL DEFAULT 0"),
+            ("repeat", "TEXT NOT NULL DEFAULT 'once'"),
+            ("enabled", "INTEGER NOT NULL DEFAULT 1"),
+            ("last_triggered_at", "INTEGER"),
+            ("created_at", "INTEGER NOT NULL DEFAULT 0"),
+            ("updated_at", "INTEGER NOT NULL DEFAULT 0"),
+        ];
+
+        for (name, definition) in required {
+            if !columns.iter().any(|column| column == name) {
+                self.conn.execute(
+                    &format!("ALTER TABLE scheduled_tasks ADD COLUMN {name} {definition}"),
+                    [],
+                )?;
+            }
+        }
+
         Ok(())
     }
 
@@ -275,6 +367,114 @@ impl Database {
         Ok(())
     }
 
+    // ===== 定时任务 =====
+
+    pub fn save_scheduled_task(&self, task: NewScheduledTask<'_>) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO scheduled_tasks (title, note, due_at, repeat, enabled, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, strftime('%s', 'now'))",
+            (
+                task.title,
+                task.note,
+                task.due_at,
+                task.repeat.as_str(),
+                if task.enabled { 1 } else { 0 },
+            ),
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn get_scheduled_task_by_id(&self, id: i64) -> Result<Option<ScheduledTask>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, note, due_at, repeat, enabled, last_triggered_at, created_at, updated_at
+             FROM scheduled_tasks
+             WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map([id], scheduled_task_from_row)?;
+        match rows.next() {
+            Some(Ok(item)) => Ok(Some(item)),
+            Some(Err(err)) => Err(err),
+            None => Ok(None),
+        }
+    }
+
+    pub fn get_all_scheduled_tasks(&self) -> Result<Vec<ScheduledTask>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, note, due_at, repeat, enabled, last_triggered_at, created_at, updated_at
+             FROM scheduled_tasks
+             ORDER BY enabled DESC, due_at ASC, id DESC",
+        )?;
+        let rows = stmt.query_map([], scheduled_task_from_row)?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
+    pub fn get_due_scheduled_tasks(&self, now: i64) -> Result<Vec<ScheduledTask>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, note, due_at, repeat, enabled, last_triggered_at, created_at, updated_at
+             FROM scheduled_tasks
+             WHERE enabled = 1 AND due_at <= ?1
+             ORDER BY due_at ASC, id ASC
+             LIMIT 20",
+        )?;
+        let rows = stmt.query_map([now], scheduled_task_from_row)?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
+    pub fn set_scheduled_task_enabled(&self, id: i64, enabled: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE scheduled_tasks
+             SET enabled = ?1, updated_at = strftime('%s', 'now')
+             WHERE id = ?2",
+            (if enabled { 1 } else { 0 }, id),
+        )?;
+        Ok(())
+    }
+
+    pub fn reschedule_triggered_task(
+        &self,
+        id: i64,
+        next_due_at: Option<i64>,
+        triggered_at: i64,
+    ) -> Result<()> {
+        match next_due_at {
+            Some(next_due_at) => {
+                self.conn.execute(
+                    "UPDATE scheduled_tasks
+                     SET due_at = ?1,
+                         last_triggered_at = ?2,
+                         updated_at = strftime('%s', 'now')
+                     WHERE id = ?3",
+                    (next_due_at, triggered_at, id),
+                )?;
+            }
+            None => {
+                self.conn.execute(
+                    "UPDATE scheduled_tasks
+                     SET enabled = 0,
+                         last_triggered_at = ?1,
+                         updated_at = strftime('%s', 'now')
+                     WHERE id = ?2",
+                    (triggered_at, id),
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn delete_scheduled_task(&self, id: i64) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM scheduled_tasks WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
     // ===== 剪切板 =====
 
     pub fn save_clipboard_item(&self, content: &str) -> Result<()> {
@@ -350,4 +550,20 @@ impl Database {
             _ => Ok(None),
         }
     }
+}
+
+fn scheduled_task_from_row(row: &rusqlite::Row<'_>) -> Result<ScheduledTask> {
+    Ok(ScheduledTask {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        note: row.get(2)?,
+        due_at: row.get(3)?,
+        repeat: TaskRepeat::from_str(&row.get::<_, String>(4)?)
+            .as_str()
+            .to_string(),
+        enabled: row.get::<_, i64>(5)? != 0,
+        last_triggered_at: row.get(6)?,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
+    })
 }

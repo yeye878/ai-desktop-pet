@@ -14,9 +14,9 @@ use std::path::Path;
 use std::time::Duration;
 use tauri::{Emitter, Manager};
 
-const MAX_AGENT_TURNS: u32 = 24;
+const MAX_AGENT_TURNS: u32 = 48;
 const MAX_VISION_IMAGES: usize = 5;
-const MAX_VISION_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_VISION_IMAGE_BYTES: u64 = 50 * 1024 * 1024;
 
 #[derive(Clone, Serialize)]
 struct ToolConfirmPayload {
@@ -94,7 +94,7 @@ pub async fn run_direct_api_agent(
         }
 
         if is_cancelled(&state).await {
-            send_aborted(&app_handle, &full_thinking).await;
+            send_aborted(&app_handle, &full_text, &full_thinking).await;
             return;
         }
 
@@ -188,7 +188,7 @@ pub async fn run_direct_api_agent(
 
                     loop {
                         if is_cancelled(&state).await {
-                            send_aborted(&app_handle, &full_thinking).await;
+                            send_aborted(&app_handle, &full_text, &full_thinking).await;
                             return;
                         }
 
@@ -612,6 +612,10 @@ pub async fn run_direct_api_agent(
                     Some(true),
                 );
 
+                if tc_name == "create_scheduled_task" || tc_name == "list_scheduled_tasks" {
+                    let _ = app_handle.emit("scheduled-tasks-changed", json!({}));
+                }
+
                 if tc_name == "open_app" {
                     let success = output.contains("已启动");
                     let app_name = tc_args["app"].as_str().unwrap_or("应用");
@@ -672,7 +676,7 @@ pub async fn run_direct_api_agent(
 
     // 保存前再次检查是否已取消
     if is_cancelled(&state).await {
-        send_aborted(&app_handle, &full_thinking).await;
+        send_aborted(&app_handle, &full_text, &full_thinking).await;
         return;
     }
 
@@ -796,7 +800,7 @@ async fn attachment_to_image_url(attachment: &UserAttachment) -> Result<String, 
     }
     if metadata.len() > MAX_VISION_IMAGE_BYTES {
         return Err(format!(
-            "{} 未作为视觉输入发送：图片超过 10MB",
+            "{} 未作为视觉输入发送：图片超过 50MB",
             attachment_display_name(attachment)
         ));
     }
@@ -1044,9 +1048,10 @@ fn mode_requires_confirmation(
     if already_approved {
         return false;
     }
-    // read_file 和 web_search 为安全/只读或已明确授权的工具，在任何模式下均不需要弹窗确认；
+    // read_file、web_search 和 list_scheduled_tasks 为安全/只读工具，在任何模式下均不需要弹窗确认；
     // 敏感工具如 run_command 和 open_app 需要等待确认（open_app 启动本地应用，具有敏感性）。
-    if tool_name == "read_file" || tool_name == "web_search" {
+    if tool_name == "read_file" || tool_name == "web_search" || tool_name == "list_scheduled_tasks"
+    {
         return false;
     }
     match config.execution_mode.as_str() {
@@ -1134,6 +1139,13 @@ fn tool_summary(tool_name: &str, args: &serde_json::Value) -> String {
         }
         "web_search" => format!("搜索网页 {}", args["query"].as_str().unwrap_or("未知查询")),
         "open_app" => format!("打开应用 {}", args["app"].as_str().unwrap_or("未知应用")),
+        "create_scheduled_task" => {
+            format!(
+                "创建定时任务 {}",
+                args["title"].as_str().unwrap_or("未命名任务")
+            )
+        }
+        "list_scheduled_tasks" => "列出定时任务".to_string(),
         _ => format!("调用工具 {tool_name}"),
     }
 }
@@ -1157,7 +1169,7 @@ async fn send_error(app_handle: &tauri::AppHandle, err_msg: String, full_thinkin
     );
 }
 
-async fn send_aborted(app_handle: &tauri::AppHandle, full_thinking: &str) {
+async fn send_aborted(app_handle: &tauri::AppHandle, full_text: &str, full_thinking: &str) {
     let state = app_handle.state::<AppState>();
     if let Ok(mut active) = state.active_chat.lock() {
         active.active = None;
@@ -1165,6 +1177,16 @@ async fn send_aborted(app_handle: &tauri::AppHandle, full_thinking: &str) {
     let mut behavior = state.behavior.lock().await;
     behavior.set_state(crate::behavior::PetState::Idle);
     drop(behavior);
+
+    // 有部分内容时保存到数据库，使"继续"时 AI 能接续
+    if !full_text.trim().is_empty() || !full_thinking.trim().is_empty() {
+        let db = state.db.lock().await;
+        let _ = db.save_message_with_thinking(
+            "assistant",
+            if full_text.trim().is_empty() { "[思考中，已被中止]" } else { full_text },
+            if full_thinking.trim().is_empty() { None } else { Some(full_thinking) },
+        );
+    }
 
     let _ = app_handle.emit(
         "ai-error",

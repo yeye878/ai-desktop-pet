@@ -96,6 +96,7 @@ let unlistenChatCleared: UnlistenFn | null = null;
 let unlistenVoiceChanged: UnlistenFn | null = null;
 let unlistenSyncMessage: UnlistenFn | null = null;
 let unlistenApiConfigChanged: UnlistenFn | null = null;
+let unlistenScheduledTaskTriggered: UnlistenFn | null = null;
 
 interface ToolConfirmPayload {
   id: string;
@@ -129,7 +130,7 @@ interface RustFileMetadata {
   is_file: boolean;
 }
 const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"];
-const MAX_FILE_SIZE = 10 * 1024 * 1024;
+const MAX_FILE_SIZE = 50 * 1024 * 1024;
 const MAX_FILES = 5;
 const pendingFiles = ref<PendingFile[]>([]);
 const fileValidationError = ref("");
@@ -165,6 +166,29 @@ const filteredClipboardItems = computed(() => {
   });
 });
 
+// Loading 超时保底机制
+let loadingTimeout: ReturnType<typeof setTimeout> | null = null;
+function resetLoadingTimeout() {
+  if (loadingTimeout) clearTimeout(loadingTimeout);
+  loadingTimeout = setTimeout(() => {
+    if (chat.isLoading) {
+      chat.isLoading = false;
+      appendAssistantOnce("⚠️ 响应超时，请重试", thinkingContent.value || undefined);
+      thinkingContent.value = "";
+      streamingAnswer.value = "";
+      isThinkingCollapsed.value = true;
+      pendingConfirm.value = null;
+      pet.setState("confused");
+    }
+  }, 90000); // 90 秒超时
+}
+function clearLoadingTimeout() {
+  if (loadingTimeout) {
+    clearTimeout(loadingTimeout);
+    loadingTimeout = null;
+  }
+}
+
 onMounted(async () => {
   unlistenDragDrop = await currentWindow.onDragDropEvent((event) => {
     handleDragDropEvent(event.payload);
@@ -172,17 +196,20 @@ onMounted(async () => {
 
   unlistenThinking = await listen<string>("ai-thinking", (event) => {
     chat.isLoading = true;
+    resetLoadingTimeout(); // 重置超时
     thinkingContent.value += event.payload;
     scrollToBottomAfterRender();
   });
 
   unlistenAnswerDelta = await listen<AnswerDeltaPayload>("ai-answer-delta", (event) => {
     chat.isLoading = true;
+    resetLoadingTimeout(); // 重置超时
     streamingAnswer.value += event.payload.text;
     scrollToBottomAfterRender();
   });
 
   unlistenAiFinished = await listen<AiFinishedPayload>("ai-finished", (event) => {
+    clearLoadingTimeout(); // 清除超时
     appendAssistantOnce(event.payload.text, event.payload.thinking ?? undefined);
     chat.isLoading = false;
     thinkingContent.value = "";
@@ -199,14 +226,26 @@ onMounted(async () => {
   });
 
   unlistenAiError = await listen<AiErrorPayload>("ai-error", (event) => {
-    const text = event.payload.aborted ? "已中止" : `出错了: ${event.payload.message}`;
+    clearLoadingTimeout(); // 清除超时
+    // 区分可恢复中断和致命错误
+    let text: string;
+    if (event.payload.aborted) {
+      text = "已中止";
+    } else if (streamingAnswer.value || thinkingContent.value) {
+      // 有部分内容时，显示警告而非错误
+      text = `⚠️ ${event.payload.message}`;
+    } else {
+      text = `出错了: ${event.payload.message}`;
+    }
     appendAssistantOnce(text, event.payload.thinking ?? (thinkingContent.value || undefined));
     chat.isLoading = false;
     thinkingContent.value = "";
     streamingAnswer.value = "";
     isThinkingCollapsed.value = true;
     pendingConfirm.value = null;
-    pet.setState(event.payload.aborted ? "idle" : "confused");
+    // 有部分内容时保持 idle，无内容时才 confused
+    const hadContent = !!streamingAnswer.value || !!thinkingContent.value;
+    pet.setState(event.payload.aborted ? "idle" : (hadContent ? "idle" : "confused"));
   });
 
   unlistenChatCleared = await listen("chat-history-cleared", () => {
@@ -240,6 +279,14 @@ onMounted(async () => {
     if (pendingConfirm.value?.id === event.payload.id) {
       pendingConfirm.value = null;
     }
+  });
+
+  unlistenScheduledTaskTriggered = await listen<{ message: string }>("scheduled-task-triggered", () => {
+    pet.setState("happy");
+    scrollToBottomAfterRender();
+    setTimeout(() => {
+      if (pet.state === "happy") pet.setState("idle");
+    }, 2600);
   });
 
   try {
@@ -320,6 +367,10 @@ onBeforeUnmount(() => {
   if (unlistenApiConfigChanged) {
     unlistenApiConfigChanged();
     unlistenApiConfigChanged = null;
+  }
+  if (unlistenScheduledTaskTriggered) {
+    unlistenScheduledTaskTriggered();
+    unlistenScheduledTaskTriggered = null;
   }
   if (fileErrorTimer) {
     clearTimeout(fileErrorTimer);
@@ -403,6 +454,7 @@ async function sendMessage() {
   input.value = "";
   clearPendingFiles();
   chat.isLoading = true;
+  resetLoadingTimeout(); // 启动超时保底
   pendingConfirm.value = null;  // Clear any pending tool confirmation
   thinkingContent.value = "";
   isThinkingCollapsed.value = false;
@@ -739,7 +791,7 @@ async function processNormalFiles(paths: string[]) {
         continue;
       }
       if (meta.size > MAX_FILE_SIZE) {
-        showFileError(`文件过大: ${meta.name} (最大 10MB)`);
+        showFileError(`文件过大: ${meta.name} (最大 50MB)`);
         continue;
       }
 
