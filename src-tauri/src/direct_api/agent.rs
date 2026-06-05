@@ -1051,6 +1051,7 @@ fn mode_requires_confirmation(
     // read_file、web_search 和 list_scheduled_tasks 为安全/只读工具，在任何模式下均不需要弹窗确认；
     // 敏感工具如 run_command 和 open_app 需要等待确认（open_app 启动本地应用，具有敏感性）。
     if tool_name == "read_file" || tool_name == "web_search" || tool_name == "list_scheduled_tasks"
+        || tool_name == "search_memory" || tool_name == "save_memory"
     {
         return false;
     }
@@ -1146,6 +1147,13 @@ fn tool_summary(tool_name: &str, args: &serde_json::Value) -> String {
             )
         }
         "list_scheduled_tasks" => "列出定时任务".to_string(),
+        "search_memory" => format!("搜索记忆 {}", args["query"].as_str().unwrap_or("未知查询")),
+        "save_memory" => format!(
+            "保存记忆 [{}] {}",
+            args["category"].as_str().unwrap_or("未分类"),
+            args["key"].as_str().unwrap_or("无标题")
+        ),
+        "delete_memory" => format!("删除记忆 #{}", args["id"].as_i64().unwrap_or(0)),
         _ => format!("调用工具 {tool_name}"),
     }
 }

@@ -367,6 +367,48 @@ impl Database {
         Ok(())
     }
 
+    pub fn search_memories(
+        &self,
+        query: &str,
+        category: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<MemoryItem>> {
+        let limit = limit.min(30);
+        let like_pattern = format!("%{}%", query);
+        let sql = if category.is_some() {
+            "SELECT id, category, key, value, created_at
+             FROM pet_memory
+             WHERE (key LIKE ?1 OR value LIKE ?1)
+               AND category = ?2
+             ORDER BY id DESC
+             LIMIT ?3"
+        } else {
+            "SELECT id, category, key, value, created_at
+             FROM pet_memory
+             WHERE (key LIKE ?1 OR value LIKE ?1)
+             ORDER BY id DESC
+             LIMIT ?3"
+        };
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map(
+            rusqlite::params![like_pattern, category, limit],
+            |row| {
+                Ok(MemoryItem {
+                    id: row.get(0)?,
+                    category: row.get(1)?,
+                    key: row.get(2)?,
+                    value: row.get(3)?,
+                    created_at: row.get(4)?,
+                })
+            },
+        )?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
     // ===== 定时任务 =====
 
     pub fn save_scheduled_task(&self, task: NewScheduledTask<'_>) -> Result<i64> {

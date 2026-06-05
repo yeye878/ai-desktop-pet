@@ -96,7 +96,6 @@ const API_THINKING_DEPTH_KEY: &str = "api_thinking_depth";
 const API_EXECUTION_MODE_KEY: &str = "api_execution_mode";
 const API_SEARCH_PROVIDER_KEY: &str = "api_search_provider";
 const API_AUTO_APPROVED_TOOLS_KEY: &str = "api_auto_approved_tools";
-const MEMORY_CATEGORY_MANUAL: &str = "manual";
 const MEMORY_CATEGORY_CONVERSATION: &str = "conversation";
 const SCHEDULE_REPEAT_ONCE: &str = "once";
 const SCHEDULE_REPEAT_DAILY: &str = "daily";
@@ -802,85 +801,14 @@ fn save_chat_summary_if_needed(db: &storage::Database) -> Result<Option<i64>, St
         .map_err(|e| e.to_string())
 }
 
-fn parse_manual_memory_request(message: &str) -> Option<(String, String)> {
-    let trimmed = message.trim();
-    let prefixes = [
-        "请记住",
-        "帮我记住",
-        "记住：",
-        "记住:",
-        "记住 ",
-        "记一下：",
-        "记一下:",
-        "remember that ",
-        "remember:",
-    ];
-
-    for prefix in prefixes {
-        if let Some(rest) = trimmed.strip_prefix(prefix) {
-            let value = rest
-                .trim()
-                .trim_start_matches(['：', ':', ',', '，', '。', ' ']);
-            if value.chars().count() >= 2 {
-                return Some(("用户指定记忆".to_string(), compact_text(value, 800)));
-            }
-        }
-    }
-
-    None
-}
-
-fn should_include_memory_context(message: &str) -> bool {
-    let lower = message.to_lowercase();
-    lower.contains("记忆库")
-        || lower.contains("长期记忆")
-        || lower.contains("保存的记忆")
-        || lower.contains("你记得")
-        || lower.contains("你还记得")
-        || lower.contains("recall")
-        || lower.contains("memory")
-        || lower.contains("打开")
-        || lower.contains("运行")
-        || lower.contains("启动")
-        || lower.contains("open")
-        || lower.contains("run")
-        || lower.contains("start")
-}
-
-fn build_memory_context(memories: &[storage::MemoryItem]) -> Option<String> {
-    if memories.is_empty() {
-        return Some("长期记忆库当前没有保存内容。".to_string());
-    }
-
-    let mut lines = Vec::new();
-    let mut total_chars = 0usize;
-    for memory in memories.iter().take(20) {
-        let line = format!(
-            "- [{}] {}: {}",
-            memory.category,
-            compact_text(&memory.key, 80),
-            compact_text(&memory.value, 240)
-        );
-        total_chars += line.chars().count();
-        if total_chars > 4000 {
-            break;
-        }
-        lines.push(line);
-    }
-
-    Some(lines.join("\n"))
-}
-
-fn attach_memory_context(system_prompt: String, memory_context: Option<String>) -> String {
-    let base = format!(
-        "{}\n\n长期记忆能力：系统有一个由用户管理的长期记忆库。不要在每次回复中主动读取或展开记忆；当用户明确要求记住内容、查看记忆或基于旧信息回答时，再使用长期记忆相关能力。",
+fn attach_memory_prompt(system_prompt: String) -> String {
+    format!(
+        "{}\n\n长期记忆能力：你拥有 search_memory、save_memory 和 delete_memory 工具来管理长期记忆。\
+        当对话中出现需要跨会话记住的信息（用户偏好、习惯、事实等），主动使用 save_memory 保存。\
+        当用户询问你是否记得某些事、或你需要回忆之前保存的信息时，使用 search_memory 搜索。\
+        不要过度记忆，只保存有价值的、长期有用的信息。",
         system_prompt
-    );
-
-    match memory_context {
-        Some(context) => format!("{}\n\n本次按用户请求读取到的长期记忆：\n{}", base, context),
-        None => base,
-    }
+    )
 }
 
 async fn attach_registered_apps_prompt(
@@ -904,20 +832,6 @@ async fn attach_registered_apps_prompt(
         }
     }
     system_prompt
-}
-
-async fn memory_context_for_message(
-    state: &tauri::State<'_, AppState>,
-    message: &str,
-) -> Option<String> {
-    if !should_include_memory_context(message) {
-        return None;
-    }
-
-    let db = state.db.lock().await;
-    db.get_all_memories()
-        .ok()
-        .and_then(|memories| build_memory_context(&memories))
 }
 
 #[cfg(test)]
@@ -953,20 +867,6 @@ mod tests {
     fn ignores_tiny_or_empty_conversations() {
         let messages = vec![chat_message("user", "   ", 10)];
         assert!(summarize_chat_messages(&messages).is_none());
-    }
-
-    #[test]
-    fn detects_manual_memory_requests() {
-        let (_, value) = parse_manual_memory_request("请记住：我喜欢简洁的界面").expect("memory");
-        assert_eq!(value, "我喜欢简洁的界面");
-        assert!(parse_manual_memory_request("普通聊天").is_none());
-    }
-
-    #[test]
-    fn memory_context_is_only_used_when_requested() {
-        assert!(should_include_memory_context("你还记得我的偏好吗？"));
-        assert!(should_include_memory_context("please recall my memory"));
-        assert!(!should_include_memory_context("帮我写一段说明"));
     }
 
     #[test]
@@ -1138,10 +1038,6 @@ async fn send_to_ai(
         let db = state.db.lock().await;
         db.save_message("user", &message)
             .map_err(|e| e.to_string())?;
-        if let Some((key, value)) = parse_manual_memory_request(&message) {
-            db.save_memory(MEMORY_CATEGORY_MANUAL, &key, &value)
-                .map_err(|e| e.to_string())?;
-        }
     }
 
     if let Some(parsed_task) = parse_schedule_request(&message, unix_now()) {
@@ -1262,8 +1158,7 @@ async fn run_ai_message(
             let base = openclaw::build_system_prompt(&personality, &profession);
             let base = attach_runtime_identity_prompt(base, &config);
             let base = attach_execution_mode_prompt(base, &config);
-            let memory_context = memory_context_for_message(&state, &message).await;
-            let base = attach_memory_context(base, memory_context);
+            let base = attach_memory_prompt(base);
             attach_registered_apps_prompt(base, &state).await
         };
 
@@ -1317,8 +1212,7 @@ async fn run_ai_message(
         let personality = state.personality.lock().await.clone();
         let profession = state.profession.lock().await.clone();
         let base = openclaw::build_system_prompt(&personality, &profession);
-        let memory_context = memory_context_for_message(&state, &message).await;
-        let base = attach_memory_context(base, memory_context);
+        let base = attach_memory_prompt(base);
         attach_registered_apps_prompt(base, &state).await
     };
 

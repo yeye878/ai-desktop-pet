@@ -284,6 +284,52 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
                 }
             }
         }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "search_memory",
+                "description": "搜索长期记忆库中的已保存记忆。可按关键词（在标题和内容中匹配）和/或分类筛选。返回匹配的记忆条目列表，包含ID、分类、标题、内容和创建时间。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "搜索关键词，在记忆的标题（key）和内容（value）中模糊匹配" },
+                        "category": { "type": "string", "description": "可选，按分类筛选记忆（如 preference、fact、habit 等）" },
+                        "limit": { "type": "integer", "description": "可选，返回结果数量上限，默认 10，最大 30" }
+                    },
+                    "required": ["query"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "save_memory",
+                "description": "将一条信息保存到长期记忆库中。适合保存用户的偏好、事实、习惯或任何需要跨会话记住的内容。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "category": { "type": "string", "description": "记忆分类，如 preference（偏好）、fact（事实）、habit（习惯）、note（备注）等" },
+                        "key": { "type": "string", "description": "记忆的简短标题或标识（如 '用户喜欢的颜色'）" },
+                        "value": { "type": "string", "description": "要保存的记忆内容" }
+                    },
+                    "required": ["category", "key", "value"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "delete_memory",
+                "description": "根据记忆 ID 删除长期记忆库中的一条记忆。这是不可逆操作。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "integer", "description": "要删除的记忆的 ID" }
+                    },
+                    "required": ["id"]
+                }
+            }
+        }),
     ]
 }
 
@@ -337,6 +383,9 @@ pub async fn execute_tool(
         "list_scheduled_tasks" => exec_list_scheduled_tasks()
             .await
             .unwrap_or_else(|e| e),
+        "search_memory" => exec_search_memory(args).await.unwrap_or_else(|e| e),
+        "save_memory" => exec_save_memory(args).await.unwrap_or_else(|e| e),
+        "delete_memory" => exec_delete_memory(args).await.unwrap_or_else(|e| e),
         _ => format!("未知工具: {name}"),
     }
 }
@@ -1308,6 +1357,112 @@ async fn exec_list_scheduled_tasks() -> Result<String, String> {
         Ok("当前没有定时任务。".to_string())
     } else {
         Ok(lines.join("\n"))
+    }
+}
+
+async fn exec_search_memory(args: &serde_json::Value) -> Result<String, String> {
+    let query = args["query"].as_str().ok_or("缺少 'query' 参数")?;
+    let category = args["category"].as_str();
+    let limit = args["limit"].as_u64().unwrap_or(10) as u32;
+
+    let db_path = get_db_path_for_tools()?;
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| format!("打开数据库失败: {e}"))?;
+
+    let like_pattern = format!("%{}%", query);
+    let limit = limit.min(30);
+
+    let (sql, params): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(cat) = category {
+        (
+            "SELECT id, category, key, value, created_at
+             FROM pet_memory
+             WHERE (key LIKE ?1 OR value LIKE ?1) AND category = ?2
+             ORDER BY id DESC LIMIT ?3",
+            vec![
+                Box::new(like_pattern),
+                Box::new(cat.to_string()),
+                Box::new(limit),
+            ],
+        )
+    } else {
+        (
+            "SELECT id, category, key, value, created_at
+             FROM pet_memory
+             WHERE (key LIKE ?1 OR value LIKE ?1)
+             ORDER BY id DESC LIMIT ?3",
+            vec![Box::new(like_pattern), Box::new(limit)],
+        )
+    };
+
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let mut stmt = conn.prepare(sql).map_err(|e| format!("查询记忆失败: {e}"))?;
+    let rows = stmt
+        .query_map(param_refs.as_slice(), |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })
+        .map_err(|e| format!("查询记忆失败: {e}"))?;
+
+    let mut lines = Vec::new();
+    for row in rows {
+        let (id, category, key, value, created_at) = row.map_err(|e| format!("读取记忆失败: {e}"))?;
+        let val_display = if value.len() > 120 {
+            format!("{}...", &value[..120])
+        } else {
+            value
+        };
+        lines.push(format!(
+            "#{} [{}] {} | {} | 创建: {}",
+            id, category, key, val_display, created_at
+        ));
+    }
+
+    if lines.is_empty() {
+        Ok(format!("未找到与 \"{}\" 相关的记忆。", query))
+    } else {
+        Ok(lines.join("\n"))
+    }
+}
+
+async fn exec_save_memory(args: &serde_json::Value) -> Result<String, String> {
+    let category = args["category"].as_str().ok_or("缺少 'category' 参数")?;
+    let key = args["key"].as_str().ok_or("缺少 'key' 参数")?;
+    let value = args["value"].as_str().ok_or("缺少 'value' 参数")?;
+
+    let db_path = get_db_path_for_tools()?;
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| format!("打开数据库失败: {e}"))?;
+
+    conn.execute(
+        "INSERT INTO pet_memory (category, key, value) VALUES (?1, ?2, ?3)",
+        rusqlite::params![category, key, value],
+    )
+    .map_err(|e| format!("保存记忆失败: {e}"))?;
+
+    let id = conn.last_insert_rowid();
+    Ok(format!("记忆已保存: #{} [{}] {}", id, category, key))
+}
+
+async fn exec_delete_memory(args: &serde_json::Value) -> Result<String, String> {
+    let id = args["id"].as_i64().ok_or("缺少 'id' 参数")?;
+
+    let db_path = get_db_path_for_tools()?;
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| format!("打开数据库失败: {e}"))?;
+
+    let affected = conn
+        .execute("DELETE FROM pet_memory WHERE id = ?1", [id])
+        .map_err(|e| format!("删除记忆失败: {e}"))?;
+
+    if affected == 0 {
+        Ok(format!("未找到 ID 为 {} 的记忆，可能已被删除。", id))
+    } else {
+        Ok(format!("记忆 #{} 已删除。", id))
     }
 }
 
