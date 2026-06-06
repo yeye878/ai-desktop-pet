@@ -10,3 +10,7 @@ nul
 resources/
 .qoder/
 update_shortcut.ps1
+__*.tmp
+__diff_*.txt
+__review_*.tmp
+docs/*.md
