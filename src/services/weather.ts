@@ -18,13 +18,56 @@ export interface WeatherUpdateEvent {
   sent_today: boolean;
 }
 
+export interface WeatherConfig {
+  enabled: boolean;
+  location: string;
+  api_url: string;
+}
+
+export const DEFAULT_WEATHER_CONFIG: WeatherConfig = {
+  enabled: true,
+  location: "",
+  api_url: "https://wttr.in",
+};
+
+function finiteNumber(value: unknown, fallback = 0): number {
+  const numberValue = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(numberValue) ? numberValue : fallback;
+}
+
+function safeText(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+export function normalizeWeatherInfo(weather: WeatherInfo | null | undefined): WeatherInfo | null {
+  if (!weather) return null;
+
+  return {
+    city: safeText(weather.city, "未知城市"),
+    temperature: finiteNumber(weather.temperature),
+    feels_like: finiteNumber(weather.feels_like),
+    humidity: finiteNumber(weather.humidity),
+    description: safeText(weather.description, "未知"),
+    wind_speed: finiteNumber(weather.wind_speed),
+    icon: safeText(weather.icon, "🌡"),
+    timestamp: finiteNumber(weather.timestamp),
+  };
+}
+
+export function formatTemperature(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
 /**
  * 根据天气状况生成暖心建议
  */
 export function getWeatherAdvice(weather: WeatherInfo): string {
-  const temp = weather.temperature;
-  const desc = weather.description.toLowerCase();
-  const humidity = weather.humidity;
+  const normalized = normalizeWeatherInfo(weather);
+  if (!normalized) return "天气数据暂时不可用，稍后再试。";
+
+  const temp = normalized.temperature;
+  const desc = normalized.description.toLowerCase();
+  const humidity = normalized.humidity;
 
   let advice = '';
 
@@ -72,22 +115,27 @@ export function getWeatherAdvice(weather: WeatherInfo): string {
  * 格式化天气信息为简洁的显示文本
  */
 export function formatWeatherDisplay(weather: WeatherInfo): string {
-  return `${weather.icon} ${weather.temperature}°C ${weather.city}`;
+  const normalized = normalizeWeatherInfo(weather);
+  if (!normalized) return "";
+  return `${normalized.icon} ${formatTemperature(normalized.temperature)}°C ${normalized.city}`;
 }
 
 /**
  * 格式化天气信息为详细的消息（用于系统消息）
  */
 export function formatWeatherMessage(weather: WeatherInfo): string {
-  const advice = getWeatherAdvice(weather);
+  const normalized = normalizeWeatherInfo(weather);
+  if (!normalized) return "天气数据暂时不可用，稍后再试。";
+
+  const advice = getWeatherAdvice(normalized);
 
   return `🌤 今日天气
 
-📍 ${weather.city}
-🌡 温度: ${weather.temperature}°C (体感 ${weather.feels_like}°C)
-💧 湿度: ${weather.humidity}%
-🌬 风速: ${weather.wind_speed} km/h
-📝 天气: ${weather.icon} ${weather.description}
+📍 ${normalized.city}
+🌡 温度: ${formatTemperature(normalized.temperature)}°C (体感 ${formatTemperature(normalized.feels_like)}°C)
+💧 湿度: ${formatTemperature(normalized.humidity)}%
+🌬 风速: ${formatTemperature(normalized.wind_speed)} km/h
+📝 天气: ${normalized.icon} ${normalized.description}
 
 ${advice}`;
 }

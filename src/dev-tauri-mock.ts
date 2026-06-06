@@ -51,6 +51,11 @@ type MockCustomPetAsset = {
   created_at: number;
   updated_at: number;
 };
+type MockWeatherConfig = {
+  enabled: boolean;
+  location: string;
+  api_url: string;
+};
 
 const settingStore = new Map<string, string>([
   ["voice_settings", JSON.stringify(DEFAULT_VOICE_SETTINGS)],
@@ -62,6 +67,11 @@ let nextMemoryId = 3;
 let nextScheduledTaskId = 2;
 let nextCustomPetId = 1;
 let customPetAssets: MockCustomPetAsset[] = [];
+let weatherConfig: MockWeatherConfig = {
+  enabled: true,
+  location: "Tokyo",
+  api_url: "https://wttr.in",
+};
 const memories: MockMemory[] = [
   {
     id: 1,
@@ -199,6 +209,19 @@ function upsertMockApiProfile(args: MockPayload) {
   return profile;
 }
 
+function mockWeatherInfo(location = weatherConfig.location) {
+  return {
+    city: location.trim() || "Tokyo",
+    temperature: 23,
+    feels_like: 25,
+    humidity: 61,
+    description: "Partly cloudy",
+    wind_speed: 9,
+    icon: "⛅",
+    timestamp: Math.floor(Date.now() / 1000),
+  };
+}
+
 function handleMockCommand(cmd: string, args: MockPayload) {
   if (cmd.startsWith("plugin:")) {
     if (cmd === "plugin:window|get_all_windows") return ["main"];
@@ -213,6 +236,28 @@ function handleMockCommand(cmd: string, args: MockPayload) {
   switch (cmd) {
     case "get_system_info":
       return { cpu: 18.6, memory: 42.3 };
+    case "get_weather_config":
+      return weatherConfig;
+    case "set_weather_config": {
+      const apiUrl = readArg(args, "apiUrl", "api_url", "https://wttr.in").trim();
+      if (!/^https?:\/\//i.test(apiUrl)) throw new Error("天气API地址必须以 http:// 或 https:// 开头");
+      weatherConfig = {
+        enabled: Boolean(args?.enabled),
+        location: readArg(args, "location", "location").trim(),
+        api_url: apiUrl.replace(/\/+$/, "") || "https://wttr.in",
+      };
+      return weatherConfig;
+    }
+    case "test_weather_config": {
+      const apiUrl = readArg(args, "apiUrl", "api_url", weatherConfig.api_url).trim();
+      if (!/^https?:\/\//i.test(apiUrl)) throw new Error("天气API地址必须以 http:// 或 https:// 开头");
+      return mockWeatherInfo(readArg(args, "location", "location", weatherConfig.location));
+    }
+    case "get_weather":
+    case "refresh_weather":
+      return weatherConfig.enabled ? mockWeatherInfo() : null;
+    case "check_and_send_weather":
+      return weatherConfig.enabled;
     case "get_current_model":
       return "Claude Code / preview";
     case "get_backend_type":
@@ -349,6 +394,32 @@ function handleMockCommand(cmd: string, args: MockPayload) {
       const id = readArg(args, "id", "id");
       return customPetAssets.find((item) => item.id === id) || null;
     }
+    case "get_active_custom_pet_asset": {
+      const id = settingStore.get("custom_pixel_pet_asset_id") || "";
+      const asset = customPetAssets.find((item) => item.id === id) || null;
+      if (id && !asset) {
+        settingStore.set("custom_pixel_pet_asset_id", "");
+        if (settingStore.get("pet_character") === "custom-pixel") {
+          settingStore.set("pet_character", "classic");
+        }
+      }
+      return asset;
+    }
+    case "set_active_custom_pet_asset": {
+      const id = readArg(args, "id", "id");
+      if (!id) {
+        settingStore.set("custom_pixel_pet_asset_id", "");
+        if (settingStore.get("pet_character") === "custom-pixel") {
+          settingStore.set("pet_character", "classic");
+        }
+        return null;
+      }
+      const asset = customPetAssets.find((item) => item.id === id) || null;
+      if (!asset) throw new Error("Custom pet asset was not found");
+      settingStore.set("custom_pixel_pet_asset_id", id);
+      settingStore.set("pet_character", "custom-pixel");
+      return asset;
+    }
     case "delete_custom_pet_asset": {
       const id = readArg(args, "id", "id");
       customPetAssets = customPetAssets.filter((item) => item.id !== id);
@@ -364,6 +435,18 @@ function handleMockCommand(cmd: string, args: MockPayload) {
       return edgeVoices;
     case "test_api_connection":
       return "Preview connection ok";
+    case "test_api_compatibility":
+      return {
+        http_ok: true,
+        http_status: 200,
+        is_sse_format: true,
+        is_json_format: false,
+        content_extracted: "Preview compatibility ok",
+        recommended_mode: "stream",
+        errors: [],
+        raw_preview: "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}",
+        response_time_ms: 120,
+      };
     case "list_api_models":
       return [
         "gpt-4o-mini",

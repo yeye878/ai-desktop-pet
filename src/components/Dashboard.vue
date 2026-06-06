@@ -15,6 +15,11 @@ import {
   type PetCharacterId,
 } from "../services/petCharacters";
 import {
+  getActiveCustomPixelPetAsset,
+  notifyPetAppearanceChanged,
+  setActiveCustomPixelPetAsset,
+} from "../services/customPixelPetAssets";
+import {
   DEFAULT_VOICE_SETTINGS,
   getAvailableVoices,
   parseVoiceSettings,
@@ -29,6 +34,11 @@ import {
   type TtsVoice,
 } from "../services/tts";
 import {
+  DEFAULT_WEATHER_CONFIG,
+  formatTemperature,
+  formatWeatherDisplay,
+  normalizeWeatherInfo,
+  type WeatherConfig,
   type WeatherInfo,
   type WeatherUpdateEvent,
 } from "../services/weather";
@@ -112,6 +122,12 @@ let sysInfoTimer: ReturnType<typeof setInterval> | null = null;
 
 // === 天气信息 ===
 const weatherInfo = ref<WeatherInfo | null>(null);
+const weatherConfig = ref<WeatherConfig>({ ...DEFAULT_WEATHER_CONFIG });
+const weatherError = ref("");
+const isWeatherLoading = ref(false);
+const isSavingWeatherConfig = ref(false);
+const isTestingWeatherConfig = ref(false);
+const weatherConfigResult = ref({ success: false, message: "" });
 let weatherTimer: ReturnType<typeof setInterval> | null = null;
 
 // === 模型 ===
@@ -371,11 +387,89 @@ async function loadSystemInfo() {
   try { systemInfo.value = await invoke("get_system_info"); } catch {}
 }
 
-async function loadWeather() {
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function loadWeatherConfig() {
   try {
-    weatherInfo.value = await invoke<WeatherInfo>("get_weather");
+    const loaded = await invoke<WeatherConfig>("get_weather_config");
+    weatherConfig.value = { ...DEFAULT_WEATHER_CONFIG, ...loaded };
   } catch (e) {
+    console.error("加载天气设置失败:", e);
+    weatherConfig.value = { ...DEFAULT_WEATHER_CONFIG };
+  }
+}
+
+async function loadWeather(forceRefresh = false) {
+  if (!weatherConfig.value.enabled) {
+    weatherInfo.value = null;
+    weatherError.value = "";
+    return;
+  }
+  if (isWeatherLoading.value) return;
+
+  isWeatherLoading.value = true;
+  try {
+    const weather = await invoke<WeatherInfo | null>(forceRefresh ? "refresh_weather" : "get_weather");
+    weatherInfo.value = normalizeWeatherInfo(weather);
+    weatherError.value = "";
+  } catch (e) {
+    weatherInfo.value = null;
+    weatherError.value = errorMessage(e);
     console.error("获取天气失败:", e);
+  } finally {
+    isWeatherLoading.value = false;
+  }
+}
+
+async function refreshWeather() {
+  await loadWeather(true);
+}
+
+async function saveWeatherConfig() {
+  isSavingWeatherConfig.value = true;
+  weatherConfigResult.value = { success: false, message: "" };
+  try {
+    const saved = await invoke<WeatherConfig>("set_weather_config", {
+      enabled: weatherConfig.value.enabled,
+      location: weatherConfig.value.location,
+      apiUrl: weatherConfig.value.api_url,
+    });
+    weatherConfig.value = saved;
+    weatherConfigResult.value = { success: true, message: "天气设置已保存。" };
+    if (saved.enabled) {
+      await loadWeather(true);
+    } else {
+      weatherInfo.value = null;
+      weatherError.value = "";
+    }
+  } catch (e) {
+    weatherConfigResult.value = { success: false, message: "天气设置保存失败: " + errorMessage(e) };
+  } finally {
+    isSavingWeatherConfig.value = false;
+  }
+}
+
+async function testWeatherConfig() {
+  if (isTestingWeatherConfig.value) return;
+  isTestingWeatherConfig.value = true;
+  weatherConfigResult.value = { success: false, message: "" };
+  try {
+    const weather = await invoke<WeatherInfo>("test_weather_config", {
+      location: weatherConfig.value.location,
+      apiUrl: weatherConfig.value.api_url,
+    });
+    const normalized = normalizeWeatherInfo(weather);
+    if (normalized) weatherInfo.value = normalized;
+    weatherConfigResult.value = {
+      success: true,
+      message: normalized ? `天气 API 正常：${formatWeatherDisplay(normalized)}` : "天气 API 正常。",
+    };
+  } catch (e) {
+    weatherConfigResult.value = { success: false, message: "天气 API 测试失败: " + errorMessage(e) };
+  } finally {
+    isTestingWeatherConfig.value = false;
   }
 }
 
@@ -403,6 +497,11 @@ async function loadCurrentCharacter() {
     currentCharacter.value = resolvePetCharacterId(await invoke<string>("get_setting_value", {
       key: PET_CHARACTER_SETTING_KEY,
     }));
+    pet.customPixelPetAsset = await getActiveCustomPixelPetAsset();
+    if (currentCharacter.value === "custom-pixel" && !pet.customPixelPetAsset) {
+      currentCharacter.value = "classic";
+      await setActiveCustomPixelPetAsset(null).catch(() => null);
+    }
     pet.character = currentCharacter.value;
   } catch {
     currentCharacter.value = pet.character;
@@ -823,14 +922,21 @@ async function selectSkin(skinId: string) {
 
 async function selectCharacter(characterId: PetCharacterId) {
   try {
+    if (characterId === "custom-pixel") {
+      const active = await getActiveCustomPixelPetAsset();
+      if (!active) {
+        alert("请先上传生成一个自定义像素形象。");
+        return;
+      }
+      pet.customPixelPetAsset = active;
+    }
     await invoke("set_setting_value", {
       key: PET_CHARACTER_SETTING_KEY,
       value: characterId,
     });
     currentCharacter.value = characterId;
     pet.character = characterId;
-    const petWin = await WebviewWindow.getByLabel("pet");
-    if (petWin) await petWin.emit("appearance-changed");
+    await notifyPetAppearanceChanged();
   } catch (e) { alert("本体形象切换失败: " + e); }
 }
 
@@ -1240,6 +1346,7 @@ let unlistenToolConfirm: UnlistenFn | null = null;
 let unlistenToolConfirmResolved: UnlistenFn | null = null;
 let unlistenScheduledTasksChanged: UnlistenFn | null = null;
 let unlistenScheduledTaskTriggered: UnlistenFn | null = null;
+let unlistenWeatherUpdate: UnlistenFn | null = null;
 let unlistenDragDrop: UnlistenFn | null = null;
 
 // === 文件拖拽与预加载相关数据 ===
@@ -1718,7 +1825,7 @@ onMounted(async () => {
   loadComputerUseSettings();
   loadBackendSettings();
   loadClaudeStatus();
-  loadWeather();
+  void loadWeatherConfig().then(() => loadWeather());
 
   sysInfoTimer = setInterval(loadSystemInfo, 5000);
   weatherTimer = setInterval(loadWeather, 300000); // 每5分钟更新天气
@@ -1829,11 +1936,16 @@ onMounted(async () => {
   });
 
   // 监听天气更新事件
-  await listen<WeatherUpdateEvent>("weather-update", (event) => {
+  unlistenWeatherUpdate = await listen<WeatherUpdateEvent>("weather-update", (event) => {
     // 重新加载天气信息
-    loadWeather();
+    void loadWeather();
     // 添加天气系统消息
-    chat.addSystemMessage(event.payload.message);
+    if (event.payload.sent_today && event.payload.message) {
+      const last = chat.messages[chat.messages.length - 1];
+      if (!(last?.role === "system" && last.content === event.payload.message)) {
+        chat.addSystemMessage(event.payload.message);
+      }
+    }
     // 滚动到底部
     scrollDashChatToBottom();
   });
@@ -1873,6 +1985,7 @@ onUnmounted(() => {
   unlistenToolConfirmResolved?.();
   unlistenScheduledTasksChanged?.();
   unlistenScheduledTaskTriggered?.();
+  unlistenWeatherUpdate?.();
   unlistenDragDrop?.();
 });
 </script>
@@ -2150,12 +2263,35 @@ onUnmounted(() => {
           <!-- ========== 对话互动 (独立页面) ========== -->
           <div v-else-if="activePage === 'chat'" key="chat" class="dash-chat-page">
             <!-- 天气信息显示栏 -->
-            <div v-if="weatherInfo" class="weather-info-bar">
-              <span class="weather-icon">{{ weatherInfo.icon }}</span>
-              <span class="weather-temp">{{ weatherInfo.temperature }}°C</span>
-              <span class="weather-city">{{ weatherInfo.city }}</span>
-              <span class="weather-desc">{{ weatherInfo.description }}</span>
-              <span class="weather-humidity">💧{{ weatherInfo.humidity }}%</span>
+            <div
+              v-if="weatherInfo || weatherError || isWeatherLoading"
+              :class="['weather-info-bar', { error: weatherError && !weatherInfo }]"
+            >
+              <template v-if="weatherInfo">
+                <span class="weather-icon">{{ weatherInfo.icon }}</span>
+                <span class="weather-temp">{{ formatTemperature(weatherInfo.temperature) }}°C</span>
+                <span class="weather-city">{{ weatherInfo.city }}</span>
+                <span class="weather-desc">{{ weatherInfo.description }}</span>
+                <span class="weather-humidity">湿度 {{ formatTemperature(weatherInfo.humidity) }}%</span>
+                <button
+                  type="button"
+                  class="weather-refresh-btn"
+                  title="刷新天气"
+                  :disabled="isWeatherLoading"
+                  @click="refreshWeather"
+                >
+                  ↻
+                </button>
+              </template>
+              <template v-else-if="isWeatherLoading">
+                <span class="weather-icon">🌡</span>
+                <span class="weather-desc">天气刷新中...</span>
+              </template>
+              <template v-else>
+                <span class="weather-icon">!</span>
+                <span class="weather-desc">天气获取失败：{{ weatherError }}</span>
+                <button type="button" class="weather-refresh-btn" title="重试" @click="refreshWeather">↻</button>
+              </template>
             </div>
             <!-- Glassmorphism drop zone overlay -->
             <div v-if="isFileOver" class="dash-drop-overlay">
@@ -3239,6 +3375,71 @@ onUnmounted(() => {
                   <p class="compat-time">响应时间: {{ compatibilityResult.response_time_ms }} ms</p>
                 </div>
               </template>
+            </div>
+
+            <div class="dash-card weather-settings-panel">
+              <div class="dash-card-title"><span class="card-icon">☼</span> 天气 API 与提醒</div>
+              <div class="dash-toggle-group">
+                <label>启用天气栏与每日天气问候</label>
+                <input
+                  type="checkbox"
+                  class="dash-toggle"
+                  v-model="weatherConfig.enabled"
+                />
+              </div>
+              <div class="weather-settings-grid">
+                <div class="dash-form-group">
+                  <label>城市/地区</label>
+                  <input
+                    type="text"
+                    v-model="weatherConfig.location"
+                    placeholder="留空自动定位；例如 Tokyo / 上海"
+                  />
+                </div>
+                <div class="dash-form-group">
+                  <label>天气 API 地址</label>
+                  <input
+                    type="text"
+                    v-model="weatherConfig.api_url"
+                    placeholder="https://wttr.in"
+                  />
+                </div>
+              </div>
+              <div v-if="weatherInfo" class="weather-settings-preview">
+                当前天气：{{ formatWeatherDisplay(weatherInfo) }} · {{ weatherInfo.description }}
+              </div>
+              <div
+                v-if="weatherConfigResult.message"
+                :class="['dash-test-result', 'compact', weatherConfigResult.success ? 'success' : 'error']"
+              >
+                {{ weatherConfigResult.message }}
+              </div>
+              <div class="dash-api-actions">
+                <button
+                  class="dash-btn"
+                  type="button"
+                  :disabled="isTestingWeatherConfig || !weatherConfig.api_url.trim()"
+                  @click="testWeatherConfig"
+                >
+                  {{ isTestingWeatherConfig ? '测试中...' : '测试天气 API' }}
+                </button>
+                <button
+                  class="dash-btn secondary"
+                  type="button"
+                  :disabled="isWeatherLoading || !weatherConfig.enabled"
+                  @click="refreshWeather"
+                >
+                  {{ isWeatherLoading ? '刷新中...' : '立即刷新' }}
+                </button>
+                <button
+                  class="dash-btn primary"
+                  type="button"
+                  :disabled="isSavingWeatherConfig"
+                  @click="saveWeatherConfig"
+                >
+                  {{ isSavingWeatherConfig ? '保存中...' : '保存天气设置' }}
+                </button>
+              </div>
             </div>
 
             <!-- 性格 -->

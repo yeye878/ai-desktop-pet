@@ -4220,7 +4220,8 @@ button {
   .quick-actions,
   .system-monitor,
   .dash-backend-selector,
-  .dash-memory-layout {
+  .dash-memory-layout,
+  .weather-settings-grid {
     grid-template-columns: 1fr;
   }
 
@@ -4678,6 +4679,7 @@ button {
 .weather-info-bar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
   padding: 8px 16px;
   background: linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(240, 248, 255, 0.95));
@@ -4686,6 +4688,11 @@ button {
   color: var(--dash-text-secondary);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
+}
+
+.weather-info-bar.error {
+  background: linear-gradient(135deg, rgba(255, 247, 237, 0.95), rgba(255, 241, 242, 0.95));
+  color: #b84f3f;
 }
 
 .weather-info-bar .weather-icon {
@@ -4706,6 +4713,10 @@ button {
 
 .weather-info-bar .weather-desc {
   color: var(--dash-text-muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .weather-info-bar .weather-humidity {
@@ -4714,10 +4725,44 @@ button {
   color: var(--dash-text-muted);
 }
 
-/* 天气系统消息样式 */
-.dash-system-divider:has(.dash-system-divider-text:contains("天气")) {
-  background: linear-gradient(135deg, rgba(135, 206, 250, 0.1), rgba(144, 238, 144, 0.1));
-  border-radius: var(--dash-radius-md);
-  padding: 12px 16px;
-  margin: 8px 0;
+.weather-refresh-btn {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(35, 31, 28, 0.08);
+  border-radius: 8px;
+  background: rgba(255, 253, 248, 0.72);
+  color: var(--dash-text-primary);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.weather-refresh-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.weather-settings-panel {
+  margin-top: 16px;
+}
+
+.weather-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.weather-settings-preview {
+  margin: -2px 0 14px;
+  padding: 10px 12px;
+  border: 1px solid rgba(102, 200, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(102, 200, 255, 0.08);
+  color: var(--dash-text-secondary);
+  font-size: 12px;
+  font-weight: 700;
 }

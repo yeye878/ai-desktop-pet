@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use url::Url;
+
+pub const DEFAULT_WEATHER_API_URL: &str = "https://wttr.in";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WeatherInfo {
@@ -13,6 +15,23 @@ pub struct WeatherInfo {
     pub timestamp: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WeatherConfig {
+    pub enabled: bool,
+    pub location: String,
+    pub api_url: String,
+}
+
+impl Default for WeatherConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            location: String::new(),
+            api_url: DEFAULT_WEATHER_API_URL.to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct WttrResponse {
     current_condition: Vec<CurrentCondition>,
@@ -21,11 +40,15 @@ struct WttrResponse {
 
 #[derive(Debug, Deserialize)]
 struct CurrentCondition {
-    temp_C: String,
-    FeelsLikeC: String,
+    #[serde(rename = "temp_C")]
+    temp_c: String,
+    #[serde(rename = "FeelsLikeC")]
+    feels_like_c: String,
     humidity: String,
-    weatherDesc: Vec<WeatherDesc>,
-    windspeedKmph: String,
+    #[serde(rename = "weatherDesc")]
+    weather_desc: Vec<WeatherDesc>,
+    #[serde(rename = "windspeedKmph")]
+    windspeed_kmph: String,
     #[serde(rename = "weatherCode")]
     weather_code: String,
 }
@@ -37,8 +60,8 @@ struct WeatherDesc {
 
 #[derive(Debug, Deserialize)]
 struct NearestArea {
-    areaName: Vec<AreaName>,
-    country: Vec<AreaName>,
+    #[serde(rename = "areaName")]
+    area_name: Vec<AreaName>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -60,55 +83,85 @@ fn weather_icon(code: &str) -> String {
     }
 }
 
-/// 获取天气信息（根据城市名）
-pub async fn get_weather(city: &str) -> Result<WeatherInfo, String> {
-    let url = if city.is_empty() {
-        "https://wttr.in/?format=j1".to_string()
+pub fn normalize_weather_config(config: WeatherConfig) -> WeatherConfig {
+    let api_url = config.api_url.trim().trim_end_matches('/').to_string();
+
+    WeatherConfig {
+        enabled: config.enabled,
+        location: config.location.trim().to_string(),
+        api_url: if api_url.is_empty() {
+            DEFAULT_WEATHER_API_URL.to_string()
+        } else {
+            api_url
+        },
+    }
+}
+
+fn validate_weather_url(url: &str) -> Result<(), String> {
+    let parsed = Url::parse(url).map_err(|e| format!("天气API地址无效: {e}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("天气API地址必须以 http:// 或 https:// 开头".to_string());
+    }
+    if parsed.host_str().unwrap_or_default().is_empty() {
+        return Err("天气API地址缺少主机名".to_string());
+    }
+    Ok(())
+}
+
+pub fn build_weather_url(config: &WeatherConfig) -> Result<String, String> {
+    let config = normalize_weather_config(config.clone());
+    validate_weather_url(&config.api_url)?;
+
+    let encoded_location = urlencoding::encode(&config.location);
+    let url = if config.api_url.contains("{location}") {
+        config
+            .api_url
+            .replace("{location}", encoded_location.as_ref())
+    } else if config.location.is_empty() {
+        format!("{}/?format=j1", config.api_url)
     } else {
-        format!("https://wttr.in/{}?format=j1", urlencoding::encode(city))
+        format!("{}/{}?format=j1", config.api_url, encoded_location)
     };
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("创建HTTP客户端失败: {e}"))?;
+    validate_weather_url(&url)?;
+    Ok(url)
+}
 
-    let response = client
-        .get(&url)
-        .header("User-Agent", "ai-desktop-pet/1.0")
-        .send()
-        .await
-        .map_err(|e| format!("请求天气API失败: {e}"))?;
+fn parse_f64_field(value: &str, field: &str) -> Result<f64, String> {
+    value
+        .parse::<f64>()
+        .map_err(|_| format!("天气数据字段 {field} 不是有效数字: {value}"))
+}
 
-    if !response.status().is_success() {
-        return Err(format!("天气API返回错误: {}", response.status()));
-    }
+fn parse_i32_field(value: &str, field: &str) -> Result<i32, String> {
+    value
+        .parse::<i32>()
+        .map_err(|_| format!("天气数据字段 {field} 不是有效整数: {value}"))
+}
 
-    let wttr: WttrResponse = response
-        .json()
-        .await
-        .map_err(|e| format!("解析天气数据失败: {e}"))?;
-
+fn parse_wttr_response(wttr: WttrResponse) -> Result<WeatherInfo, String> {
     let current = wttr
         .current_condition
         .first()
-        .ok_or("天气数据为空")?;
+        .ok_or_else(|| "天气数据为空".to_string())?;
 
-    let area = wttr.nearest_area.first();
-
-    let city_name = area
-        .and_then(|a| a.areaName.first())
-        .map(|a| a.value.clone())
+    let city_name = wttr
+        .nearest_area
+        .first()
+        .and_then(|area| area.area_name.first())
+        .map(|area| area.value.clone())
+        .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| "未知城市".to_string());
 
-    let temperature = current.temp_C.parse::<f64>().unwrap_or(0.0);
-    let feels_like = current.FeelsLikeC.parse::<f64>().unwrap_or(0.0);
-    let humidity = current.humidity.parse::<i32>().unwrap_or(0);
-    let wind_speed = current.windspeedKmph.parse::<f64>().unwrap_or(0.0);
+    let temperature = parse_f64_field(&current.temp_c, "temp_C")?;
+    let feels_like = parse_f64_field(&current.feels_like_c, "FeelsLikeC")?;
+    let humidity = parse_i32_field(&current.humidity, "humidity")?;
+    let wind_speed = parse_f64_field(&current.windspeed_kmph, "windspeedKmph")?;
     let description = current
-        .weatherDesc
+        .weather_desc
         .first()
-        .map(|d| d.value.clone())
+        .map(|desc| desc.value.clone())
+        .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| "未知".to_string());
     let icon = weather_icon(&current.weather_code);
 
@@ -129,9 +182,34 @@ pub async fn get_weather(city: &str) -> Result<WeatherInfo, String> {
     })
 }
 
-/// 获取天气信息（自动根据IP定位）
-pub async fn get_weather_auto() -> Result<WeatherInfo, String> {
-    get_weather("").await
+pub async fn get_weather_with_client(
+    client: &reqwest::Client,
+    config: &WeatherConfig,
+) -> Result<WeatherInfo, String> {
+    let config = normalize_weather_config(config.clone());
+    if !config.enabled {
+        return Err("天气功能已关闭".to_string());
+    }
+
+    let url = build_weather_url(&config)?;
+
+    let response = client
+        .get(&url)
+        .header("User-Agent", "ai-desktop-pet/1.0")
+        .send()
+        .await
+        .map_err(|e| format!("请求天气API失败: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!("天气API返回错误: {}", response.status()));
+    }
+
+    let wttr: WttrResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("解析天气数据失败: {e}"))?;
+
+    parse_wttr_response(wttr)
 }
 
 /// 根据天气状况生成暖心提醒
@@ -208,4 +286,103 @@ pub fn format_weather_message(weather: &WeatherInfo) -> String {
 /// 获取今天的日期字符串
 pub fn get_today_date() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_response() -> WttrResponse {
+        serde_json::from_value(serde_json::json!({
+            "current_condition": [{
+                "temp_C": "23",
+                "FeelsLikeC": "25",
+                "humidity": "61",
+                "weatherDesc": [{ "value": "Partly cloudy" }],
+                "windspeedKmph": "9",
+                "weatherCode": "116"
+            }],
+            "nearest_area": [{
+                "areaName": [{ "value": "Tokyo" }],
+                "country": [{ "value": "Japan" }]
+            }]
+        }))
+        .expect("sample response")
+    }
+
+    #[test]
+    fn normalizes_weather_config_defaults_and_trims() {
+        let config = normalize_weather_config(WeatherConfig {
+            enabled: true,
+            location: "  Tokyo  ".to_string(),
+            api_url: " https://wttr.in/ ".to_string(),
+        });
+
+        assert!(config.enabled);
+        assert_eq!(config.location, "Tokyo");
+        assert_eq!(config.api_url, DEFAULT_WEATHER_API_URL);
+
+        let defaulted = normalize_weather_config(WeatherConfig {
+            enabled: false,
+            location: " ".to_string(),
+            api_url: " ".to_string(),
+        });
+
+        assert!(!defaulted.enabled);
+        assert_eq!(defaulted.location, "");
+        assert_eq!(defaulted.api_url, DEFAULT_WEATHER_API_URL);
+    }
+
+    #[test]
+    fn builds_weather_urls_for_auto_city_and_template() {
+        let auto = WeatherConfig {
+            enabled: true,
+            location: "".to_string(),
+            api_url: DEFAULT_WEATHER_API_URL.to_string(),
+        };
+        assert_eq!(build_weather_url(&auto).expect("auto url"), "https://wttr.in/?format=j1");
+
+        let city = WeatherConfig {
+            enabled: true,
+            location: "上海".to_string(),
+            api_url: "https://wttr.in".to_string(),
+        };
+        assert_eq!(
+            build_weather_url(&city).expect("city url"),
+            "https://wttr.in/%E4%B8%8A%E6%B5%B7?format=j1"
+        );
+
+        let template = WeatherConfig {
+            enabled: true,
+            location: "New York".to_string(),
+            api_url: "https://weather.example.test/{location}?format=j1".to_string(),
+        };
+        assert_eq!(
+            build_weather_url(&template).expect("template url"),
+            "https://weather.example.test/New%20York?format=j1"
+        );
+    }
+
+    #[test]
+    fn parses_wttr_response_into_weather_info() {
+        let weather = parse_wttr_response(sample_response()).expect("weather");
+
+        assert_eq!(weather.city, "Tokyo");
+        assert_eq!(weather.temperature, 23.0);
+        assert_eq!(weather.feels_like, 25.0);
+        assert_eq!(weather.humidity, 61);
+        assert_eq!(weather.description, "Partly cloudy");
+        assert_eq!(weather.wind_speed, 9.0);
+        assert_eq!(weather.icon, "⛅");
+        assert!(weather.timestamp > 0);
+    }
+
+    #[test]
+    fn parse_wttr_response_rejects_invalid_numbers() {
+        let mut response = sample_response();
+        response.current_condition[0].temp_c = "not-a-number".to_string();
+
+        let error = parse_wttr_response(response).expect_err("invalid temperature should fail");
+        assert!(error.contains("temp_C"));
+    }
 }

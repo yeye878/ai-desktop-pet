@@ -49,6 +49,7 @@ const fluidCanvasRef = ref<HTMLCanvasElement | null>(null);
 let animId = 0;
 let unlistenAiFinished: UnlistenFn | null = null;
 let unlistenAiError: UnlistenFn | null = null;
+let unlistenStartListening: UnlistenFn | null = null;
 let sendTimeoutId: ReturnType<typeof setTimeout> | null = null;
 let autoListenTimer: ReturnType<typeof setTimeout> | null = null;
 let speakGeneration = 0;
@@ -99,11 +100,24 @@ async function loadSettings() {
   }
 }
 
-async function startListening() {
-  if (status.value === "listening") {
-    voice.stopListening();
-    return;
+function clearAutoListenTimer() {
+  if (autoListenTimer) {
+    clearTimeout(autoListenTimer);
+    autoListenTimer = null;
   }
+}
+
+function scheduleStartListening(delay = 0) {
+  clearAutoListenTimer();
+  autoListenTimer = setTimeout(() => {
+    autoListenTimer = null;
+    void beginListening();
+  }, delay);
+}
+
+async function beginListening() {
+  if (status.value === "listening") return;
+
   if (!canListen.value) {
     errorText.value = !settings.value.enabled
       ? "请先在设置里启用语音"
@@ -144,6 +158,15 @@ async function startListening() {
     status.value = "error";
     pet.setState("confused");
   }
+}
+
+async function startListening() {
+  if (status.value === "listening") {
+    clearAutoListenTimer();
+    voice.stopListening();
+    return;
+  }
+  await beginListening();
 }
 
 function clearSendTimeout() {
@@ -220,10 +243,7 @@ onMounted(async () => {
   // 自动开始语音识别（如果条件允许）
   if (canListen.value) {
     // 短暂延时确保UI渲染完成
-    autoListenTimer = setTimeout(() => {
-      autoListenTimer = null;
-      startListening();
-    }, 300);
+    scheduleStartListening(300);
   }
 
   // Start canvas fluid animation loop
@@ -411,17 +431,19 @@ onMounted(async () => {
     status.value = event.payload.aborted ? "idle" : "error";
     pet.setState(event.payload.aborted ? "idle" : "confused");
   });
+
+  unlistenStartListening = await listen("voice-start-listening", () => {
+    scheduleStartListening();
+  });
 });
 
 onBeforeUnmount(() => {
   clearSendTimeout();
-  if (autoListenTimer) {
-    clearTimeout(autoListenTimer);
-    autoListenTimer = null;
-  }
+  clearAutoListenTimer();
   cancelAnimationFrame(animId);
   unlistenAiFinished?.();
   unlistenAiError?.();
+  unlistenStartListening?.();
   voice.abortListening();
   ttsPlayer.stop();
   isSending.value = false;

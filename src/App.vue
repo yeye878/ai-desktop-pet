@@ -21,9 +21,9 @@ import {
   type VoiceSettings,
 } from "./services/voice";
 import {
-  CUSTOM_PIXEL_PET_SETTING_KEY,
-  type CustomPixelPetAsset,
-} from "./services/customPixelPet";
+  getActiveCustomPixelPetAsset,
+  setActiveCustomPixelPetAsset,
+} from "./services/customPixelPetAssets";
 import { isPetCanvasPoint } from "./services/petHitTest";
 import { PET_CHARACTER_SETTING_KEY, resolvePetCharacterId } from "./services/petCharacters";
 
@@ -61,8 +61,10 @@ let unlistenAppearanceChanged: UnlistenFn | null = null;
 let unlistenFocusChanged: UnlistenFn | null = null;
 let unlistenMoved: UnlistenFn | null = null;
 let unlistenOpenVoice: UnlistenFn | null = null;
+let unlistenVoiceSettingsChanged: UnlistenFn | null = null;
 let unlistenToolConfirm: UnlistenFn | null = null;
 let registeredVoiceShortcut = "";
+let voiceShortcutRegistration = Promise.resolve();
 
 function panelUrl(label: PanelLabel) {
   const baseUrl = window.location.href.split("#")[0].split("?")[0];
@@ -201,8 +203,11 @@ async function openSettingsPanel(tab = "appearance") {
 }
 
 async function openVoicePanel() {
-  await openPanel("voice", 0, 0);
+  const voicePanel = await openPanel("voice", 0, 0);
   await closePanel("context-menu");
+  window.setTimeout(() => {
+    void voicePanel.emit("voice-start-listening").catch(() => {});
+  }, 150);
 }
 
 async function openToolConfirmPanel(payload: ToolConfirmPayload) {
@@ -293,14 +298,16 @@ async function hydrateAppearance() {
   }
 
   try {
-    const assetId = await invoke<string>("get_setting_value", {
-      key: CUSTOM_PIXEL_PET_SETTING_KEY,
-    });
-    petStore.customPixelPetAsset = assetId
-      ? await invoke<CustomPixelPetAsset | null>("get_custom_pet_asset", { id: assetId })
-      : null;
+    petStore.customPixelPetAsset = await getActiveCustomPixelPetAsset();
+    if (petStore.character === "custom-pixel" && !petStore.customPixelPetAsset) {
+      petStore.character = "classic";
+      await setActiveCustomPixelPetAsset(null).catch(() => null);
+    }
   } catch {
     petStore.customPixelPetAsset = null;
+    if (petStore.character === "custom-pixel") {
+      petStore.character = "classic";
+    }
   }
 }
 
@@ -315,16 +322,21 @@ async function loadVoiceSettings(): Promise<VoiceSettings> {
 }
 
 async function registerVoiceShortcut() {
-  if (currentLabel !== "main" && currentLabel !== "pet") return;
+  if (currentLabel !== "main") return;
 
   const settings = await loadVoiceSettings();
   const shortcut = (settings.shortcut || DEFAULT_VOICE_SETTINGS.shortcut).trim();
-  if (!shortcut || shortcut === registeredVoiceShortcut) return;
+  if (shortcut === registeredVoiceShortcut) return;
 
-  if (registeredVoiceShortcut) {
-    await unregister(registeredVoiceShortcut).catch(() => {});
-    registeredVoiceShortcut = "";
+  if (!shortcut) {
+    if (registeredVoiceShortcut) {
+      await unregister(registeredVoiceShortcut).catch(() => {});
+      registeredVoiceShortcut = "";
+    }
+    return;
   }
+
+  const previousShortcut = registeredVoiceShortcut;
 
   try {
     await register(shortcut, (event) => {
@@ -333,8 +345,26 @@ async function registerVoiceShortcut() {
       }
     });
     registeredVoiceShortcut = shortcut;
+    if (previousShortcut) {
+      await unregister(previousShortcut).catch(() => {});
+    }
   } catch (err) {
     console.warn("Failed to register voice shortcut", err);
+  }
+}
+
+function queueVoiceShortcutRegistration() {
+  voiceShortcutRegistration = voiceShortcutRegistration
+    .catch(() => {})
+    .then(() => registerVoiceShortcut());
+  void voiceShortcutRegistration;
+}
+
+async function unregisterVoiceShortcut() {
+  await voiceShortcutRegistration.catch(() => {});
+  if (registeredVoiceShortcut) {
+    await unregister(registeredVoiceShortcut).catch(() => {});
+    registeredVoiceShortcut = "";
   }
 }
 
@@ -436,13 +466,11 @@ onMounted(async () => {
     });
   }
 
-  // Pet window: hit test + panel repositioning + voice shortcut
+  // Pet window: hit test + panel repositioning
   if (currentLabel === "pet") {
     unlistenOpenVoice = await listen("open-voice-panel", () => {
       void openVoicePanel();
     });
-    window.addEventListener("voice-settings-changed", registerVoiceShortcut);
-    await registerVoiceShortcut();
 
     unlistenMoved = await currentWindow.onMoved(() => {
       repositionOpenPanels();
@@ -456,11 +484,14 @@ onMounted(async () => {
     unlistenOpenVoice = await listen("open-voice-panel", () => {
       void openVoicePanel();
     });
+    unlistenVoiceSettingsChanged = await listen("voice-settings-changed", () => {
+      queueVoiceShortcutRegistration();
+    });
     unlistenToolConfirm = await listen<ToolConfirmPayload>("ai-tool-confirm", (event) => {
       void openToolConfirmPanel(event.payload);
     });
-    window.addEventListener("voice-settings-changed", registerVoiceShortcut);
-    await registerVoiceShortcut();
+    window.addEventListener("voice-settings-changed", queueVoiceShortcutRegistration);
+    queueVoiceShortcutRegistration();
 
     // Auto-launch pet on startup
     setTimeout(() => {
@@ -475,13 +506,11 @@ onUnmounted(() => {
   unlistenFocusChanged?.();
   unlistenMoved?.();
   unlistenOpenVoice?.();
+  unlistenVoiceSettingsChanged?.();
   unlistenToolConfirm?.();
-  if (currentLabel === "pet" || currentLabel === "main") {
-    window.removeEventListener("voice-settings-changed", registerVoiceShortcut);
-    if (registeredVoiceShortcut) {
-      void unregister(registeredVoiceShortcut);
-      registeredVoiceShortcut = "";
-    }
+  if (currentLabel === "main") {
+    window.removeEventListener("voice-settings-changed", queueVoiceShortcutRegistration);
+    void unregisterVoiceShortcut();
   }
   if (currentLabel === "pet") {
     setPetWindowIgnoresCursorEvents(false);

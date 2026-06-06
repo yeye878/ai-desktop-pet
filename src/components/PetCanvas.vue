@@ -57,11 +57,13 @@ let daimaoVideoCanvas: HTMLCanvasElement | null = null;
 let customSpriteImage: HTMLImageElement | null = null;
 let customSpriteAssetId = "";
 let customSpriteReady = false;
+let customSpriteFailed = false;
 
 watch(() => pet.customPixelPetAsset?.id, () => {
   customSpriteImage = null;
   customSpriteAssetId = "";
   customSpriteReady = false;
+  customSpriteFailed = false;
 });
 
 // ===== 粒子系统 =====
@@ -426,6 +428,7 @@ function ensureCustomSprite() {
     customSpriteImage = null;
     customSpriteAssetId = "";
     customSpriteReady = false;
+    customSpriteFailed = false;
     return;
   }
 
@@ -433,13 +436,16 @@ function ensureCustomSprite() {
 
   customSpriteAssetId = asset.id;
   customSpriteReady = false;
+  customSpriteFailed = false;
   customSpriteImage = new Image();
   customSpriteImage.decoding = "async";
   customSpriteImage.onload = () => {
     customSpriteReady = true;
+    customSpriteFailed = false;
   };
   customSpriteImage.onerror = () => {
     customSpriteReady = false;
+    customSpriteFailed = true;
   };
   customSpriteImage.src = resolveSpritePath(asset.sprite_path);
 }
@@ -493,8 +499,11 @@ function drawCustomPixelPet(ctx: CanvasRenderingContext2D) {
   }
   squashAmt += (1 - squashAmt) * 0.1;
 
-  if (!manifest || !customSpriteImage || !customSpriteReady) {
+  if (!manifest || !customSpriteImage || customSpriteFailed || !customSpriteReady) {
     drawCustomPixelFallback(ctx);
+    if (!props.preview && (!asset || !manifest || customSpriteFailed)) {
+      pet.character = "classic";
+    }
     finishFrame(ctx);
     return;
   }

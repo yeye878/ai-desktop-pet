@@ -1,10 +1,11 @@
 export const CUSTOM_PIXEL_PET_SETTING_KEY = "custom_pixel_pet_asset_id";
 
-const FRAME_SIZE = 64;
 const SHEET_COLUMNS = 10;
 const MAX_SOURCE_SIZE = 6 * 1024 * 1024;
+const GENERATOR_VERSION = "local-pixel-v2";
 
 type Rgb = { r: number; g: number; b: number };
+type PixelBounds = { left: number; top: number; right: number; bottom: number };
 
 export type PixelPetAnimation = {
   frames: number[];
@@ -20,6 +21,14 @@ export type PixelPetManifest = {
   displayScale: number;
   sheet: { columns: number; rows: number };
   animations: Record<string, PixelPetAnimation>;
+  generatorVersion?: string;
+  source?: { width: number; height: number };
+  generationOptions?: {
+    frameSize: number;
+    paletteStep: number;
+    removeBackground: boolean;
+    outline: boolean;
+  };
 };
 
 export type CustomPixelPetAsset = {
@@ -38,6 +47,20 @@ export type GeneratedPixelPet = {
   manifest: PixelPetManifest;
   spriteDataUrl: string;
   previewDataUrl: string;
+};
+
+export type CustomPixelPetGenerationOptions = {
+  frameSize: 48 | 64 | 96;
+  paletteStep: 24 | 32 | 48;
+  removeBackground: boolean;
+  outline: boolean;
+};
+
+export const CUSTOM_PIXEL_PET_DEFAULT_OPTIONS: CustomPixelPetGenerationOptions = {
+  frameSize: 64,
+  paletteStep: 32,
+  removeBackground: true,
+  outline: true,
 };
 
 type FrameTransform = {
@@ -81,69 +104,128 @@ function colorDistance(a: Rgb, b: Rgb) {
   return Math.sqrt(dr * dr + dg * dg + db * db);
 }
 
-function estimateEdgeColor(data: Uint8ClampedArray, width: number, height: number): Rgb | null {
-  let r = 0;
-  let g = 0;
-  let b = 0;
-  let count = 0;
+function normalizeBounds(bounds: PixelBounds | undefined, width: number, height: number): PixelBounds | null {
+  const normalized = {
+    left: Math.max(0, Math.min(width, Math.floor(bounds?.left ?? 0))),
+    top: Math.max(0, Math.min(height, Math.floor(bounds?.top ?? 0))),
+    right: Math.max(0, Math.min(width, Math.ceil(bounds?.right ?? width))),
+    bottom: Math.max(0, Math.min(height, Math.ceil(bounds?.bottom ?? height))),
+  };
 
+  if (normalized.right <= normalized.left || normalized.bottom <= normalized.top) return null;
+  return normalized;
+}
+
+function collectEdgeSamples(
+  data: Uint8ClampedArray,
+  width: number,
+  bounds: PixelBounds,
+) {
+  const samples: Rgb[] = [];
   const sample = (x: number, y: number) => {
     const index = (y * width + x) * 4;
     if (data[index + 3] < 128) return;
-    r += data[index];
-    g += data[index + 1];
-    b += data[index + 2];
-    count++;
+    samples.push({ r: data[index], g: data[index + 1], b: data[index + 2] });
   };
 
-  for (let x = 0; x < width; x++) {
-    sample(x, 0);
-    sample(x, height - 1);
+  for (let x = bounds.left; x < bounds.right; x++) {
+    sample(x, bounds.top);
+    sample(x, bounds.bottom - 1);
   }
-  for (let y = 1; y < height - 1; y++) {
-    sample(0, y);
-    sample(width - 1, y);
+  for (let y = bounds.top + 1; y < bounds.bottom - 1; y++) {
+    sample(bounds.left, y);
+    sample(bounds.right - 1, y);
   }
 
-  if (count === 0) return null;
-  return { r: r / count, g: g / count, b: b / count };
+  return samples;
 }
 
-function removeEdgeBackground(imageData: ImageData) {
+function estimateEdgeColors(data: Uint8ClampedArray, width: number, bounds: PixelBounds) {
+  const samples = collectEdgeSamples(data, width, bounds);
+  if (samples.length === 0) return [];
+
+  const bucketSize = 24;
+  const buckets = new Map<string, { r: number; g: number; b: number; count: number }>();
+  for (const sample of samples) {
+    const key = [
+      Math.floor(sample.r / bucketSize),
+      Math.floor(sample.g / bucketSize),
+      Math.floor(sample.b / bucketSize),
+    ].join(":");
+    const bucket = buckets.get(key) || { r: 0, g: 0, b: 0, count: 0 };
+    bucket.r += sample.r;
+    bucket.g += sample.g;
+    bucket.b += sample.b;
+    bucket.count++;
+    buckets.set(key, bucket);
+  }
+
+  const ranked = Array.from(buckets.values())
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 3);
+  const candidates = ranked.filter((bucket) => bucket.count >= Math.max(2, samples.length * 0.04));
+
+  return (candidates.length > 0 ? candidates : ranked.slice(0, 1))
+    .map((bucket) => ({
+      r: bucket.r / bucket.count,
+      g: bucket.g / bucket.count,
+      b: bucket.b / bucket.count,
+    }));
+}
+
+function removeEdgeBackground(imageData: ImageData, bounds?: PixelBounds) {
   const { data, width, height } = imageData;
-  const bg = estimateEdgeColor(data, width, height);
-  if (!bg) return;
+  const area = normalizeBounds(bounds, width, height);
+  if (!area) return;
+  const bgColors = estimateEdgeColors(data, width, area);
+  if (bgColors.length === 0) return;
 
   const visited = new Uint8Array(width * height);
   const queue: number[] = [];
   const enqueue = (x: number, y: number) => {
-    if (x < 0 || x >= width || y < 0 || y >= height) return;
+    if (x < area.left || x >= area.right || y < area.top || y >= area.bottom) return;
     const key = y * width + x;
     if (visited[key]) return;
     visited[key] = 1;
     queue.push(key);
   };
 
-  for (let x = 0; x < width; x++) {
-    enqueue(x, 0);
-    enqueue(x, height - 1);
+  for (let x = area.left; x < area.right; x++) {
+    enqueue(x, area.top);
+    enqueue(x, area.bottom - 1);
   }
-  for (let y = 1; y < height - 1; y++) {
-    enqueue(0, y);
-    enqueue(width - 1, y);
+  for (let y = area.top + 1; y < area.bottom - 1; y++) {
+    enqueue(area.left, y);
+    enqueue(area.right - 1, y);
   }
 
-  while (queue.length) {
-    const key = queue.shift() ?? 0;
+  let cursor = 0;
+  while (cursor < queue.length) {
+    const key = queue[cursor++] ?? 0;
     const index = key * 4;
-    if (data[index + 3] < 20) continue;
-
-    const current = { r: data[index], g: data[index + 1], b: data[index + 2] };
-    if (colorDistance(current, bg) > 48) continue;
-
-    data[index + 3] = 0;
     const x = key % width;
     const y = Math.floor(key / width);
+    if (data[index + 3] < 20) {
+      data[index] = 0;
+      data[index + 1] = 0;
+      data[index + 2] = 0;
+      data[index + 3] = 0;
+      enqueue(x + 1, y);
+      enqueue(x - 1, y);
+      enqueue(x, y + 1);
+      enqueue(x, y - 1);
+      continue;
+    }
+
+    const current = { r: data[index], g: data[index + 1], b: data[index + 2] };
+    const distance = Math.min(...bgColors.map((bg) => colorDistance(current, bg)));
+    const tolerance = 58 + (data[index + 3] < 220 ? 12 : 0);
+    if (distance > tolerance) continue;
+
+    data[index] = 0;
+    data[index + 1] = 0;
+    data[index + 2] = 0;
+    data[index + 3] = 0;
     enqueue(x + 1, y);
     enqueue(x - 1, y);
     enqueue(x, y + 1);
@@ -151,22 +233,62 @@ function removeEdgeBackground(imageData: ImageData) {
   }
 }
 
-function quantizeChannel(value: number) {
-  return Math.max(0, Math.min(255, Math.round(value / 32) * 32));
+function findOpaqueBounds(imageData: ImageData, minAlpha = 72): PixelBounds | null {
+  const { data, width, height } = imageData;
+  let left = width;
+  let top = height;
+  let right = 0;
+  let bottom = 0;
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const alpha = data[(y * width + x) * 4 + 3];
+      if (alpha < minAlpha) continue;
+      left = Math.min(left, x);
+      top = Math.min(top, y);
+      right = Math.max(right, x + 1);
+      bottom = Math.max(bottom, y + 1);
+    }
+  }
+
+  if (right <= left || bottom <= top) return null;
+  return { left, top, right, bottom };
 }
 
-function applyPixelPalette(imageData: ImageData) {
+function normalizeGenerationOptions(options?: Partial<CustomPixelPetGenerationOptions>): CustomPixelPetGenerationOptions {
+  const frameSize = [48, 64, 96].includes(Number(options?.frameSize))
+    ? Number(options?.frameSize) as 48 | 64 | 96
+    : CUSTOM_PIXEL_PET_DEFAULT_OPTIONS.frameSize;
+  const paletteStep = [24, 32, 48].includes(Number(options?.paletteStep))
+    ? Number(options?.paletteStep) as 24 | 32 | 48
+    : CUSTOM_PIXEL_PET_DEFAULT_OPTIONS.paletteStep;
+  return {
+    frameSize,
+    paletteStep,
+    removeBackground: options?.removeBackground ?? CUSTOM_PIXEL_PET_DEFAULT_OPTIONS.removeBackground,
+    outline: options?.outline ?? CUSTOM_PIXEL_PET_DEFAULT_OPTIONS.outline,
+  };
+}
+
+function quantizeChannel(value: number, step: number) {
+  return Math.max(0, Math.min(255, Math.round(value / step) * step));
+}
+
+function applyPixelPalette(imageData: ImageData, paletteStep: number) {
   const { data } = imageData;
   for (let i = 0; i < data.length; i += 4) {
     if (data[i + 3] < 72) {
+      data[i] = 0;
+      data[i + 1] = 0;
+      data[i + 2] = 0;
       data[i + 3] = 0;
       continue;
     }
 
     const contrast = 1.08;
-    data[i] = quantizeChannel((data[i] - 128) * contrast + 128);
-    data[i + 1] = quantizeChannel((data[i + 1] - 128) * contrast + 128);
-    data[i + 2] = quantizeChannel((data[i + 2] - 128) * contrast + 128);
+    data[i] = quantizeChannel((data[i] - 128) * contrast + 128, paletteStep);
+    data[i + 1] = quantizeChannel((data[i + 1] - 128) * contrast + 128, paletteStep);
+    data[i + 2] = quantizeChannel((data[i + 2] - 128) * contrast + 128, paletteStep);
     data[i + 3] = 255;
   }
 }
@@ -209,28 +331,55 @@ function addOutline(source: HTMLCanvasElement) {
   return outlined;
 }
 
-function createBaseSprite(image: HTMLImageElement) {
-  const canvas = createCanvas(FRAME_SIZE, FRAME_SIZE);
+function createBaseSprite(image: HTMLImageElement, options: CustomPixelPetGenerationOptions) {
+  const frameSize = options.frameSize;
+  const canvas = createCanvas(frameSize, frameSize);
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("Canvas is unavailable");
 
-  ctx.clearRect(0, 0, FRAME_SIZE, FRAME_SIZE);
-  ctx.imageSmoothingEnabled = true;
-  const maxSize = FRAME_SIZE - 8;
+  const maxSize = frameSize - Math.max(6, Math.round(frameSize * 0.125));
   const scale = Math.min(maxSize / image.naturalWidth, maxSize / image.naturalHeight);
   const drawW = Math.max(1, Math.round(image.naturalWidth * scale));
   const drawH = Math.max(1, Math.round(image.naturalHeight * scale));
-  const drawX = Math.round((FRAME_SIZE - drawW) / 2);
-  const drawY = Math.round((FRAME_SIZE - drawH) / 2);
-  ctx.drawImage(image, drawX, drawY, drawW, drawH);
 
-  const imageData = ctx.getImageData(0, 0, FRAME_SIZE, FRAME_SIZE);
-  removeEdgeBackground(imageData);
-  applyPixelPalette(imageData);
-  ctx.clearRect(0, 0, FRAME_SIZE, FRAME_SIZE);
-  ctx.putImageData(imageData, 0, 0);
+  const source = createCanvas(drawW, drawH);
+  const sourceCtx = source.getContext("2d");
+  if (!sourceCtx) throw new Error("Canvas is unavailable");
+  sourceCtx.clearRect(0, 0, drawW, drawH);
+  sourceCtx.imageSmoothingEnabled = true;
+  sourceCtx.drawImage(image, 0, 0, drawW, drawH);
 
-  return addOutline(canvas);
+  const imageData = sourceCtx.getImageData(0, 0, drawW, drawH);
+  if (options.removeBackground) removeEdgeBackground(imageData);
+  applyPixelPalette(imageData, options.paletteStep);
+  sourceCtx.clearRect(0, 0, drawW, drawH);
+  sourceCtx.putImageData(imageData, 0, 0);
+
+  const subjectBounds = findOpaqueBounds(imageData);
+  if (subjectBounds) {
+    const subjectW = subjectBounds.right - subjectBounds.left;
+    const subjectH = subjectBounds.bottom - subjectBounds.top;
+    const subjectScale = Math.min(maxSize / subjectW, maxSize / subjectH);
+    const targetW = Math.max(1, Math.round(subjectW * subjectScale));
+    const targetH = Math.max(1, Math.round(subjectH * subjectScale));
+    const targetX = Math.round((frameSize - targetW) / 2);
+    const targetY = Math.round((frameSize - targetH) / 2);
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0, 0, frameSize, frameSize);
+    ctx.drawImage(
+      source,
+      subjectBounds.left,
+      subjectBounds.top,
+      subjectW,
+      subjectH,
+      targetX,
+      targetY,
+      targetW,
+      targetH,
+    );
+  }
+
+  return options.outline ? addOutline(canvas) : canvas;
 }
 
 function drawSpark(ctx: CanvasRenderingContext2D, x: number, y: number, color: string) {
@@ -261,23 +410,36 @@ function drawFrame(
   index: number,
   transform: FrameTransform = {},
 ) {
-  const cellX = (index % SHEET_COLUMNS) * FRAME_SIZE;
-  const cellY = Math.floor(index / SHEET_COLUMNS) * FRAME_SIZE;
-  sheetCtx.clearRect(cellX, cellY, FRAME_SIZE, FRAME_SIZE);
+  const frameSize = base.width;
+  const cellX = (index % SHEET_COLUMNS) * frameSize;
+  const cellY = Math.floor(index / SHEET_COLUMNS) * frameSize;
+  sheetCtx.clearRect(cellX, cellY, frameSize, frameSize);
   sheetCtx.save();
   sheetCtx.globalAlpha = transform.alpha ?? 1;
   sheetCtx.imageSmoothingEnabled = false;
-  sheetCtx.translate(cellX + FRAME_SIZE / 2 + (transform.offsetX ?? 0), cellY + FRAME_SIZE / 2 + (transform.offsetY ?? 0));
+  const motionScale = frameSize / 64;
+  sheetCtx.translate(
+    cellX + frameSize / 2 + (transform.offsetX ?? 0) * motionScale,
+    cellY + frameSize / 2 + (transform.offsetY ?? 0) * motionScale,
+  );
   sheetCtx.scale(transform.scaleX ?? 1, transform.scaleY ?? 1);
-  sheetCtx.drawImage(base, -FRAME_SIZE / 2, -FRAME_SIZE / 2);
+  sheetCtx.drawImage(base, -frameSize / 2, -frameSize / 2);
   sheetCtx.restore();
-  transform.overlay?.(sheetCtx, cellX, cellY);
+  if (transform.overlay) {
+    sheetCtx.save();
+    const overlayScale = frameSize / 64;
+    sheetCtx.translate(cellX, cellY);
+    sheetCtx.scale(overlayScale, overlayScale);
+    transform.overlay(sheetCtx, 0, 0);
+    sheetCtx.restore();
+  }
 }
 
 function buildSpriteSheet(base: HTMLCanvasElement) {
   const frameCount = 40;
   const rows = Math.ceil(frameCount / SHEET_COLUMNS);
-  const sheet = createCanvas(SHEET_COLUMNS * FRAME_SIZE, rows * FRAME_SIZE);
+  const frameSize = base.width;
+  const sheet = createCanvas(SHEET_COLUMNS * frameSize, rows * frameSize);
   const ctx = sheet.getContext("2d");
   if (!ctx) throw new Error("Canvas is unavailable");
   ctx.imageSmoothingEnabled = false;
@@ -329,14 +491,27 @@ function buildSpriteSheet(base: HTMLCanvasElement) {
   return { sheet, rows };
 }
 
-function buildManifest(name: string, rows: number): PixelPetManifest {
+function buildManifest(
+  name: string,
+  rows: number,
+  options: CustomPixelPetGenerationOptions,
+  source: { width: number; height: number },
+): PixelPetManifest {
   return {
     version: 1,
     renderer: "pixel-sprite",
     name,
-    frameSize: { width: FRAME_SIZE, height: FRAME_SIZE },
-    displayScale: 1.65,
+    frameSize: { width: options.frameSize, height: options.frameSize },
+    displayScale: options.frameSize === 96 ? 1.15 : options.frameSize === 48 ? 2.05 : 1.65,
     sheet: { columns: SHEET_COLUMNS, rows },
+    generatorVersion: GENERATOR_VERSION,
+    source,
+    generationOptions: {
+      frameSize: options.frameSize,
+      paletteStep: options.paletteStep,
+      removeBackground: options.removeBackground,
+      outline: options.outline,
+    },
     animations: {
       idle: { frames: [0, 1, 2, 3], fps: 7, loop: true },
       happy: { frames: [4, 5, 6, 7], fps: 12, loop: false },
@@ -357,11 +532,14 @@ function buildPreview(base: HTMLCanvasElement) {
   const ctx = preview.getContext("2d");
   if (!ctx) throw new Error("Canvas is unavailable");
   ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(base, 0, 0, FRAME_SIZE, FRAME_SIZE, 0, 0, 96, 96);
+  ctx.drawImage(base, 0, 0, base.width, base.height, 0, 0, 96, 96);
   return preview.toDataURL("image/png");
 }
 
-export async function generateCustomPixelPetFromFile(file: File): Promise<GeneratedPixelPet> {
+export async function generateCustomPixelPetFromFile(
+  file: File,
+  options?: Partial<CustomPixelPetGenerationOptions>,
+): Promise<GeneratedPixelPet> {
   if (!file.type.startsWith("image/")) {
     throw new Error("Please choose an image file.");
   }
@@ -371,10 +549,14 @@ export async function generateCustomPixelPetFromFile(file: File): Promise<Genera
 
   const sourceDataUrl = await readFileAsDataUrl(file);
   const image = await loadImage(sourceDataUrl);
-  const base = createBaseSprite(image);
+  const generationOptions = normalizeGenerationOptions(options);
+  const base = createBaseSprite(image, generationOptions);
   const { sheet, rows } = buildSpriteSheet(base);
   const name = file.name.replace(/\.[^.]+$/, "").slice(0, 24) || "Custom Pixel Pet";
-  const manifest = buildManifest(name, rows);
+  const manifest = buildManifest(name, rows, generationOptions, {
+    width: image.naturalWidth,
+    height: image.naturalHeight,
+  });
 
   return {
     name,

@@ -111,7 +111,9 @@ const API_SEARCH_PROVIDER_KEY: &str = "api_search_provider";
 const API_AUTO_APPROVED_TOOLS_KEY: &str = "api_auto_approved_tools";
 const CUSTOM_PIXEL_PET_SETTING_KEY: &str = "custom_pixel_pet_asset_id";
 const MEMORY_CATEGORY_CONVERSATION: &str = "conversation";
+const WEATHER_CONFIG_KEY: &str = "weather_config";
 const WEATHER_SENT_DATE_KEY: &str = "weather_sent_date";
+const WEATHER_CACHE_TTL_SECS: i64 = 600;
 const SCHEDULE_REPEAT_ONCE: &str = "once";
 const SCHEDULE_REPEAT_DAILY: &str = "daily";
 const SCHEDULE_REPEAT_WEEKLY: &str = "weekly";
@@ -267,6 +269,31 @@ fn validate_pixel_pet_manifest(manifest: &str) -> Result<(), String> {
             == 0
     {
         return Err("Custom pet manifest has invalid frameSize".to_string());
+    }
+    let width = frame_size
+        .get("width")
+        .and_then(|item| item.as_u64())
+        .unwrap_or(0);
+    let height = frame_size
+        .get("height")
+        .and_then(|item| item.as_u64())
+        .unwrap_or(0);
+    if !matches!(width, 48 | 64 | 96) || width != height {
+        return Err("Custom pet manifest frameSize must be 48, 64, or 96 square pixels".to_string());
+    }
+    let sheet = value
+        .get("sheet")
+        .ok_or_else(|| "Custom pet manifest missing sheet".to_string())?;
+    let columns = sheet
+        .get("columns")
+        .and_then(|item| item.as_u64())
+        .unwrap_or(0);
+    let rows = sheet
+        .get("rows")
+        .and_then(|item| item.as_u64())
+        .unwrap_or(0);
+    if columns == 0 || columns > 20 || rows == 0 || rows > 20 {
+        return Err("Custom pet manifest has invalid sheet size".to_string());
     }
     if value
         .get("animations")
@@ -2051,48 +2078,162 @@ async fn get_system_info(state: tauri::State<'_, AppState>) -> Result<serde_json
     }))
 }
 
-#[tauri::command]
-async fn get_weather(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let mut cache = state.weather_cache.lock().await;
+fn load_weather_config(db: &storage::Database) -> system::weather::WeatherConfig {
+    db.get_setting(WEATHER_CONFIG_KEY)
+        .ok()
+        .flatten()
+        .and_then(|raw| serde_json::from_str::<system::weather::WeatherConfig>(&raw).ok())
+        .map(system::weather::normalize_weather_config)
+        .unwrap_or_default()
+}
 
-    // 检查缓存是否有效（5分钟内）
-    if let Some(ref weather) = *cache {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        if now - weather.timestamp < 300 {
-            return Ok(serde_json::json!({
-                "city": weather.city,
-                "temperature": weather.temperature,
-                "feels_like": weather.feels_like,
-                "humidity": weather.humidity,
-                "description": weather.description,
-                "wind_speed": weather.wind_speed,
-                "icon": weather.icon,
-                "timestamp": weather.timestamp,
-            }));
+fn save_weather_config(
+    db: &storage::Database,
+    config: system::weather::WeatherConfig,
+) -> Result<system::weather::WeatherConfig, String> {
+    let config = system::weather::normalize_weather_config(config);
+    if config.enabled {
+        system::weather::build_weather_url(&config)?;
+    }
+    let value = serde_json::to_string(&config).map_err(|e| e.to_string())?;
+    db.save_setting(WEATHER_CONFIG_KEY, &value)
+        .map_err(|e| e.to_string())?;
+    Ok(config)
+}
+
+async fn fetch_weather_from_settings(
+    state: &tauri::State<'_, AppState>,
+    force_refresh: bool,
+) -> Result<Option<system::WeatherInfo>, String> {
+    let config = {
+        let db = state.db.lock().await;
+        load_weather_config(&db)
+    };
+
+    if !config.enabled {
+        return Ok(None);
+    }
+
+    let cached = { state.weather_cache.lock().await.clone() };
+    if !force_refresh {
+        if let Some(weather) = cached.clone() {
+            if unix_now() - weather.timestamp <= WEATHER_CACHE_TTL_SECS {
+                return Ok(Some(weather));
+            }
         }
     }
 
-    // 获取新天气
-    match system::weather::get_weather_auto().await {
+    match system::weather::get_weather_with_client(&state.http_client, &config).await {
         Ok(weather) => {
-            let result = serde_json::json!({
-                "city": weather.city,
-                "temperature": weather.temperature,
-                "feels_like": weather.feels_like,
-                "humidity": weather.humidity,
-                "description": weather.description,
-                "wind_speed": weather.wind_speed,
-                "icon": weather.icon,
-                "timestamp": weather.timestamp,
-            });
-            *cache = Some(weather);
-            Ok(result)
+            let mut cache = state.weather_cache.lock().await;
+            *cache = Some(weather.clone());
+            Ok(Some(weather))
         }
-        Err(e) => Err(e),
+        Err(error) => {
+            if !force_refresh {
+                if let Some(weather) = cached {
+                    return Ok(Some(weather));
+                }
+            }
+            Err(error)
+        }
     }
+}
+
+async fn send_weather_if_due(
+    app_handle: &tauri::AppHandle,
+    state: &tauri::State<'_, AppState>,
+) -> Result<bool, String> {
+    let today = system::weather::get_today_date();
+    let last_sent = {
+        let db = state.db.lock().await;
+        db.get_setting(WEATHER_SENT_DATE_KEY)
+            .map_err(|e| e.to_string())?
+            .unwrap_or_default()
+    };
+
+    if last_sent == today {
+        return Ok(false);
+    }
+
+    let Some(weather) = fetch_weather_from_settings(state, true).await? else {
+        return Ok(false);
+    };
+
+    let message = system::weather::format_weather_message(&weather);
+    app_handle
+        .emit(
+            "weather-update",
+            serde_json::json!({
+                "message": message,
+                "sent_today": true,
+            }),
+        )
+        .map_err(|e| format!("发送天气事件失败: {e}"))?;
+
+    let db = state.db.lock().await;
+    db.save_setting(WEATHER_SENT_DATE_KEY, &today)
+        .map_err(|e| e.to_string())?;
+
+    Ok(true)
+}
+
+#[tauri::command]
+async fn get_weather_config(
+    state: tauri::State<'_, AppState>,
+) -> Result<system::weather::WeatherConfig, String> {
+    let db = state.db.lock().await;
+    Ok(load_weather_config(&db))
+}
+
+#[tauri::command]
+async fn set_weather_config(
+    enabled: bool,
+    location: String,
+    api_url: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<system::weather::WeatherConfig, String> {
+    let config = system::weather::WeatherConfig {
+        enabled,
+        location,
+        api_url,
+    };
+    let saved = {
+        let db = state.db.lock().await;
+        save_weather_config(&db, config)?
+    };
+
+    let mut cache = state.weather_cache.lock().await;
+    *cache = None;
+    Ok(saved)
+}
+
+#[tauri::command]
+async fn test_weather_config(
+    location: String,
+    api_url: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<system::WeatherInfo, String> {
+    let config = system::weather::WeatherConfig {
+        enabled: true,
+        location,
+        api_url,
+    };
+    system::weather::get_weather_with_client(&state.http_client, &config).await
+}
+
+#[tauri::command]
+async fn get_weather(
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<system::WeatherInfo>, String> {
+    fetch_weather_from_settings(&state, false).await
+}
+
+#[tauri::command]
+async fn refresh_weather(
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<system::WeatherInfo>, String> {
+    fetch_weather_from_settings(&state, true).await
 }
 
 #[tauri::command]
@@ -2100,44 +2241,7 @@ async fn check_and_send_weather(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<bool, String> {
-    let db = state.db.lock().await;
-    let last_sent = db.get_setting(WEATHER_SENT_DATE_KEY)
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-
-    let today = system::weather::get_today_date();
-    if last_sent == today {
-        return Ok(false);
-    }
-
-    // 获取天气
-    match system::weather::get_weather_auto().await {
-        Ok(weather) => {
-            let message = system::weather::format_weather_message(&weather);
-
-            // 保存天气信息到缓存
-            {
-                let mut cache = state.weather_cache.lock().await;
-                *cache = Some(weather);
-            }
-
-            // 记录今天已发送
-            let _ = db.save_setting(WEATHER_SENT_DATE_KEY, &today);
-
-            // 发送事件到前端
-            let _ = app_handle.emit("weather-update", serde_json::json!({
-                "message": message,
-                "sent_today": true,
-            }));
-
-            Ok(true)
-        }
-        Err(e) => {
-            eprintln!("获取天气失败: {}", e);
-            Ok(false)
-        }
-    }
+    send_weather_if_due(&app_handle, &state).await
 }
 
 #[tauri::command]
@@ -2466,6 +2570,77 @@ async fn get_custom_pet_asset(
 ) -> Result<Option<storage::CustomPetAsset>, String> {
     let db = state.db.lock().await;
     db.get_custom_pet_asset(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_active_custom_pet_asset(
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<storage::CustomPetAsset>, String> {
+    let db = state.db.lock().await;
+    let active_id = db
+        .get_setting(CUSTOM_PIXEL_PET_SETTING_KEY)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    if active_id.trim().is_empty() {
+        return Ok(None);
+    }
+
+    let asset = db
+        .get_custom_pet_asset(&active_id)
+        .map_err(|e| e.to_string())?;
+    if asset.is_none() {
+        db.save_setting(CUSTOM_PIXEL_PET_SETTING_KEY, "")
+            .map_err(|e| e.to_string())?;
+        if db
+            .get_setting("pet_character")
+            .map_err(|e| e.to_string())?
+            .as_deref()
+            == Some("custom-pixel")
+        {
+            db.save_setting("pet_character", "classic")
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(asset)
+}
+
+#[tauri::command]
+async fn set_active_custom_pet_asset(
+    id: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<storage::CustomPetAsset>, String> {
+    let db = state.db.lock().await;
+    let id = id.unwrap_or_default();
+    let id = id.trim();
+
+    if id.is_empty() {
+        db.save_setting(CUSTOM_PIXEL_PET_SETTING_KEY, "")
+            .map_err(|e| e.to_string())?;
+        if db
+            .get_setting("pet_character")
+            .map_err(|e| e.to_string())?
+            .as_deref()
+            == Some("custom-pixel")
+        {
+            db.save_setting("pet_character", "classic")
+                .map_err(|e| e.to_string())?;
+        }
+        return Ok(None);
+    }
+
+    if !is_valid_custom_pet_id(id) {
+        return Err("Invalid custom pet asset id".to_string());
+    }
+
+    let asset = db
+        .get_custom_pet_asset(id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Custom pet asset was not found".to_string())?;
+    db.save_setting(CUSTOM_PIXEL_PET_SETTING_KEY, id)
+        .map_err(|e| e.to_string())?;
+    db.save_setting("pet_character", "custom-pixel")
+        .map_err(|e| e.to_string())?;
+    Ok(Some(asset))
 }
 
 #[tauri::command]
@@ -3087,43 +3262,13 @@ pub fn run() {
 
             // 启动时检查并发送天气
             let app_handle = app.handle().clone();
-            tokio::spawn(async move {
+            tauri::async_runtime::spawn(async move {
                 // 延迟2秒等待前端准备就绪
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
                 let state = app_handle.state::<AppState>();
-                let db = state.db.lock().await;
-                let last_sent = db.get_setting(WEATHER_SENT_DATE_KEY)
-                    .ok()
-                    .flatten()
-                    .unwrap_or_default();
-
-                let today = system::weather::get_today_date();
-                if last_sent != today {
-                    // 获取天气
-                    match system::weather::get_weather_auto().await {
-                        Ok(weather) => {
-                            let message = system::weather::format_weather_message(&weather);
-
-                            // 保存天气信息到缓存
-                            {
-                                let mut cache = state.weather_cache.lock().await;
-                                *cache = Some(weather);
-                            }
-
-                            // 记录今天已发送
-                            let _ = db.save_setting(WEATHER_SENT_DATE_KEY, &today);
-
-                            // 发送事件到前端
-                            let _ = app_handle.emit("weather-update", serde_json::json!({
-                                "message": message,
-                                "sent_today": true,
-                            }));
-                        }
-                        Err(e) => {
-                            eprintln!("启动时获取天气失败: {}", e);
-                        }
-                    }
+                if let Err(e) = send_weather_if_due(&app_handle, &state).await {
+                    eprintln!("启动时获取天气失败: {}", e);
                 }
             });
 
@@ -3158,6 +3303,8 @@ pub fn run() {
             save_custom_pet_asset,
             list_custom_pet_assets,
             get_custom_pet_asset,
+            get_active_custom_pet_asset,
+            set_active_custom_pet_asset,
             delete_custom_pet_asset,
             tick,
             switch_model,
@@ -3192,7 +3339,11 @@ pub fn run() {
             list_api_models,
             confirm_tool,
             check_claude_status,
+            get_weather_config,
+            set_weather_config,
+            test_weather_config,
             get_weather,
+            refresh_weather,
             check_and_send_weather,
         ])
         .run(tauri::generate_context!())

@@ -14,6 +14,11 @@ import {
   type PetCharacterId,
 } from "../services/petCharacters";
 import {
+  getActiveCustomPixelPetAsset,
+  notifyPetAppearanceChanged,
+  setActiveCustomPixelPetAsset,
+} from "../services/customPixelPetAssets";
+import {
   DEFAULT_VOICE_SETTINGS,
   getAvailableVoices,
   parseVoiceSettings,
@@ -211,6 +216,11 @@ async function loadCurrentCharacter() {
     currentCharacter.value = resolvePetCharacterId(await invoke<string>("get_setting_value", {
       key: PET_CHARACTER_SETTING_KEY,
     }));
+    pet.customPixelPetAsset = await getActiveCustomPixelPetAsset();
+    if (currentCharacter.value === "custom-pixel" && !pet.customPixelPetAsset) {
+      currentCharacter.value = "classic";
+      await setActiveCustomPixelPetAsset(null).catch(() => null);
+    }
     pet.character = currentCharacter.value;
   } catch {
     currentCharacter.value = pet.character;
@@ -634,14 +644,21 @@ async function selectSkin(skinId: string) {
 
 async function selectCharacter(characterId: PetCharacterId) {
   try {
+    if (characterId === "custom-pixel") {
+      const active = await getActiveCustomPixelPetAsset();
+      if (!active) {
+        alert("请先上传生成一个自定义像素形象。");
+        return;
+      }
+      pet.customPixelPetAsset = active;
+    }
     await invoke("set_setting_value", {
       key: PET_CHARACTER_SETTING_KEY,
       value: characterId,
     });
     currentCharacter.value = characterId;
     pet.character = characterId;
-    const petWin = await WebviewWindow.getByLabel("pet");
-    if (petWin) await petWin.emit("appearance-changed");
+    await notifyPetAppearanceChanged();
   } catch (e) {
     alert("本体形象切换失败: " + e);
   }
