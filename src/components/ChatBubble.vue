@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { useChatStore, type FileAttachment } from "../stores/chat";
+import { useChatStore, type FileAttachment, type Message } from "../stores/chat";
 import { usePetStore } from "../stores/pet";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -73,6 +73,7 @@ const clipboardSearch = ref("");
 const chatBubbleRef = ref<HTMLDivElement | null>(null);
 const messagesRef = ref<HTMLDivElement | null>(null);
 const chatEndRef = ref<HTMLDivElement | null>(null);
+const activeMessageMenuId = ref<number | null>(null);
 const isFileOver = ref(false);
 const BG_KEY = "ai-desktop-pet.chat-bg";
 const CUSTOM_BG_KEY = "ai-desktop-pet.chat-bg-custom";
@@ -228,10 +229,11 @@ onMounted(async () => {
   unlistenAiError = await listen<AiErrorPayload>("ai-error", (event) => {
     clearLoadingTimeout(); // 清除超时
     // 区分可恢复中断和致命错误
+    const hadContent = !!streamingAnswer.value || !!thinkingContent.value;
     let text: string;
     if (event.payload.aborted) {
       text = "已中止";
-    } else if (streamingAnswer.value || thinkingContent.value) {
+    } else if (hadContent) {
       // 有部分内容时，显示警告而非错误
       text = `⚠️ ${event.payload.message}`;
     } else {
@@ -244,7 +246,6 @@ onMounted(async () => {
     isThinkingCollapsed.value = true;
     pendingConfirm.value = null;
     // 有部分内容时保持 idle，无内容时才 confused
-    const hadContent = !!streamingAnswer.value || !!thinkingContent.value;
     pet.setState(event.payload.aborted ? "idle" : (hadContent ? "idle" : "confused"));
   });
 
@@ -313,11 +314,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
-  // Reject any pending tool confirmation before closing
-  if (pendingConfirm.value) {
-    invoke("confirm_tool", { id: pendingConfirm.value.id, approved: false }).catch(() => {});
-    pendingConfirm.value = null;
-  }
+  pendingConfirm.value = null;
   if (scrollFrame !== null) {
     cancelAnimationFrame(scrollFrame);
     scrollFrame = null;
@@ -423,6 +420,7 @@ async function sendMessage() {
     return;
   }
   if (chat.isLoading) return;
+  closeMessageMenu();
 
   const fullMessage = buildMessageWithFiles(text, files);
 
@@ -474,6 +472,36 @@ async function sendMessage() {
     chat.addMessage("assistant", `出错了: ${err}`);
     pet.setState("confused");
   }
+}
+
+function openMessageMenu(msg: Message) {
+  activeMessageMenuId.value = activeMessageMenuId.value === msg.id ? null : msg.id;
+}
+
+function closeMessageMenu() {
+  activeMessageMenuId.value = null;
+}
+
+async function copyMessage(msg: Message) {
+  try {
+    await navigator.clipboard.writeText(msg.content);
+    pet.updateMood({ happiness: 0.01 });
+  } catch (err) {
+    appendAssistantOnce(`复制失败: ${err}`);
+  } finally {
+    closeMessageMenu();
+  }
+}
+
+async function resendMessage(msg: Message) {
+  const text = msg.content.trim();
+  if (!text || chat.isLoading) return;
+  closeMessageMenu();
+  activeTab.value = "chat";
+  localStorage.setItem(ACTIVE_TAB_KEY, "chat");
+  input.value = text;
+  await nextTick();
+  await sendMessage();
 }
 
 async function toggleVoiceInput() {
@@ -927,6 +955,7 @@ function clearBgPointer() {
 }
 
 function onBgClick(e: MouseEvent) {
+  closeMessageMenu();
   if (bgCanvasRef.value) {
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     bgCanvasRef.value.onClick(e.clientX - rect.left, e.clientY - rect.top);
@@ -941,6 +970,7 @@ function onKeyDown(e: KeyboardEvent) {
 }
 
 function switchTab(tab: ActiveTab) {
+  closeMessageMenu();
   activeTab.value = tab;
   localStorage.setItem(ACTIVE_TAB_KEY, tab);
   scrollToBottomAfterRender();
@@ -1073,6 +1103,7 @@ function formatClipboardTime(value: string | number): string {
           v-for="(msg, idx) in chat.messages"
           :key="msg.id"
           :class="['message', msg.role, { 'msg-enter': idx === chat.messages.length - 1 }]"
+          @contextmenu.prevent.stop="msg.role !== 'system' && openMessageMenu(msg)"
         >
           <!-- 系统分割线 -->
           <div v-if="msg.role === 'system'" class="system-divider">
@@ -1107,6 +1138,15 @@ function formatClipboardTime(value: string | number): string {
               </div>
             </div>
             <div class="msg-time">{{ formatTime(msg.timestamp) }}</div>
+            <div
+              v-if="activeMessageMenuId === msg.id"
+              class="message-action-menu"
+              @click.stop
+              @contextmenu.prevent.stop
+            >
+              <button type="button" @click="copyMessage(msg)">复制</button>
+              <button type="button" :disabled="chat.isLoading" @click="resendMessage(msg)">重新发送</button>
+            </div>
           </div>
 
           <div v-if="msg.role === 'user'" class="avatar user-avatar">
@@ -1790,6 +1830,49 @@ function formatClipboardTime(value: string | number): string {
 
 .message.user .msg-time {
   text-align: right;
+}
+
+.message-action-menu {
+  display: inline-flex;
+  align-self: flex-start;
+  gap: 6px;
+  margin-top: 5px;
+  padding: 4px;
+  border: 1px solid rgba(24, 42, 72, 0.08);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 8px 18px rgba(24, 42, 72, 0.12);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.message.user .message-action-menu {
+  align-self: flex-end;
+}
+
+.message-action-menu button {
+  min-width: 58px;
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid rgba(24, 42, 72, 0.08);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.86);
+  color: #475569;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.message-action-menu button:hover:not(:disabled) {
+  border-color: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.30);
+  color: var(--pet-primary, #ff6b6b);
+  background: #ffffff;
+}
+
+.message-action-menu button:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
 }
 
 .thinking-section {

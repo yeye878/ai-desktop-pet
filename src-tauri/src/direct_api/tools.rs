@@ -1,7 +1,8 @@
+use crate::computer_use;
 use serde_json::json;
 use std::{
     ffi::OsString,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -92,38 +93,119 @@ fn canonicalize_requested_path(path: &str) -> Result<PathBuf, String> {
 }
 
 fn canonical_allowed_roots() -> Vec<PathBuf> {
-    [
+    let mut roots = Vec::new();
+    for root in [
         dirs::document_dir(),
         dirs::download_dir(),
         dirs::desktop_dir(),
         dirs::audio_dir(),
         dirs::picture_dir(),
         dirs::video_dir(),
+        std::env::current_dir().ok(),
         Some(std::env::temp_dir()),
     ]
     .into_iter()
     .flatten()
-    .filter_map(|root| root.canonicalize().ok())
-    .collect()
+    {
+        push_canonical_root(&mut roots, root);
+    }
+    roots
+}
+
+fn push_canonical_root(roots: &mut Vec<PathBuf>, root: PathBuf) {
+    if let Ok(canonical) = root.canonicalize() {
+        if !roots.iter().any(|existing| existing == &canonical) {
+            roots.push(canonical);
+        }
+    }
+}
+
+fn canonical_blocked_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+
+    #[cfg(target_os = "windows")]
+    {
+        for name in [
+            "WINDIR",
+            "SystemRoot",
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+            "ProgramData",
+        ] {
+            if let Some(value) = std::env::var_os(name) {
+                push_canonical_root(&mut roots, PathBuf::from(value));
+            }
+        }
+
+        if let Some(system_drive) = std::env::var_os("SystemDrive") {
+            let drive = system_drive.to_string_lossy();
+            for suffix in [
+                "$Recycle.Bin",
+                "Recovery",
+                "System Volume Information",
+                "Windows.old",
+            ] {
+                push_canonical_root(&mut roots, PathBuf::from(format!("{drive}\\{suffix}")));
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        for root in ["/bin", "/boot", "/dev", "/etc", "/proc", "/root", "/sbin", "/sys", "/usr"] {
+            push_canonical_root(&mut roots, PathBuf::from(root));
+        }
+    }
+
+    roots
 }
 
 fn is_under_allowed_root(path: &Path, roots: &[PathBuf]) -> bool {
     roots.iter().any(|root| path.starts_with(root))
 }
 
-/// 检查路径是否在允许的目录范围内
-fn is_path_allowed(path: &str) -> Result<PathBuf, String> {
-    let canonical = canonicalize_requested_path(path)?;
-    let allowed_roots = canonical_allowed_roots();
+fn has_sensitive_component(path: &Path) -> bool {
+    path.components().any(|component| {
+        let Component::Normal(name) = component else {
+            return false;
+        };
+        let name = name.to_string_lossy().to_ascii_lowercase();
+        matches!(
+            name.as_str(),
+            ".ssh"
+                | ".gnupg"
+                | ".aws"
+                | ".azure"
+                | ".kube"
+                | ".docker"
+                | ".password-store"
+                | "id_rsa"
+                | "id_dsa"
+                | "id_ecdsa"
+                | "id_ed25519"
+                | "ntuser.dat"
+        ) || name == ".env"
+            || name.starts_with(".env.")
+            || name.ends_with(".pem")
+            || name.ends_with(".pfx")
+            || name.ends_with(".key")
+    })
+}
 
-    if is_under_allowed_root(&canonical, &allowed_roots) {
-        Ok(canonical)
-    } else {
-        Err(format!(
-            "路径不在允许范围内，仅可访问用户文档、桌面、下载、媒体和临时目录: {}",
-            path
-        ))
+/// 检查路径是否避开系统目录和常见敏感凭据路径。
+pub fn is_path_allowed(path: &str) -> Result<PathBuf, String> {
+    let canonical = canonicalize_requested_path(path)?;
+    let blocked_roots = canonical_blocked_roots();
+
+    if is_under_allowed_root(&canonical, &blocked_roots) {
+        return Err(format!("路径位于系统目录中，已拒绝访问: {}", path));
     }
+
+    if has_sensitive_component(&canonical) {
+        return Err(format!("路径疑似包含敏感凭据或密钥文件，已拒绝访问: {}", path));
+    }
+
+    Ok(canonical)
 }
 
 /// 检查命令是否包含危险操作
@@ -157,7 +239,7 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "读取本地文件的内容（最大 512KB），支持文本文件和 .docx 格式",
+                "description": "读取本地文件的内容（最大 512KB），支持文本文件、.docx、.pdf 和 .pptx/.pptm/.ppsx 格式；会拒绝系统目录和常见敏感凭据路径",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -256,6 +338,144 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
         json!({
             "type": "function",
             "function": {
+                "name": "computer_screenshot",
+                "description": "Capture the user's desktop as an image for visual inspection. Requires Computer Use to be enabled in settings. Use before mouse/keyboard actions when the current UI state matters.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "display": { "type": "integer", "description": "Optional display index. Defaults to 0." },
+                        "max_width": { "type": "integer", "description": "Optional max image width for compression. Defaults to 1024." }
+                    }
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "computer_mouse",
+                "description": "Control the mouse after observing the screen. Actions: move, click, double_click, right_click, drag, scroll. Coordinates are absolute screen pixels.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": { "type": "string", "enum": ["move", "click", "double_click", "right_click", "drag", "scroll"] },
+                        "x": { "type": "integer", "description": "Absolute screen x coordinate." },
+                        "y": { "type": "integer", "description": "Absolute screen y coordinate." },
+                        "to_x": { "type": "integer", "description": "Drag destination x coordinate." },
+                        "to_y": { "type": "integer", "description": "Drag destination y coordinate." },
+                        "dx": { "type": "integer", "description": "Relative x delta for drag when to_x is omitted." },
+                        "dy": { "type": "integer", "description": "Relative y delta for drag or scroll." },
+                        "amount": { "type": "integer", "description": "Mouse wheel notches for scroll. Positive scrolls up, negative scrolls down." },
+                        "button": { "type": "string", "enum": ["left", "right"], "description": "Mouse button for click. Defaults to left." }
+                    },
+                    "required": ["action"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "computer_keyboard",
+                "description": "Type text, press a key, or send a hotkey to the focused app. Use one type call for a complete known text string instead of typing character-by-character. Sensitive-looking secrets and short numeric verification codes are refused.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": { "type": "string", "enum": ["type", "press", "hotkey"] },
+                        "text": { "type": "string", "description": "Text to type when action is type." },
+                        "key": { "type": "string", "description": "Single key for press, e.g. enter, tab, escape, a, f5." },
+                        "keys": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Keys for hotkey, e.g. [\"ctrl\", \"l\"] or [\"ctrl\", \"shift\", \"esc\"]."
+                        }
+                    },
+                    "required": ["action"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "computer_wait",
+                "description": "Wait briefly for UI changes after an app launch, click, navigation, or keyboard action.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "ms": { "type": "integer", "description": "Milliseconds to wait, clamped between 50 and 10000." }
+                    }
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "window_list",
+                "description": "List visible desktop windows with pid, process name, and title. Useful before focusing QQ, WeChat, browsers, or other native apps.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {}
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "window_focus",
+                "description": "Focus a visible desktop window by pid or by partial title match.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pid": { "type": "integer", "description": "Process id from window_list." },
+                        "title": { "type": "string", "description": "Partial window title to match." }
+                    }
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "browser_open",
+                "description": "Open the default browser, Chrome, or Edge. If url is provided it must be http or https.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": { "type": "string", "description": "Optional http/https URL to open." },
+                        "browser": { "type": "string", "enum": ["default", "chrome", "edge"], "description": "Browser target. Defaults to default." }
+                    }
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "browser_navigate",
+                "description": "Navigate by opening an http/https URL in the selected browser. Use browser_snapshot or computer_screenshot afterward to inspect the result.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": { "type": "string", "description": "http/https URL to open." },
+                        "browser": { "type": "string", "enum": ["default", "chrome", "edge"], "description": "Browser target. Defaults to default." }
+                    },
+                    "required": ["url"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "browser_snapshot",
+                "description": "Capture the desktop after browser navigation. This is a screenshot alias used for browser workflows.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "display": { "type": "integer", "description": "Optional display index. Defaults to 0." },
+                        "max_width": { "type": "integer", "description": "Optional max image width for compression. Defaults to 1024." }
+                    }
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
                 "name": "create_scheduled_task",
                 "description": "创建一个本地定时提醒任务。适合用户要求“稍后提醒我”“每天提醒我”“定时任务”等场景。需要明确标题和提醒时间；可以用 due_at Unix 秒，或 delay_minutes/小时/天这样的相对时间。",
                 "parameters": {
@@ -319,6 +539,22 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
         json!({
             "type": "function",
             "function": {
+                "name": "file_search",
+                "description": "在指定目录下递归搜索匹配文件名模式的文件，支持通配符（如 *.pdf、*report*、*.pptx、*.py）。不指定目录时搜索用户常用目录和当前项目；指定目录时会拒绝系统目录和常见敏感凭据路径。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": { "type": "string", "description": "文件名匹配模式，支持 * 和 ? 通配符，如 *.pdf、*report*、*.pptx、*.py" },
+                        "directory": { "type": "string", "description": "可选，搜索起始目录；不指定时搜索用户常用目录和当前项目。" },
+                        "max_results": { "type": "integer", "description": "可选，最大返回结果数，默认 50，上限 200" }
+                    },
+                    "required": ["pattern"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
                 "name": "delete_memory",
                 "description": "根据记忆 ID 删除长期记忆库中的一条记忆。这是不可逆操作。",
                 "parameters": {
@@ -370,19 +606,31 @@ pub async fn execute_tool(
             if url.is_empty() {
                 "URL 不能为空".to_string()
             } else {
-                match tokio::time::timeout(std::time::Duration::from_secs(15), read_webpage(url)).await {
+                match tokio::time::timeout(std::time::Duration::from_secs(15), read_webpage(url))
+                    .await
+                {
                     Ok(result) => result.unwrap_or_else(|e| e),
                     Err(_) => "读取网页超时 (15秒)".to_string(),
                 }
             }
         }
         "open_app" => exec_open_app(args).await.unwrap_or_else(|e| e),
-        "create_scheduled_task" => exec_create_scheduled_task(args)
+        "computer_screenshot" => computer_use::screenshot(args).await.unwrap_or_else(|e| e),
+        "computer_mouse" => computer_use::mouse(args).await.unwrap_or_else(|e| e),
+        "computer_keyboard" => computer_use::keyboard(args).await.unwrap_or_else(|e| e),
+        "computer_wait" => computer_use::wait(args).await.unwrap_or_else(|e| e),
+        "window_list" => computer_use::window_list(args).await.unwrap_or_else(|e| e),
+        "window_focus" => computer_use::window_focus(args).await.unwrap_or_else(|e| e),
+        "browser_open" => computer_use::browser_open(args).await.unwrap_or_else(|e| e),
+        "browser_navigate" => computer_use::browser_navigate(args)
             .await
             .unwrap_or_else(|e| e),
-        "list_scheduled_tasks" => exec_list_scheduled_tasks()
+        "browser_snapshot" => computer_use::browser_snapshot(args)
             .await
             .unwrap_or_else(|e| e),
+        "create_scheduled_task" => exec_create_scheduled_task(args).await.unwrap_or_else(|e| e),
+        "list_scheduled_tasks" => exec_list_scheduled_tasks().await.unwrap_or_else(|e| e),
+        "file_search" => exec_file_search(args).await.unwrap_or_else(|e| e),
         "search_memory" => exec_search_memory(args).await.unwrap_or_else(|e| e),
         "save_memory" => exec_save_memory(args).await.unwrap_or_else(|e| e),
         "delete_memory" => exec_delete_memory(args).await.unwrap_or_else(|e| e),
@@ -397,13 +645,19 @@ async fn exec_read_file(args: &serde_json::Value) -> Result<String, String> {
         return Err(format!("路径不是一个文件: {path}"));
     }
 
-    // .docx 是二进制 ZIP 格式，需要特殊处理
-    if path_buf
+    // Office/PDF 二进制或压缩格式需要特殊处理
+    let ext = path_buf
         .extension()
-        .map(|ext| ext.eq_ignore_ascii_case("docx"))
-        .unwrap_or(false)
-    {
-        return read_docx_text(&path_buf);
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("docx") => return read_docx_text(&path_buf),
+        Some("pdf") => return read_pdf_text(&path_buf),
+        Some("pptx") | Some("pptm") | Some("ppsx") => return read_pptx_text(&path_buf),
+        Some("ppt") => {
+            return Err("旧版 .ppt 二进制格式暂不支持，请将文件另存为 .pptx 后再读取".to_string())
+        }
+        _ => {}
     }
 
     let content = tokio::fs::read_to_string(&path_buf)
@@ -439,9 +693,109 @@ fn read_docx_text(path: &Path) -> Result<String, String> {
             .map_err(|e| format!("读取 document.xml 失败: {e}"))?;
     }
 
-    // 从 XML 中提取 <w:t> 标签之间的文本，在段落边界插入换行
+    let text = extract_open_xml_text(&xml_content);
+    finish_extracted_text("docx", text, "docx 文件中未提取到文本内容")
+}
+
+/// 从 .pptx/.pptm/.ppsx 文件中提取每页幻灯片和备注的纯文本内容
+fn read_pptx_text(path: &Path) -> Result<String, String> {
+    use std::io::Read;
+
+    let file = std::fs::File::open(path).map_err(|e| format!("打开 pptx 文件失败: {e}"))?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| format!("解析 pptx 压缩包失败: {e}"))?;
+
+    let slide_names = sorted_zip_part_names(&mut archive, "ppt/slides/slide");
+    if slide_names.is_empty() {
+        return Err("pptx 文件中未找到幻灯片 XML 内容".to_string());
+    }
+
+    let note_names = sorted_zip_part_names(&mut archive, "ppt/notesSlides/notesSlide");
+    let mut sections = Vec::new();
+
+    for name in slide_names {
+        let mut xml_content = String::new();
+        {
+            let mut entry = archive
+                .by_name(&name)
+                .map_err(|e| format!("读取 pptx 幻灯片失败 ({name}): {e}"))?;
+            entry
+                .read_to_string(&mut xml_content)
+                .map_err(|e| format!("读取 pptx 幻灯片 XML 失败 ({name}): {e}"))?;
+        }
+
+        let text = extract_open_xml_text(&xml_content);
+        if !text.is_empty() {
+            let slide_no = open_xml_part_number(&name).unwrap_or(sections.len() + 1);
+            sections.push(format!("幻灯片 {slide_no}\n{text}"));
+        }
+    }
+
+    for name in note_names {
+        let mut xml_content = String::new();
+        {
+            let mut entry = archive
+                .by_name(&name)
+                .map_err(|e| format!("读取 pptx 备注页失败 ({name}): {e}"))?;
+            entry
+                .read_to_string(&mut xml_content)
+                .map_err(|e| format!("读取 pptx 备注页 XML 失败 ({name}): {e}"))?;
+        }
+
+        let text = extract_open_xml_text(&xml_content);
+        if !text.is_empty() {
+            let note_no = open_xml_part_number(&name).unwrap_or(sections.len() + 1);
+            sections.push(format!("备注 {note_no}\n{text}"));
+        }
+    }
+
+    finish_extracted_text(
+        "pptx",
+        sections.join("\n\n"),
+        "pptx 文件中未提取到文本内容（可能主要是图片/图表，不支持 OCR）",
+    )
+}
+
+fn sorted_zip_part_names<R: std::io::Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    prefix: &str,
+) -> Vec<String> {
+    let mut names = Vec::new();
+    for index in 0..archive.len() {
+        if let Ok(entry) = archive.by_index(index) {
+            let name = entry.name().replace('\\', "/");
+            if name.starts_with(prefix) && name.ends_with(".xml") {
+                names.push(name);
+            }
+        }
+    }
+
+    names.sort_by(|left, right| {
+        open_xml_part_number(left)
+            .unwrap_or(usize::MAX)
+            .cmp(&open_xml_part_number(right).unwrap_or(usize::MAX))
+            .then_with(|| left.cmp(right))
+    });
+    names
+}
+
+fn open_xml_part_number(name: &str) -> Option<usize> {
+    let file_name = name.rsplit('/').next().unwrap_or(name);
+    let stem = file_name.strip_suffix(".xml").unwrap_or(file_name);
+    let digits_reversed: String = stem
+        .chars()
+        .rev()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect();
+    if digits_reversed.is_empty() {
+        return None;
+    }
+    digits_reversed.chars().rev().collect::<String>().parse().ok()
+}
+
+fn extract_open_xml_text(xml_content: &str) -> String {
     let mut text = String::new();
-    let mut in_wt = false;
+    let mut in_text = false;
     let mut segment = String::new();
     let mut chars = xml_content.chars().peekable();
 
@@ -455,33 +809,170 @@ fn read_docx_text(path: &Path) -> Result<String, String> {
                     break;
                 }
             }
-            if tag.starts_with("<w:t") && !tag.starts_with("</w:t") {
-                in_wt = true;
+            let Some((is_closing, is_self_closing, local_name)) = parse_xml_tag(&tag) else {
+                continue;
+            };
+            if is_self_closing && local_name == "t" {
+                in_text = false;
                 segment.clear();
-            } else if tag.starts_with("</w:t") {
-                in_wt = false;
-                text.push_str(&segment);
+            } else if !is_closing && local_name == "t" {
+                in_text = true;
                 segment.clear();
-            } else if tag.starts_with("</w:p") {
+            } else if is_closing && local_name == "t" {
+                in_text = false;
+                text.push_str(&decode_xml_entities(&segment));
+                segment.clear();
+            } else if local_name == "tab" {
+                if in_text {
+                    segment.push(' ');
+                }
+            } else if local_name == "br" || (is_closing && local_name == "p") {
                 text.push('\n');
             }
         } else {
             chars.next();
-            if in_wt {
+            if in_text {
                 segment.push(c);
             }
         }
     }
 
+    clean_extracted_text(&text)
+}
+
+fn parse_xml_tag(tag: &str) -> Option<(bool, bool, String)> {
+    let trimmed = tag
+        .trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .trim();
+
+    if trimmed.is_empty() || trimmed.starts_with('?') || trimmed.starts_with('!') {
+        return None;
+    }
+
+    let is_closing = trimmed.starts_with('/');
+    let body = if is_closing {
+        trimmed.trim_start_matches('/').trim()
+    } else {
+        trimmed
+    };
+    let is_self_closing = body.ends_with('/');
+    let body = body.trim_end_matches('/').trim();
+    let tag_name = body.split_whitespace().next()?;
+    let local_name = tag_name.rsplit(':').next().unwrap_or(tag_name);
+    Some((is_closing, is_self_closing, local_name.to_ascii_lowercase()))
+}
+
+fn decode_xml_entities(input: &str) -> String {
+    let mut output = String::new();
+    let mut chars = input.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch != '&' {
+            output.push(ch);
+            continue;
+        }
+
+        let mut entity = String::new();
+        let mut found_end = false;
+        while let Some(next) = chars.next() {
+            if next == ';' {
+                found_end = true;
+                break;
+            }
+            entity.push(next);
+            if entity.len() > 16 {
+                break;
+            }
+        }
+
+        if !found_end {
+            output.push('&');
+            output.push_str(&entity);
+            continue;
+        }
+
+        let decoded = match entity.as_str() {
+            "amp" => Some('&'),
+            "lt" => Some('<'),
+            "gt" => Some('>'),
+            "quot" => Some('"'),
+            "apos" => Some('\''),
+            _ if entity.starts_with("#x") => u32::from_str_radix(&entity[2..], 16)
+                .ok()
+                .and_then(char::from_u32),
+            _ if entity.starts_with('#') => entity[1..].parse::<u32>().ok().and_then(char::from_u32),
+            _ => None,
+        };
+
+        if let Some(decoded) = decoded {
+            output.push(decoded);
+        } else {
+            output.push('&');
+            output.push_str(&entity);
+            output.push(';');
+        }
+    }
+
+    output
+}
+
+fn clean_extracted_text(text: &str) -> String {
+    let mut cleaned = String::new();
+    let mut prev_empty = false;
+    for line in text.lines() {
+        let trimmed = line.split_whitespace().collect::<Vec<_>>().join(" ");
+        if trimmed.is_empty() {
+            if !prev_empty {
+                cleaned.push('\n');
+                prev_empty = true;
+            }
+        } else {
+            cleaned.push_str(&trimmed);
+            cleaned.push('\n');
+            prev_empty = false;
+        }
+    }
+    cleaned.trim().to_string()
+}
+
+fn finish_extracted_text(kind: &str, text: String, empty_message: &str) -> Result<String, String> {
     let text = text.trim().to_string();
     if text.is_empty() {
-        return Err("docx 文件中未提取到文本内容".to_string());
+        return Err(empty_message.to_string());
     }
 
     if text.len() > 524288 {
         let safe_end = text.floor_char_boundary(524288);
         Ok(format!(
-            "{}\n\n... [docx 内容已截断，仅显示前 512KB]",
+            "{}\n\n... [{} 内容已截断，仅显示前 512KB]",
+            &text[..safe_end],
+            kind
+        ))
+    } else {
+        Ok(text)
+    }
+}
+
+/// 从 PDF 文件中提取纯文本内容
+fn read_pdf_text(path: &Path) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("读取 PDF 文件失败: {e}"))?;
+
+    // 使用 catch_unwind 防止畸形 PDF 导致进程崩溃
+    let text = std::panic::catch_unwind(|| pdf_extract::extract_text_from_mem(&bytes))
+        .map_err(|_| "PDF 解析过程中发生异常，文件可能已损坏".to_string())?
+        .map_err(|e| format!("解析 PDF 文件失败: {e}"))?;
+
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return Err("PDF 文件中未提取到文本内容（可能是扫描版/图片 PDF，不支持 OCR）".to_string());
+    }
+
+    if text.len() > 524288 {
+        let safe_end = text.floor_char_boundary(524288);
+        Ok(format!(
+            "{}\n\n... [PDF 内容已截断，仅显示前 512KB]",
             &text[..safe_end]
         ))
     } else {
@@ -696,13 +1187,13 @@ async fn read_webpage(url: &str) -> Result<String, String> {
 
     // 检查是否为 HTML 内容
     if !content_type.contains("text/html") && !content_type.contains("text/plain") {
-        return Err(format!("不支持的内容类型: {}。此工具仅支持 HTML 和纯文本网页。", content_type));
+        return Err(format!(
+            "不支持的内容类型: {}。此工具仅支持 HTML 和纯文本网页。",
+            content_type
+        ));
     }
 
-    let body = res
-        .text()
-        .await
-        .map_err(|e| format!("读取响应失败: {e}"))?;
+    let body = res.text().await.map_err(|e| format!("读取响应失败: {e}"))?;
 
     // 提取正文内容
     let text = html_to_text(&body);
@@ -767,12 +1258,18 @@ fn html_to_text(html: &str) -> String {
             if i > 0 {
                 let prev_tag = chars[..i].iter().rev().take(20).collect::<String>();
                 let prev_lower = prev_tag.to_lowercase();
-                if prev_lower.contains("/p") || prev_lower.contains("/div") 
-                    || prev_lower.contains("/li") || prev_lower.contains("/tr")
-                    || prev_lower.contains("/h1") || prev_lower.contains("/h2")
-                    || prev_lower.contains("/h3") || prev_lower.contains("/h4")
-                    || prev_lower.contains("/h5") || prev_lower.contains("/h6")
-                    || prev_lower.contains("br") {
+                if prev_lower.contains("/p")
+                    || prev_lower.contains("/div")
+                    || prev_lower.contains("/li")
+                    || prev_lower.contains("/tr")
+                    || prev_lower.contains("/h1")
+                    || prev_lower.contains("/h2")
+                    || prev_lower.contains("/h3")
+                    || prev_lower.contains("/h4")
+                    || prev_lower.contains("/h5")
+                    || prev_lower.contains("/h6")
+                    || prev_lower.contains("br")
+                {
                     if !last_was_space {
                         result.push('\n');
                         last_was_space = true;
@@ -1265,16 +1762,14 @@ fn due_at_from_tool_args(args: &serde_json::Value) -> Result<i64, String> {
         Some(seconds) if seconds.is_finite() && seconds > 0.0 => {
             Ok(now.saturating_add(seconds.round() as i64))
         }
-        _ => Err("缺少有效提醒时间，请提供 due_at 或 delay_minutes/delay_hours/delay_days".to_string()),
+        _ => Err(
+            "缺少有效提醒时间，请提供 due_at 或 delay_minutes/delay_hours/delay_days".to_string(),
+        ),
     }
 }
 
 async fn exec_create_scheduled_task(args: &serde_json::Value) -> Result<String, String> {
-    let title = args["title"]
-        .as_str()
-        .unwrap_or("")
-        .trim()
-        .to_string();
+    let title = args["title"].as_str().unwrap_or("").trim().to_string();
     if title.is_empty() {
         return Err("缺少任务标题 title".to_string());
     }
@@ -1287,8 +1782,7 @@ async fn exec_create_scheduled_task(args: &serde_json::Value) -> Result<String, 
     let repeat = normalize_task_repeat_for_tools(args["repeat"].as_str().unwrap_or("once"));
 
     let db_path = get_db_path_for_tools()?;
-    let conn = rusqlite::Connection::open(&db_path)
-        .map_err(|e| format!("打开数据库失败: {e}"))?;
+    let conn = rusqlite::Connection::open(&db_path).map_err(|e| format!("打开数据库失败: {e}"))?;
     ensure_scheduled_tasks_table(&conn)?;
     conn.execute(
         "INSERT INTO scheduled_tasks (title, note, due_at, repeat, enabled, updated_at)
@@ -1306,8 +1800,7 @@ async fn exec_create_scheduled_task(args: &serde_json::Value) -> Result<String, 
 
 async fn exec_list_scheduled_tasks() -> Result<String, String> {
     let db_path = get_db_path_for_tools()?;
-    let conn = rusqlite::Connection::open(&db_path)
-        .map_err(|e| format!("打开数据库失败: {e}"))?;
+    let conn = rusqlite::Connection::open(&db_path).map_err(|e| format!("打开数据库失败: {e}"))?;
     ensure_scheduled_tasks_table(&conn)?;
 
     let mut stmt = conn
@@ -1366,8 +1859,7 @@ async fn exec_search_memory(args: &serde_json::Value) -> Result<String, String> 
     let limit = args["limit"].as_u64().unwrap_or(10) as u32;
 
     let db_path = get_db_path_for_tools()?;
-    let conn = rusqlite::Connection::open(&db_path)
-        .map_err(|e| format!("打开数据库失败: {e}"))?;
+    let conn = rusqlite::Connection::open(&db_path).map_err(|e| format!("打开数据库失败: {e}"))?;
 
     let like_pattern = format!("%{}%", query);
     let limit = limit.min(30);
@@ -1395,7 +1887,9 @@ async fn exec_search_memory(args: &serde_json::Value) -> Result<String, String> 
     };
 
     let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-    let mut stmt = conn.prepare(sql).map_err(|e| format!("查询记忆失败: {e}"))?;
+    let mut stmt = conn
+        .prepare(sql)
+        .map_err(|e| format!("查询记忆失败: {e}"))?;
     let rows = stmt
         .query_map(param_refs.as_slice(), |row| {
             Ok((
@@ -1410,7 +1904,8 @@ async fn exec_search_memory(args: &serde_json::Value) -> Result<String, String> 
 
     let mut lines = Vec::new();
     for row in rows {
-        let (id, category, key, value, created_at) = row.map_err(|e| format!("读取记忆失败: {e}"))?;
+        let (id, category, key, value, created_at) =
+            row.map_err(|e| format!("读取记忆失败: {e}"))?;
         let val_display = if value.len() > 120 {
             format!("{}...", &value[..120])
         } else {
@@ -1435,8 +1930,7 @@ async fn exec_save_memory(args: &serde_json::Value) -> Result<String, String> {
     let value = args["value"].as_str().ok_or("缺少 'value' 参数")?;
 
     let db_path = get_db_path_for_tools()?;
-    let conn = rusqlite::Connection::open(&db_path)
-        .map_err(|e| format!("打开数据库失败: {e}"))?;
+    let conn = rusqlite::Connection::open(&db_path).map_err(|e| format!("打开数据库失败: {e}"))?;
 
     conn.execute(
         "INSERT INTO pet_memory (category, key, value) VALUES (?1, ?2, ?3)",
@@ -1452,8 +1946,7 @@ async fn exec_delete_memory(args: &serde_json::Value) -> Result<String, String> 
     let id = args["id"].as_i64().ok_or("缺少 'id' 参数")?;
 
     let db_path = get_db_path_for_tools()?;
-    let conn = rusqlite::Connection::open(&db_path)
-        .map_err(|e| format!("打开数据库失败: {e}"))?;
+    let conn = rusqlite::Connection::open(&db_path).map_err(|e| format!("打开数据库失败: {e}"))?;
 
     let affected = conn
         .execute("DELETE FROM pet_memory WHERE id = ?1", [id])
@@ -1503,9 +1996,230 @@ async fn exec_open_app(args: &serde_json::Value) -> Result<String, String> {
     Ok(format!("已启动: {} ({})", app, resolved))
 }
 
+/// 递归搜索匹配 glob 模式的文件
+async fn exec_file_search(args: &serde_json::Value) -> Result<String, String> {
+    let pattern = args["pattern"].as_str().ok_or("缺少 'pattern' 参数")?;
+    let directory = args["directory"].as_str();
+    let max_results = args["max_results"]
+        .as_u64()
+        .map(|v| v.min(200) as usize)
+        .unwrap_or(50);
+
+    if pattern.trim().is_empty() {
+        return Err("搜索模式不能为空".to_string());
+    }
+
+    let allowed_roots = canonical_allowed_roots();
+    let glob_pattern = pattern.to_lowercase();
+
+    // 确定搜索起始目录
+    let search_dirs: Vec<PathBuf> = if let Some(dir) = directory {
+        let canonical = is_path_allowed(dir)?;
+        if !canonical.is_dir() {
+            return Err(format!("路径不是目录: {dir}"));
+        }
+        vec![canonical]
+    } else {
+        allowed_roots.clone()
+    };
+
+    let mut results: Vec<(PathBuf, u64)> = Vec::new();
+
+    for root in &search_dirs {
+        if results.len() >= max_results {
+            break;
+        }
+        // walkdir 递归搜索，最大深度 10 层
+        let walker = walkdir::WalkDir::new(root)
+            .max_depth(10)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|e| {
+                // 跳过隐藏目录和系统目录
+                let name = e.file_name().to_string_lossy();
+                !name.starts_with('.') && name != "node_modules" && name != "__pycache__"
+            });
+
+        for entry in walker.flatten() {
+            if results.len() >= max_results {
+                break;
+            }
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let file_name = entry.file_name().to_string_lossy().to_lowercase();
+            if glob_match(&glob_pattern, &file_name) {
+                let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                results.push((entry.path().to_path_buf(), size));
+            }
+        }
+    }
+
+    if results.is_empty() {
+        let scope = directory.unwrap_or("所有允许目录");
+        return Ok(format!("在 {} 中未找到匹配 '{}' 的文件", scope, pattern));
+    }
+
+    let mut output = format!("找到 {} 个匹配 '{}' 的文件:\n", results.len(), pattern);
+    for (i, (path, size)) in results.iter().enumerate() {
+        let size_str = format_file_size(*size);
+        output.push_str(&format!("[{}] {} ({})", i + 1, path.display(), size_str));
+        output.push('\n');
+    }
+    if results.len() >= max_results {
+        output.push_str(&format!("\n... [已达到最大结果数 {}]", max_results));
+    }
+    Ok(output)
+}
+
+/// 简单的 glob 匹配（支持 * 和 ? 通配符）
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let pat: Vec<char> = pattern.chars().collect();
+    let txt: Vec<char> = text.chars().collect();
+    glob_match_inner(&pat, &txt, 0, 0)
+}
+
+fn glob_match_inner(pattern: &[char], text: &[char], mut pi: usize, mut ti: usize) -> bool {
+    let mut star_pi: Option<usize> = None;
+    let mut star_ti: Option<usize> = None;
+
+    while ti < text.len() {
+        if pi < pattern.len() && (pattern[pi] == '?' || pattern[pi] == text[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < pattern.len() && pattern[pi] == '*' {
+            star_pi = Some(pi);
+            star_ti = Some(ti);
+            pi += 1;
+        } else if let Some(sp) = star_pi {
+            pi = sp + 1;
+            let st = star_ti.unwrap() + 1;
+            star_ti = Some(st);
+            ti = st;
+        } else {
+            return false;
+        }
+    }
+    while pi < pattern.len() && pattern[pi] == '*' {
+        pi += 1;
+    }
+    pi == pattern.len()
+}
+
+/// 格式化文件大小
+fn format_file_size(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{} B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn unique_test_name(prefix: &str, ext: &str) -> String {
+        format!(
+            "{}-{}.{}",
+            prefix,
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            ext
+        )
+    }
+
+    #[test]
+    fn allows_current_workspace_paths() {
+        let path = std::env::current_dir()
+            .unwrap()
+            .join(unique_test_name("path-policy", "txt"));
+        std::fs::write(&path, "ok").unwrap();
+
+        let allowed = is_path_allowed(path.to_str().unwrap()).unwrap();
+        let expected = path.canonicalize().unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(allowed, expected);
+    }
+
+    #[test]
+    fn rejects_sensitive_credential_paths() {
+        let dir = std::env::temp_dir().join(unique_test_name("path-policy", "dir"));
+        let ssh_dir = dir.join(".ssh");
+        std::fs::create_dir_all(&ssh_dir).unwrap();
+        let path = ssh_dir.join("id_rsa");
+        std::fs::write(&path, "secret").unwrap();
+
+        let result = is_path_allowed(path.to_str().unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn extracts_open_xml_text_with_entities_and_paragraphs() {
+        let xml = r#"
+            <p:txBody>
+              <a:p><a:r><a:t>第一 &amp; 第二</a:t></a:r></a:p>
+              <a:p><a:r><a:t>3 &lt; 4</a:t></a:r><a:br/><a:r><a:t>&#x4E2D;&#25991;</a:t></a:r></a:p>
+            </p:txBody>
+        "#;
+
+        let text = extract_open_xml_text(xml);
+
+        assert_eq!(text, "第一 & 第二\n3 < 4\n中文");
+    }
+
+    #[test]
+    fn reads_pptx_slide_and_note_text() {
+        use std::io::Write;
+
+        let path = std::env::temp_dir().join(unique_test_name("ai-desktop-pet-test", "pptx"));
+
+        {
+            let file = std::fs::File::create(&path).unwrap();
+            let mut zip = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+
+            zip.start_file("[Content_Types].xml", options).unwrap();
+            zip.write_all(br#"<Types></Types>"#).unwrap();
+            zip.start_file("ppt/slides/slide2.xml", options).unwrap();
+            zip.write_all(
+                r#"<p:sld><p:cSld><p:spTree><a:p><a:r><a:t>第二页</a:t></a:r></a:p></p:spTree></p:cSld></p:sld>"#
+                    .as_bytes(),
+            )
+            .unwrap();
+            zip.start_file("ppt/slides/slide1.xml", options).unwrap();
+            zip.write_all(
+                r#"<p:sld><p:cSld><p:spTree><a:p><a:r><a:t>标题 &amp; 要点</a:t></a:r></a:p></p:spTree></p:cSld></p:sld>"#
+                    .as_bytes(),
+            )
+            .unwrap();
+            zip.start_file("ppt/notesSlides/notesSlide1.xml", options)
+                .unwrap();
+            zip.write_all(
+                r#"<p:notes><a:p><a:r><a:t>备注内容</a:t></a:r></a:p></p:notes>"#
+                    .as_bytes(),
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        }
+
+        let text = read_pptx_text(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert!(text.contains("幻灯片 1\n标题 & 要点"));
+        assert!(text.contains("幻灯片 2\n第二页"));
+        assert!(text.contains("备注 1\n备注内容"));
+    }
 
     #[test]
     fn parses_duckduckgo_result_and_redirect_url() {

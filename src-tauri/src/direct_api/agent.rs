@@ -1,4 +1,5 @@
-﻿use crate::direct_api::api_client::{
+use crate::direct_api::api_client::{
+    api_error_message_from_sse_text, api_error_message_from_value,
     call_chat_completions_non_stream, call_chat_completions_stream, ChatCompletionChunk,
     DirectApiConfig, SseParser, UserAttachment,
 };
@@ -14,7 +15,7 @@ use std::path::Path;
 use std::time::Duration;
 use tauri::{Emitter, Manager};
 
-const MAX_AGENT_TURNS: u32 = 48;
+const MAX_AGENT_TURNS: u32 = 160;
 const MAX_VISION_IMAGES: usize = 5;
 const MAX_VISION_IMAGE_BYTES: u64 = 50 * 1024 * 1024;
 
@@ -69,9 +70,14 @@ pub async fn run_direct_api_agent(
     }));
 
     for msg in chat_history {
+        let content = if msg.role == "assistant" {
+            assistant_history_content_for_context(&msg.content, msg.thinking.as_deref())
+        } else {
+            msg.content
+        };
         api_messages.push(json!({
             "role": msg.role,
-            "content": msg.content
+            "content": content
         }));
     }
 
@@ -87,8 +93,10 @@ pub async fn run_direct_api_agent(
     loop {
         current_turn += 1;
         if current_turn > MAX_AGENT_TURNS {
-            let limit_msg = format!("\n[已达到最大迭代限制 {MAX_AGENT_TURNS} 轮]");
+            let limit_msg = turn_limit_message(MAX_AGENT_TURNS, &full_thinking);
             full_text.push_str(&limit_msg);
+            full_thinking.push_str(&limit_msg);
+            append_active_thinking(&state, &limit_msg);
             let _ = app_handle.emit("ai-thinking", &limit_msg);
             break;
         }
@@ -127,19 +135,24 @@ pub async fn run_direct_api_agent(
                                 full_text.push_str(content);
                                 let _ = app_handle.emit(
                                     "ai-answer-delta",
-                                    AnswerDeltaPayload { text: content.clone() },
+                                    AnswerDeltaPayload {
+                                        text: content.clone(),
+                                    },
                                 );
                             }
                         }
-                        
+
                         // 处理工具调用 - 填充 accumulated_tool_calls
                         // 这样现有的工具执行循环会处理它们
                         for (i, tc) in result.tool_calls.iter().enumerate() {
-                            accumulated_tool_calls.insert(i, AccumulatedToolCall {
-                                id: tc.id.clone().unwrap_or_default(),
-                                name: tc.function.name.clone(),
-                                arguments: tc.function.arguments.clone(),
-                            });
+                            accumulated_tool_calls.insert(
+                                i,
+                                AccumulatedToolCall {
+                                    id: tc.id.clone().unwrap_or_default(),
+                                    name: tc.function.name.clone(),
+                                    arguments: tc.function.arguments.clone(),
+                                },
+                            );
                         }
                     }
                     Err(e) => {
@@ -159,7 +172,12 @@ pub async fn run_direct_api_agent(
                         let delay = Duration::from_secs(2u64.pow(attempt as u32));
                         let _ = app_handle.emit(
                             "ai-thinking",
-                            format!("\n[连接中断，{}秒后重试 ({}/{})]\n", delay.as_secs(), attempt, MAX_STREAM_RETRIES),
+                            format!(
+                                "\n[连接中断，{}秒后重试 ({}/{})]\n",
+                                delay.as_secs(),
+                                attempt,
+                                MAX_STREAM_RETRIES
+                            ),
                         );
                         tokio::time::sleep(delay).await;
                     }
@@ -174,8 +192,11 @@ pub async fn run_direct_api_agent(
                     {
                         Ok(res) => res,
                         Err(e) => {
-                            if attempt < MAX_STREAM_RETRIES - 1 { continue; }
-                            send_error(&app_handle, format!("API 请求失败: {e}"), &full_thinking).await;
+                            if attempt < MAX_STREAM_RETRIES - 1 {
+                                continue;
+                            }
+                            send_error(&app_handle, format!("API 请求失败: {e}"), &full_thinking)
+                                .await;
                             return;
                         }
                     };
@@ -192,12 +213,18 @@ pub async fn run_direct_api_agent(
                             return;
                         }
 
-                        let chunk_res = match tokio::time::timeout(Duration::from_secs(25), stream.next()).await {
+                        let chunk_res = match tokio::time::timeout(
+                            Duration::from_secs(25),
+                            stream.next(),
+                        )
+                        .await
+                        {
                             Ok(Some(chunk_res)) => chunk_res,
                             Ok(None) => break,
                             Err(_) => {
                                 // 超时：如果有部分内容，保留它而非丢弃
-                                if !turn_text.trim().is_empty() || !full_thinking.trim().is_empty() {
+                                if !turn_text.trim().is_empty() || !full_thinking.trim().is_empty()
+                                {
                                     break;
                                 }
                                 send_error(
@@ -215,7 +242,9 @@ pub async fn run_direct_api_agent(
                             Err(e) => {
                                 let message = e.to_string();
                                 if is_recoverable_stream_error(&message) {
-                                    if !turn_text.trim().is_empty() || !full_thinking.trim().is_empty() {
+                                    if !turn_text.trim().is_empty()
+                                        || !full_thinking.trim().is_empty()
+                                    {
                                         // 有内容 -> 恢复
                                         break;
                                     }
@@ -224,10 +253,16 @@ pub async fn run_direct_api_agent(
                                     break;
                                 }
                                 // 非可恢复错误：如果有部分内容，保留它而非丢弃
-                                if !turn_text.trim().is_empty() || !full_thinking.trim().is_empty() {
+                                if !turn_text.trim().is_empty() || !full_thinking.trim().is_empty()
+                                {
                                     break;
                                 }
-                                send_error(&app_handle, format!("流式读取失败: {message}"), &full_thinking).await;
+                                send_error(
+                                    &app_handle,
+                                    format!("流式读取失败: {message}"),
+                                    &full_thinking,
+                                )
+                                .await;
                                 return;
                             }
                         };
@@ -242,30 +277,44 @@ pub async fn run_direct_api_agent(
                                 break;
                             }
 
+                            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&data) {
+                                if let Some(message) = api_error_message_from_value(&value) {
+                                    send_error(&app_handle, message, &full_thinking).await;
+                                    return;
+                                }
+                            }
+
                             if config.api_mode == "responses" {
                                 // ===== Responses API 流式解析 =====
-                                let data_value: serde_json::Value = match serde_json::from_str(&data) {
-                                    Ok(v) => v,
-                                    Err(_) => continue,
-                                };
+                                let data_value: serde_json::Value =
+                                    match serde_json::from_str(&data) {
+                                        Ok(v) => v,
+                                        Err(_) => continue,
+                                    };
                                 match event_type.as_str() {
                                     "response.output_item.added" => {
                                         // 记录输出项类型（保留用于后续扩展）
                                     }
                                     "response.output_text.delta" => {
-                                        if let Some(text) = data_value.get("delta").and_then(|d| d.as_str()) {
+                                        if let Some(text) =
+                                            data_value.get("delta").and_then(|d| d.as_str())
+                                        {
                                             if !text.is_empty() {
                                                 turn_text.push_str(text);
                                                 full_text.push_str(text);
                                                 let _ = app_handle.emit(
                                                     "ai-answer-delta",
-                                                    AnswerDeltaPayload { text: text.to_string() },
+                                                    AnswerDeltaPayload {
+                                                        text: text.to_string(),
+                                                    },
                                                 );
                                             }
                                         }
                                     }
                                     "response.reasoning_summary_text.delta" => {
-                                        if let Some(text) = data_value.get("delta").and_then(|d| d.as_str()) {
+                                        if let Some(text) =
+                                            data_value.get("delta").and_then(|d| d.as_str())
+                                        {
                                             if !text.is_empty() {
                                                 full_thinking.push_str(text);
                                                 append_active_thinking(&state, text);
@@ -274,60 +323,80 @@ pub async fn run_direct_api_agent(
                                         }
                                     }
                                     "response.function_call_arguments.delta" => {
-                                        let idx = data_value.get("output_index")
+                                        let idx = data_value
+                                            .get("output_index")
                                             .and_then(|i| i.as_u64())
-                                            .unwrap_or(0) as usize;
-                                        if let Some(delta) = data_value.get("delta").and_then(|d| d.as_str()) {
-                                            let entry = accumulated_tool_calls.entry(idx).or_insert(
-                                                AccumulatedToolCall {
+                                            .unwrap_or(0)
+                                            as usize;
+                                        if let Some(delta) =
+                                            data_value.get("delta").and_then(|d| d.as_str())
+                                        {
+                                            let entry = accumulated_tool_calls
+                                                .entry(idx)
+                                                .or_insert(AccumulatedToolCall {
                                                     id: String::new(),
                                                     name: String::new(),
                                                     arguments: String::new(),
-                                                },
-                                            );
+                                                });
                                             entry.arguments.push_str(delta);
                                         }
                                     }
                                     "response.function_call_arguments.done" => {
-                                        let idx = data_value.get("output_index")
+                                        let idx = data_value
+                                            .get("output_index")
                                             .and_then(|i| i.as_u64())
-                                            .unwrap_or(0) as usize;
-                                        if let Some(args) = data_value.get("arguments").and_then(|a| a.as_str()) {
-                                            let entry = accumulated_tool_calls.entry(idx).or_insert(
-                                                AccumulatedToolCall {
+                                            .unwrap_or(0)
+                                            as usize;
+                                        if let Some(args) =
+                                            data_value.get("arguments").and_then(|a| a.as_str())
+                                        {
+                                            let entry = accumulated_tool_calls
+                                                .entry(idx)
+                                                .or_insert(AccumulatedToolCall {
                                                     id: String::new(),
                                                     name: String::new(),
                                                     arguments: String::new(),
-                                                },
-                                            );
+                                                });
                                             // done 事件包含完整参数，覆盖累积值
                                             entry.arguments = args.to_string();
                                         }
                                     }
                                     "response.output_item.done" => {
-                                        let idx = data_value.get("output_index")
+                                        let idx = data_value
+                                            .get("output_index")
                                             .and_then(|i| i.as_u64())
-                                            .unwrap_or(0) as usize;
+                                            .unwrap_or(0)
+                                            as usize;
                                         if let Some(item) = data_value.get("item") {
-                                            let item_type = item.get("type")
+                                            let item_type = item
+                                                .get("type")
                                                 .and_then(|t| t.as_str())
                                                 .unwrap_or("");
                                             if item_type == "function_call" {
-                                                let entry = accumulated_tool_calls.entry(idx).or_insert(
-                                                    AccumulatedToolCall {
+                                                let entry = accumulated_tool_calls
+                                                    .entry(idx)
+                                                    .or_insert(AccumulatedToolCall {
                                                         id: String::new(),
                                                         name: String::new(),
                                                         arguments: String::new(),
-                                                    },
-                                                );
-                                                if let Some(id) = item.get("call_id").and_then(|c| c.as_str())
-                                                    .or_else(|| item.get("id").and_then(|i| i.as_str())) {
+                                                    });
+                                                if let Some(id) = item
+                                                    .get("call_id")
+                                                    .and_then(|c| c.as_str())
+                                                    .or_else(|| {
+                                                        item.get("id").and_then(|i| i.as_str())
+                                                    })
+                                                {
                                                     entry.id = id.to_string();
                                                 }
-                                                if let Some(name) = item.get("name").and_then(|n| n.as_str()) {
+                                                if let Some(name) =
+                                                    item.get("name").and_then(|n| n.as_str())
+                                                {
                                                     entry.name = name.to_string();
                                                 }
-                                                if let Some(args) = item.get("arguments").and_then(|a| a.as_str()) {
+                                                if let Some(args) =
+                                                    item.get("arguments").and_then(|a| a.as_str())
+                                                {
                                                     entry.arguments = args.to_string();
                                                 }
                                             }
@@ -340,9 +409,12 @@ pub async fn run_direct_api_agent(
                                 }
                             } else {
                                 // ===== Chat Completions 流式解析 =====
-                                if let Ok(parsed) = serde_json::from_str::<ChatCompletionChunk>(&data) {
+                                if let Ok(parsed) =
+                                    serde_json::from_str::<ChatCompletionChunk>(&data)
+                                {
                                     if let Some(choice) = parsed.choices.first() {
-                                        if let Some(reasoning) = reasoning_delta_text(&choice.delta) {
+                                        if let Some(reasoning) = reasoning_delta_text(&choice.delta)
+                                        {
                                             full_thinking.push_str(&reasoning);
                                             append_active_thinking(&state, &reasoning);
                                             let _ = app_handle.emit("ai-thinking", reasoning);
@@ -351,19 +423,21 @@ pub async fn run_direct_api_agent(
                                         if let Some(ref text) = choice.delta.content {
                                             turn_text.push_str(text);
                                             full_text.push_str(text);
-                                            let _ = app_handle
-                                                .emit("ai-answer-delta", AnswerDeltaPayload { text: text.clone() });
+                                            let _ = app_handle.emit(
+                                                "ai-answer-delta",
+                                                AnswerDeltaPayload { text: text.clone() },
+                                            );
                                         }
 
                                         if let Some(ref tool_calls) = choice.delta.tool_calls {
                                             for tc in tool_calls {
-                                                let entry = accumulated_tool_calls.entry(tc.index).or_insert(
-                                                    AccumulatedToolCall {
+                                                let entry = accumulated_tool_calls
+                                                    .entry(tc.index)
+                                                    .or_insert(AccumulatedToolCall {
                                                         id: String::new(),
                                                         name: String::new(),
                                                         arguments: String::new(),
-                                                    },
-                                                );
+                                                    });
 
                                                 if let Some(ref id) = tc.id {
                                                     entry.id.push_str(id);
@@ -396,101 +470,124 @@ pub async fn run_direct_api_agent(
                 }
 
                 if !stream_success && turn_text.is_empty() && accumulated_tool_calls.is_empty() {
-                    send_error(&app_handle, "流式连接多次中断，无法获取响应".to_string(), &full_thinking).await;
+                    send_error(
+                        &app_handle,
+                        "流式连接多次中断，无法获取响应".to_string(),
+                        &full_thinking,
+                    )
+                    .await;
                     return;
                 }
 
                 // auto fallback: 如果 SSE 解析无内容，尝试将原始响应当作 JSON 解析
-                if turn_text.is_empty() && accumulated_tool_calls.is_empty() && !raw_buffer.is_empty() {
-                // HTML 响应检测
-                let buf_trimmed = raw_buffer.trim();
-                if buf_trimmed.starts_with("<!DOCTYPE") || buf_trimmed.starts_with("<!doctype")
-                    || buf_trimmed.starts_with("<html") || buf_trimmed.starts_with("<HTML")
+                if turn_text.is_empty()
+                    && accumulated_tool_calls.is_empty()
+                    && !raw_buffer.is_empty()
                 {
-                    send_error(
+                    if let Some(message) = api_error_message_from_sse_text(&raw_buffer) {
+                        send_error(&app_handle, message, &full_thinking).await;
+                        return;
+                    }
+                    // HTML 响应检测
+                    let buf_trimmed = raw_buffer.trim();
+                    if buf_trimmed.starts_with("<!DOCTYPE")
+                        || buf_trimmed.starts_with("<!doctype")
+                        || buf_trimmed.starts_with("<html")
+                        || buf_trimmed.starts_with("<HTML")
+                    {
+                        send_error(
                         &app_handle,
                         "API 返回了 HTML 页面而非 JSON 响应。请检查 Base URL 是否指向了正确的 API 端点（而非网关首页），以及 API Key 是否有效。".to_string(),
                         &full_thinking,
                     ).await;
-                    return;
-                }
+                        return;
+                    }
 
-                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw_buffer) {
-                    use crate::direct_api::api_client::ContentExtractor;
-                    
-                    // 提取内容
-                    if let Some(content) = ContentExtractor::extract_content(&value) {
-                        turn_text.push_str(&content);
-                        full_text.push_str(&content);
-                        let _ = app_handle.emit(
-                            "ai-answer-delta",
-                            AnswerDeltaPayload { text: content },
-                        );
-                    }
-                    
-                    // 提取工具调用
-                    let tool_calls = ContentExtractor::extract_tool_calls(&value);
-                    for (i, tc) in tool_calls.iter().enumerate() {
-                        accumulated_tool_calls.insert(i, AccumulatedToolCall {
-                            id: tc.id.clone().unwrap_or_default(),
-                            name: tc.function.name.clone(),
-                            arguments: tc.function.arguments.clone(),
-                        });
-                    }
-                    
-                    // 提取 reasoning
-                    if turn_text.is_empty() && accumulated_tool_calls.is_empty() {
-                        if let Some(reasoning) = ContentExtractor::extract_reasoning(&value) {
-                            full_thinking.push_str(&reasoning);
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw_buffer) {
+                        use crate::direct_api::api_client::ContentExtractor;
+
+                        // 提取内容
+                        if let Some(content) = ContentExtractor::extract_content(&value) {
+                            turn_text.push_str(&content);
+                            full_text.push_str(&content);
+                            let _ = app_handle
+                                .emit("ai-answer-delta", AnswerDeltaPayload { text: content });
+                        }
+
+                        // 提取工具调用
+                        let tool_calls = ContentExtractor::extract_tool_calls(&value);
+                        for (i, tc) in tool_calls.iter().enumerate() {
+                            accumulated_tool_calls.insert(
+                                i,
+                                AccumulatedToolCall {
+                                    id: tc.id.clone().unwrap_or_default(),
+                                    name: tc.function.name.clone(),
+                                    arguments: tc.function.arguments.clone(),
+                                },
+                            );
+                        }
+
+                        // 提取 reasoning
+                        if turn_text.is_empty() && accumulated_tool_calls.is_empty() {
+                            if let Some(reasoning) = ContentExtractor::extract_reasoning(&value) {
+                                full_thinking.push_str(&reasoning);
+                            }
                         }
                     }
-                }
-                
-                // 如果 JSON 解析也失败了，尝试从 raw_buffer 中提取 SSE data 行的文本内容
-                if turn_text.is_empty() && accumulated_tool_calls.is_empty() {
-                    let mut extracted_text = String::new();
-                    for line in raw_buffer.lines() {
-                        let line = line.trim();
-                        if let Some(data) = line.strip_prefix("data:") {
-                            let data = data.trim();
-                            if data == "[DONE]" { continue; }
-                            // 尝试解析 JSON，如果失败则跳过
-                            if let Ok(parsed) = serde_json::from_str::<ChatCompletionChunk>(data) {
-                                if let Some(choice) = parsed.choices.first() {
-                                    if let Some(ref text) = choice.delta.content {
-                                        extracted_text.push_str(text);
+
+                    // 如果 JSON 解析也失败了，尝试从 raw_buffer 中提取 SSE data 行的文本内容
+                    if turn_text.is_empty() && accumulated_tool_calls.is_empty() {
+                        let mut extracted_text = String::new();
+                        for line in raw_buffer.lines() {
+                            let line = line.trim();
+                            if let Some(data) = line.strip_prefix("data:") {
+                                let data = data.trim();
+                                if data == "[DONE]" {
+                                    continue;
+                                }
+                                // 尝试解析 JSON，如果失败则跳过
+                                if let Ok(parsed) =
+                                    serde_json::from_str::<ChatCompletionChunk>(data)
+                                {
+                                    if let Some(choice) = parsed.choices.first() {
+                                        if let Some(ref text) = choice.delta.content {
+                                            extracted_text.push_str(text);
+                                        }
                                     }
                                 }
                             }
                         }
+                        if !extracted_text.is_empty() {
+                            turn_text = extracted_text.clone();
+                            full_text.push_str(&extracted_text);
+                            let _ = app_handle.emit(
+                                "ai-answer-delta",
+                                AnswerDeltaPayload {
+                                    text: extracted_text,
+                                },
+                            );
+                        }
                     }
-                    if !extracted_text.is_empty() {
-                        turn_text = extracted_text.clone();
-                        full_text.push_str(&extracted_text);
-                        let _ = app_handle.emit(
-                            "ai-answer-delta",
-                            AnswerDeltaPayload { text: extracted_text },
-                        );
-                    }
-                }
 
-                // 策略4: 纯文本 fallback（raw_buffer 非空、非 HTML、非 JSON、且前面所有策略都没提取到内容）
-                if turn_text.is_empty() && accumulated_tool_calls.is_empty() {
-                    let buf_trimmed = raw_buffer.trim();
-                    if !buf_trimmed.is_empty()
-                        && !buf_trimmed.starts_with('<')
-                        && !buf_trimmed.starts_with('{')
-                        && !buf_trimmed.starts_with('[')
-                    {
-                        turn_text = buf_trimmed.to_string();
-                        full_text.push_str(buf_trimmed);
-                        let _ = app_handle.emit(
-                            "ai-answer-delta",
-                            AnswerDeltaPayload { text: buf_trimmed.to_string() },
-                        );
+                    // 策略4: 纯文本 fallback（raw_buffer 非空、非 HTML、非 JSON、且前面所有策略都没提取到内容）
+                    if turn_text.is_empty() && accumulated_tool_calls.is_empty() {
+                        let buf_trimmed = raw_buffer.trim();
+                        if !buf_trimmed.is_empty()
+                            && !buf_trimmed.starts_with('<')
+                            && !buf_trimmed.starts_with('{')
+                            && !buf_trimmed.starts_with('[')
+                        {
+                            turn_text = buf_trimmed.to_string();
+                            full_text.push_str(buf_trimmed);
+                            let _ = app_handle.emit(
+                                "ai-answer-delta",
+                                AnswerDeltaPayload {
+                                    text: buf_trimmed.to_string(),
+                                },
+                            );
+                        }
                     }
                 }
-            }
             } // end of "auto" | _ branch
         }
 
@@ -503,8 +600,11 @@ pub async fn run_direct_api_agent(
             break;
         }
 
+        let mut ordered_tool_calls = accumulated_tool_calls.into_iter().collect::<Vec<_>>();
+        ordered_tool_calls.sort_by_key(|(index, _)| *index);
+
         let mut assistant_tool_calls_json = Vec::new();
-        for (_, tc) in &accumulated_tool_calls {
+        for (_, tc) in &ordered_tool_calls {
             assistant_tool_calls_json.push(json!({
                 "id": tc.id,
                 "type": "function",
@@ -521,7 +621,7 @@ pub async fn run_direct_api_agent(
             "tool_calls": assistant_tool_calls_json
         }));
 
-        for (_, tc) in accumulated_tool_calls {
+        for (_, tc) in ordered_tool_calls {
             let tc_id = if tc.id.is_empty() {
                 format!("tool_{}_{}", tc.name, crate::unix_now())
             } else {
@@ -575,6 +675,13 @@ pub async fn run_direct_api_agent(
                 approved_tool_types.contains(&tc_name)
             };
             let requires_confirm = mode_requires_confirmation(&config, &tc_name, already_approved);
+            let focus_snapshot = if requires_confirm
+                && crate::computer_use::should_restore_focus_after_confirmation(&tc_name)
+            {
+                crate::computer_use::capture_foreground_window().await
+            } else {
+                None
+            };
 
             let approved = if requires_confirm {
                 request_tool_confirmation(
@@ -592,6 +699,9 @@ pub async fn run_direct_api_agent(
             };
 
             let tool_output = if approved {
+                if focus_snapshot.is_some() {
+                    crate::computer_use::restore_foreground_window(focus_snapshot.as_ref()).await;
+                }
                 emit_tool_event(
                     &app_handle,
                     &tc_id,
@@ -602,62 +712,19 @@ pub async fn run_direct_api_agent(
                     Some(true),
                 );
                 let output = execute_tool(&tc_name, &tc_args, &config.search_provider).await;
+                let output_for_event = tool_output_for_log(&output);
                 emit_tool_event(
                     &app_handle,
                     &tc_id,
                     &tc_name,
                     "completed",
                     &tc_args,
-                    Some(&output),
+                    Some(&output_for_event),
                     Some(true),
                 );
 
                 if tc_name == "create_scheduled_task" || tc_name == "list_scheduled_tasks" {
                     let _ = app_handle.emit("scheduled-tasks-changed", json!({}));
-                }
-
-                if tc_name == "open_app" {
-                    let success = output.contains("已启动");
-                    let app_name = tc_args["app"].as_str().unwrap_or("应用");
-                    let reply_text = if success {
-                        format!("已成功为您打开了：{}！🐾", app_name)
-                    } else {
-                        format!("未能打开 {}：{}", app_name, output)
-                    };
-
-                    let _ = app_handle.emit(
-                        "ai-finished",
-                        crate::AiFinishedPayload {
-                            text: reply_text.clone(),
-                            thinking: if full_thinking.is_empty() {
-                                None
-                            } else {
-                                Some(full_thinking.clone())
-                            },
-                        },
-                    );
-
-                    let db = state.db.lock().await;
-                    let _ = db.save_message_with_thinking(
-                        "assistant",
-                        &reply_text,
-                        if full_thinking.is_empty() {
-                            None
-                        } else {
-                            Some(&full_thinking)
-                        },
-                    );
-                    drop(db);
-
-                    {
-                        let mut behavior = state.behavior.lock().await;
-                        behavior.set_state(crate::behavior::PetState::Speaking);
-                        behavior.mood.update(Some(0.05), None);
-                    }
-                    if let Ok(mut active) = state.active_chat.lock() {
-                        active.active = None;
-                    }
-                    return;
                 }
 
                 output
@@ -666,11 +733,14 @@ pub async fn run_direct_api_agent(
                     .to_string()
             };
 
-            let output_display = format!("[执行结果]\n{}\n", tool_output);
+            let output_for_log = tool_output_for_log(&tool_output);
+            let output_for_message = tool_output_for_message(&tool_output);
+            let output_display = format!("[执行结果]\n{}\n", output_for_log);
             full_thinking.push_str(&output_display);
             append_active_thinking(&state, &output_display);
             let _ = app_handle.emit("ai-thinking", &output_display);
-            push_tool_message(&mut api_messages, &tc_id, &tc_name, &tool_output);
+            push_tool_message(&mut api_messages, &tc_id, &tc_name, &output_for_message);
+            append_visual_tool_message(&mut api_messages, &tc_name, &tool_output);
         }
     }
 
@@ -719,10 +789,10 @@ pub async fn run_direct_api_agent(
 
     let _ = app_handle.emit(
         "ai-finished",
-        json!({
-            "text": full_text,
-            "thinking": if full_thinking.is_empty() { None } else { Some(full_thinking) }
-        }),
+        crate::AiFinishedPayload {
+            text: full_text,
+            thinking: if full_thinking.is_empty() { None } else { Some(full_thinking) },
+        },
     );
 }
 
@@ -772,6 +842,99 @@ fn append_attachment_warnings(message: &str, warnings: &[String]) -> String {
     }
 
     format!("{}\n\n[系统提示：{}]", message, warnings.join("；"))
+}
+
+fn assistant_history_content_for_context(content: &str, thinking: Option<&str>) -> String {
+    let Some(thinking) = thinking else {
+        return content.to_string();
+    };
+    if content.contains("工具进度摘要") {
+        return content.to_string();
+    }
+    let should_restore_progress = content.contains("[执行中断]")
+        || content.contains("[思考中，已被中止]")
+        || content.contains("已达到最大迭代限制")
+        || content.contains("⚠️");
+    if !should_restore_progress {
+        return content.to_string();
+    }
+    let Some(progress) = compact_execution_progress_for_context(thinking) else {
+        return content.to_string();
+    };
+    format!("{content}\n\n[上次工具进度摘要]\n{progress}")
+}
+
+fn turn_limit_message(limit: u32, thinking: &str) -> String {
+    let mut message = format!(
+        "\n[已达到最大迭代限制 {limit} 轮，已保存当前工具进度。请直接发送“继续”，AI 会根据进度和新的屏幕状态接着执行。]"
+    );
+    if let Some(progress) = compact_execution_progress_for_context(thinking) {
+        message.push_str("\n\n[当前工具进度摘要]\n");
+        message.push_str(&progress);
+    }
+    message
+}
+
+fn interrupted_message_with_progress(base: &str, thinking: &str) -> String {
+    if base.contains("工具进度摘要") {
+        return base.to_string();
+    }
+    let Some(progress) = compact_execution_progress_for_context(thinking) else {
+        return base.to_string();
+    };
+    format!("{base}\n\n[当前工具进度摘要]\n{progress}")
+}
+
+fn compact_execution_progress_for_context(thinking: &str) -> Option<String> {
+    const MAX_PROGRESS_CHARS: usize = 8000;
+    let mut lines = Vec::new();
+    let mut capture_remaining = 0usize;
+
+    for raw_line in thinking.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let starts_block = line.starts_with("[调用工具]")
+            || line.starts_with("[执行结果]")
+            || line.starts_with("[计划模式未执行]")
+            || line.starts_with("[等待授权]")
+            || line.starts_with("[用户已授权")
+            || line.starts_with("[用户拒绝")
+            || line.starts_with("[确认超时")
+            || line.starts_with("[授权通道");
+
+        if starts_block {
+            lines.push(line.to_string());
+            capture_remaining = if line.starts_with("[执行结果]") { 12 } else { 8 };
+            continue;
+        }
+
+        if capture_remaining > 0 {
+            lines.push(line.to_string());
+            capture_remaining -= 1;
+        }
+    }
+
+    if lines.is_empty() {
+        return None;
+    }
+
+    let progress = lines.join("\n");
+    Some(compact_tail_chars(&progress, MAX_PROGRESS_CHARS))
+}
+
+fn compact_tail_chars(input: &str, max_chars: usize) -> String {
+    let char_count = input.chars().count();
+    if char_count <= max_chars {
+        return input.to_string();
+    }
+    let tail = input
+        .chars()
+        .skip(char_count.saturating_sub(max_chars))
+        .collect::<String>();
+    format!("... [已省略较早工具进度]\n{tail}")
 }
 
 async fn attachment_to_image_url(attachment: &UserAttachment) -> Result<String, String> {
@@ -1040,6 +1203,82 @@ fn push_tool_message(
     }));
 }
 
+fn tool_output_for_log(output: &str) -> String {
+    redact_visual_payload(output).unwrap_or_else(|| output.to_string())
+}
+
+fn tool_output_for_message(output: &str) -> String {
+    redact_visual_payload(output).unwrap_or_else(|| output.to_string())
+}
+
+fn redact_visual_payload(output: &str) -> Option<String> {
+    let mut value = serde_json::from_str::<Value>(output).ok()?;
+    let image_url = value
+        .get("image_url")
+        .and_then(|item| item.as_str())
+        .filter(|item| item.starts_with("data:image/"))?;
+
+    let image_bytes = image_url.len();
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "image_url".to_string(),
+            json!(format!(
+                "[attached image omitted: {image_bytes} bytes data URL]"
+            )),
+        );
+        object.insert("image_attached".to_string(), json!(true));
+    }
+
+    serde_json::to_string_pretty(&value).ok()
+}
+
+fn append_visual_tool_message(
+    api_messages: &mut Vec<serde_json::Value>,
+    tool_name: &str,
+    output: &str,
+) {
+    if !matches!(tool_name, "computer_screenshot" | "browser_snapshot") {
+        return;
+    }
+
+    let Ok(value) = serde_json::from_str::<Value>(output) else {
+        return;
+    };
+    let Some(image_url) = value.get("image_url").and_then(|item| item.as_str()) else {
+        return;
+    };
+    if !image_url.starts_with("data:image/") {
+        return;
+    }
+
+    let summary = value
+        .get("summary")
+        .and_then(|item| item.as_str())
+        .unwrap_or("Screenshot captured.");
+    let width = value
+        .get("width")
+        .and_then(|item| item.as_i64())
+        .unwrap_or(0);
+    let height = value
+        .get("height")
+        .and_then(|item| item.as_i64())
+        .unwrap_or(0);
+
+    api_messages.push(json!({
+        "role": "user",
+        "content": [
+            {
+                "type": "text",
+                "text": format!("{summary}\nUse this screenshot to decide the next UI action. Original screen size: {width}x{height}.")
+            },
+            {
+                "type": "image_url",
+                "image_url": { "url": image_url }
+            }
+        ]
+    }));
+}
+
 fn mode_requires_confirmation(
     config: &DirectApiConfig,
     tool_name: &str,
@@ -1048,10 +1287,26 @@ fn mode_requires_confirmation(
     if already_approved {
         return false;
     }
+    if config.execution_mode == "unreviewed" {
+        return false;
+    }
+    if matches!(
+        tool_name,
+        "computer_mouse"
+            | "computer_keyboard"
+            | "window_focus"
+            | "browser_open"
+            | "browser_navigate"
+    ) {
+        return true;
+    }
     // read_file、web_search 和 list_scheduled_tasks 为安全/只读工具，在任何模式下均不需要弹窗确认；
     // 敏感工具如 run_command 和 open_app 需要等待确认（open_app 启动本地应用，具有敏感性）。
-    if tool_name == "read_file" || tool_name == "web_search" || tool_name == "list_scheduled_tasks"
-        || tool_name == "search_memory" || tool_name == "save_memory"
+    if tool_name == "read_file"
+        || tool_name == "web_search"
+        || tool_name == "list_scheduled_tasks"
+        || tool_name == "search_memory"
+        || tool_name == "save_memory"
     {
         return false;
     }
@@ -1112,6 +1367,13 @@ fn tool_command(tool_name: &str, args: &serde_json::Value) -> Option<String> {
                 Some(format!("{app} {extra}"))
             }
         }
+        "computer_mouse" => args["action"].as_str().map(|action| action.to_string()),
+        "computer_keyboard" => args["action"].as_str().map(|action| action.to_string()),
+        "browser_open" | "browser_navigate" => args["url"].as_str().map(|url| url.to_string()),
+        "window_focus" => args["title"]
+            .as_str()
+            .map(|value| value.to_string())
+            .or_else(|| args["pid"].as_i64().map(|pid| format!("pid {pid}"))),
         _ => None,
     }
 }
@@ -1121,6 +1383,8 @@ fn tool_path(tool_name: &str, args: &serde_json::Value) -> Option<String> {
         "read_file" | "write_file" | "list_directory" => {
             args["path"].as_str().map(|value| value.to_string())
         }
+        "file_search" => args["directory"].as_str().map(|value| value.to_string()),
+        "browser_open" | "browser_navigate" => args["url"].as_str().map(|value| value.to_string()),
         _ => None,
     }
 }
@@ -1140,6 +1404,21 @@ fn tool_summary(tool_name: &str, args: &serde_json::Value) -> String {
         }
         "web_search" => format!("搜索网页 {}", args["query"].as_str().unwrap_or("未知查询")),
         "open_app" => format!("打开应用 {}", args["app"].as_str().unwrap_or("未知应用")),
+        "computer_screenshot" => "查看桌面截图".to_string(),
+        "computer_mouse" => format!("控制鼠标 {}", args["action"].as_str().unwrap_or("unknown")),
+        "computer_keyboard" => format!("输入键盘 {}", args["action"].as_str().unwrap_or("unknown")),
+        "computer_wait" => format!("等待 {} ms", args["ms"].as_i64().unwrap_or(500)),
+        "window_list" => "列出桌面窗口".to_string(),
+        "window_focus" => {
+            if let Some(title) = args["title"].as_str() {
+                format!("聚焦窗口 {title}")
+            } else {
+                format!("聚焦窗口 pid {}", args["pid"].as_i64().unwrap_or(0))
+            }
+        }
+        "browser_open" => format!("打开浏览器 {}", args["url"].as_str().unwrap_or("默认首页")),
+        "browser_navigate" => format!("浏览器导航 {}", args["url"].as_str().unwrap_or("未知 URL")),
+        "browser_snapshot" => "查看浏览器截图".to_string(),
         "create_scheduled_task" => {
             format!(
                 "创建定时任务 {}",
@@ -1154,6 +1433,13 @@ fn tool_summary(tool_name: &str, args: &serde_json::Value) -> String {
             args["key"].as_str().unwrap_or("无标题")
         ),
         "delete_memory" => format!("删除记忆 #{}", args["id"].as_i64().unwrap_or(0)),
+        "file_search" => format!(
+            "搜索文件 '{}'{}",
+            args["pattern"].as_str().unwrap_or("*"),
+            args["directory"].as_str()
+                .map(|d| format!(" 在 {}", d))
+                .unwrap_or_default()
+        ),
         _ => format!("调用工具 {tool_name}"),
     }
 }
@@ -1166,6 +1452,21 @@ async fn send_error(app_handle: &tauri::AppHandle, err_msg: String, full_thinkin
     let mut behavior = state.behavior.lock().await;
     behavior.set_state(crate::behavior::PetState::Confused);
     drop(behavior);
+
+    {
+        let saved_text =
+            interrupted_message_with_progress(&format!("[执行中断] {err_msg}"), full_thinking);
+        let db = state.db.lock().await;
+        let _ = db.save_message_with_thinking(
+            "assistant",
+            &saved_text,
+            if full_thinking.trim().is_empty() {
+                None
+            } else {
+                Some(full_thinking)
+            },
+        );
+    }
 
     let _ = app_handle.emit(
         "ai-error",
@@ -1189,10 +1490,19 @@ async fn send_aborted(app_handle: &tauri::AppHandle, full_text: &str, full_think
     // 有部分内容时保存到数据库，使"继续"时 AI 能接续
     if !full_text.trim().is_empty() || !full_thinking.trim().is_empty() {
         let db = state.db.lock().await;
+        let saved_text = if full_text.trim().is_empty() {
+            interrupted_message_with_progress("[思考中，已被中止]", full_thinking)
+        } else {
+            interrupted_message_with_progress(full_text, full_thinking)
+        };
         let _ = db.save_message_with_thinking(
             "assistant",
-            if full_text.trim().is_empty() { "[思考中，已被中止]" } else { full_text },
-            if full_thinking.trim().is_empty() { None } else { Some(full_thinking) },
+            &saved_text,
+            if full_thinking.trim().is_empty() {
+                None
+            } else {
+                Some(full_thinking)
+            },
         );
     }
 
@@ -1288,5 +1598,73 @@ mod tests {
     #[test]
     fn connection_reset_is_recoverable() {
         assert!(is_recoverable_stream_error("connection reset by peer"));
+    }
+
+    #[test]
+    fn unreviewed_mode_does_not_force_computer_use_confirmation() {
+        let mut config = DirectApiConfig::default();
+        config.execution_mode = "unreviewed".to_string();
+
+        assert!(!mode_requires_confirmation(
+            &config,
+            "computer_keyboard",
+            false
+        ));
+        assert!(!mode_requires_confirmation(
+            &config,
+            "computer_mouse",
+            false
+        ));
+    }
+
+    #[test]
+    fn approved_computer_use_tool_is_not_reconfirmed() {
+        let mut config = DirectApiConfig::default();
+        config.execution_mode = "normal".to_string();
+
+        assert!(mode_requires_confirmation(
+            &config,
+            "computer_keyboard",
+            false
+        ));
+        assert!(!mode_requires_confirmation(
+            &config,
+            "computer_keyboard",
+            true
+        ));
+    }
+
+    #[test]
+    fn history_context_includes_compact_tool_progress() {
+        let thinking = r#"
+private reasoning that should not be replayed
+[调用工具] 打开应用 notepad
+{
+  "app": "notepad"
+}
+[执行结果]
+{
+  "ok": true,
+  "summary": "已启动: notepad (notepad.exe)"
+}
+"#;
+
+        let content = assistant_history_content_for_context("[执行中断] 测试", Some(thinking));
+
+        assert!(content.contains("[上次工具进度摘要]"));
+        assert!(content.contains("[调用工具] 打开应用 notepad"));
+        assert!(content.contains("已启动: notepad"));
+        assert!(!content.contains("private reasoning"));
+    }
+
+    #[test]
+    fn turn_limit_message_keeps_progress_for_continue() {
+        let thinking = "[调用工具] 查看桌面截图\n{}\n[执行结果]\n{\"summary\":\"Screenshot captured\"}";
+        let message = turn_limit_message(160, thinking);
+
+        assert!(message.contains("已达到最大迭代限制 160 轮"));
+        assert!(message.contains("继续"));
+        assert!(message.contains("[当前工具进度摘要]"));
+        assert!(message.contains("Screenshot captured"));
     }
 }

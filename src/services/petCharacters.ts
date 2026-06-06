@@ -1,6 +1,6 @@
 import daimaoVideoUrl from "../assets/pets/daimao-batiao/daimao-batiao.mp4?url";
 
-export type PetCharacterId = "classic" | "daimao-batiao";
+export type PetCharacterId = "classic" | "daimao-batiao" | "custom-pixel";
 
 export type PetCharacter = {
   id: PetCharacterId;
@@ -21,6 +21,11 @@ export const PET_CHARACTERS: PetCharacter[] = [
     name: "呆猫八条",
     description: "透明主体素材随机变换",
   },
+  {
+    id: "custom-pixel",
+    name: "自定义像素",
+    description: "上传图片生成个人像素桌宠",
+  },
 ];
 
 const daimaoStillModules = import.meta.glob("../assets/pets/daimao-batiao/stills/*.png", {
@@ -36,6 +41,7 @@ export const DAIMAO_BATIAO_STILLS = Object.entries(daimaoStillModules)
 export const DAIMAO_BATIAO_VIDEO_URL = daimaoVideoUrl;
 
 export function resolvePetCharacterId(value: unknown): PetCharacterId {
+  if (value === "custom-pixel") return "custom-pixel";
   return value === "daimao-batiao" ? "daimao-batiao" : "classic";
 }
 

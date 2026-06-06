@@ -136,7 +136,10 @@ impl SseParser {
             let line = self.buffer[..newline_pos].trim().to_string();
             self.buffer.drain(..=newline_pos);
 
-            if let Some(event) = line.strip_prefix("event:") {
+            if line.is_empty() {
+                // SSE 事件边界：空行表示事件结束，此时清除 event_type
+                self.current_event.clear();
+            } else if let Some(event) = line.strip_prefix("event:") {
                 self.current_event = event.trim().to_string();
             } else if let Some(data) = line.strip_prefix("data:") {
                 let data_str = data.trim().to_string();
@@ -145,7 +148,6 @@ impl SseParser {
                 } else if !data_str.is_empty() {
                     results.push((self.current_event.clone(), data_str));
                 }
-                self.current_event.clear();
             }
         }
 
@@ -153,12 +155,165 @@ impl SseParser {
     }
 }
 
+pub fn api_error_message_from_value(value: &Value) -> Option<String> {
+    let error = value.get("error")?;
+    let (raw_message, error_type, code) = match error {
+        Value::String(message) => (message.as_str(), None, None),
+        Value::Object(map) => {
+            let message = map
+                .get("message")
+                .and_then(|item| item.as_str())
+                .unwrap_or("上游 API 返回错误");
+            let error_type = map.get("type").and_then(|item| item.as_str());
+            let code = map.get("code").and_then(|item| item.as_str());
+            (message, error_type, code)
+        }
+        _ => return Some("上游 API 返回了无法识别的错误格式。".to_string()),
+    };
+
+    let cleaned = clean_api_error_text(raw_message);
+    let mut message = if looks_like_html(raw_message) {
+        format!(
+            "上游返回了 HTML 错误页而不是 API JSON/SSE：{}。这通常表示上游网关、Cloudflare、Base URL、API Key 或网络代理异常。",
+            cleaned
+        )
+    } else {
+        format!("上游 API 错误：{}", cleaned)
+    };
+
+    let details = [("type", error_type), ("code", code)]
+        .into_iter()
+        .filter_map(|(label, value)| value.map(|value| format!("{label}: {value}")))
+        .collect::<Vec<_>>();
+    if !details.is_empty() {
+        message.push_str(&format!(" ({})", details.join(", ")));
+    }
+
+    Some(message)
+}
+
+pub fn api_error_message_from_sse_text(text: &str) -> Option<String> {
+    let mut sse = SseParser::new();
+    let mut input = text.to_string();
+    if !input.ends_with('\n') {
+        input.push('\n');
+    }
+    for (_event, data) in sse.push(&input) {
+        if data == "[DONE]" {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(&data) else {
+            continue;
+        };
+        if let Some(message) = api_error_message_from_value(&value) {
+            return Some(message);
+        }
+    }
+    None
+}
+
+fn clean_api_error_text(text: &str) -> String {
+    let cleaned = if looks_like_html(text) {
+        html_to_text(text)
+    } else {
+        collapse_whitespace(text)
+    };
+
+    truncate_chars(
+        cleaned
+            .trim()
+            .trim_matches('"')
+            .trim()
+            .trim_end_matches('.'),
+        360,
+    )
+}
+
+fn looks_like_html(text: &str) -> bool {
+    let trimmed = text.trim_start().to_ascii_lowercase();
+    trimmed.starts_with("<!doctype")
+        || trimmed.starts_with("<html")
+        || trimmed.starts_with("<head")
+        || trimmed.starts_with("<body")
+        || (trimmed.starts_with('<') && trimmed.contains("</html>"))
+}
+
+fn html_to_text(html: &str) -> String {
+    let without_scripts = remove_html_block(html, "script");
+    let without_styles = remove_html_block(&without_scripts, "style");
+    let mut text = String::new();
+    let mut in_tag = false;
+    for ch in without_styles.chars() {
+        match ch {
+            '<' => {
+                in_tag = true;
+                text.push(' ');
+            }
+            '>' => {
+                in_tag = false;
+                text.push(' ');
+            }
+            _ if !in_tag => text.push(ch),
+            _ => {}
+        }
+    }
+
+    collapse_whitespace(&decode_basic_html_entities(&text))
+}
+
+fn remove_html_block(input: &str, tag: &str) -> String {
+    let mut output = String::new();
+    let mut cursor = 0;
+    let lower = input.to_ascii_lowercase();
+    let open = format!("<{tag}");
+    let close = format!("</{tag}>");
+
+    while let Some(relative_start) = lower[cursor..].find(&open) {
+        let start = cursor + relative_start;
+        output.push_str(&input[cursor..start]);
+        let Some(relative_end) = lower[start..].find(&close) else {
+            cursor = input.len();
+            break;
+        };
+        cursor = start + relative_end + close.len();
+    }
+
+    output.push_str(&input[cursor..]);
+    output
+}
+
+fn decode_basic_html_entities(text: &str) -> String {
+    text.replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+}
+
+fn collapse_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    let mut chars = text.chars();
+    let mut truncated = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        truncated.push_str("...");
+    }
+    truncated
+}
+
 /// 检查 URL 是否包含 API 版本路径 (/v1, /v2, /v3)
 /// 精确匹配 /v1/, /v2/, /v3/ 或以 /v1, /v2, /v3 结尾
 fn has_api_version_path(url: &str) -> bool {
     let lower = url.to_lowercase();
-    lower.contains("/v1/") || lower.contains("/v2/") || lower.contains("/v3/")
-        || lower.ends_with("/v1") || lower.ends_with("/v2") || lower.ends_with("/v3")
+    lower.contains("/v1/")
+        || lower.contains("/v2/")
+        || lower.contains("/v3/")
+        || lower.ends_with("/v1")
+        || lower.ends_with("/v2")
+        || lower.ends_with("/v3")
 }
 
 /// 智能构建 API 端点 URL
@@ -215,7 +370,10 @@ pub fn convert_messages_to_responses_input(messages: &[Value]) -> Vec<Value> {
 
         match role {
             "system" | "developer" => {
-                let content = msg.get("content").cloned().unwrap_or(Value::String(String::new()));
+                let content = msg
+                    .get("content")
+                    .cloned()
+                    .unwrap_or(Value::String(String::new()));
                 input.push(json!({
                     "type": "message",
                     "role": "developer",
@@ -244,11 +402,13 @@ pub fn convert_messages_to_responses_input(messages: &[Value]) -> Vec<Value> {
                 if let Some(tool_calls) = msg.get("tool_calls").and_then(|tc| tc.as_array()) {
                     for tc in tool_calls {
                         let id = tc.get("id").and_then(|i| i.as_str()).unwrap_or("");
-                        let name = tc.get("function")
+                        let name = tc
+                            .get("function")
                             .and_then(|f| f.get("name"))
                             .and_then(|n| n.as_str())
                             .unwrap_or("");
-                        let arguments = tc.get("function")
+                        let arguments = tc
+                            .get("function")
                             .and_then(|f| f.get("arguments"))
                             .and_then(|a| a.as_str())
                             .unwrap_or("{}");
@@ -263,7 +423,10 @@ pub fn convert_messages_to_responses_input(messages: &[Value]) -> Vec<Value> {
                 }
             }
             "tool" => {
-                let call_id = msg.get("tool_call_id").and_then(|i| i.as_str()).unwrap_or("");
+                let call_id = msg
+                    .get("tool_call_id")
+                    .and_then(|i| i.as_str())
+                    .unwrap_or("");
                 let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
                 input.push(json!({
                     "type": "function_call_output",
@@ -273,7 +436,10 @@ pub fn convert_messages_to_responses_input(messages: &[Value]) -> Vec<Value> {
             }
             _ => {
                 // user 等角色
-                let content = msg.get("content").cloned().unwrap_or(Value::String(String::new()));
+                let content = msg
+                    .get("content")
+                    .cloned()
+                    .unwrap_or(Value::String(String::new()));
                 input.push(json!({
                     "type": "message",
                     "role": role,
@@ -290,12 +456,14 @@ pub fn convert_messages_to_responses_input(messages: &[Value]) -> Vec<Value> {
 fn normalize_content_to_responses(content: Value) -> Vec<Value> {
     match content {
         Value::String(s) => vec![json!({"type": "input_text", "text": s})],
-        Value::Array(arr) => {
-            arr.into_iter().map(|part| {
+        Value::Array(arr) => arr
+            .into_iter()
+            .map(|part| {
                 let ptype = part.get("type").and_then(|t| t.as_str()).unwrap_or("text");
                 match ptype {
                     "image_url" => {
-                        let url = part.get("image_url")
+                        let url = part
+                            .get("image_url")
                             .and_then(|iu| iu.get("url"))
                             .and_then(|u| u.as_str())
                             .unwrap_or("");
@@ -306,8 +474,8 @@ fn normalize_content_to_responses(content: Value) -> Vec<Value> {
                         json!({"type": "input_text", "text": text})
                     }
                 }
-            }).collect()
-        }
+            })
+            .collect(),
         other => vec![json!({"type": "input_text", "text": other.to_string()})],
     }
 }
@@ -372,11 +540,22 @@ pub fn parse_responses_non_stream(value: &Value) -> NonStreamResult {
                     }
                 }
                 "function_call" => {
-                    let call_id = item.get("call_id").and_then(|c| c.as_str())
+                    let call_id = item
+                        .get("call_id")
+                        .and_then(|c| c.as_str())
                         .or_else(|| item.get("id").and_then(|i| i.as_str()))
-                        .unwrap_or("").to_string();
-                    let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
-                    let arguments = item.get("arguments").and_then(|a| a.as_str()).unwrap_or("{}").to_string();
+                        .unwrap_or("")
+                        .to_string();
+                    let name = item
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let arguments = item
+                        .get("arguments")
+                        .and_then(|a| a.as_str())
+                        .unwrap_or("{}")
+                        .to_string();
                     tool_calls.push(NonStreamToolCall {
                         id: Some(call_id),
                         r#type: "function".to_string(),
@@ -390,9 +569,16 @@ pub fn parse_responses_non_stream(value: &Value) -> NonStreamResult {
 
     let combined = content_parts.join("");
     NonStreamResult {
-        content: if combined.is_empty() { None } else { Some(combined) },
+        content: if combined.is_empty() {
+            None
+        } else {
+            Some(combined)
+        },
         tool_calls,
-        finish_reason: value.get("status").and_then(|s| s.as_str()).map(|s| s.to_string()),
+        finish_reason: value
+            .get("status")
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string()),
     }
 }
 
@@ -448,7 +634,11 @@ pub async fn call_chat_completions_stream(
             .text()
             .await
             .unwrap_or_else(|_| "无法读取错误详情".to_string());
-        return Err(format!("API 返回错误 ({}): {}", url, err_text));
+        return Err(format!(
+            "API 返回错误 ({}): {}",
+            url,
+            clean_api_error_text(&err_text)
+        ));
     }
 
     Ok(res)
@@ -506,7 +696,11 @@ pub async fn call_chat_completions_non_stream(
             .text()
             .await
             .unwrap_or_else(|_| "无法读取错误详情".to_string());
-        return Err(format!("API 返回错误 ({}): {}", url, err_text));
+        return Err(format!(
+            "API 返回错误 ({}): {}",
+            url,
+            clean_api_error_text(&err_text)
+        ));
     }
 
     // 先读取响应体为文本，以便调试和兼容多种格式
@@ -522,13 +716,11 @@ pub async fn call_chat_completions_non_stream(
 
     // HTML 响应检测（API 返回了登录页面或错误页面）
     let trimmed = response_text.trim();
-    if trimmed.starts_with("<!DOCTYPE") || trimmed.starts_with("<!doctype")
-        || trimmed.starts_with("<html") || trimmed.starts_with("<HTML")
-    {
-        return Err("API 返回了 HTML 页面而非 JSON 响应。这通常意味着：\n\
-            1. Base URL 配置不正确（应指向 API 端点，而非网关首页）\n\
-            2. API Key 无效或已过期\n\n\
-            请检查 Base URL 和 API Key 配置。".to_string());
+    if looks_like_html(trimmed) {
+        return Err(format!(
+            "API 返回了 HTML 页面而非 JSON 响应：{}。请检查 Base URL、API Key、上游网关或网络代理。",
+            clean_api_error_text(trimmed)
+        ));
     }
 
     // Responses API 模式：优先使用专用解析器
@@ -544,10 +736,14 @@ pub async fn call_chat_completions_non_stream(
 
     // 策略1: 直接 JSON 解析
     if let Ok(value) = serde_json::from_str::<Value>(&response_text) {
+        if let Some(message) = api_error_message_from_value(&value) {
+            return Err(message);
+        }
+
         let content = ContentExtractor::extract_content(&value);
         let tool_calls = ContentExtractor::extract_tool_calls(&value);
         let finish_reason = ContentExtractor::extract_finish_reason(&value);
-        
+
         if content.is_some() || !tool_calls.is_empty() {
             return Ok(NonStreamResult {
                 content,
@@ -555,7 +751,7 @@ pub async fn call_chat_completions_non_stream(
                 finish_reason,
             });
         }
-        
+
         // 检查是否只有 reasoning
         if ContentExtractor::extract_reasoning(&value).is_some() {
             return Err("接口只返回了 reasoning（思考过程），没有返回正文内容。请检查模型是否支持内容输出。".to_string());
@@ -568,31 +764,37 @@ pub async fn call_chat_completions_non_stream(
         let data_lines = sse.push(&response_text);
         let mut combined_content = String::new();
         let mut accumulated_tool_calls: HashMap<usize, NonStreamToolCall> = HashMap::new();
-    
+
         for (_event, data) in data_lines {
             if data == "[DONE]" {
                 continue;
+            }
+            if let Ok(value) = serde_json::from_str::<Value>(&data) {
+                if let Some(message) = api_error_message_from_value(&value) {
+                    return Err(message);
+                }
             }
             if let Ok(chunk) = serde_json::from_str::<ChatCompletionChunk>(&data) {
                 if let Some(choice) = chunk.choices.first() {
                     if let Some(ref text) = choice.delta.content {
                         combined_content.push_str(text);
                     }
-                    
+
                     // 处理 SSE 格式的 tool_calls
                     if let Some(ref tc_deltas) = choice.delta.tool_calls {
                         for tc in tc_deltas {
-                            let entry = accumulated_tool_calls.entry(tc.index).or_insert_with(|| {
-                                NonStreamToolCall {
-                                    id: None,
-                                    r#type: "function".to_string(),
-                                    function: NonStreamFunctionCall {
-                                        name: String::new(),
-                                        arguments: String::new(),
-                                    },
-                                }
-                            });
-                            
+                            let entry =
+                                accumulated_tool_calls.entry(tc.index).or_insert_with(|| {
+                                    NonStreamToolCall {
+                                        id: None,
+                                        r#type: "function".to_string(),
+                                        function: NonStreamFunctionCall {
+                                            name: String::new(),
+                                            arguments: String::new(),
+                                        },
+                                    }
+                                });
+
                             if let Some(ref id) = tc.id {
                                 entry.id = Some(id.clone());
                             }
@@ -617,9 +819,13 @@ pub async fn call_chat_completions_non_stream(
                 .collect();
             // 按 id 排序（如果有的话）
             tool_calls.sort_by(|a, b| a.id.cmp(&b.id));
-            
+
             return Ok(NonStreamResult {
-                content: if combined_content.is_empty() { None } else { Some(combined_content) },
+                content: if combined_content.is_empty() {
+                    None
+                } else {
+                    Some(combined_content)
+                },
                 tool_calls,
                 finish_reason: None,
             });
@@ -627,9 +833,9 @@ pub async fn call_chat_completions_non_stream(
     }
 
     // 策略3: 检查是否是纯文本响应（某些API可能返回纯文本）
-    if !response_text.trim().is_empty() 
-        && !response_text.trim().starts_with('{') 
-        && !response_text.trim().starts_with('[') 
+    if !response_text.trim().is_empty()
+        && !response_text.trim().starts_with('{')
+        && !response_text.trim().starts_with('[')
     {
         return Ok(NonStreamResult {
             content: Some(response_text.trim().to_string()),
@@ -641,11 +847,7 @@ pub async fn call_chat_completions_non_stream(
     // 所有策略失败，返回详细错误
     Err(format!(
         "接口返回了HTTP 200，但响应不是有效的JSON格式。响应内容预览: {}",
-        if response_text.len() > 200 {
-            format!("{}...", &response_text[..200])
-        } else {
-            response_text.clone()
-        }
+        truncate_chars(&response_text, 200)
     ))
 }
 
@@ -678,7 +880,11 @@ pub async fn list_models(
             .text()
             .await
             .unwrap_or_else(|_| "无法读取错误详情".to_string());
-        return Err(format!("获取模型列表失败 ({}): {}", status, err_text));
+        return Err(format!(
+            "获取模型列表失败 ({}): {}",
+            status,
+            clean_api_error_text(&err_text)
+        ));
     }
 
     let value = res
@@ -695,6 +901,35 @@ pub async fn list_models(
         Err("接口返回成功，但没有找到可用模型".to_string())
     } else {
         Ok(models)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_and_cleans_html_error_from_sse() {
+        let sse = r#"data: {"error":{"message":"<html><head><style>body{color:red}</style></head><body><p>Unable to load site</p><span>Please try again later.</span><script>window.bad=true</script></body></html>","type":"server_error","code":"upstream_error"}}"#;
+
+        let message = api_error_message_from_sse_text(sse).expect("sse error");
+
+        assert!(message.contains("Unable to load site"));
+        assert!(message.contains("Please try again later"));
+        assert!(message.contains("upstream_error"));
+        assert!(!message.contains("<html"));
+        assert!(!message.contains("body{color:red}"));
+        assert!(!message.contains("window.bad"));
+    }
+
+    #[test]
+    fn ignores_normal_sse_chunks_when_extracting_errors() {
+        let sse = r#"data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}
+
+data: [DONE]
+"#;
+
+        assert!(api_error_message_from_sse_text(sse).is_none());
     }
 }
 
@@ -868,7 +1103,7 @@ impl ContentExtractor {
     /// 提取工具调用（支持流式和非流式格式）
     pub fn extract_tool_calls(value: &Value) -> Vec<NonStreamToolCall> {
         let mut tool_calls = Vec::new();
-        
+
         if let Some(choices) = value.get("choices") {
             if let Some(first_choice) = choices.as_array().and_then(|arr| arr.first()) {
                 // 尝试 message.tool_calls（非流式格式）
@@ -878,12 +1113,14 @@ impl ContentExtractor {
                     .and_then(|tc| tc.as_array())
                 {
                     for tc in tc_array {
-                        if let Ok(tool_call) = serde_json::from_value::<NonStreamToolCall>(tc.clone()) {
+                        if let Ok(tool_call) =
+                            serde_json::from_value::<NonStreamToolCall>(tc.clone())
+                        {
                             tool_calls.push(tool_call);
                         }
                     }
                 }
-                
+
                 // 尝试 delta.tool_calls（流式格式，某些API可能在非流式中使用）
                 if tool_calls.is_empty() {
                     if let Some(tc_array) = first_choice
@@ -892,7 +1129,9 @@ impl ContentExtractor {
                         .and_then(|tc| tc.as_array())
                     {
                         for tc in tc_array {
-                            if let Ok(tool_call) = serde_json::from_value::<NonStreamToolCall>(tc.clone()) {
+                            if let Ok(tool_call) =
+                                serde_json::from_value::<NonStreamToolCall>(tc.clone())
+                            {
                                 tool_calls.push(tool_call);
                             }
                         }
@@ -900,13 +1139,14 @@ impl ContentExtractor {
                 }
             }
         }
-        
+
         tool_calls
     }
 
     /// 提取 finish_reason
     pub fn extract_finish_reason(value: &Value) -> Option<String> {
-        value.get("choices")
+        value
+            .get("choices")
             .and_then(|c| c.as_array())
             .and_then(|arr| arr.first())
             .and_then(|choice| choice.get("finish_reason"))

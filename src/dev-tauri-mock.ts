@@ -41,6 +41,16 @@ type MockApiProfile = {
   search_provider: string;
   auto_approved_tools: string[];
 };
+type MockCustomPetAsset = {
+  id: string;
+  name: string;
+  kind: string;
+  manifest: string;
+  sprite_path: string;
+  preview_path: string;
+  created_at: number;
+  updated_at: number;
+};
 
 const settingStore = new Map<string, string>([
   ["voice_settings", JSON.stringify(DEFAULT_VOICE_SETTINGS)],
@@ -50,6 +60,8 @@ const settingStore = new Map<string, string>([
 let backendType = "claude_code";
 let nextMemoryId = 3;
 let nextScheduledTaskId = 2;
+let nextCustomPetId = 1;
+let customPetAssets: MockCustomPetAsset[] = [];
 const memories: MockMemory[] = [
   {
     id: 1,
@@ -315,6 +327,39 @@ function handleMockCommand(cmd: string, args: MockPayload) {
       return getMockSetting(args);
     case "set_setting_value":
       return setMockSetting(args);
+    case "save_custom_pet_asset": {
+      const request = (args?.request || {}) as Record<string, unknown>;
+      const now = Date.now();
+      const asset: MockCustomPetAsset = {
+        id: String(request.id || `mock-custom-${nextCustomPetId++}`),
+        name: String(request.name || "Custom Pixel Pet"),
+        kind: String(request.kind || "custom-pixel"),
+        manifest: String(request.manifest || ""),
+        sprite_path: String(request.spriteDataUrl || request.sprite_data_url || ""),
+        preview_path: String(request.previewDataUrl || request.preview_data_url || ""),
+        created_at: now,
+        updated_at: now,
+      };
+      customPetAssets = [asset, ...customPetAssets.filter((item) => item.id !== asset.id)];
+      return asset;
+    }
+    case "list_custom_pet_assets":
+      return customPetAssets;
+    case "get_custom_pet_asset": {
+      const id = readArg(args, "id", "id");
+      return customPetAssets.find((item) => item.id === id) || null;
+    }
+    case "delete_custom_pet_asset": {
+      const id = readArg(args, "id", "id");
+      customPetAssets = customPetAssets.filter((item) => item.id !== id);
+      if (settingStore.get("custom_pixel_pet_asset_id") === id) {
+        settingStore.set("custom_pixel_pet_asset_id", "");
+        if (settingStore.get("pet_character") === "custom-pixel") {
+          settingStore.set("pet_character", "classic");
+        }
+      }
+      return null;
+    }
     case "tts_list_voices":
       return edgeVoices;
     case "test_api_connection":

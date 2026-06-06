@@ -1,4 +1,4 @@
-use rusqlite::{Connection, Result};
+use rusqlite::{Connection, OptionalExtension, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -78,6 +78,18 @@ pub struct NewScheduledTask<'a> {
     pub enabled: bool,
 }
 
+#[derive(Debug, Serialize, Clone)]
+pub struct CustomPetAsset {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub manifest: String,
+    pub sprite_path: String,
+    pub preview_path: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 pub struct Database {
     conn: Connection,
 }
@@ -124,6 +136,16 @@ impl Database {
                 repeat TEXT NOT NULL DEFAULT 'once',
                 enabled INTEGER NOT NULL DEFAULT 1,
                 last_triggered_at INTEGER,
+                created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+                updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+            );
+            CREATE TABLE IF NOT EXISTS custom_pet_assets (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                manifest TEXT NOT NULL,
+                sprite_path TEXT NOT NULL,
+                preview_path TEXT NOT NULL DEFAULT '',
                 created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
                 updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
             );",
@@ -570,6 +592,68 @@ impl Database {
 
     // ===== 设置 =====
 
+    // ===== Custom pet assets =====
+
+    pub fn save_custom_pet_asset(&self, asset: &CustomPetAsset) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO custom_pet_assets (
+                id, name, kind, manifest, sprite_path, preview_path, created_at, updated_at
+             )
+             VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, strftime('%s', 'now'), strftime('%s', 'now')
+             )
+             ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                kind = excluded.kind,
+                manifest = excluded.manifest,
+                sprite_path = excluded.sprite_path,
+                preview_path = excluded.preview_path,
+                updated_at = excluded.updated_at",
+            (
+                &asset.id,
+                &asset.name,
+                &asset.kind,
+                &asset.manifest,
+                &asset.sprite_path,
+                &asset.preview_path,
+            ),
+        )?;
+        Ok(())
+    }
+
+    pub fn get_custom_pet_asset(&self, id: &str) -> Result<Option<CustomPetAsset>> {
+        self.conn
+            .query_row(
+                "SELECT id, name, kind, manifest, sprite_path, preview_path, created_at, updated_at
+                 FROM custom_pet_assets
+                 WHERE id = ?1",
+                [id],
+                custom_pet_asset_from_row,
+            )
+            .optional()
+    }
+
+    pub fn list_custom_pet_assets(&self) -> Result<Vec<CustomPetAsset>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, kind, manifest, sprite_path, preview_path, created_at, updated_at
+             FROM custom_pet_assets
+             ORDER BY updated_at DESC, created_at DESC",
+        )?;
+        let rows = stmt.query_map([], custom_pet_asset_from_row)?;
+        let mut assets = Vec::new();
+        for row in rows {
+            assets.push(row?);
+        }
+        Ok(assets)
+    }
+
+    pub fn delete_custom_pet_asset(&self, id: &str) -> Result<Option<CustomPetAsset>> {
+        let existing = self.get_custom_pet_asset(id)?;
+        self.conn
+            .execute("DELETE FROM custom_pet_assets WHERE id = ?1", [id])?;
+        Ok(existing)
+    }
+
     pub fn save_setting(&self, key: &str, value: &str) -> Result<()> {
         self.conn.execute(
             "INSERT INTO pet_settings (key, value, updated_at)
@@ -607,5 +691,18 @@ fn scheduled_task_from_row(row: &rusqlite::Row<'_>) -> Result<ScheduledTask> {
         last_triggered_at: row.get(6)?,
         created_at: row.get(7)?,
         updated_at: row.get(8)?,
+    })
+}
+
+fn custom_pet_asset_from_row(row: &rusqlite::Row<'_>) -> Result<CustomPetAsset> {
+    Ok(CustomPetAsset {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        kind: row.get(2)?,
+        manifest: row.get(3)?,
+        sprite_path: row.get(4)?,
+        preview_path: row.get(5)?,
+        created_at: row.get(6)?,
+        updated_at: row.get(7)?,
     })
 }

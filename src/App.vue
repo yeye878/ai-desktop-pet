@@ -4,6 +4,7 @@ import PetCanvas from "./components/PetCanvas.vue";
 import ChatBubble from "./components/ChatBubble.vue";
 import ContextMenu from "./components/ContextMenu.vue";
 import Settings from "./components/Settings.vue";
+import ToolConfirmPanel from "./components/ToolConfirmPanel.vue";
 import VoicePanel from "./components/VoicePanel.vue";
 import { onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
@@ -19,11 +20,24 @@ import {
   parseVoiceSettings,
   type VoiceSettings,
 } from "./services/voice";
+import {
+  CUSTOM_PIXEL_PET_SETTING_KEY,
+  type CustomPixelPetAsset,
+} from "./services/customPixelPet";
+import { isPetCanvasPoint } from "./services/petHitTest";
 import { PET_CHARACTER_SETTING_KEY, resolvePetCharacterId } from "./services/petCharacters";
 
-type AppWindowLabel = "main" | "pet" | "chat" | "context-menu" | "settings" | "voice";
+type AppWindowLabel = "main" | "pet" | "chat" | "context-menu" | "settings" | "voice" | "tool-confirm";
 type PanelLabel = Exclude<AppWindowLabel, "main" | "pet">;
 type WindowHandle = ReturnType<typeof getCurrentWindow> | WebviewWindow;
+type ToolConfirmPayload = {
+  id: string;
+  tool_name: string;
+  arguments: string;
+  summary?: string;
+  command?: string | null;
+  path?: string | null;
+};
 
 const PET_W = 120;
 const PANEL_GAP = 8;
@@ -31,9 +45,11 @@ const PANEL_SPECS: Record<PanelLabel, { width: number; height: number; title: st
   chat: { width: 340, height: 400, title: "AI Desktop Pet Chat" },
   "context-menu": { width: 170, height: 320, title: "AI Desktop Pet Menu" },
   settings: { width: 380, height: 460, title: "AI Desktop Pet Settings" },
+  "tool-confirm": { width: 390, height: 350, title: "AI Desktop Pet Tool Confirm" },
   voice: { width: 430, height: 520, title: "AI Desktop Pet Voice" },
 };
 const VOICE_SETTINGS_KEY = "voice_settings";
+const TOOL_CONFIRM_PAYLOAD_KEY = "ai-desktop-pet.tool-confirm-payload";
 
 const currentWindow = getCurrentWindow();
 const currentLabel = currentWindow.label as AppWindowLabel;
@@ -45,6 +61,7 @@ let unlistenAppearanceChanged: UnlistenFn | null = null;
 let unlistenFocusChanged: UnlistenFn | null = null;
 let unlistenMoved: UnlistenFn | null = null;
 let unlistenOpenVoice: UnlistenFn | null = null;
+let unlistenToolConfirm: UnlistenFn | null = null;
 let registeredVoiceShortcut = "";
 
 function panelUrl(label: PanelLabel) {
@@ -188,6 +205,39 @@ async function openVoicePanel() {
   await closePanel("context-menu");
 }
 
+async function openToolConfirmPanel(payload: ToolConfirmPayload) {
+  const spec = PANEL_SPECS["tool-confirm"];
+  const baseUrl = window.location.href.split("#")[0].split("?")[0];
+  const url = `${baseUrl}?window=tool-confirm`;
+  const size = new LogicalSize(spec.width, spec.height);
+  localStorage.setItem(TOOL_CONFIRM_PAYLOAD_KEY, JSON.stringify(payload));
+  const existing = await WebviewWindow.getByLabel("tool-confirm");
+  if (existing) {
+    await existing.setSize(size);
+    await existing.center();
+    await existing.setAlwaysOnTop(true);
+    await existing.show();
+    await existing.setFocus();
+    await existing.emit("tool-confirm-payload", payload);
+    return;
+  }
+
+  new WebviewWindow("tool-confirm", {
+    url,
+    width: spec.width,
+    height: spec.height,
+    title: spec.title,
+    center: true,
+    transparent: false,
+    decorations: false,
+    alwaysOnTop: true,
+    resizable: false,
+    skipTaskbar: true,
+    shadow: true,
+    focus: true,
+  });
+}
+
 async function closeCurrentWindow() {
   if (currentLabel === "voice") {
     await currentWindow.setIgnoreCursorEvents(true).catch(() => {});
@@ -241,6 +291,17 @@ async function hydrateAppearance() {
   } catch {
     // Keep local defaults if persisted settings are unavailable.
   }
+
+  try {
+    const assetId = await invoke<string>("get_setting_value", {
+      key: CUSTOM_PIXEL_PET_SETTING_KEY,
+    });
+    petStore.customPixelPetAsset = assetId
+      ? await invoke<CustomPixelPetAsset | null>("get_custom_pet_asset", { id: assetId })
+      : null;
+  } catch {
+    petStore.customPixelPetAsset = null;
+  }
 }
 
 async function loadVoiceSettings(): Promise<VoiceSettings> {
@@ -277,55 +338,8 @@ async function registerVoiceShortcut() {
   }
 }
 
-function isInEllipse(px: number, py: number, cx: number, cy: number, rx: number, ry: number) {
-  const dx = (px - cx) / rx;
-  const dy = (py - cy) / ry;
-  return dx * dx + dy * dy <= 1;
-}
-
-function isInRoundedRect(
-  px: number,
-  py: number,
-  left: number,
-  top: number,
-  width: number,
-  height: number,
-  radius: number,
-) {
-  const right = left + width;
-  const bottom = top + height;
-  if (px < left || px > right || py < top || py > bottom) return false;
-  const cx = px < left + radius ? left + radius : px > right - radius ? right - radius : px;
-  const cy = py < top + radius ? top + radius : py > bottom - radius ? bottom - radius : py;
-  const dx = px - cx;
-  const dy = py - cy;
-  return dx * dx + dy * dy <= radius * radius;
-}
-
 function isPetBodyPoint(px: number, py: number) {
-  if (petStore.character === "daimao-batiao") {
-    return isInRoundedRect(px, py, 8, 12, 104, 122, 20);
-  }
-
-  const x = 60;
-  const y = 60;
-  const padding = 5;
-  const size = 80;
-  const body = isInRoundedRect(
-    px,
-    py,
-    x - size / 2 - padding,
-    y - size / 2 - padding,
-    size + padding * 2,
-    size + padding * 2,
-    24 + padding,
-  );
-  const leftEar = isInEllipse(px, py, x - size / 2 + 14, y - size / 2 + 8, 16, 19);
-  const rightEar = isInEllipse(px, py, x + size / 2 - 14, y - size / 2 + 8, 16, 19);
-  const leftFoot = isInEllipse(px, py, x - 15, y + size / 2 + 4, 13, 9);
-  const rightFoot = isInEllipse(px, py, x + 15, y + size / 2 + 4, 13, 9);
-
-  return body || leftEar || rightEar || leftFoot || rightFoot;
+  return isPetCanvasPoint(px, py, petStore.character, petStore.state, petStore.position);
 }
 
 async function setPetWindowIgnoresCursorEvents(ignore: boolean) {
@@ -442,6 +456,9 @@ onMounted(async () => {
     unlistenOpenVoice = await listen("open-voice-panel", () => {
       void openVoicePanel();
     });
+    unlistenToolConfirm = await listen<ToolConfirmPayload>("ai-tool-confirm", (event) => {
+      void openToolConfirmPanel(event.payload);
+    });
     window.addEventListener("voice-settings-changed", registerVoiceShortcut);
     await registerVoiceShortcut();
 
@@ -458,6 +475,7 @@ onUnmounted(() => {
   unlistenFocusChanged?.();
   unlistenMoved?.();
   unlistenOpenVoice?.();
+  unlistenToolConfirm?.();
   if (currentLabel === "pet" || currentLabel === "main") {
     window.removeEventListener("voice-settings-changed", registerVoiceShortcut);
     if (registeredVoiceShortcut) {
@@ -507,6 +525,11 @@ onUnmounted(() => {
 
     <VoicePanel
       v-else-if="currentLabel === 'voice'"
+      @close="closeCurrentWindow"
+    />
+
+    <ToolConfirmPanel
+      v-else-if="currentLabel === 'tool-confirm'"
       @close="closeCurrentWindow"
     />
   </div>

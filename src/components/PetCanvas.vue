@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, onMounted, onUnmounted, watch } from "vue";
 import { usePetStore, resolveSkinId, type Theme } from "../stores/pet";
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, currentMonitor } from "@tauri-apps/api/window";
 import { LogicalPosition } from "@tauri-apps/api/dpi";
 import type { UnlistenFn } from "@tauri-apps/api/event";
@@ -12,6 +12,8 @@ import {
   resolvePetCharacterId,
   type PetCharacterId,
 } from "../services/petCharacters";
+import { parsePixelPetManifest, type PixelPetManifest } from "../services/customPixelPet";
+import { isPetCanvasPoint } from "../services/petHitTest";
 
 const emit = defineEmits<{
   click: [];
@@ -52,6 +54,15 @@ let daimaoMediaIndex = 0;
 let daimaoNextSwitchFrame = 0;
 let daimaoVideo: HTMLVideoElement | null = null;
 let daimaoVideoCanvas: HTMLCanvasElement | null = null;
+let customSpriteImage: HTMLImageElement | null = null;
+let customSpriteAssetId = "";
+let customSpriteReady = false;
+
+watch(() => pet.customPixelPetAsset?.id, () => {
+  customSpriteImage = null;
+  customSpriteAssetId = "";
+  customSpriteReady = false;
+});
 
 // ===== 粒子系统 =====
 interface Particle {
@@ -398,9 +409,136 @@ function drawDaimaoPet(ctx: CanvasRenderingContext2D) {
   }
 }
 
+function activeCharacter() {
+  return props.character || pet.character;
+}
+
+function resolveSpritePath(path: string) {
+  if (!path || path.startsWith("data:") || path.startsWith("http:") || path.startsWith("https:")) {
+    return path;
+  }
+  return convertFileSrc(path);
+}
+
+function ensureCustomSprite() {
+  const asset = pet.customPixelPetAsset;
+  if (!asset?.sprite_path) {
+    customSpriteImage = null;
+    customSpriteAssetId = "";
+    customSpriteReady = false;
+    return;
+  }
+
+  if (asset.id === customSpriteAssetId && customSpriteImage) return;
+
+  customSpriteAssetId = asset.id;
+  customSpriteReady = false;
+  customSpriteImage = new Image();
+  customSpriteImage.decoding = "async";
+  customSpriteImage.onload = () => {
+    customSpriteReady = true;
+  };
+  customSpriteImage.onerror = () => {
+    customSpriteReady = false;
+  };
+  customSpriteImage.src = resolveSpritePath(asset.sprite_path);
+}
+
+function customAnimationName() {
+  if (pet.state === "speaking") return "speaking";
+  if (pet.state === "thinking") return "thinking";
+  if (pet.state === "working") return "working";
+  if (pet.state === "sleeping") return "sleeping";
+  if (pet.state === "hungry") return "hungry";
+  if (pet.state === "stuffed") return "stuffed";
+  if (pet.state === "refusing") return "refusing";
+  if (pet.state === "dragging") return "dragging";
+  if (pet.state === "happy" || pet.state === "waving") return "happy";
+  return "idle";
+}
+
+function drawCustomPixelFallback(ctx: CanvasRenderingContext2D) {
+  const theme = pet.visualTheme;
+  ctx.fillStyle = "rgba(15, 23, 42, 0.12)";
+  ctx.beginPath();
+  ctx.ellipse(ctx.canvas.width / 2, ctx.canvas.height - 15, 36, 6, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = theme.primary;
+  ctx.fillRect(36, 42, 48, 48);
+  ctx.fillStyle = theme.accent;
+  ctx.fillRect(42, 34, 36, 12);
+  ctx.fillStyle = "#2f2633";
+  ctx.fillRect(46, 58, 8, 8);
+  ctx.fillRect(66, 58, 8, 8);
+  ctx.fillStyle = "rgba(255,255,255,0.75)";
+  ctx.fillRect(48, 58, 3, 3);
+  ctx.fillRect(68, 58, 3, 3);
+}
+
+function drawCustomPixelPet(ctx: CanvasRenderingContext2D) {
+  ensureCustomSprite();
+  ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+  const asset = pet.customPixelPetAsset;
+  const manifest = parsePixelPetManifest(asset?.manifest) as PixelPetManifest | null;
+
+  if (bounceOffset !== 0 || bounceVy !== 0) {
+    bounceVy += 1.0;
+    bounceOffset += bounceVy;
+    if (bounceOffset >= 0) {
+      bounceOffset = 0;
+      bounceVy = 0;
+    }
+  }
+  squashAmt += (1 - squashAmt) * 0.1;
+
+  if (!manifest || !customSpriteImage || !customSpriteReady) {
+    drawCustomPixelFallback(ctx);
+    finishFrame(ctx);
+    return;
+  }
+
+  const animation = manifest.animations[customAnimationName()] || manifest.animations.idle;
+  const frames = animation.frames.length > 0 ? animation.frames : manifest.animations.idle.frames;
+  const fps = Math.max(1, animation.fps || 8);
+  const ticksPerFrame = Math.max(1, Math.round(60 / fps));
+  const sourceFrame = frames[Math.floor(frameCount / ticksPerFrame) % frames.length] || 0;
+  const frameW = manifest.frameSize.width;
+  const frameH = manifest.frameSize.height;
+  const columns = Math.max(1, manifest.sheet.columns || 1);
+  const sx = (sourceFrame % columns) * frameW;
+  const sy = Math.floor(sourceFrame / columns) * frameH;
+  const scale = manifest.displayScale || 1.65;
+  const drawW = Math.min(112, Math.round(frameW * scale * (2 - squashAmt)));
+  const drawH = Math.min(116, Math.round(frameH * scale * squashAmt));
+  const bob = pet.state === "sleeping" ? 2 : Math.sin(frameCount * 0.06) * 2;
+  const drawX = Math.round((ctx.canvas.width - drawW) / 2);
+  const drawY = Math.round(24 + bob + bounceOffset + (116 - drawH) / 2);
+
+  ctx.fillStyle = "rgba(15, 23, 42, 0.14)";
+  ctx.beginPath();
+  ctx.ellipse(ctx.canvas.width / 2, ctx.canvas.height - 15, 34, 5.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.save();
+  ctx.imageSmoothingEnabled = false;
+  if (pet.state === "refusing") {
+    ctx.translate(Math.sin(frameCount * 1.5) * 4, 0);
+  }
+  ctx.drawImage(customSpriteImage, sx, sy, frameW, frameH, drawX, drawY, drawW, drawH);
+  ctx.restore();
+  finishFrame(ctx);
+}
+
 // ===== 绘制桌宠 =====
 function draw(ctx: CanvasRenderingContext2D) {
-  if ((props.character || pet.character) === "daimao-batiao") {
+  if (activeCharacter() === "custom-pixel") {
+    drawCustomPixelPet(ctx);
+    return;
+  }
+
+  if (activeCharacter() === "daimao-batiao") {
     drawDaimaoPet(ctx);
     return;
   }
@@ -858,31 +996,6 @@ function animate() {
   requestAnimationFrame(animate);
 }
 
-function isInEllipse(px: number, py: number, cx: number, cy: number, rx: number, ry: number) {
-  const dx = (px - cx) / rx;
-  const dy = (py - cy) / ry;
-  return dx * dx + dy * dy <= 1;
-}
-
-function isInRoundedRect(
-  px: number,
-  py: number,
-  left: number,
-  top: number,
-  width: number,
-  height: number,
-  radius: number,
-) {
-  const right = left + width;
-  const bottom = top + height;
-  if (px < left || px > right || py < top || py > bottom) return false;
-  const cx = px < left + radius ? left + radius : px > right - radius ? right - radius : px;
-  const cy = py < top + radius ? top + radius : py > bottom - radius ? bottom - radius : py;
-  const dx = px - cx;
-  const dy = py - cy;
-  return dx * dx + dy * dy <= radius * radius;
-}
-
 function isPetHit(e: MouseEvent) {
   const canvas = canvasRef.value;
   if (!canvas) return false;
@@ -890,32 +1003,7 @@ function isPetHit(e: MouseEvent) {
   const rect = canvas.getBoundingClientRect();
   const px = e.clientX - rect.left;
   const py = e.clientY - rect.top;
-  const { x, y } = pet.position;
-  const padding = 5;
-  const size = 80;
-
-  if ((props.character || pet.character) === "daimao-batiao") {
-    return isInRoundedRect(px, py, 8, 12, 104, 122, 20);
-  }
-
-  const body = isInRoundedRect(
-    px,
-    py,
-    x - size / 2 - padding,
-    y - size / 2 - padding,
-    size + padding * 2,
-    size + padding * 2,
-    24 + padding,
-  );
-  const leftEar = isInEllipse(px, py, x - size / 2 + 14, y - size / 2 + 8, 16, 19);
-  const rightEar = isInEllipse(px, py, x + size / 2 - 14, y - size / 2 + 8, 16, 19);
-  const leftFoot = isInEllipse(px, py, x - 15, y + size / 2 + 4, 13, 9);
-  const rightFoot = isInEllipse(px, py, x + 15, y + size / 2 + 4, 13, 9);
-  const wavingHand =
-    pet.state === "waving" &&
-    isInRoundedRect(px, py, x + size / 2 - 8, y - 36, 28, 54, 13);
-
-  return body || leftEar || rightEar || leftFoot || rightFoot || wavingHand;
+  return isPetCanvasPoint(px, py, activeCharacter(), pet.state, pet.position);
 }
 
 async function onMouseDown(e: MouseEvent) {

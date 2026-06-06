@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Default capabilities for the app",
-  "windows": ["main", "pet", "chat", "context-menu", "settings", "voice"],
+  "windows": ["main", "pet", "chat", "context-menu", "settings", "voice", "tool-confirm"],
   "permissions": [
     "core:default",
     "core:window:default",

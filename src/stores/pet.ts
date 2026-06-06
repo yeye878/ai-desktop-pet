@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { ref, computed, watch } from "vue";
+import type { CustomPixelPetAsset } from "../services/customPixelPet";
 import type { PetCharacterId } from "../services/petCharacters";
 
 export type PetState =
@@ -238,6 +239,7 @@ export const usePetStore = defineStore("pet", () => {
   const isDragging = ref(false);
   const skin = ref("default");
   const character = ref<PetCharacterId>("classic");
+  const customPixelPetAsset = ref<CustomPixelPetAsset | null>(null);
   const fontColor = ref("");     // 用户自定义字体色，空=跟随主题
   const userAvatar = ref("");    // 用户头像 data URL / URL
   const themeTick = ref(0);
@@ -328,7 +330,7 @@ export const usePetStore = defineStore("pet", () => {
 
   return {
     state, happiness, energy, position, isDragging,
-    skin, character, fontColor, userAvatar, resolvedSkin, theme, visualTheme, isAnimatedSkin, expression,
+    skin, character, customPixelPetAsset, fontColor, userAvatar, resolvedSkin, theme, visualTheme, isAnimatedSkin, expression,
     setState, updateMood, moveTo, applyCssVars,
   };
 });

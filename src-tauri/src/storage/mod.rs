@@ -1,5 +1,6 @@
 mod db;
 
 pub use db::{
-    ChatMessage, ClipboardItem, Database, MemoryItem, NewScheduledTask, ScheduledTask, TaskRepeat,
+    ChatMessage, ClipboardItem, CustomPetAsset, Database, MemoryItem, NewScheduledTask,
+    ScheduledTask, TaskRepeat,
 };

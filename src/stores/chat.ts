@@ -7,6 +7,18 @@ export interface FileAttachment {
   extension: string;
 }
 
+export interface ToolEventItem {
+  id: string;
+  tool_name: string;
+  status: string;
+  summary: string;
+  arguments?: string;
+  command?: string;
+  path?: string;
+  output?: string;
+  approved?: boolean;
+}
+
 export interface Message {
   id: number;
   role: "user" | "assistant" | "system";
@@ -14,6 +26,7 @@ export interface Message {
   thinking?: string;
   timestamp: number;
   files?: FileAttachment[];
+  toolEvents?: ToolEventItem[];
 }
 
 export type MessageDraft = Omit<Message, "id">;
@@ -28,6 +41,7 @@ export const useChatStore = defineStore("chat", () => {
     content: string,
     thinking?: string,
     files?: FileAttachment[],
+    toolEvents?: ToolEventItem[],
   ) {
     const message = {
       id: nextId++,
@@ -35,6 +49,7 @@ export const useChatStore = defineStore("chat", () => {
       content,
       thinking,
       files,
+      toolEvents,
       timestamp: Date.now(),
     };
     messages.value.push(message);
