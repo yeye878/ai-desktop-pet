@@ -4,9 +4,10 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import CustomPixelPetWorkshop from "./CustomPixelPetWorkshop.vue";
 import PetCanvas from "./PetCanvas.vue";
 import { usePetStore, THEMES, FONT_COLORS, resolveSkinId } from "../stores/pet";
-import { useChatStore } from "../stores/chat";
+import { useChatStore, type Message } from "../stores/chat";
 import {
   PET_CHARACTERS,
   PET_CHARACTER_SETTING_KEY,
@@ -27,6 +28,10 @@ import {
   type TtsSettings,
   type TtsVoice,
 } from "../services/tts";
+import {
+  type WeatherInfo,
+  type WeatherUpdateEvent,
+} from "../services/weather";
 import "../assets/dashboard.css";
 
 const emit = defineEmits<{ openPet: []; closePet: [] }>();
@@ -105,6 +110,10 @@ type AnswerDeltaPayload = {
 const systemInfo = ref({ cpu: 0, memory: 0 });
 let sysInfoTimer: ReturnType<typeof setInterval> | null = null;
 
+// === 天气信息 ===
+const weatherInfo = ref<WeatherInfo | null>(null);
+let weatherTimer: ReturnType<typeof setInterval> | null = null;
+
 // === 模型 ===
 const currentModel = ref("");
 const modelSaved = ref(false);
@@ -139,6 +148,7 @@ const modelFetchResult = ref({ success: false, message: "" });
 const fetchedModels = ref<string[]>([]);
 const selectedFetchedModel = ref("");
 const isAddingFetchedModel = ref(false);
+const activeDashMessageMenuId = ref<number | null>(null);
 
 // === Claude Code 状态 ===
 const claudeStatus = ref({
@@ -171,9 +181,12 @@ const BG_KEY = "ai-desktop-pet.chat-bg";
 const CUSTOM_BG_KEY = "ai-desktop-pet.chat-bg-custom";
 const VOICE_SETTINGS_KEY = "voice_settings";
 const TTS_SETTINGS_KEY = "tts_settings";
+const COMPUTER_USE_ENABLED_KEY = "computer_use_enabled";
 const chatBg = ref(localStorage.getItem(BG_KEY) || "none");
 const customBgImage = ref(localStorage.getItem(CUSTOM_BG_KEY) || "");
 const bgInputRef = ref<HTMLInputElement | null>(null);
+const computerUseEnabled = ref(false);
+const computerUseSaved = ref(false);
 
 // === 语音 ===
 const voiceSettings = ref<VoiceSettings>({ ...DEFAULT_VOICE_SETTINGS });
@@ -291,6 +304,10 @@ const toolPermissionOptions = [
   { id: "web_search", label: "网页搜索" },
   { id: "open_app", label: "打开应用" },
   { id: "create_scheduled_task", label: "创建定时任务" },
+  { id: "computer_screenshot", label: "查看屏幕" },
+  { id: "computer_wait", label: "等待界面" },
+  { id: "window_list", label: "列出窗口" },
+  { id: "browser_snapshot", label: "查看浏览器" },
 ];
 
 const currentModelLabel = computed(() => {
@@ -352,6 +369,14 @@ const PRESETS: Record<string, { base_url: string; model: string }> = {
 // === 加载函数 ===
 async function loadSystemInfo() {
   try { systemInfo.value = await invoke("get_system_info"); } catch {}
+}
+
+async function loadWeather() {
+  try {
+    weatherInfo.value = await invoke<WeatherInfo>("get_weather");
+  } catch (e) {
+    console.error("获取天气失败:", e);
+  }
 }
 
 async function loadMemories() {
@@ -420,6 +445,33 @@ async function loadVoiceSettings() {
   if (ttsSettings.value.engine === "edge" && edgeVoices.value.length > 0) {
     const hasSavedVoice = edgeVoices.value.some((v) => v.id === ttsSettings.value.voice);
     if (!hasSavedVoice) await updateTtsSettings({ voice: edgeVoices.value[0].id });
+  }
+}
+
+async function loadComputerUseSettings() {
+  try {
+    const value = await invoke<string>("get_setting_value", { key: COMPUTER_USE_ENABLED_KEY });
+    computerUseEnabled.value = value === "true";
+  } catch {
+    computerUseEnabled.value = false;
+  }
+}
+
+async function updateComputerUseEnabled(enabled: boolean) {
+  computerUseEnabled.value = enabled;
+  computerUseSaved.value = false;
+  try {
+    await invoke("set_setting_value", {
+      key: COMPUTER_USE_ENABLED_KEY,
+      value: enabled ? "true" : "false",
+    });
+    computerUseSaved.value = true;
+    setTimeout(() => {
+      computerUseSaved.value = false;
+    }, 1800);
+  } catch (e) {
+    computerUseEnabled.value = !enabled;
+    alert("Computer Use setting save failed: " + e);
   }
 }
 
@@ -780,6 +832,10 @@ async function selectCharacter(characterId: PetCharacterId) {
     const petWin = await WebviewWindow.getByLabel("pet");
     if (petWin) await petWin.emit("appearance-changed");
   } catch (e) { alert("本体形象切换失败: " + e); }
+}
+
+function onCustomPixelSelected() {
+  currentCharacter.value = pet.character;
 }
 
 async function selectFontColor(value: string) {
@@ -1425,6 +1481,7 @@ async function abortAi() {
   chat.isLoading = false;
   thinkingContent.value = "";
   streamingAnswer.value = "";
+  toolEvents.value = [];
   pendingConfirm.value = null;  // Clear pending tool confirmation on abort
   try {
     await invoke("abort_ai");
@@ -1438,6 +1495,7 @@ async function sendDashboardMessage() {
 
   if (!text && files.length === 0) return;
   if (chat.isLoading) return;
+  closeDashMessageMenu();
 
   const fullMessage = buildMessageWithFiles(text, files);
 
@@ -1479,6 +1537,35 @@ async function sendDashboardMessage() {
     chat.addMessage("assistant", `出错了: ${err}`);
     pet.setState("confused");
   }
+}
+
+function openDashMessageMenu(msg: Message) {
+  activeDashMessageMenuId.value = activeDashMessageMenuId.value === msg.id ? null : msg.id;
+}
+
+function closeDashMessageMenu() {
+  activeDashMessageMenuId.value = null;
+}
+
+async function copyDashMessage(msg: Message) {
+  try {
+    await navigator.clipboard.writeText(msg.content);
+    pet.updateMood({ happiness: 0.01 });
+  } catch (err) {
+    chat.addMessage("assistant", `复制失败: ${err}`);
+  } finally {
+    closeDashMessageMenu();
+  }
+}
+
+async function resendDashMessage(msg: Message) {
+  const text = msg.content.trim();
+  if (!text || chat.isLoading) return;
+  closeDashMessageMenu();
+  activePage.value = "chat";
+  chatInput.value = text;
+  await nextTick();
+  await sendDashboardMessage();
 }
 
 function upsertToolEvent(event: ToolEvent) {
@@ -1628,10 +1715,13 @@ onMounted(async () => {
   loadPersonality();
   loadProfession();
   loadVoiceSettings();
+  loadComputerUseSettings();
   loadBackendSettings();
   loadClaudeStatus();
+  loadWeather();
 
   sysInfoTimer = setInterval(loadSystemInfo, 5000);
+  weatherTimer = setInterval(loadWeather, 300000); // 每5分钟更新天气
 
   // 检查最大化状态
   isMaximized.value = await currentWindow.isMaximized();
@@ -1653,18 +1743,26 @@ onMounted(async () => {
 
   unlistenAiFinished = await listen<any>("ai-finished", (event) => {
     clearLoadingTimeout(); // 清除超时
+    // 将当前工具事件快照附加到 AI 回复消息上
+    const toolSnapshot = toolEvents.value.length > 0
+      ? JSON.parse(JSON.stringify(toolEvents.value)) as any[]
+      : undefined;
     const last = chat.messages[chat.messages.length - 1];
     if (!(last?.role === "assistant" && last.content === event.payload.text)) {
-      chat.addMessage("assistant", event.payload.text, event.payload.thinking || undefined);
+      chat.addMessage("assistant", event.payload.text, event.payload.thinking || undefined, undefined, toolSnapshot);
     }
     chat.isLoading = false;
     thinkingContent.value = "";
     streamingAnswer.value = "";
+    toolEvents.value = [];
     pendingConfirm.value = null;
   });
 
   unlistenAiError = await listen<any>("ai-error", (event) => {
     clearLoadingTimeout(); // 清除超时
+    const toolSnapshot = toolEvents.value.length > 0
+      ? JSON.parse(JSON.stringify(toolEvents.value)) as any[]
+      : undefined;
     // 区分可恢复中断和致命错误
     let text: string;
     if (event.payload.aborted) {
@@ -1677,11 +1775,12 @@ onMounted(async () => {
     }
     const last = chat.messages[chat.messages.length - 1];
     if (!(last?.role === "assistant" && last.content === text)) {
-      chat.addMessage("assistant", text, event.payload.thinking || undefined);
+      chat.addMessage("assistant", text, event.payload.thinking || undefined, undefined, toolSnapshot);
     }
     chat.isLoading = false;
     thinkingContent.value = "";
     streamingAnswer.value = "";
+    toolEvents.value = [];
     pendingConfirm.value = null;
   });
 
@@ -1729,6 +1828,16 @@ onMounted(async () => {
     void loadScheduledTasks();
   });
 
+  // 监听天气更新事件
+  await listen<WeatherUpdateEvent>("weather-update", (event) => {
+    // 重新加载天气信息
+    loadWeather();
+    // 添加天气系统消息
+    chat.addSystemMessage(event.payload.message);
+    // 滚动到底部
+    scrollDashChatToBottom();
+  });
+
   // 检查桌宠窗口是否已存在
   const existing = await WebviewWindow.getByLabel("pet");
   isPetActive.value = !!existing;
@@ -1748,6 +1857,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (sysInfoTimer) clearInterval(sysInfoTimer);
+  if (weatherTimer) clearInterval(weatherTimer);
   if (actionFeedbackTimer) clearTimeout(actionFeedbackTimer);
   if (dashChatScrollFrame !== null) cancelAnimationFrame(dashChatScrollFrame);
   dashChatScrollTimers.forEach(clearTimeout);
@@ -2039,6 +2149,14 @@ onUnmounted(() => {
 
           <!-- ========== 对话互动 (独立页面) ========== -->
           <div v-else-if="activePage === 'chat'" key="chat" class="dash-chat-page">
+            <!-- 天气信息显示栏 -->
+            <div v-if="weatherInfo" class="weather-info-bar">
+              <span class="weather-icon">{{ weatherInfo.icon }}</span>
+              <span class="weather-temp">{{ weatherInfo.temperature }}°C</span>
+              <span class="weather-city">{{ weatherInfo.city }}</span>
+              <span class="weather-desc">{{ weatherInfo.description }}</span>
+              <span class="weather-humidity">💧{{ weatherInfo.humidity }}%</span>
+            </div>
             <!-- Glassmorphism drop zone overlay -->
             <div v-if="isFileOver" class="dash-drop-overlay">
               <div class="dash-drop-overlay-box">
@@ -2047,7 +2165,7 @@ onUnmounted(() => {
               </div>
             </div>
 
-            <div class="dash-chat-messages" ref="dashChatMessagesRef">
+            <div class="dash-chat-messages" ref="dashChatMessagesRef" @click="closeDashMessageMenu">
               <div v-if="chat.messages.length === 0" class="dash-chat-empty">
                 🐾 暂无对话历史，跟小家伙说点什么吧！
               </div>
@@ -2055,6 +2173,7 @@ onUnmounted(() => {
               <div
                 v-for="msg in chat.messages" :key="msg.id"
                 :class="['dash-msg-wrapper', msg.role]"
+                @contextmenu.prevent.stop="msg.role !== 'system' && openDashMessageMenu(msg)"
               >
                 <!-- 系统分割线 -->
                 <div v-if="msg.role === 'system'" class="dash-system-divider">
@@ -2062,7 +2181,37 @@ onUnmounted(() => {
                   <span class="dash-system-divider-text">{{ msg.content }}</span>
                   <span class="dash-system-divider-line"></span>
                 </div>
-                <div v-else class="dash-msg-bubble">
+                <!-- 工具执行轨迹（显示在 AI 回复消息的上方） -->
+                <div v-else-if="msg.role === 'assistant' && msg.toolEvents && msg.toolEvents.length > 0" class="dash-tool-trace-panel">
+                  <div class="dash-tool-trace-header">
+                    <span>执行轨迹</span>
+                    <small>{{ msg.toolEvents.length }} 个工具事件</small>
+                  </div>
+                  <div class="dash-tool-trace-list">
+                    <div
+                      v-for="event in msg.toolEvents"
+                      :key="event.id"
+                      :class="['dash-tool-event', event.status]"
+                    >
+                      <div class="dash-tool-event-head">
+                        <span class="dash-tool-status">{{ toolStatusLabel(event.status) }}</span>
+                        <span class="dash-tool-name">{{ event.tool_name }}</span>
+                      </div>
+                      <div class="dash-tool-summary">{{ event.summary }}</div>
+                      <div v-if="event.command" class="dash-tool-meta">命令：{{ event.command }}</div>
+                      <div v-if="event.path" class="dash-tool-meta">路径：{{ event.path }}</div>
+                      <details v-if="event.arguments" class="dash-tool-details">
+                        <summary>参数</summary>
+                        <pre>{{ event.arguments }}</pre>
+                      </details>
+                      <details v-if="event.output" class="dash-tool-details">
+                        <summary>输出</summary>
+                        <pre>{{ event.output }}</pre>
+                      </details>
+                    </div>
+                  </div>
+                </div>
+                <div v-if="msg.role !== 'system'" class="dash-msg-bubble">
                   <div v-if="msg.thinking" class="dash-msg-thinking">
                     <details>
                       <summary>思考过程</summary>
@@ -2079,10 +2228,19 @@ onUnmounted(() => {
                     </div>
                   </div>
                 </div>
+                <div
+                  v-if="activeDashMessageMenuId === msg.id"
+                  class="dash-message-action-menu"
+                  @click.stop
+                  @contextmenu.prevent.stop
+                >
+                  <button type="button" @click="copyDashMessage(msg)">复制</button>
+                  <button type="button" :disabled="chat.isLoading" @click="resendDashMessage(msg)">重新发送</button>
+                </div>
               </div>
 
-              <!-- 工具执行轨迹（用户消息与 AI 回复之间） -->
-              <div v-if="toolEvents.length > 0" class="dash-msg-wrapper assistant">
+              <!-- 工具执行轨迹（仅流式时显示，完成后转移到消息上） -->
+              <div v-if="toolEvents.length > 0 && chat.isLoading" class="dash-msg-wrapper assistant">
                 <div class="dash-tool-trace-panel">
                   <div class="dash-tool-trace-header">
                     <span>执行轨迹</span>
@@ -2434,13 +2592,23 @@ onUnmounted(() => {
                   @click="selectCharacter(character.id)"
                 >
                   <div class="dash-character-preview">
-                    <PetCanvas v-if="character.id === 'classic'" preview character="classic" style="width: 88px; height: 102px; pointer-events: none;" />
+                    <PetCanvas
+                      v-if="character.id === 'classic' || character.id === 'custom-pixel'"
+                      preview
+                      :character="character.id"
+                      style="width: 88px; height: 102px; pointer-events: none;"
+                    />
                     <img v-else src="../assets/pets/daimao-batiao/stills/still-03.png" alt="" />
                   </div>
                   <span class="dash-character-name">{{ character.name }}</span>
                   <span class="dash-character-desc">{{ character.description }}</span>
                 </button>
               </div>
+            </div>
+
+              <div class="dash-card character-panel">
+              <div class="dash-card-title"><span class="card-icon">PX</span> 自定义像素桌宠</div>
+              <CustomPixelPetWorkshop @selected="onCustomPixelSelected" />
             </div>
 
               <div class="dash-card palette-panel skin-panel">
@@ -2901,6 +3069,19 @@ onUnmounted(() => {
                     </button>
                   </div>
                 </div>
+                <div class="dash-toggle-group">
+                  <label>Computer Use 桌面控制</label>
+                  <input
+                    type="checkbox"
+                    class="dash-toggle"
+                    :checked="computerUseEnabled"
+                    @change="updateComputerUseEnabled(($event.target as HTMLInputElement).checked)"
+                  />
+                </div>
+                <p class="dash-hint" style="margin-top:-4px;">
+                  开启后 AI 可使用查看屏幕、聚焦窗口、打开浏览器、鼠标和键盘工具。仅在需要桌面自动化时开启。
+                  <span v-if="computerUseSaved"> 已保存。</span>
+                </p>
                 <div v-if="apiConfig.execution_mode === 'custom'" class="dash-form-group">
                   <label>自定义免确认操作</label>
                   <div class="dash-tool-permission-grid">

@@ -49,6 +49,9 @@ const fluidCanvasRef = ref<HTMLCanvasElement | null>(null);
 let animId = 0;
 let unlistenAiFinished: UnlistenFn | null = null;
 let unlistenAiError: UnlistenFn | null = null;
+let sendTimeoutId: ReturnType<typeof setTimeout> | null = null;
+let autoListenTimer: ReturnType<typeof setTimeout> | null = null;
+let speakGeneration = 0;
 
 interface Spark {
   x: number;
@@ -143,35 +146,60 @@ async function startListening() {
   }
 }
 
+function clearSendTimeout() {
+  if (sendTimeoutId) {
+    clearTimeout(sendTimeoutId);
+    sendTimeoutId = null;
+  }
+}
+
 async function sendTranscript() {
   const message = transcript.value.trim();
   if (!message || chat.isLoading || isSending.value) return;
 
   chat.addMessage("user", message);
-  transcript.value = "";
   errorText.value = "";
   isSending.value = true;
   chat.isLoading = true;
   pet.setState("thinking");
 
+  // 60s 超时兜底：若 ai-finished/ai-error 事件丢失，自动恢复状态
+  clearSendTimeout();
+  sendTimeoutId = setTimeout(() => {
+    if (isSending.value) {
+      isSending.value = false;
+      chat.isLoading = false;
+      errorText.value = "AI 响应超时，请重试";
+      status.value = "error";
+      pet.setState("confused");
+    }
+  }, 60_000);
+
   try {
     await invoke<{ started: boolean }>("send_to_ai", { message, attachments: [] });
+    transcript.value = "";
     await currentWindow.emit("voice-message-sent", message);
   } catch (err) {
+    clearSendTimeout();
     chat.isLoading = false;
     isSending.value = false;
-    errorText.value = `发送失败: ${err}`;
+    errorText.value = `发送失败: ${err instanceof Error ? err.message : String(err)}`;
     status.value = "error";
     pet.setState("confused");
+    // 保留文本，用户可直接重试发送
   }
 }
 
 function cancelVoice() {
+  clearSendTimeout();
   voice.abortListening();
   ttsPlayer.stop();
   transcript.value = "";
   interimText.value = "";
   errorText.value = "";
+  isSending.value = false;
+  chat.isLoading = false;
+  isGenerating.value = false;
   status.value = "idle";
   pet.setState("idle");
   emit("close");
@@ -192,7 +220,8 @@ onMounted(async () => {
   // 自动开始语音识别（如果条件允许）
   if (canListen.value) {
     // 短暂延时确保UI渲染完成
-    setTimeout(() => {
+    autoListenTimer = setTimeout(() => {
+      autoListenTimer = null;
       startListening();
     }, 300);
   }
@@ -350,10 +379,12 @@ onMounted(async () => {
   }
 
   unlistenAiFinished = await listen<AiFinishedPayload>("ai-finished", async (event) => {
+    clearSendTimeout();
     isSending.value = false;
     chat.isLoading = false;
     pet.setState("speaking");
     if (settings.value.enabled && settings.value.autoSpeak) {
+      const gen = ++speakGeneration;
       isGenerating.value = true;
       status.value = "speaking";
       try {
@@ -364,13 +395,16 @@ onMounted(async () => {
           status.value = "error";
         }
       }
+      // 若已被新的 TTS 请求取代，跳过状态恢复
+      if (gen !== speakGeneration) return;
       isGenerating.value = false;
     }
     if (status.value === "speaking") status.value = "idle";
-    if (pet.state === "speaking") pet.setState("idle");
+    if (pet.state === "speaking" && status.value !== "error") pet.setState("idle");
   });
 
   unlistenAiError = await listen<AiErrorPayload>("ai-error", (event) => {
+    clearSendTimeout();
     isSending.value = false;
     chat.isLoading = false;
     errorText.value = event.payload.aborted ? "已中止" : event.payload.message;
@@ -380,11 +414,18 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  clearSendTimeout();
+  if (autoListenTimer) {
+    clearTimeout(autoListenTimer);
+    autoListenTimer = null;
+  }
   cancelAnimationFrame(animId);
   unlistenAiFinished?.();
   unlistenAiError?.();
   voice.abortListening();
   ttsPlayer.stop();
+  isSending.value = false;
+  chat.isLoading = false;
 });
 </script>
 
@@ -451,7 +492,7 @@ onBeforeUnmount(() => {
       <button class="action-btn primary" :disabled="!transcript.trim() || chat.isLoading || isSending" @click="sendTranscript">发送</button>
     </div>
 
-    <div class="shortcut-hint">{{ settings.shortcut }}</div>
+    <div class="shortcut-hint">快捷键: {{ settings.shortcut }}</div>
   </section>
 </template>
 
@@ -761,7 +802,7 @@ onBeforeUnmount(() => {
 .shortcut-hint {
   text-align: center;
   font-size: 10px;
-  color: #334155;
+  color: #64748b;
   padding-top: 4px;
   z-index: 2;
 }

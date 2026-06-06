@@ -135,12 +135,17 @@ export class VoiceController {
       let finalText = "";
       let interimText = "";
       let settled = false;
+      let listenTimer: ReturnType<typeof setTimeout> | null = null;
       const recognition = new Recognition();
       this.recognition = recognition;
 
       const finish = (error?: Error) => {
         if (settled) return;
         settled = true;
+        if (listenTimer) {
+          clearTimeout(listenTimer);
+          listenTimer = null;
+        }
         this.recognition = null;
         if (error) {
           reject(error);
@@ -148,6 +153,11 @@ export class VoiceController {
           resolve(finalText.trim() || interimText.trim());
         }
       };
+
+      // 60秒最大监听时长，防止永久挂起
+      listenTimer = setTimeout(() => {
+        finish();
+      }, 60_000);
 
       recognition.lang = settings.language || DEFAULT_VOICE_SETTINGS.language;
       recognition.continuous = false;
@@ -189,6 +199,8 @@ export class VoiceController {
     try {
       this.recognition?.stop();
     } catch {
+      // stop may throw if recognition is already inactive
+    } finally {
       this.recognition = null;
     }
   }

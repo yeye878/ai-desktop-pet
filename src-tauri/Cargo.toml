@@ -33,6 +33,17 @@ tokio-util = { version = "0.7", features = ["rt"] }
 base64 = "0.22"
 keyring-core = "1.0.0"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+pdf-extract = "0.10"
+walkdir = "2"
+chrono = "0.4"
+urlencoding = "2"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 

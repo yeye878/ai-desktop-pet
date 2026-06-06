@@ -1,10 +1,12 @@
 mod behavior;
+mod computer_use;
 mod direct_api;
 mod openclaw;
 mod storage;
 mod system;
 mod tts;
 
+use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -14,7 +16,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{Emitter, Manager};
-use futures_util::FutureExt;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -60,6 +61,17 @@ struct FileMetadata {
     is_file: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SaveCustomPetAssetRequest {
+    id: Option<String>,
+    name: String,
+    kind: Option<String>,
+    manifest: String,
+    sprite_data_url: String,
+    preview_data_url: Option<String>,
+}
+
 pub struct AppState {
     pub ai: tokio::sync::Mutex<openclaw::ClaudeAdapter>,
     pub behavior: tokio::sync::Mutex<behavior::BehaviorEngine>,
@@ -81,6 +93,7 @@ pub struct AppState {
     pub abort_token: tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>,
     pub chat_start_id: StdMutex<i64>,
     pub http_client: reqwest::Client,
+    pub weather_cache: tokio::sync::Mutex<Option<system::WeatherInfo>>,
 }
 
 fn unix_now() -> i64 {
@@ -96,7 +109,9 @@ const API_THINKING_DEPTH_KEY: &str = "api_thinking_depth";
 const API_EXECUTION_MODE_KEY: &str = "api_execution_mode";
 const API_SEARCH_PROVIDER_KEY: &str = "api_search_provider";
 const API_AUTO_APPROVED_TOOLS_KEY: &str = "api_auto_approved_tools";
+const CUSTOM_PIXEL_PET_SETTING_KEY: &str = "custom_pixel_pet_asset_id";
 const MEMORY_CATEGORY_CONVERSATION: &str = "conversation";
+const WEATHER_SENT_DATE_KEY: &str = "weather_sent_date";
 const SCHEDULE_REPEAT_ONCE: &str = "once";
 const SCHEDULE_REPEAT_DAILY: &str = "daily";
 const SCHEDULE_REPEAT_WEEKLY: &str = "weekly";
@@ -168,6 +183,101 @@ fn scheduled_task_message(task: &storage::ScheduledTask) -> String {
     }
 }
 
+const MAX_CUSTOM_PET_PNG_BYTES: usize = 4 * 1024 * 1024;
+const MAX_CUSTOM_PET_MANIFEST_BYTES: usize = 64 * 1024;
+
+fn is_valid_custom_pet_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 80
+        && id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+}
+
+fn app_data_root(app_handle: &tauri::AppHandle) -> PathBuf {
+    app_handle.path().app_data_dir().unwrap_or_else(|_| {
+        dirs::data_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("ai-desktop-pet")
+    })
+}
+
+fn custom_pet_assets_root(app_handle: &tauri::AppHandle) -> PathBuf {
+    app_data_root(app_handle).join("custom_pets")
+}
+
+fn custom_pet_asset_dir(app_handle: &tauri::AppHandle, id: &str) -> Result<PathBuf, String> {
+    if !is_valid_custom_pet_id(id) {
+        return Err("Invalid custom pet asset id".to_string());
+    }
+    Ok(custom_pet_assets_root(app_handle).join(id))
+}
+
+fn normalize_custom_pet_name(name: &str) -> String {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return "Custom Pixel Pet".to_string();
+    }
+    trimmed.chars().take(64).collect()
+}
+
+fn decode_png_data_url(data_url: &str) -> Result<Vec<u8>, String> {
+    use base64::Engine;
+
+    let (header, encoded) = data_url
+        .split_once(',')
+        .ok_or_else(|| "Invalid PNG data URL".to_string())?;
+    let header = header.to_ascii_lowercase();
+    if !header.starts_with("data:image/png") || !header.contains(";base64") {
+        return Err("Only PNG data URLs are supported".to_string());
+    }
+    if encoded.len() > MAX_CUSTOM_PET_PNG_BYTES * 2 {
+        return Err("Custom pet image is too large".to_string());
+    }
+
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() > MAX_CUSTOM_PET_PNG_BYTES {
+        return Err("Custom pet image is too large".to_string());
+    }
+    Ok(bytes)
+}
+
+fn validate_pixel_pet_manifest(manifest: &str) -> Result<(), String> {
+    if manifest.len() > MAX_CUSTOM_PET_MANIFEST_BYTES {
+        return Err("Custom pet manifest is too large".to_string());
+    }
+    let value: serde_json::Value = serde_json::from_str(manifest).map_err(|e| e.to_string())?;
+    if value.get("renderer").and_then(|item| item.as_str()) != Some("pixel-sprite") {
+        return Err("Custom pet manifest renderer must be pixel-sprite".to_string());
+    }
+    let frame_size = value
+        .get("frameSize")
+        .ok_or_else(|| "Custom pet manifest missing frameSize".to_string())?;
+    if frame_size
+        .get("width")
+        .and_then(|item| item.as_u64())
+        .unwrap_or(0)
+        == 0
+        || frame_size
+            .get("height")
+            .and_then(|item| item.as_u64())
+            .unwrap_or(0)
+            == 0
+    {
+        return Err("Custom pet manifest has invalid frameSize".to_string());
+    }
+    if value
+        .get("animations")
+        .and_then(|item| item.get("idle"))
+        .is_none()
+    {
+        return Err("Custom pet manifest missing idle animation".to_string());
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 struct ParsedScheduleRequest {
     title: String,
@@ -183,23 +293,16 @@ fn parse_schedule_request(message: &str, now: i64) -> Option<ParsedScheduleReque
     }
 
     let lower = trimmed.to_lowercase();
-    let has_schedule_intent = [
-        "提醒",
-        "叫我",
-        "定时",
-        "闹钟",
-        "remind",
-        "timer",
-        "alarm",
-    ]
-    .iter()
-    .any(|needle| lower.contains(needle));
+    let has_schedule_intent = ["提醒", "叫我", "定时", "闹钟", "remind", "timer", "alarm"]
+        .iter()
+        .any(|needle| lower.contains(needle));
     if !has_schedule_intent {
         return None;
     }
 
     let (due_at, matched_time) = parse_relative_due_at(trimmed, now)?;
-    let repeat = if lower.contains("每天") || lower.contains("每日") || lower.contains("daily") {
+    let repeat = if lower.contains("每天") || lower.contains("每日") || lower.contains("daily")
+    {
         storage::TaskRepeat::Daily
     } else if lower.contains("每周") || lower.contains("weekly") {
         storage::TaskRepeat::Weekly
@@ -220,7 +323,10 @@ fn parse_schedule_request(message: &str, now: i64) -> Option<ParsedScheduleReque
 
 fn parse_relative_due_at(message: &str, now: i64) -> Option<(i64, String)> {
     if let Some(index) = message.find("半小时后") {
-        return Some((now.saturating_add(30 * 60), message[index..index + "半小时后".len()].to_string()));
+        return Some((
+            now.saturating_add(30 * 60),
+            message[index..index + "半小时后".len()].to_string(),
+        ));
     }
 
     let candidates = [
@@ -281,7 +387,10 @@ fn number_before_marker(message: &str, marker: &str) -> Option<(f64, String)> {
 }
 
 fn is_chinese_number_char(ch: char) -> bool {
-    matches!(ch, '零' | '一' | '二' | '两' | '三' | '四' | '五' | '六' | '七' | '八' | '九' | '十' | '百')
+    matches!(
+        ch,
+        '零' | '一' | '二' | '两' | '三' | '四' | '五' | '六' | '七' | '八' | '九' | '十' | '百'
+    )
 }
 
 fn chinese_digit_value(ch: char) -> Option<i64> {
@@ -674,6 +783,11 @@ fn attach_execution_mode_prompt(
         }
     };
     format!("{}\n\n{}", system_prompt, mode_note)
+}
+
+fn attach_computer_use_prompt(system_prompt: String) -> String {
+    let note = "Computer Use tools are available only when the user enables them in settings. When using them, inspect the current UI with computer_screenshot or browser_snapshot before the first mouse/keyboard action when the UI state matters. Continue the task until it is actually complete: after launching an app, wait/focus/inspect as needed and proceed with the next requested step. Batch safe low-risk actions such as typing a known text string, pressing Enter after typing, or using a common hotkey; do not screenshot after every keystroke or every tiny mouse movement. Wait and inspect again after actions that materially change the UI, when target focus is uncertain, or before irreversible actions. Never type passwords, verification codes, API keys, tokens, payment data, or other secrets. If the user says to continue after an interruption, use the saved tool progress in the conversation and take a fresh screenshot before deciding the next UI action. If the user has not clearly asked for desktop/browser control, explain what you need before requesting an action.";
+    format!("{}\n\n{}", system_prompt, note)
 }
 
 fn attach_runtime_identity_prompt(
@@ -1112,11 +1226,19 @@ async fn send_to_ai(
             } else {
                 "未知内部错误".to_string()
             };
-            let _ = app_handle_clone.emit("ai-error", serde_json::json!({
-                "message": format!("内部错误: {}", panic_msg),
-                "thinking": null,
-                "aborted": false
-            }));
+            // panic 后清理 active_chat 状态，防止宠物卡在"思考"状态
+            let state = app_handle_clone.state::<AppState>();
+            if let Ok(mut active) = state.active_chat.lock() {
+                active.active = None;
+            }
+            let _ = app_handle_clone.emit(
+                "ai-error",
+                serde_json::json!({
+                    "message": format!("内部错误: {}", panic_msg),
+                    "thinking": null,
+                    "aborted": false
+                }),
+            );
         }
     });
 
@@ -1158,6 +1280,7 @@ async fn run_ai_message(
             let base = openclaw::build_system_prompt(&personality, &profession);
             let base = attach_runtime_identity_prompt(base, &config);
             let base = attach_execution_mode_prompt(base, &config);
+            let base = attach_computer_use_prompt(base);
             let base = attach_memory_prompt(base);
             attach_registered_apps_prompt(base, &state).await
         };
@@ -1169,7 +1292,7 @@ async fn run_ai_message(
                 .unwrap_or_else(|e| e.into_inner());
             let db = state.db.lock().await;
             let mut history = db
-                .get_recent_messages_after(start_id, 25)
+                .get_recent_messages_after(start_id, 50)
                 .unwrap_or_default();
             if history
                 .last()
@@ -1503,10 +1626,8 @@ async fn set_api_config(
                 .unwrap_or_else(|| existing_profile.search_provider.clone()),
             auto_approved_tools: auto_approved_tools
                 .unwrap_or_else(|| existing_profile.auto_approved_tools.clone()),
-            stream_mode: stream_mode
-                .unwrap_or_else(|| existing_profile.stream_mode.clone()),
-            api_mode: api_mode
-                .unwrap_or_else(|| existing_profile.api_mode.clone()),
+            stream_mode: stream_mode.unwrap_or_else(|| existing_profile.stream_mode.clone()),
+            api_mode: api_mode.unwrap_or_else(|| existing_profile.api_mode.clone()),
         },
         true,
     )?;
@@ -1537,6 +1658,8 @@ async fn get_api_config(state: tauri::State<'_, AppState>) -> Result<serde_json:
         "execution_mode": profile.execution_mode,
         "search_provider": profile.search_provider,
         "auto_approved_tools": profile.auto_approved_tools,
+        "stream_mode": profile.stream_mode,
+        "api_mode": profile.api_mode,
     }))
 }
 
@@ -1625,9 +1748,9 @@ async fn test_api_connection(
     let normalized_depth =
         normalize_thinking_depth(&thinking_depth.unwrap_or_else(|| "auto".to_string()));
     let body = if effective_api_mode == "responses" {
-        let input = direct_api::api_client::convert_messages_to_responses_input(
-            &[serde_json::json!({ "role": "user", "content": "ping" })]
-        );
+        let input = direct_api::api_client::convert_messages_to_responses_input(&[
+            serde_json::json!({ "role": "user", "content": "ping" }),
+        ]);
         serde_json::json!({
             "model": model,
             "input": input,
@@ -1692,13 +1815,12 @@ async fn test_api_compatibility(
     let effective_api_mode = api_mode.unwrap_or_else(|| "chat_completions".to_string());
     let url = direct_api::api_client::build_chat_completions_url(&base_url, &effective_api_mode);
 
-
     let normalized_depth =
         normalize_thinking_depth(&thinking_depth.unwrap_or_else(|| "auto".to_string()));
     let body = if effective_api_mode == "responses" {
-        let input = direct_api::api_client::convert_messages_to_responses_input(
-            &[serde_json::json!({ "role": "user", "content": "请回复一个简短的问候语" })]
-        );
+        let input = direct_api::api_client::convert_messages_to_responses_input(&[
+            serde_json::json!({ "role": "user", "content": "请回复一个简短的问候语" }),
+        ]);
         serde_json::json!({
             "model": model,
             "input": input,
@@ -1764,10 +1886,7 @@ async fn test_api_compatibility(
     }
 
     // 尝试读取响应内容
-    let full_text = res
-        .text()
-        .await
-        .unwrap_or_default();
+    let full_text = res.text().await.unwrap_or_default();
 
     // 分析响应格式
     let is_sse = full_text.contains("data:") || full_text.contains("event:");
@@ -1785,7 +1904,8 @@ async fn test_api_compatibility(
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&full_text) {
             if let Some(content) = ContentExtractor::extract_content(&value) {
                 content_extracted = Some(content);
-                content_field_path = Some("choices[0].delta.content 或 choices[0].message.content".to_string());
+                content_field_path =
+                    Some("choices[0].delta.content 或 choices[0].message.content".to_string());
                 recommended_mode = Some("non_stream".to_string());
             }
 
@@ -1794,8 +1914,14 @@ async fn test_api_compatibility(
             // 检查tool calls
             if let Some(choices) = value.get("choices") {
                 if let Some(first) = choices.as_array().and_then(|arr| arr.first()) {
-                    has_tool_calls = first.get("delta").and_then(|d| d.get("tool_calls")).is_some()
-                        || first.get("message").and_then(|m| m.get("tool_calls")).is_some();
+                    has_tool_calls = first
+                        .get("delta")
+                        .and_then(|d| d.get("tool_calls"))
+                        .is_some()
+                        || first
+                            .get("message")
+                            .and_then(|m| m.get("tool_calls"))
+                            .is_some();
                 }
             }
 
@@ -1923,6 +2049,95 @@ async fn get_system_info(state: tauri::State<'_, AppState>) -> Result<serde_json
         "cpu": monitor.cpu_usage(),
         "memory": monitor.memory_usage_percent(),
     }))
+}
+
+#[tauri::command]
+async fn get_weather(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let mut cache = state.weather_cache.lock().await;
+
+    // 检查缓存是否有效（5分钟内）
+    if let Some(ref weather) = *cache {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        if now - weather.timestamp < 300 {
+            return Ok(serde_json::json!({
+                "city": weather.city,
+                "temperature": weather.temperature,
+                "feels_like": weather.feels_like,
+                "humidity": weather.humidity,
+                "description": weather.description,
+                "wind_speed": weather.wind_speed,
+                "icon": weather.icon,
+                "timestamp": weather.timestamp,
+            }));
+        }
+    }
+
+    // 获取新天气
+    match system::weather::get_weather_auto().await {
+        Ok(weather) => {
+            let result = serde_json::json!({
+                "city": weather.city,
+                "temperature": weather.temperature,
+                "feels_like": weather.feels_like,
+                "humidity": weather.humidity,
+                "description": weather.description,
+                "wind_speed": weather.wind_speed,
+                "icon": weather.icon,
+                "timestamp": weather.timestamp,
+            });
+            *cache = Some(weather);
+            Ok(result)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+#[tauri::command]
+async fn check_and_send_weather(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<bool, String> {
+    let db = state.db.lock().await;
+    let last_sent = db.get_setting(WEATHER_SENT_DATE_KEY)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+
+    let today = system::weather::get_today_date();
+    if last_sent == today {
+        return Ok(false);
+    }
+
+    // 获取天气
+    match system::weather::get_weather_auto().await {
+        Ok(weather) => {
+            let message = system::weather::format_weather_message(&weather);
+
+            // 保存天气信息到缓存
+            {
+                let mut cache = state.weather_cache.lock().await;
+                *cache = Some(weather);
+            }
+
+            // 记录今天已发送
+            let _ = db.save_setting(WEATHER_SENT_DATE_KEY, &today);
+
+            // 发送事件到前端
+            let _ = app_handle.emit("weather-update", serde_json::json!({
+                "message": message,
+                "sent_today": true,
+            }));
+
+            Ok(true)
+        }
+        Err(e) => {
+            eprintln!("获取天气失败: {}", e);
+            Ok(false)
+        }
+    }
 }
 
 #[tauri::command]
@@ -2184,6 +2399,119 @@ async fn get_user_avatar(state: tauri::State<'_, AppState>) -> Result<String, St
 }
 
 #[tauri::command]
+async fn save_custom_pet_asset(
+    request: SaveCustomPetAssetRequest,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<storage::CustomPetAsset, String> {
+    validate_pixel_pet_manifest(&request.manifest)?;
+
+    let id = request
+        .id
+        .filter(|value| is_valid_custom_pet_id(value))
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let name = normalize_custom_pet_name(&request.name);
+    let kind = request.kind.unwrap_or_else(|| "custom-pixel".to_string());
+    if kind != "custom-pixel" {
+        return Err("Unsupported custom pet kind".to_string());
+    }
+
+    let dir = custom_pet_asset_dir(&app_handle, &id)?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+    let sprite_path = dir.join("spritesheet.png");
+    let preview_path = dir.join("preview.png");
+    let sprite_bytes = decode_png_data_url(&request.sprite_data_url)?;
+    std::fs::write(&sprite_path, sprite_bytes).map_err(|e| e.to_string())?;
+
+    let preview_path_string = if let Some(preview_data_url) = request.preview_data_url {
+        let preview_bytes = decode_png_data_url(&preview_data_url)?;
+        std::fs::write(&preview_path, preview_bytes).map_err(|e| e.to_string())?;
+        preview_path.to_string_lossy().to_string()
+    } else {
+        String::new()
+    };
+
+    let asset = storage::CustomPetAsset {
+        id: id.clone(),
+        name,
+        kind,
+        manifest: request.manifest,
+        sprite_path: sprite_path.to_string_lossy().to_string(),
+        preview_path: preview_path_string,
+        created_at: 0,
+        updated_at: 0,
+    };
+
+    let db = state.db.lock().await;
+    db.save_custom_pet_asset(&asset)
+        .map_err(|e| e.to_string())?;
+    db.get_custom_pet_asset(&id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Custom pet asset was not saved".to_string())
+}
+
+#[tauri::command]
+async fn list_custom_pet_assets(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<storage::CustomPetAsset>, String> {
+    let db = state.db.lock().await;
+    db.list_custom_pet_assets().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_custom_pet_asset(
+    id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<storage::CustomPetAsset>, String> {
+    let db = state.db.lock().await;
+    db.get_custom_pet_asset(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn delete_custom_pet_asset(
+    id: String,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    if !is_valid_custom_pet_id(&id) {
+        return Err("Invalid custom pet asset id".to_string());
+    }
+
+    let deleted = {
+        let db = state.db.lock().await;
+        let deleted = db.delete_custom_pet_asset(&id).map_err(|e| e.to_string())?;
+        if db
+            .get_setting(CUSTOM_PIXEL_PET_SETTING_KEY)
+            .map_err(|e| e.to_string())?
+            .as_deref()
+            == Some(id.as_str())
+        {
+            db.save_setting(CUSTOM_PIXEL_PET_SETTING_KEY, "")
+                .map_err(|e| e.to_string())?;
+            if db
+                .get_setting("pet_character")
+                .map_err(|e| e.to_string())?
+                .as_deref()
+                == Some("custom-pixel")
+            {
+                db.save_setting("pet_character", "classic")
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        deleted
+    };
+
+    if deleted.is_some() {
+        let dir = custom_pet_asset_dir(&app_handle, &id)?;
+        if dir.exists() {
+            std::fs::remove_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn tick(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
     let mut behavior = state.behavior.lock().await;
     behavior.tick();
@@ -2249,12 +2577,42 @@ async fn get_font_color(state: tauri::State<'_, AppState>) -> Result<String, Str
     Ok(fc.clone())
 }
 
+/// 允许前端通过 set_setting_value 修改的设置键白名单
+const ALLOWED_SETTING_KEYS: &[&str] = &[
+    "theme",
+    "voice_enabled",
+    "voice_name",
+    "auto_start",
+    "font_size",
+    "font_color",
+    "skin",
+    "personality",
+    "profession",
+    "backend_type",
+    "model",
+    "confirm_enabled",
+    "thinking_depth",
+    "execution_mode",
+    "search_provider",
+    "stream_mode",
+    "api_mode",
+    "computer_use_enabled",
+    "computer_use_scale",
+    "pet_character",
+    "custom_pixel_pet_asset_id",
+    "voice_settings",
+    "tts_settings",
+];
+
 #[tauri::command]
 async fn set_setting_value(
     key: String,
     value: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
+    if !ALLOWED_SETTING_KEYS.contains(&key.as_str()) {
+        return Err(format!("不允许修改此设置键: {}", key));
+    }
     let db = state.db.lock().await;
     db.save_setting(&key, &value).map_err(|e| e.to_string())
 }
@@ -2328,6 +2686,20 @@ async fn eat_files(paths: Vec<String>) -> Result<(), String> {
 async fn get_shortcut_target_path(lnk_path: &str) -> Result<String, String> {
     #[cfg(target_os = "windows")]
     {
+        // 路径安全验证：必须是绝对路径、以 .lnk 结尾、不包含 PowerShell 特殊字符
+        let p = std::path::Path::new(lnk_path);
+        if !p.is_absolute() {
+            return Err("快捷方式路径必须是绝对路径".to_string());
+        }
+        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !ext.eq_ignore_ascii_case("lnk") {
+            return Err("仅支持 .lnk 快捷方式文件".to_string());
+        }
+        // 拒绝包含 PowerShell 注入特征的字符
+        if lnk_path.contains(';') || lnk_path.contains('`') || lnk_path.contains("$(") {
+            return Err("快捷方式路径包含不允许的特殊字符".to_string());
+        }
+
         let script = format!(
             "$sh = New-Object -ComObject WScript.Shell; \
              $target = $sh.CreateShortcut('{}').TargetPath; \
@@ -2431,19 +2803,20 @@ async fn get_file_metadata(paths: Vec<String>) -> Result<Vec<FileMetadata>, Stri
 #[tauri::command]
 async fn read_file_as_data_url(path: String) -> Result<String, String> {
     use base64::Engine;
-    let p = std::path::Path::new(&path);
-    if !p.exists() || !p.is_file() {
-        return Err("文件不存在".into());
+    // 路径安全验证：仅允许访问用户文档、桌面、下载等目录
+    let canonical = direct_api::tools::is_path_allowed(&path)?;
+    if !canonical.is_file() {
+        return Err("文件不存在或不是文件".into());
     }
-    let size = tokio::fs::metadata(&path)
+    let size = tokio::fs::metadata(&canonical)
         .await
         .map_err(|e| e.to_string())?
         .len();
     if size > 5 * 1024 * 1024 {
         return Err("文件过大，无法生成预览 (>5MB)".into());
     }
-    let bytes = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
-    let ext = p
+    let bytes = tokio::fs::read(&canonical).await.map_err(|e| e.to_string())?;
+    let ext = canonical
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
@@ -2707,9 +3080,52 @@ pub fn run() {
                 abort_token: tokio::sync::Mutex::new(None),
                 chat_start_id: StdMutex::new(chat_start_id),
                 http_client,
+                weather_cache: tokio::sync::Mutex::new(None),
             };
             app.manage(app_state);
             start_scheduled_task_runner(app.handle().clone());
+
+            // 启动时检查并发送天气
+            let app_handle = app.handle().clone();
+            tokio::spawn(async move {
+                // 延迟2秒等待前端准备就绪
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+                let state = app_handle.state::<AppState>();
+                let db = state.db.lock().await;
+                let last_sent = db.get_setting(WEATHER_SENT_DATE_KEY)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
+
+                let today = system::weather::get_today_date();
+                if last_sent != today {
+                    // 获取天气
+                    match system::weather::get_weather_auto().await {
+                        Ok(weather) => {
+                            let message = system::weather::format_weather_message(&weather);
+
+                            // 保存天气信息到缓存
+                            {
+                                let mut cache = state.weather_cache.lock().await;
+                                *cache = Some(weather);
+                            }
+
+                            // 记录今天已发送
+                            let _ = db.save_setting(WEATHER_SENT_DATE_KEY, &today);
+
+                            // 发送事件到前端
+                            let _ = app_handle.emit("weather-update", serde_json::json!({
+                                "message": message,
+                                "sent_today": true,
+                            }));
+                        }
+                        Err(e) => {
+                            eprintln!("启动时获取天气失败: {}", e);
+                        }
+                    }
+                }
+            });
 
             // main 窗口现在是控制台，无需置顶
 
@@ -2739,6 +3155,10 @@ pub fn run() {
             clear_clipboard_items,
             set_user_avatar,
             get_user_avatar,
+            save_custom_pet_asset,
+            list_custom_pet_assets,
+            get_custom_pet_asset,
+            delete_custom_pet_asset,
             tick,
             switch_model,
             get_current_model,
@@ -2772,6 +3192,8 @@ pub fn run() {
             list_api_models,
             confirm_tool,
             check_claude_status,
+            get_weather,
+            check_and_send_weather,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

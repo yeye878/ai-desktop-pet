@@ -1,4 +1,5 @@
 use crate::tts::{TtsRequest, TtsVoice};
+use tokio::time::Duration;
 use tokio_tungstenite::{connect_async, tungstenite};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::http::Request;
@@ -74,9 +75,13 @@ pub async fn synthesize(req: &TtsRequest) -> Result<Vec<u8>, String> {
         .body(())
         .map_err(|e| format!("构建请求失败: {e}"))?;
 
-    let (ws_stream, _) = connect_async(request)
-        .await
-        .map_err(|e| format!("WebSocket 连接失败: {e}"))?;
+    let (ws_stream, _) = tokio::time::timeout(
+        Duration::from_secs(15),
+        connect_async(request),
+    )
+    .await
+    .map_err(|_| "WebSocket 连接超时".to_string())?
+    .map_err(|e| format!("WebSocket 连接失败: {e}"))?;
 
     let (mut write, mut read) = ws_stream.split();
 
@@ -99,24 +104,37 @@ pub async fn synthesize(req: &TtsRequest) -> Result<Vec<u8>, String> {
     let mut audio_data: Vec<u8> = Vec::new();
     let header_separator = b"Path:audio\r\n";
 
-    while let Some(msg) = read.next().await {
-        match msg {
-            Ok(Message::Binary(data)) => {
-                if let Some(pos) = find_subsequence(&data, header_separator) {
-                    let audio_start = pos + header_separator.len();
-                    if audio_start < data.len() {
-                        audio_data.extend_from_slice(&data[audio_start..]);
+    let read_result = tokio::time::timeout(Duration::from_secs(30), async {
+        while let Some(msg) = read.next().await {
+            match msg {
+                Ok(Message::Binary(data)) => {
+                    if let Some(pos) = find_subsequence(&data, header_separator) {
+                        let audio_start = pos + header_separator.len();
+                        if audio_start < data.len() {
+                            audio_data.extend_from_slice(&data[audio_start..]);
+                        }
                     }
                 }
-            }
-            Ok(Message::Text(text)) => {
-                if text.contains("turn.end") {
-                    break;
+                Ok(Message::Text(text)) => {
+                    if text.contains("turn.end") {
+                        break;
+                    }
                 }
+                Err(e) => return Err(format!("WebSocket 读取错误: {e}")),
+                _ => {}
             }
-            Err(e) => return Err(format!("WebSocket 读取错误: {e}")),
-            _ => {}
         }
+        Ok(())
+    })
+    .await;
+
+    // 优雅关闭 WebSocket
+    write.send(Message::Close(None)).await.ok();
+
+    match read_result {
+        Err(_) => return Err("TTS 合成超时".to_string()),
+        Ok(Err(e)) => return Err(e),
+        Ok(Ok(())) => {}
     }
 
     if audio_data.is_empty() {
@@ -132,10 +150,20 @@ fn build_ssml(voice: &str, rate: i32, pitch: i32, volume: i32, text: &str) -> St
         .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        // 过滤 XML 非法控制字符（U+0000-U+001F 中除 \t \n \r 外）
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\t' || *c == '\n' || *c == '\r')
+        .collect::<String>();
+    let safe_voice = voice
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('\'', "&apos;")
         .replace('"', "&quot;");
     format!(
         "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='zh-CN'>\
-        <voice name='{voice}'>\
+        <voice name='{safe_voice}'>\
         <prosody rate='{rate_str}' pitch='{pitch_str}' volume='{volume}'>\
         {escaped}\
         </prosody></voice></speak>"

@@ -4,6 +4,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import CustomPixelPetWorkshop from "./CustomPixelPetWorkshop.vue";
+import PetCanvas from "./PetCanvas.vue";
 import { usePetStore, THEMES, FONT_COLORS, resolveSkinId } from "../stores/pet";
 import {
   PET_CHARACTERS,
@@ -108,6 +110,7 @@ const edgeVoiceSearch = ref("");
 const showAllEdgeVoices = ref(false);
 const ttsPreviewPlayer = new TtsPlayer();
 const isPreviewing = ref(false);
+const voiceErrorMsg = ref("");
 
 const filteredEdgeVoices = computed(() => {
   const lang = (voiceSettings.value.language || "zh-CN").toLowerCase();
@@ -644,6 +647,10 @@ async function selectCharacter(characterId: PetCharacterId) {
   }
 }
 
+function onCustomPixelSelected() {
+  currentCharacter.value = pet.character;
+}
+
 async function selectFontColor(value: string) {
   try {
     await invoke("set_font_color", { fontColor: value });
@@ -775,7 +782,8 @@ async function previewVoice() {
     await ttsPreviewPlayer.speak("你好，我是你的桌宠伙伴，很高兴认识你。", ttsSettings.value);
   } catch (e: any) {
     if (e.message !== "Aborted") {
-      alert("试听失败: " + (e.message || e));
+      voiceErrorMsg.value = "试听失败: " + (e.message || e);
+      setTimeout(() => { voiceErrorMsg.value = ""; }, 5000);
     }
   }
   isPreviewing.value = false;
@@ -795,7 +803,8 @@ async function updateVoiceSettings(patch: Partial<VoiceSettings>) {
     window.dispatchEvent(new CustomEvent("voice-settings-changed"));
     await currentWindow.emit("voice-settings-changed");
   } catch (e) {
-    alert("语音设置保存失败: " + e);
+    voiceErrorMsg.value = "语音设置保存失败: " + (e instanceof Error ? e.message : String(e));
+    setTimeout(() => { voiceErrorMsg.value = ""; }, 5000);
   }
 }
 
@@ -882,13 +891,23 @@ onUnmounted(() => {
               @click="selectCharacter(character.id)"
             >
               <div class="character-preview">
-                <span v-if="character.id === 'classic'">●</span>
+                <PetCanvas
+                  v-if="character.id === 'classic' || character.id === 'custom-pixel'"
+                  preview
+                  :character="character.id"
+                  style="width: 72px; height: 82px; pointer-events: none;"
+                />
                 <img v-else src="../assets/pets/daimao-batiao/stills/still-03.png" alt="" />
               </div>
               <span>{{ character.name }}</span>
               <small>{{ character.description }}</small>
             </button>
           </div>
+        </div>
+
+        <div class="section">
+          <h3>自定义像素桌宠</h3>
+          <CustomPixelPetWorkshop @selected="onCustomPixelSelected" />
         </div>
 
         <!-- 主题皮肤 -->
@@ -1112,6 +1131,7 @@ onUnmounted(() => {
                   {{ isPreviewing ? '停止' : '试听' }}
                 </button>
               </div>
+              <div v-if="voiceErrorMsg" class="voice-error-msg">{{ voiceErrorMsg }}</div>
             </template>
 
             <template v-else>
@@ -1946,6 +1966,13 @@ onUnmounted(() => {
 .preview-btn:disabled {
   cursor: not-allowed;
   opacity: 0.45;
+}
+
+.voice-error-msg {
+  padding: 6px 9px 2px;
+  color: #ef4444;
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .switch-row small {

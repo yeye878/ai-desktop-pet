@@ -12,12 +12,13 @@ impl AudioCache {
         Self { dir }
     }
 
-    pub fn make_key(&self, provider: &str, voice: &str, rate: i32, pitch: i32, text: &str) -> String {
+    pub fn make_key(&self, provider: &str, voice: &str, rate: i32, pitch: i32, volume: i32, text: &str) -> String {
         let mut hasher = Sha256::new();
         hasher.update(provider.as_bytes());
         hasher.update(voice.as_bytes());
         hasher.update(rate.to_le_bytes());
         hasher.update(pitch.to_le_bytes());
+        hasher.update(volume.to_le_bytes());
         hasher.update(text.as_bytes());
         hex::encode(hasher.finalize())
     }

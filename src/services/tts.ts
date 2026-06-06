@@ -93,7 +93,7 @@ export class TtsPlayer {
 
     const audioUrl = convertFileSrc(result.audio_path);
     this.audio = new Audio(audioUrl);
-    this.audio.volume = settings.volume / 100;
+    this.audio.volume = 1.0; // 音量由后端 SSML <prosody volume> 控制，避免双重衰减
     this.playing = true;
 
     return new Promise<void>((resolve, reject) => {
@@ -103,16 +103,35 @@ export class TtsPlayer {
       this.audio.onended = () => {
         this.playing = false;
         this.activeReject = null;
+        this.audio = null;
         resolve();
       };
       this.audio.onerror = () => {
+        const errCode = this.audio?.error?.code;
+        const msg = errCode === MediaError.MEDIA_ERR_NETWORK
+          ? "音频网络加载失败"
+          : errCode === MediaError.MEDIA_ERR_DECODE
+            ? "音频解码失败"
+            : errCode === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED
+              ? "音频格式不支持"
+              : "音频播放失败";
         this.playing = false;
         this.activeReject = null;
-        reject(new Error("音频播放失败"));
+        if (this.audio) {
+          this.audio.onended = null;
+          this.audio.onerror = null;
+          this.audio = null;
+        }
+        reject(new Error(msg));
       };
       this.audio.play().catch((e) => {
         this.playing = false;
         this.activeReject = null;
+        if (this.audio) {
+          this.audio.onended = null;
+          this.audio.onerror = null;
+          this.audio = null;
+        }
         reject(e);
       });
     });
@@ -123,7 +142,7 @@ export class TtsPlayer {
       this.audio.onended = null;
       this.audio.onerror = null;
       this.audio.pause();
-      this.audio.src = "";
+      this.audio.removeAttribute("src");
       this.audio = null;
     }
     if (this.activeReject) {

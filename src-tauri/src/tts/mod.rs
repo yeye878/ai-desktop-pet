@@ -39,9 +39,12 @@ impl TtsManager {
     }
 
     pub async fn synthesize(&self, req: &TtsRequest) -> Result<TtsResult, String> {
-        let cache_key = self.cache.make_key("edge", &req.voice, req.rate, req.pitch, &req.text);
+        let cache_key = self.cache.make_key("edge", &req.voice, req.rate, req.pitch, req.volume, &req.text);
         if let Some(path) = self.cache.get(&cache_key) {
-            return Ok(TtsResult { audio_path: path, cached: true });
+            // 验证缓存文件确实可读，防止外部删除导致播放失败
+            if std::path::Path::new(&path).metadata().map(|m| m.len() > 0).unwrap_or(false) {
+                return Ok(TtsResult { audio_path: path, cached: true });
+            }
         }
         let audio = edge_tts::synthesize(req).await?;
         let path = self.cache.put(&cache_key, &audio)?;
