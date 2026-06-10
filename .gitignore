@@ -3,6 +3,9 @@ dist/
 desktop-release/
 target/
 src-tauri/target/
+__pycache__/
+*.pyc
+*.tsbuildinfo
 *.log
 .DS_Store
 *.exe

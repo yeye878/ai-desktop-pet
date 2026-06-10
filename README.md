@@ -1,67 +1,71 @@
 # AI Desktop Pet
 
-智能桌宠 — 连接 OpenClaw / Ollama 等 AI Agent 的本地桌宠应用。
+A local AI desktop pet built with Tauri, Vue, Rust, and Canvas. It provides a small companion window, chat UI, direct API agent mode, local memory, weather reminders, text-to-speech, scheduled tasks, and optional desktop automation tools.
 
-## 技术栈
+## Features
 
-- **桌面框架**: Tauri v2 (Rust + WebView)
-- **前端**: Vue 3 + Canvas + Pinia
-- **AI 接入**: OpenClaw Gateway (WebSocket RPC) / Ollama 直连
-- **持久化**: SQLite
+- Desktop pet with multiple character/rendering modes
+- Chat dashboard with streaming AI responses and tool traces
+- Direct API profiles for OpenAI-compatible chat/completions APIs
+- Local SQLite storage for conversation history, memories, clipboard items, and scheduled tasks
+- Weather bar and daily weather greeting with a fallback weather provider
+- Text-to-speech support through Edge TTS
+- Optional computer-use tools for screenshots, mouse/keyboard, windows, and browsers
+- Custom pixel pet workshop for user-generated pet sprites
 
-## 前置依赖
+## Tech Stack
 
-1. **Node.js** >= 22
-2. **Rust** >= 1.77
-3. **Ollama** (可选，用于直连本地模型)
+- Tauri v2
+- Rust
+- Vue 3
+- Pinia
+- Vite
+- SQLite
 
-### 安装 Rust
+## Requirements
+
+- Windows 10/11
+- Node.js 22 or newer
+- Rust 1.77 or newer
+- Optional: a Claude Code CLI or OpenAI-compatible API provider, depending on the backend mode you use
+
+## Development
 
 ```bash
-winget install Rustlang.Rustup
-```
-
-### 安装 Ollama (可选)
-
-```bash
-winget install Ollama.Ollama
-ollama pull hermes3
-```
-
-## 开发
-
-```bash
-# 安装依赖
 npm install
-
-# 启动开发模式
 npm run tauri dev
+```
 
-# 构建
+## Build
+
+```bash
 npm run tauri build
 ```
 
-## AI 模式
+The NSIS installer is generated under:
 
-| 模式 | 说明 | 配置 |
-|------|------|------|
-| **Ollama** (默认) | 直连本地 Ollama，默认用 hermes3 | 需要 Ollama 运行中 |
-| **OpenClaw** | 通过 OpenClaw Gateway 走全功能 AI | 需要 OpenClaw 运行中 |
-
-## 项目结构
-
+```text
+src-tauri/target/release/bundle/nsis/
 ```
-ai-desktop-pet/
-├── src/                  # Vue 3 前端
-│   ├── components/       # UI 组件
-│   ├── stores/           # 状态管理
-│   └── assets/           # 素材
-├── src-tauri/            # Rust 后端
-│   ├── src/
-│   │   ├── openclaw/     # AI Agent 适配器
-│   │   ├── behavior/     # 行为引擎
-│   │   ├── system/       # 系统感知
-│   │   └── storage/      # SQLite 存储
-│   └── Cargo.toml
-└── docs/                 # 设计文档
+
+For the local desktop shortcut workflow used by this project:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\create_shortcut.ps1
 ```
+
+## Configuration
+
+Runtime settings, chat history, memories, and API profiles are stored locally in the app data directory. API keys are stored through the system credential helper where supported and are not intended to be committed to the repository.
+
+Weather defaults to a wttr.in-compatible endpoint and falls back to a secondary provider for supported Chinese city names when wttr.in is unavailable.
+
+## Repository Hygiene
+
+Generated outputs such as `node_modules/`, `dist/`, `desktop-release/`, `src-tauri/target/`, bundled runtime resources, logs, temporary review files, and local lab artifacts are ignored.
+
+Before publishing forks or releases, review local settings and generated assets to avoid accidentally sharing private data.
+
+## License
+
+MIT
