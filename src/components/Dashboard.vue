@@ -3393,7 +3393,7 @@ onUnmounted(() => {
                   <input
                     type="text"
                     v-model="weatherConfig.location"
-                    placeholder="留空自动定位；例如 Tokyo / 上海"
+                    placeholder="建议填写中文城市；例如 上海 / 北京"
                   />
                 </div>
                 <div class="dash-form-group">

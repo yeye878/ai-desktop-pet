@@ -329,6 +329,33 @@ pub async fn get_weather_with_client(
         return Err("天气功能已关闭".to_string());
     }
 
+    match get_wttr_weather_with_client(client, &config).await {
+        Ok(weather) => Ok(weather),
+        Err(primary_error) if should_try_fallback_weather(&config) => {
+            match get_fallback_weather_with_client(client, &config.location).await {
+                Ok(weather) => Ok(weather),
+                Err(fallback_error) => Err(format!(
+                    "{}\n兜底天气源也失败: {}",
+                    primary_error, fallback_error
+                )),
+            }
+        }
+        Err(primary_error)
+            if is_wttr_api_url(&config.api_url) && config.location.trim().is_empty() =>
+        {
+            Err(format!(
+                "{}\nwttr.in 自动定位当前不可用；请在天气设置里填写城市/地区后再试。",
+                primary_error
+            ))
+        }
+        Err(primary_error) => Err(primary_error),
+    }
+}
+
+async fn get_wttr_weather_with_client(
+    client: &reqwest::Client,
+    config: &WeatherConfig,
+) -> Result<WeatherInfo, String> {
     let url = build_weather_url(&config)?;
     let api_label = weather_api_label(&url);
 
@@ -375,6 +402,56 @@ pub async fn get_weather_with_client(
     })?;
 
     parse_wttr_response(wttr)
+}
+
+fn is_wttr_api_url(api_url: &str) -> bool {
+    Url::parse(api_url)
+        .ok()
+        .and_then(|parsed| {
+            parsed
+                .host_str()
+                .map(|host| host.eq_ignore_ascii_case("wttr.in"))
+        })
+        .unwrap_or(false)
+}
+
+fn should_try_fallback_weather(config: &WeatherConfig) -> bool {
+    is_wttr_api_url(&config.api_url) && !config.location.trim().is_empty()
+}
+
+async fn get_fallback_weather_with_client(
+    client: &reqwest::Client,
+    location: &str,
+) -> Result<WeatherInfo, String> {
+    let encoded_location = urlencoding::encode(location.trim());
+    let url = format!("{FALLBACK_WEATHER_API_URL}?city={encoded_location}");
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(WEATHER_REQUEST_TIMEOUT_SECS),
+        client
+            .get(&url)
+            .header("User-Agent", "ai-desktop-pet/1.0")
+            .send(),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "请求兜底天气源超时（{}秒，api.52vmy.cn）",
+            WEATHER_REQUEST_TIMEOUT_SECS
+        )
+    })?
+    .map_err(|e| format!("请求兜底天气源失败（api.52vmy.cn）: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!("兜底天气源返回错误: {}", response.status()));
+    }
+
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("读取兜底天气源响应失败: {e}"))?;
+    let parsed: VmyWeatherResponse =
+        serde_json::from_str(&body).map_err(|e| format!("解析兜底天气源响应失败: {e}"))?;
+    parse_vmy_response(parsed)
 }
 
 /// 根据天气状况生成暖心提醒
@@ -475,6 +552,26 @@ mod tests {
         .expect("sample response")
     }
 
+    fn sample_vmy_response() -> VmyWeatherResponse {
+        serde_json::from_value(serde_json::json!({
+            "code": 200,
+            "msg": "成功",
+            "data": {
+                "city": "上海",
+                "temp": "29.7",
+                "weather": "多云",
+                "windSpeed": "<3级",
+                "current": {
+                    "humidity": "33%",
+                    "weather": "晴",
+                    "temp": "29.7",
+                    "windSpeed": "1级"
+                }
+            }
+        }))
+        .expect("sample vmy response")
+    }
+
     #[test]
     fn normalizes_weather_config_defaults_and_trims() {
         let config = normalize_weather_config(WeatherConfig {
@@ -552,5 +649,19 @@ mod tests {
 
         let error = parse_wttr_response(response).expect_err("invalid temperature should fail");
         assert!(error.contains("temp_C"));
+    }
+
+    #[test]
+    fn parses_vmy_response_into_weather_info() {
+        let weather = parse_vmy_response(sample_vmy_response()).expect("weather");
+
+        assert_eq!(weather.city, "上海");
+        assert_eq!(weather.temperature, 29.7);
+        assert_eq!(weather.feels_like, 29.7);
+        assert_eq!(weather.humidity, 33);
+        assert_eq!(weather.description, "晴");
+        assert_eq!(weather.wind_speed, 5.0);
+        assert_eq!(weather.icon, "☀");
+        assert!(weather.timestamp > 0);
     }
 }
