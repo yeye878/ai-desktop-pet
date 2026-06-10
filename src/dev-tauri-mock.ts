@@ -70,7 +70,7 @@ let customPetAssets: MockCustomPetAsset[] = [];
 let weatherConfig: MockWeatherConfig = {
   enabled: true,
   location: "Tokyo",
-  api_url: "https://wttr.in",
+  api_url: "http://wttr.in",
 };
 const memories: MockMemory[] = [
   {
@@ -239,12 +239,12 @@ function handleMockCommand(cmd: string, args: MockPayload) {
     case "get_weather_config":
       return weatherConfig;
     case "set_weather_config": {
-      const apiUrl = readArg(args, "apiUrl", "api_url", "https://wttr.in").trim();
+      const apiUrl = readArg(args, "apiUrl", "api_url", "http://wttr.in").trim();
       if (!/^https?:\/\//i.test(apiUrl)) throw new Error("天气API地址必须以 http:// 或 https:// 开头");
       weatherConfig = {
         enabled: Boolean(args?.enabled),
         location: readArg(args, "location", "location").trim(),
-        api_url: apiUrl.replace(/\/+$/, "") || "https://wttr.in",
+        api_url: apiUrl.replace(/\/+$/, "") || "http://wttr.in",
       };
       return weatherConfig;
     }

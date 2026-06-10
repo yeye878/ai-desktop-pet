@@ -14,3 +14,4 @@ __*.tmp
 __diff_*.txt
 __review_*.tmp
 docs/*.md
+_lab3_review/

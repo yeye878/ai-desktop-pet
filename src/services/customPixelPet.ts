@@ -1,11 +1,10 @@
+import { removeEdgeBackground, type PixelBounds } from "./customPixelPetBackground";
+
 export const CUSTOM_PIXEL_PET_SETTING_KEY = "custom_pixel_pet_asset_id";
 
 const SHEET_COLUMNS = 10;
 const MAX_SOURCE_SIZE = 6 * 1024 * 1024;
 const GENERATOR_VERSION = "local-pixel-v2";
-
-type Rgb = { r: number; g: number; b: number };
-type PixelBounds = { left: number; top: number; right: number; bottom: number };
 
 export type PixelPetAnimation = {
   frames: number[];
@@ -95,142 +94,6 @@ function loadImage(src: string): Promise<HTMLImageElement> {
     image.onerror = () => reject(new Error("Failed to load image"));
     image.src = src;
   });
-}
-
-function colorDistance(a: Rgb, b: Rgb) {
-  const dr = a.r - b.r;
-  const dg = a.g - b.g;
-  const db = a.b - b.b;
-  return Math.sqrt(dr * dr + dg * dg + db * db);
-}
-
-function normalizeBounds(bounds: PixelBounds | undefined, width: number, height: number): PixelBounds | null {
-  const normalized = {
-    left: Math.max(0, Math.min(width, Math.floor(bounds?.left ?? 0))),
-    top: Math.max(0, Math.min(height, Math.floor(bounds?.top ?? 0))),
-    right: Math.max(0, Math.min(width, Math.ceil(bounds?.right ?? width))),
-    bottom: Math.max(0, Math.min(height, Math.ceil(bounds?.bottom ?? height))),
-  };
-
-  if (normalized.right <= normalized.left || normalized.bottom <= normalized.top) return null;
-  return normalized;
-}
-
-function collectEdgeSamples(
-  data: Uint8ClampedArray,
-  width: number,
-  bounds: PixelBounds,
-) {
-  const samples: Rgb[] = [];
-  const sample = (x: number, y: number) => {
-    const index = (y * width + x) * 4;
-    if (data[index + 3] < 128) return;
-    samples.push({ r: data[index], g: data[index + 1], b: data[index + 2] });
-  };
-
-  for (let x = bounds.left; x < bounds.right; x++) {
-    sample(x, bounds.top);
-    sample(x, bounds.bottom - 1);
-  }
-  for (let y = bounds.top + 1; y < bounds.bottom - 1; y++) {
-    sample(bounds.left, y);
-    sample(bounds.right - 1, y);
-  }
-
-  return samples;
-}
-
-function estimateEdgeColors(data: Uint8ClampedArray, width: number, bounds: PixelBounds) {
-  const samples = collectEdgeSamples(data, width, bounds);
-  if (samples.length === 0) return [];
-
-  const bucketSize = 24;
-  const buckets = new Map<string, { r: number; g: number; b: number; count: number }>();
-  for (const sample of samples) {
-    const key = [
-      Math.floor(sample.r / bucketSize),
-      Math.floor(sample.g / bucketSize),
-      Math.floor(sample.b / bucketSize),
-    ].join(":");
-    const bucket = buckets.get(key) || { r: 0, g: 0, b: 0, count: 0 };
-    bucket.r += sample.r;
-    bucket.g += sample.g;
-    bucket.b += sample.b;
-    bucket.count++;
-    buckets.set(key, bucket);
-  }
-
-  const ranked = Array.from(buckets.values())
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 3);
-  const candidates = ranked.filter((bucket) => bucket.count >= Math.max(2, samples.length * 0.04));
-
-  return (candidates.length > 0 ? candidates : ranked.slice(0, 1))
-    .map((bucket) => ({
-      r: bucket.r / bucket.count,
-      g: bucket.g / bucket.count,
-      b: bucket.b / bucket.count,
-    }));
-}
-
-function removeEdgeBackground(imageData: ImageData, bounds?: PixelBounds) {
-  const { data, width, height } = imageData;
-  const area = normalizeBounds(bounds, width, height);
-  if (!area) return;
-  const bgColors = estimateEdgeColors(data, width, area);
-  if (bgColors.length === 0) return;
-
-  const visited = new Uint8Array(width * height);
-  const queue: number[] = [];
-  const enqueue = (x: number, y: number) => {
-    if (x < area.left || x >= area.right || y < area.top || y >= area.bottom) return;
-    const key = y * width + x;
-    if (visited[key]) return;
-    visited[key] = 1;
-    queue.push(key);
-  };
-
-  for (let x = area.left; x < area.right; x++) {
-    enqueue(x, area.top);
-    enqueue(x, area.bottom - 1);
-  }
-  for (let y = area.top + 1; y < area.bottom - 1; y++) {
-    enqueue(area.left, y);
-    enqueue(area.right - 1, y);
-  }
-
-  let cursor = 0;
-  while (cursor < queue.length) {
-    const key = queue[cursor++] ?? 0;
-    const index = key * 4;
-    const x = key % width;
-    const y = Math.floor(key / width);
-    if (data[index + 3] < 20) {
-      data[index] = 0;
-      data[index + 1] = 0;
-      data[index + 2] = 0;
-      data[index + 3] = 0;
-      enqueue(x + 1, y);
-      enqueue(x - 1, y);
-      enqueue(x, y + 1);
-      enqueue(x, y - 1);
-      continue;
-    }
-
-    const current = { r: data[index], g: data[index + 1], b: data[index + 2] };
-    const distance = Math.min(...bgColors.map((bg) => colorDistance(current, bg)));
-    const tolerance = 58 + (data[index + 3] < 220 ? 12 : 0);
-    if (distance > tolerance) continue;
-
-    data[index] = 0;
-    data[index + 1] = 0;
-    data[index + 2] = 0;
-    data[index + 3] = 0;
-    enqueue(x + 1, y);
-    enqueue(x - 1, y);
-    enqueue(x, y + 1);
-    enqueue(x, y - 1);
-  }
 }
 
 function findOpaqueBounds(imageData: ImageData, minAlpha = 72): PixelBounds | null {

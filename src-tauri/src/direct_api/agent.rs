@@ -791,7 +791,11 @@ pub async fn run_direct_api_agent(
         "ai-finished",
         crate::AiFinishedPayload {
             text: full_text,
-            thinking: if full_thinking.is_empty() { None } else { Some(full_thinking) },
+            thinking: if full_thinking.is_empty() {
+                None
+            } else {
+                Some(full_thinking)
+            },
         },
     );
 }
@@ -907,7 +911,11 @@ fn compact_execution_progress_for_context(thinking: &str) -> Option<String> {
 
         if starts_block {
             lines.push(line.to_string());
-            capture_remaining = if line.starts_with("[执行结果]") { 12 } else { 8 };
+            capture_remaining = if line.starts_with("[执行结果]") {
+                12
+            } else {
+                8
+            };
             continue;
         }
 
@@ -1300,10 +1308,11 @@ fn mode_requires_confirmation(
     ) {
         return true;
     }
-    // read_file、web_search 和 list_scheduled_tasks 为安全/只读工具，在任何模式下均不需要弹窗确认；
+    // read_file、web_search、get_weather 和 list_scheduled_tasks 为安全/只读工具，在任何模式下均不需要弹窗确认；
     // 敏感工具如 run_command 和 open_app 需要等待确认（open_app 启动本地应用，具有敏感性）。
     if tool_name == "read_file"
         || tool_name == "web_search"
+        || tool_name == "get_weather"
         || tool_name == "list_scheduled_tasks"
         || tool_name == "search_memory"
         || tool_name == "save_memory"
@@ -1403,6 +1412,16 @@ fn tool_summary(tool_name: &str, args: &serde_json::Value) -> String {
             )
         }
         "web_search" => format!("搜索网页 {}", args["query"].as_str().unwrap_or("未知查询")),
+        "get_weather" => {
+            if let Some(location) = args["location"]
+                .as_str()
+                .filter(|value| !value.trim().is_empty())
+            {
+                format!("查询天气 {}", location)
+            } else {
+                "查询当前天气".to_string()
+            }
+        }
         "open_app" => format!("打开应用 {}", args["app"].as_str().unwrap_or("未知应用")),
         "computer_screenshot" => "查看桌面截图".to_string(),
         "computer_mouse" => format!("控制鼠标 {}", args["action"].as_str().unwrap_or("unknown")),
@@ -1436,7 +1455,8 @@ fn tool_summary(tool_name: &str, args: &serde_json::Value) -> String {
         "file_search" => format!(
             "搜索文件 '{}'{}",
             args["pattern"].as_str().unwrap_or("*"),
-            args["directory"].as_str()
+            args["directory"]
+                .as_str()
                 .map(|d| format!(" 在 {}", d))
                 .unwrap_or_default()
         ),
@@ -1635,6 +1655,14 @@ mod tests {
     }
 
     #[test]
+    fn weather_tool_does_not_require_confirmation() {
+        let mut config = DirectApiConfig::default();
+        config.execution_mode = "normal".to_string();
+
+        assert!(!mode_requires_confirmation(&config, "get_weather", false));
+    }
+
+    #[test]
     fn history_context_includes_compact_tool_progress() {
         let thinking = r#"
 private reasoning that should not be replayed
@@ -1659,7 +1687,8 @@ private reasoning that should not be replayed
 
     #[test]
     fn turn_limit_message_keeps_progress_for_continue() {
-        let thinking = "[调用工具] 查看桌面截图\n{}\n[执行结果]\n{\"summary\":\"Screenshot captured\"}";
+        let thinking =
+            "[调用工具] 查看桌面截图\n{}\n[执行结果]\n{\"summary\":\"Screenshot captured\"}";
         let message = turn_limit_message(160, thinking);
 
         assert!(message.contains("已达到最大迭代限制 160 轮"));

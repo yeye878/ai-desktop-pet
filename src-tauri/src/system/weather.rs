@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-pub const DEFAULT_WEATHER_API_URL: &str = "https://wttr.in";
+pub const DEFAULT_WEATHER_API_URL: &str = "http://wttr.in";
+const LEGACY_HTTPS_WTTR_API_URL: &str = "https://wttr.in";
+const WEATHER_REQUEST_TIMEOUT_SECS: u64 = 20;
+const FALLBACK_WEATHER_API_URL: &str = "https://api.52vmy.cn/api/query/tian";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WeatherInfo {
@@ -69,6 +72,32 @@ struct AreaName {
     value: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct VmyWeatherResponse {
+    code: i32,
+    msg: String,
+    data: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct VmyWeatherData {
+    city: String,
+    temp: String,
+    weather: String,
+    #[serde(rename = "windSpeed")]
+    wind_speed: String,
+    current: Option<VmyCurrentWeather>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VmyCurrentWeather {
+    humidity: String,
+    weather: String,
+    temp: String,
+    #[serde(rename = "windSpeed")]
+    wind_speed: String,
+}
+
 /// 根据天气代码返回图标
 fn weather_icon(code: &str) -> String {
     match code {
@@ -76,15 +105,44 @@ fn weather_icon(code: &str) -> String {
         "116" => "⛅".to_string(),
         "119" | "122" => "☁".to_string(),
         "143" | "248" | "260" => "🌫".to_string(),
-        "176" | "263" | "266" | "293" | "296" | "299" | "302" | "305" | "311" | "353" => "🌧".to_string(),
-        "179" | "182" | "185" | "227" | "230" | "320" | "323" | "326" | "329" | "332" | "335" | "338" | "350" | "362" | "365" | "374" | "377" => "🌨".to_string(),
+        "176" | "263" | "266" | "293" | "296" | "299" | "302" | "305" | "311" | "353" => {
+            "🌧".to_string()
+        }
+        "179" | "182" | "185" | "227" | "230" | "320" | "323" | "326" | "329" | "332" | "335"
+        | "338" | "350" | "362" | "365" | "374" | "377" => "🌨".to_string(),
         "200" | "386" | "389" | "392" | "395" => "⛈".to_string(),
         _ => "🌡".to_string(),
     }
 }
 
+fn weather_icon_from_description(description: &str) -> String {
+    let desc = description.to_lowercase();
+    if desc.contains("雷") || desc.contains("thunder") {
+        "⛈".to_string()
+    } else if desc.contains("雨") || desc.contains("rain") {
+        "🌧".to_string()
+    } else if desc.contains("雪") || desc.contains("snow") {
+        "🌨".to_string()
+    } else if desc.contains("雾")
+        || desc.contains("霾")
+        || desc.contains("fog")
+        || desc.contains("haze")
+    {
+        "🌫".to_string()
+    } else if desc.contains("云") || desc.contains("cloud") {
+        "☁".to_string()
+    } else if desc.contains("晴") || desc.contains("sunny") || desc.contains("clear") {
+        "☀".to_string()
+    } else {
+        "🌡".to_string()
+    }
+}
+
 pub fn normalize_weather_config(config: WeatherConfig) -> WeatherConfig {
-    let api_url = config.api_url.trim().trim_end_matches('/').to_string();
+    let mut api_url = config.api_url.trim().trim_end_matches('/').to_string();
+    if api_url.eq_ignore_ascii_case(LEGACY_HTTPS_WTTR_API_URL) {
+        api_url = DEFAULT_WEATHER_API_URL.to_string();
+    }
 
     WeatherConfig {
         enabled: config.enabled,
@@ -106,6 +164,13 @@ fn validate_weather_url(url: &str) -> Result<(), String> {
         return Err("天气API地址缺少主机名".to_string());
     }
     Ok(())
+}
+
+fn weather_api_label(url: &str) -> String {
+    Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(|host| host.to_string()))
+        .unwrap_or_else(|| "配置的天气API".to_string())
 }
 
 pub fn build_weather_url(config: &WeatherConfig) -> Result<String, String> {
@@ -137,6 +202,39 @@ fn parse_i32_field(value: &str, field: &str) -> Result<i32, String> {
     value
         .parse::<i32>()
         .map_err(|_| format!("天气数据字段 {field} 不是有效整数: {value}"))
+}
+
+fn parse_percent_i32(value: &str, field: &str) -> Result<i32, String> {
+    parse_i32_field(value.trim().trim_end_matches('%'), field)
+}
+
+fn parse_wind_speed_kmph(value: &str) -> f64 {
+    let numeric = value
+        .chars()
+        .filter(|ch| ch.is_ascii_digit() || *ch == '.')
+        .collect::<String>()
+        .parse::<f64>()
+        .unwrap_or(0.0);
+
+    if value.contains('级') {
+        match numeric as i32 {
+            0 => 1.0,
+            1 => 5.0,
+            2 => 11.0,
+            3 => 19.0,
+            4 => 28.0,
+            5 => 38.0,
+            6 => 49.0,
+            7 => 61.0,
+            8 => 74.0,
+            9 => 88.0,
+            10 => 102.0,
+            11 => 117.0,
+            _ => numeric,
+        }
+    } else {
+        numeric
+    }
 }
 
 fn parse_wttr_response(wttr: WttrResponse) -> Result<WeatherInfo, String> {
@@ -182,6 +280,46 @@ fn parse_wttr_response(wttr: WttrResponse) -> Result<WeatherInfo, String> {
     })
 }
 
+fn parse_vmy_response(response: VmyWeatherResponse) -> Result<WeatherInfo, String> {
+    if response.code != 200 {
+        return Err(format!("52vmy 天气源返回失败: {}", response.msg));
+    }
+
+    let data: VmyWeatherData = serde_json::from_value(response.data)
+        .map_err(|e| format!("解析 52vmy 天气数据失败: {e}"))?;
+    let current = data.current.as_ref();
+    let temperature = current
+        .map(|item| parse_f64_field(&item.temp, "current.temp"))
+        .unwrap_or_else(|| parse_f64_field(&data.temp, "temp"))?;
+    let humidity = current
+        .map(|item| parse_percent_i32(&item.humidity, "current.humidity"))
+        .transpose()?
+        .unwrap_or(0);
+    let description = current
+        .map(|item| item.weather.clone())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| data.weather.clone());
+    let wind_speed = current
+        .map(|item| parse_wind_speed_kmph(&item.wind_speed))
+        .unwrap_or_else(|| parse_wind_speed_kmph(&data.wind_speed));
+    let icon = weather_icon_from_description(&description);
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    Ok(WeatherInfo {
+        city: data.city,
+        temperature,
+        feels_like: temperature,
+        humidity,
+        description,
+        wind_speed,
+        icon,
+        timestamp,
+    })
+}
+
 pub async fn get_weather_with_client(
     client: &reqwest::Client,
     config: &WeatherConfig,
@@ -192,22 +330,49 @@ pub async fn get_weather_with_client(
     }
 
     let url = build_weather_url(&config)?;
+    let api_label = weather_api_label(&url);
 
-    let response = client
-        .get(&url)
-        .header("User-Agent", "ai-desktop-pet/1.0")
-        .send()
-        .await
-        .map_err(|e| format!("请求天气API失败: {e}"))?;
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(WEATHER_REQUEST_TIMEOUT_SECS),
+        client
+            .get(&url)
+            .header("User-Agent", "ai-desktop-pet/1.0")
+            .send(),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "请求天气API超时（{}秒，{}）",
+            WEATHER_REQUEST_TIMEOUT_SECS, api_label
+        )
+    })?
+    .map_err(|e| format!("请求天气API失败（{}）: {e}", api_label))?;
 
     if !response.status().is_success() {
-        return Err(format!("天气API返回错误: {}", response.status()));
+        return Err(format!(
+            "天气API返回错误（{}）: {}",
+            api_label,
+            response.status()
+        ));
     }
 
-    let wttr: WttrResponse = response
-        .json()
+    let body = response
+        .text()
         .await
-        .map_err(|e| format!("解析天气数据失败: {e}"))?;
+        .map_err(|e| format!("读取天气API响应失败（{}）: {e}", api_label))?;
+    let wttr: WttrResponse = serde_json::from_str(&body).map_err(|e| {
+        let preview = body
+            .chars()
+            .take(120)
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!(
+            "解析天气数据失败（{}）: {e}。当前天气 API 需要返回 wttr.in format=j1 兼容 JSON；响应开头: {}",
+            api_label, preview
+        )
+    })?;
 
     parse_wttr_response(wttr)
 }
@@ -263,7 +428,7 @@ pub fn get_weather_advice(weather: &WeatherInfo) -> String {
 /// 格式化天气消息（含暖心提醒）
 pub fn format_weather_message(weather: &WeatherInfo) -> String {
     let advice = get_weather_advice(weather);
-    
+
     format!(
         "🌤 今日天气\n\n\
          📍 {}\n\
@@ -340,16 +505,19 @@ mod tests {
             location: "".to_string(),
             api_url: DEFAULT_WEATHER_API_URL.to_string(),
         };
-        assert_eq!(build_weather_url(&auto).expect("auto url"), "https://wttr.in/?format=j1");
+        assert_eq!(
+            build_weather_url(&auto).expect("auto url"),
+            "http://wttr.in/?format=j1"
+        );
 
         let city = WeatherConfig {
             enabled: true,
             location: "上海".to_string(),
-            api_url: "https://wttr.in".to_string(),
+            api_url: DEFAULT_WEATHER_API_URL.to_string(),
         };
         assert_eq!(
             build_weather_url(&city).expect("city url"),
-            "https://wttr.in/%E4%B8%8A%E6%B5%B7?format=j1"
+            "http://wttr.in/%E4%B8%8A%E6%B5%B7?format=j1"
         );
 
         let template = WeatherConfig {

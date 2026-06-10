@@ -3397,11 +3397,11 @@ onUnmounted(() => {
                   />
                 </div>
                 <div class="dash-form-group">
-                  <label>天气 API 地址</label>
+                  <label>wttr.in 兼容 API 地址</label>
                   <input
                     type="text"
                     v-model="weatherConfig.api_url"
-                    placeholder="https://wttr.in"
+                    placeholder="http://wttr.in 或 https://example.com/{location}?format=j1"
                   />
                 </div>
               </div>

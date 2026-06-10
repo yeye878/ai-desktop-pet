@@ -1033,6 +1033,41 @@ onUnmounted(() => {
             />
           </div>
         </div>
+
+        <!-- 性格 -->
+        <div class="section">
+          <h3>&#x2728; 性格</h3>
+          <div class="option-grid personality-grid">
+            <button
+              v-for="item in personalities"
+              :key="item.id"
+              class="option-item"
+              :class="{ active: currentPersonality === item.id }"
+              @click="selectPersonality(item.id)"
+            >
+              <span class="option-name">{{ item.name }}</span>
+              <span class="option-desc">{{ item.desc }}</span>
+            </button>
+          </div>
+          <p class="hint">切换后会重置 Claude 会话，让新设定立即生效</p>
+        </div>
+
+        <!-- 职业 -->
+        <div class="section">
+          <h3>&#x1F9ED; 职业</h3>
+          <div class="option-grid profession-grid">
+            <button
+              v-for="item in professions"
+              :key="item.id"
+              class="option-item"
+              :class="{ active: currentProfession === item.id }"
+              @click="selectProfession(item.id)"
+            >
+              <span class="option-name">{{ item.name }}</span>
+              <span class="option-desc">{{ item.desc }}</span>
+            </button>
+          </div>
+        </div>
       </template>
 
       <!-- VOICE TAB -->
@@ -1608,41 +1643,6 @@ onUnmounted(() => {
               </div>
             </div>
           </template>
-        </div>
-
-        <!-- 性格 -->
-        <div class="section">
-          <h3>&#x2728; 性格</h3>
-          <div class="option-grid personality-grid">
-            <button
-              v-for="item in personalities"
-              :key="item.id"
-              class="option-item"
-              :class="{ active: currentPersonality === item.id }"
-              @click="selectPersonality(item.id)"
-            >
-              <span class="option-name">{{ item.name }}</span>
-              <span class="option-desc">{{ item.desc }}</span>
-            </button>
-          </div>
-          <p class="hint">切换后会重置 Claude 会话，让新设定立即生效</p>
-        </div>
-
-        <!-- 职业 -->
-        <div class="section">
-          <h3>&#x1F9ED; 职业</h3>
-          <div class="option-grid profession-grid">
-            <button
-              v-for="item in professions"
-              :key="item.id"
-              class="option-item"
-              :class="{ active: currentProfession === item.id }"
-              @click="selectProfession(item.id)"
-            >
-              <span class="option-name">{{ item.name }}</span>
-              <span class="option-desc">{{ item.desc }}</span>
-            </button>
-          </div>
         </div>
       </template>
     </div>

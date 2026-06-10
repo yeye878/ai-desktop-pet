@@ -279,7 +279,9 @@ fn validate_pixel_pet_manifest(manifest: &str) -> Result<(), String> {
         .and_then(|item| item.as_u64())
         .unwrap_or(0);
     if !matches!(width, 48 | 64 | 96) || width != height {
-        return Err("Custom pet manifest frameSize must be 48, 64, or 96 square pixels".to_string());
+        return Err(
+            "Custom pet manifest frameSize must be 48, 64, or 96 square pixels".to_string(),
+        );
     }
     let sheet = value
         .get("sheet")
@@ -817,6 +819,11 @@ fn attach_computer_use_prompt(system_prompt: String) -> String {
     format!("{}\n\n{}", system_prompt, note)
 }
 
+fn attach_weather_prompt(system_prompt: String) -> String {
+    let note = "天气能力：当用户询问当前天气、温度、湿度、出门建议，或要求查询某个城市天气时，优先使用 get_weather 工具。该工具会读取设置页保存的天气配置，也可以临时传入 location 查询指定城市。";
+    format!("{}\n\n{}", system_prompt, note)
+}
+
 fn attach_runtime_identity_prompt(
     system_prompt: String,
     config: &direct_api::DirectApiConfig,
@@ -1308,6 +1315,7 @@ async fn run_ai_message(
             let base = attach_runtime_identity_prompt(base, &config);
             let base = attach_execution_mode_prompt(base, &config);
             let base = attach_computer_use_prompt(base);
+            let base = attach_weather_prompt(base);
             let base = attach_memory_prompt(base);
             attach_registered_apps_prompt(base, &state).await
         };
@@ -2990,7 +2998,9 @@ async fn read_file_as_data_url(path: String) -> Result<String, String> {
     if size > 5 * 1024 * 1024 {
         return Err("文件过大，无法生成预览 (>5MB)".into());
     }
-    let bytes = tokio::fs::read(&canonical).await.map_err(|e| e.to_string())?;
+    let bytes = tokio::fs::read(&canonical)
+        .await
+        .map_err(|e| e.to_string())?;
     let ext = canonical
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())

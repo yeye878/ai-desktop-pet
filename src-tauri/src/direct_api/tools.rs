@@ -1,4 +1,4 @@
-use crate::computer_use;
+use crate::{computer_use, system};
 use serde_json::json;
 use std::{
     ffi::OsString,
@@ -152,7 +152,9 @@ fn canonical_blocked_roots() -> Vec<PathBuf> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        for root in ["/bin", "/boot", "/dev", "/etc", "/proc", "/root", "/sbin", "/sys", "/usr"] {
+        for root in [
+            "/bin", "/boot", "/dev", "/etc", "/proc", "/root", "/sbin", "/sys", "/usr",
+        ] {
             push_canonical_root(&mut roots, PathBuf::from(root));
         }
     }
@@ -202,7 +204,10 @@ pub fn is_path_allowed(path: &str) -> Result<PathBuf, String> {
     }
 
     if has_sensitive_component(&canonical) {
-        return Err(format!("路径疑似包含敏感凭据或密钥文件，已拒绝访问: {}", path));
+        return Err(format!(
+            "路径疑似包含敏感凭据或密钥文件，已拒绝访问: {}",
+            path
+        ));
     }
 
     Ok(canonical)
@@ -317,6 +322,19 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
                         "url": { "type": "string", "description": "要读取的网页 URL（必须是 http 或 https 链接）" }
                     },
                     "required": ["url"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "查询桌宠内置天气功能的当前天气。默认使用设置页保存的城市/地区与 wttr.in 兼容天气 API；可用 location 临时查询其他城市。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "location": { "type": "string", "description": "可选，城市或地区，例如 Tokyo、上海；不提供时使用天气设置中的位置，设置为空则由天气源自动定位" }
+                    }
                 }
             }
         }),
@@ -614,6 +632,7 @@ pub async fn execute_tool(
                 }
             }
         }
+        "get_weather" => exec_get_weather(args).await.unwrap_or_else(|e| e),
         "open_app" => exec_open_app(args).await.unwrap_or_else(|e| e),
         "computer_screenshot" => computer_use::screenshot(args).await.unwrap_or_else(|e| e),
         "computer_mouse" => computer_use::mouse(args).await.unwrap_or_else(|e| e),
@@ -790,7 +809,12 @@ fn open_xml_part_number(name: &str) -> Option<usize> {
     if digits_reversed.is_empty() {
         return None;
     }
-    digits_reversed.chars().rev().collect::<String>().parse().ok()
+    digits_reversed
+        .chars()
+        .rev()
+        .collect::<String>()
+        .parse()
+        .ok()
 }
 
 fn extract_open_xml_text(xml_content: &str) -> String {
@@ -902,7 +926,9 @@ fn decode_xml_entities(input: &str) -> String {
             _ if entity.starts_with("#x") => u32::from_str_radix(&entity[2..], 16)
                 .ok()
                 .and_then(char::from_u32),
-            _ if entity.starts_with('#') => entity[1..].parse::<u32>().ok().and_then(char::from_u32),
+            _ if entity.starts_with('#') => {
+                entity[1..].parse::<u32>().ok().and_then(char::from_u32)
+            }
             _ => None,
         };
 
@@ -1713,11 +1739,60 @@ fn get_db_path_for_tools() -> Result<std::path::PathBuf, String> {
     Ok(path)
 }
 
+const WEATHER_CONFIG_KEY_FOR_TOOLS: &str = "weather_config";
+
 fn unix_now_for_tools() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
         .unwrap_or_default()
+}
+
+fn load_weather_config_for_tools() -> Result<system::weather::WeatherConfig, String> {
+    let db_path = get_db_path_for_tools()?;
+    let conn =
+        rusqlite::Connection::open(&db_path).map_err(|e| format!("打开天气设置数据库失败: {e}"))?;
+    let mut stmt = conn
+        .prepare("SELECT value FROM pet_settings WHERE key = ?1")
+        .map_err(|e| format!("读取天气设置失败: {e}"))?;
+    let mut rows = stmt
+        .query_map([WEATHER_CONFIG_KEY_FOR_TOOLS], |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|e| format!("读取天气设置失败: {e}"))?;
+    let raw = match rows.next() {
+        Some(Ok(value)) => Some(value),
+        Some(Err(error)) => return Err(format!("读取天气设置失败: {error}")),
+        None => None,
+    };
+
+    let config = raw
+        .and_then(|value| serde_json::from_str::<system::weather::WeatherConfig>(&value).ok())
+        .map(system::weather::normalize_weather_config)
+        .unwrap_or_default();
+    Ok(config)
+}
+
+async fn exec_get_weather(args: &serde_json::Value) -> Result<String, String> {
+    let mut config = load_weather_config_for_tools()?;
+    if let Some(location) = args["location"]
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        config.location = location.to_string();
+        config.enabled = true;
+    }
+    if !config.enabled {
+        return Err("天气功能已关闭，请先在设置里启用天气栏与每日天气问候。".to_string());
+    }
+
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|e| format!("创建天气请求客户端失败: {e}"))?;
+    let weather = system::weather::get_weather_with_client(&client, &config).await?;
+    Ok(system::weather::format_weather_message(&weather))
 }
 
 fn normalize_task_repeat_for_tools(value: &str) -> &'static str {
@@ -2206,8 +2281,7 @@ mod tests {
             zip.start_file("ppt/notesSlides/notesSlide1.xml", options)
                 .unwrap();
             zip.write_all(
-                r#"<p:notes><a:p><a:r><a:t>备注内容</a:t></a:r></a:p></p:notes>"#
-                    .as_bytes(),
+                r#"<p:notes><a:p><a:r><a:t>备注内容</a:t></a:r></a:p></p:notes>"#.as_bytes(),
             )
             .unwrap();
             zip.finish().unwrap();
@@ -2300,5 +2374,17 @@ mod tests {
                 SearchProvider::BingHtml,
             ]
         );
+    }
+
+    #[test]
+    fn tool_definitions_include_weather_query() {
+        let tools = tool_definitions();
+        let has_weather = tools.iter().any(|tool| {
+            tool["function"]["name"]
+                .as_str()
+                .is_some_and(|name| name == "get_weather")
+        });
+
+        assert!(has_weather);
     }
 }
