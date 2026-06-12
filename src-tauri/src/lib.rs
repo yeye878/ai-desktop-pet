@@ -243,6 +243,10 @@ fn decode_png_data_url(data_url: &str) -> Result<Vec<u8>, String> {
     if bytes.len() > MAX_CUSTOM_PET_PNG_BYTES {
         return Err("Custom pet image is too large".to_string());
     }
+    // 校验 PNG 魔数 (\x89PNG\r\n\x1a\n)，避免任意字节以 .png 后缀写入
+    if bytes.len() < 8 || &bytes[..8] != b"\x89PNG\r\n\x1a\n" {
+        return Err("Invalid PNG signature".to_string());
+    }
     Ok(bytes)
 }
 
@@ -824,6 +828,17 @@ fn attach_weather_prompt(system_prompt: String) -> String {
     format!("{}\n\n{}", system_prompt, note)
 }
 
+fn attach_search_prompt(system_prompt: String) -> String {
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let note = format!(
+        "联网搜索能力：当前日期是 {today}。当用户询问新闻、日报、最近、最新、今天、本周、价格、法规、版本、人物职位或其他可能随时间变化的信息时，必须先把时间范围想清楚再搜索。\
+        对新闻、日报、快讯、最近动态这类任务，优先调用 web_search 并传入 recency_days（今天/日报用 1-2，最近/本周用 7，本月用 31）；搜索词要包含关键实体、地区、主题和日期线索。\
+        阅读网页时优先调用 read_webpage 并传入 query，只读取与问题相关的片段。整理结果时比较来源的发布时间，丢弃明显过旧或与时间范围不符的内容；如果搜索结果没有发布时间，要说明不确定性并继续找更可靠来源。\
+        做每日时报或新闻简报时，先用 recency_days 搜索最近新闻，再按重要性、地区/主题多样性和来源可靠性筛选，不要把旧新闻当成今日新闻。"
+    );
+    format!("{}\n\n{}", system_prompt, note)
+}
+
 fn attach_runtime_identity_prompt(
     system_prompt: String,
     config: &direct_api::DirectApiConfig,
@@ -1083,6 +1098,15 @@ mod tests {
         assert!(!prompt.contains("sk-secret-value"));
         assert!(!prompt.contains("api.secret.example"));
     }
+
+    #[test]
+    fn search_prompt_mentions_recency_and_dates() {
+        let prompt = attach_search_prompt("base prompt".to_string());
+
+        assert!(prompt.contains("recency_days"));
+        assert!(prompt.contains("当前日期"));
+        assert!(prompt.contains("发布时间"));
+    }
 }
 
 fn kill_process_tree(pid: u32) {
@@ -1316,6 +1340,7 @@ async fn run_ai_message(
             let base = attach_execution_mode_prompt(base, &config);
             let base = attach_computer_use_prompt(base);
             let base = attach_weather_prompt(base);
+            let base = attach_search_prompt(base);
             let base = attach_memory_prompt(base);
             attach_registered_apps_prompt(base, &state).await
         };
@@ -2310,6 +2335,10 @@ async fn start_new_conversation(
     Ok(serde_json::json!({ "saved_memory_id": saved_memory_id }))
 }
 
+const MAX_MEMORY_VALUE_BYTES: usize = 64 * 1024;
+const MAX_MEMORY_KEY_BYTES: usize = 256;
+const MAX_MEMORY_CATEGORY_BYTES: usize = 64;
+
 #[tauri::command]
 async fn save_memory(
     category: String,
@@ -2317,6 +2346,19 @@ async fn save_memory(
     value: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<storage::MemoryItem, String> {
+    if category.len() > MAX_MEMORY_CATEGORY_BYTES {
+        return Err(format!("分类名称过长（上限 {} 字节）", MAX_MEMORY_CATEGORY_BYTES));
+    }
+    if key.len() > MAX_MEMORY_KEY_BYTES {
+        return Err(format!("键名过长（上限 {} 字节）", MAX_MEMORY_KEY_BYTES));
+    }
+    if value.len() > MAX_MEMORY_VALUE_BYTES {
+        return Err(format!(
+            "记忆内容过长：{} 字节（上限 {} 字节 / 64KB）",
+            value.len(),
+            MAX_MEMORY_VALUE_BYTES
+        ));
+    }
     let db = state.db.lock().await;
     let id = db
         .save_memory(&category, &key, &value)
@@ -2455,11 +2497,20 @@ fn start_scheduled_task_runner(app_handle: tauri::AppHandle) {
     });
 }
 
+const MAX_CLIPBOARD_BYTES: usize = 64 * 1024;
+
 #[tauri::command]
 async fn save_clipboard_item(
     content: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
+    if content.len() > MAX_CLIPBOARD_BYTES {
+        return Err(format!(
+            "剪贴板内容过长：{} 字节（上限 {} 字节 / 64KB）",
+            content.len(),
+            MAX_CLIPBOARD_BYTES
+        ));
+    }
     let db = state.db.lock().await;
     db.save_clipboard_item(&content).map_err(|e| e.to_string())
 }
@@ -2495,8 +2546,17 @@ async fn clear_clipboard_items(state: tauri::State<'_, AppState>) -> Result<(), 
     db.clear_clipboard_items().map_err(|e| e.to_string())
 }
 
+const MAX_USER_AVATAR_BYTES: usize = 256 * 1024;
+
 #[tauri::command]
 async fn set_user_avatar(avatar: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    if avatar.len() > MAX_USER_AVATAR_BYTES {
+        return Err(format!(
+            "头像数据过大：{} 字节（上限 {} 字节 / 256KB）",
+            avatar.len(),
+            MAX_USER_AVATAR_BYTES
+        ));
+    }
     let db = state.db.lock().await;
     db.save_setting("user_avatar", &avatar)
         .map_err(|e| e.to_string())
@@ -2863,6 +2923,21 @@ async fn get_profession(state: tauri::State<'_, AppState>) -> Result<String, Str
 
 #[tauri::command]
 async fn eat_files(paths: Vec<String>) -> Result<(), String> {
+    if paths.is_empty() {
+        return Err("没有提供任何路径".to_string());
+    }
+    if paths.len() > 100 {
+        return Err(format!(
+            "一次最多只能移动 100 个文件到回收站，当前传入 {} 个",
+            paths.len()
+        ));
+    }
+    for p in &paths {
+        if p.is_empty() {
+            return Err("路径不能为空".to_string());
+        }
+        direct_api::tools::is_path_allowed(p)?;
+    }
     trash::delete_all(&paths).map_err(|e| e.to_string())
 }
 
@@ -2953,8 +3028,17 @@ async fn register_shortcut_file(
 
 #[tauri::command]
 async fn get_file_metadata(paths: Vec<String>) -> Result<Vec<FileMetadata>, String> {
+    if paths.len() > 50 {
+        return Err(format!(
+            "一次最多只能查询 50 个文件，当前传入 {} 个",
+            paths.len()
+        ));
+    }
     let mut results = Vec::new();
     for p in &paths {
+        if p.is_empty() {
+            return Err("路径不能为空".to_string());
+        }
         let path = std::path::Path::new(p);
         let exists = path.exists();
         let is_file = exists && path.is_file();
@@ -3011,8 +3095,7 @@ async fn read_file_as_data_url(path: String) -> Result<String, String> {
         "gif" => "image/gif",
         "webp" => "image/webp",
         "bmp" => "image/bmp",
-        "svg" => "image/svg+xml",
-        _ => "application/octet-stream",
+        _ => return Err(format!("不支持的文件类型: .{ext}")),
     };
     let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
     Ok(format!("data:{};base64,{}", mime, b64))
@@ -3150,6 +3233,8 @@ async fn check_claude_status() -> Result<ClaudeStatus, String> {
     })
 }
 
+const MAX_TTS_TEXT_BYTES: usize = 4 * 1024;
+
 #[tauri::command]
 async fn tts_synthesize(
     text: String,
@@ -3159,6 +3244,16 @@ async fn tts_synthesize(
     volume: Option<i32>,
     state: tauri::State<'_, AppState>,
 ) -> Result<tts::TtsResult, String> {
+    if text.len() > MAX_TTS_TEXT_BYTES {
+        return Err(format!(
+            "TTS 文本过长：{} 字节（上限 {} 字节 / 4KB）",
+            text.len(),
+            MAX_TTS_TEXT_BYTES
+        ));
+    }
+    if voice.len() > 128 {
+        return Err("TTS 声音名称过长".to_string());
+    }
     let req = tts::TtsRequest {
         text,
         voice,

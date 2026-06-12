@@ -23,8 +23,21 @@ impl AudioCache {
         hex::encode(hasher.finalize())
     }
 
+    /// 把任意输入限制为 64 个十六进制字符以内的安全文件名组件
+    fn safe_key(key: &str) -> Option<String> {
+        if key.is_empty() || key.len() > 64 {
+            return None;
+        }
+        if key.chars().all(|c| c.is_ascii_hexdigit()) {
+            Some(key.to_ascii_lowercase())
+        } else {
+            None
+        }
+    }
+
     pub fn get(&self, key: &str) -> Option<String> {
-        let path = self.dir.join(format!("{key}.mp3"));
+        let safe = Self::safe_key(key)?;
+        let path = self.dir.join(format!("{safe}.mp3"));
         if path.exists() {
             Some(path.to_string_lossy().to_string())
         } else {
@@ -33,7 +46,8 @@ impl AudioCache {
     }
 
     pub fn put(&self, key: &str, data: &[u8]) -> Result<String, String> {
-        let path = self.dir.join(format!("{key}.mp3"));
+        let safe = Self::safe_key(key).ok_or_else(|| "TTS 缓存 key 不合法".to_string())?;
+        let path = self.dir.join(format!("{safe}.mp3"));
         fs::write(&path, data).map_err(|e| format!("缓存写入失败: {e}"))?;
         Ok(path.to_string_lossy().to_string())
     }

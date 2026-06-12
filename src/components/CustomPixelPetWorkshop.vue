@@ -532,4 +532,95 @@ onMounted(() => {
     height: 54px;
   }
 }
+
+/* Product polish layer */
+.custom-pixel-workshop {
+  padding: 10px;
+  border: 1px solid rgba(33, 48, 74, 0.08);
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.62), rgba(246, 252, 255, 0.40));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.70);
+}
+
+.custom-pixel-workshop.dragging {
+  background:
+    radial-gradient(circle at 10% 0%, rgba(var(--pet-primary-rgb, 255, 107, 107), 0.12), transparent 34%),
+    rgba(255, 255, 255, 0.70);
+  outline-color: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.38);
+}
+
+.custom-pixel-preview {
+  border-color: rgba(33, 48, 74, 0.12);
+  border-radius: 12px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.74),
+    0 8px 18px rgba(33, 48, 74, 0.07);
+}
+
+.custom-pixel-options select,
+.custom-pixel-btn,
+.custom-pixel-item,
+.custom-pixel-delete {
+  border-color: rgba(33, 48, 74, 0.11);
+  border-radius: 10px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.68);
+  transition:
+    transform 0.16s ease,
+    border-color 0.16s ease,
+    background 0.16s ease,
+    color 0.16s ease,
+    box-shadow 0.16s ease,
+    opacity 0.16s ease;
+}
+
+.custom-pixel-options select:focus,
+.custom-pixel-btn:focus-visible,
+.custom-pixel-item:focus-visible,
+.custom-pixel-delete:focus-visible {
+  outline: none;
+  border-color: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.36);
+  box-shadow: 0 0 0 4px rgba(var(--pet-primary-rgb, 255, 107, 107), 0.12);
+}
+
+.custom-pixel-btn:hover:not(:disabled),
+.custom-pixel-item:hover:not(:disabled),
+.custom-pixel-delete:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.28);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 10px 22px rgba(33, 48, 74, 0.08);
+}
+
+.custom-pixel-btn:active:not(:disabled),
+.custom-pixel-item:active:not(:disabled),
+.custom-pixel-delete:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.custom-pixel-btn.primary {
+  border-color: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.20);
+  box-shadow:
+    0 8px 18px rgba(var(--pet-primary-rgb, 255, 107, 107), 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.20);
+}
+
+.custom-pixel-item.active {
+  border-color: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.44);
+  background: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.08);
+  box-shadow:
+    0 0 0 3px rgba(var(--pet-primary-rgb, 255, 107, 107), 0.10),
+    inset 0 1px 0 rgba(255, 255, 255, 0.74);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .custom-pixel-workshop,
+  .custom-pixel-btn,
+  .custom-pixel-item,
+  .custom-pixel-delete {
+    animation: none !important;
+    transition-duration: 1ms !important;
+    transform: none !important;
+  }
+}
 </style>

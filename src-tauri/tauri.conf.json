@@ -27,17 +27,14 @@
       }
     ],
     "security": {
-      "csp": null,
+      "csp": "default-src 'self'; img-src 'self' data: asset: http://asset.localhost https://asset.localhost; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost https:; script-src 'self'; media-src 'self' asset: http://asset.localhost https://asset.localhost blob:; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none';",
       "assetProtocol": {
         "enable": true,
         "scope": [
-          "$APPDATA/**/*",
-          "$HOME/**/*",
-          "$DOCUMENT/**/*",
-          "$DOWNLOAD/**/*",
-          "$PICTURE/**/*",
-          "$DESKTOP/**/*",
-          "$RESOURCE/**/*"
+          "$APPDATA/ai-desktop-pet/**",
+          "$APPDATA/ai-desktop-pet/custom_pets/**",
+          "$LOCALDATA/ai-desktop-pet/**",
+          "$RESOURCE/**"
         ]
       }
     }

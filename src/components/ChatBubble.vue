@@ -2686,4 +2686,182 @@ function formatClipboardTime(value: string | number): string {
 .fade-leave-to {
   opacity: 0;
 }
+
+/* Product polish layer */
+.chat-bubble {
+  border-color: rgba(33, 48, 74, 0.11);
+  border-radius: 18px;
+  background:
+    url("../assets/art/paper-grain.webp"),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(245, 251, 255, 0.78)),
+    var(--pet-bg-glass, rgba(255, 255, 255, 0.94));
+  background-size: 420px 420px, auto, auto;
+  box-shadow:
+    0 18px 42px rgba(33, 48, 74, 0.17),
+    inset 0 1px 0 rgba(255, 255, 255, 0.78);
+}
+
+.chat-bubble::before,
+.chat-bubble::after {
+  opacity: 0.42;
+}
+
+.chat-header {
+  border-bottom-color: rgba(33, 48, 74, 0.09);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.66), rgba(255, 255, 255, 0.16));
+}
+
+.tabs {
+  border-color: rgba(33, 48, 74, 0.08);
+  background: rgba(255, 255, 255, 0.54);
+}
+
+.tab-btn,
+.header-action-btn,
+.close-btn,
+.voice-btn,
+.send-btn,
+.clipboard-action-btn,
+.message-action-menu button,
+.confirm-btn,
+.clear-all-btn {
+  transition:
+    transform 0.16s ease,
+    border-color 0.16s ease,
+    background 0.16s ease,
+    color 0.16s ease,
+    box-shadow 0.16s ease,
+    opacity 0.16s ease;
+}
+
+.tab-btn:hover,
+.header-action-btn:hover,
+.close-btn:hover,
+.voice-btn:hover:not(:disabled),
+.send-btn:hover:not(:disabled),
+.clipboard-action-btn:hover,
+.message-action-menu button:hover:not(:disabled),
+.confirm-btn:hover,
+.clear-all-btn:hover {
+  transform: translateY(-1px);
+}
+
+.tab-btn:active,
+.header-action-btn:active,
+.close-btn:active,
+.voice-btn:active:not(:disabled),
+.send-btn:active:not(:disabled),
+.clipboard-action-btn:active,
+.message-action-menu button:active:not(:disabled),
+.confirm-btn:active {
+  transform: translateY(1px);
+}
+
+.tab-btn.active {
+  box-shadow:
+    0 8px 18px rgba(var(--pet-primary-rgb, 255, 107, 107), 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.24);
+}
+
+.messages-area {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(247, 251, 255, 0.36));
+}
+
+.bubble {
+  border: 1px solid rgba(33, 48, 74, 0.08);
+  box-shadow: 0 10px 22px rgba(33, 48, 74, 0.07);
+}
+
+.message.assistant .bubble {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(255, 253, 248, 0.82)),
+    var(--pet-bubble-bot, rgba(255, 107, 107, 0.08));
+}
+
+.message.user .bubble {
+  box-shadow:
+    0 8px 18px rgba(var(--pet-primary-rgb, 255, 107, 107), 0.17),
+    inset 0 1px 0 rgba(255, 255, 255, 0.24);
+}
+
+.thinking-content,
+.clipboard-search,
+.message-action-menu,
+.tool-confirm-card,
+.file-preview-item,
+.preview-file-card,
+.msg-file-tag {
+  border-color: rgba(33, 48, 74, 0.10);
+  box-shadow: 0 8px 18px rgba(33, 48, 74, 0.055);
+}
+
+.chat-input,
+.voice-status,
+.file-preview-area {
+  border-color: rgba(33, 48, 74, 0.09);
+  background:
+    url("../assets/art/paper-grain.webp"),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.60), rgba(255, 249, 238, 0.70));
+  background-size: 420px 420px, auto;
+}
+
+.chat-input input {
+  border-color: rgba(33, 48, 74, 0.11);
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.78),
+    0 1px 2px rgba(33, 48, 74, 0.03);
+}
+
+.chat-input input:hover:not(:disabled) {
+  border-color: rgba(33, 48, 74, 0.17);
+  background: #ffffff;
+}
+
+.chat-input input:focus {
+  border-color: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.34);
+  box-shadow:
+    0 0 0 4px rgba(var(--pet-primary-rgb, 255, 107, 107), 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.78);
+}
+
+.voice-btn {
+  border-color: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.20);
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.voice-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.voice-btn.active,
+.send-btn {
+  box-shadow:
+    0 8px 18px rgba(var(--pet-primary-rgb, 255, 107, 107), 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.20);
+}
+
+.drop-hint {
+  border-color: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.34);
+  border-radius: 16px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.94), rgba(245, 251, 255, 0.88));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-bubble,
+  .tab-btn,
+  .header-action-btn,
+  .close-btn,
+  .voice-btn,
+  .send-btn,
+  .clipboard-action-btn,
+  .message-action-menu button,
+  .confirm-btn {
+    animation: none !important;
+    transition-duration: 1ms !important;
+    transform: none !important;
+  }
+}
 </style>

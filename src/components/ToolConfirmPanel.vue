@@ -308,4 +308,116 @@ pre {
   color: #ffffff;
   box-shadow: 0 10px 20px rgba(31, 157, 85, 0.20);
 }
+
+/* Product polish layer */
+.tool-confirm-window {
+  background:
+    url("../assets/art/paper-grain.webp"),
+    radial-gradient(circle at 8% 0%, rgba(255, 216, 92, 0.18), transparent 32%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.98), rgba(241, 250, 255, 0.94));
+  background-size: 420px 420px, auto, auto;
+  border-color: rgba(33, 48, 74, 0.12);
+  box-shadow:
+    0 18px 42px rgba(33, 48, 74, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.78);
+}
+
+.tool-confirm-titlebar {
+  padding: 15px 16px 12px;
+  border-bottom-color: rgba(33, 48, 74, 0.09);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.52), transparent);
+}
+
+.tool-confirm-kicker {
+  color: #7a8698;
+  letter-spacing: 0.06em;
+}
+
+h1 {
+  color: #20293a;
+  font-weight: 760;
+}
+
+.icon-btn {
+  border-color: rgba(33, 48, 74, 0.10);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.76);
+  box-shadow: 0 8px 18px rgba(33, 48, 74, 0.06);
+}
+
+.icon-btn:hover {
+  background: #ffffff;
+  box-shadow: 0 10px 20px rgba(239, 68, 68, 0.10);
+}
+
+.summary-panel,
+.detail-row,
+.args-block {
+  border-color: rgba(33, 48, 74, 0.10);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.72),
+    0 8px 18px rgba(33, 48, 74, 0.055);
+}
+
+.summary-panel strong {
+  color: #20293a;
+}
+
+.args-block pre {
+  border: 1px solid rgba(33, 48, 74, 0.08);
+  border-radius: 10px;
+  background: rgba(33, 48, 74, 0.045);
+}
+
+.tool-confirm-actions {
+  border-top-color: rgba(33, 48, 74, 0.09);
+  background: rgba(255, 255, 255, 0.36);
+}
+
+.tool-confirm-actions button {
+  border-radius: 10px;
+  transition:
+    transform 0.16s ease,
+    border-color 0.16s ease,
+    background 0.16s ease,
+    box-shadow 0.16s ease,
+    opacity 0.16s ease;
+}
+
+.tool-confirm-actions button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.tool-confirm-actions button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.deny-btn {
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.deny-btn:hover:not(:disabled) {
+  background: #ef4444;
+  color: #ffffff;
+  box-shadow: 0 10px 20px rgba(239, 68, 68, 0.16);
+}
+
+.approve-btn {
+  background: linear-gradient(135deg, #1f9d55, #20b866);
+  box-shadow: 0 10px 22px rgba(31, 157, 85, 0.18);
+}
+
+.approve-btn:hover:not(:disabled) {
+  box-shadow: 0 14px 26px rgba(31, 157, 85, 0.24);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tool-confirm-actions button,
+  .icon-btn {
+    transition-duration: 1ms !important;
+    transform: none !important;
+  }
+}
 </style>

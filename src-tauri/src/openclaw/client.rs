@@ -155,8 +155,7 @@ impl ClaudeAdapter {
             .arg("--append-system-prompt")
             .arg(system_prompt_arg)
             .arg("--max-budget-usd")
-            .arg("0.5")
-            .arg("--dangerously-skip-permissions");
+            .arg("0.5");
 
         // 多轮对话：如果已有 session_id，追加 --resume
         if let Ok(sid) = self.session_id.lock() {

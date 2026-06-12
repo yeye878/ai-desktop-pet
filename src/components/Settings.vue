@@ -2973,4 +2973,170 @@ onUnmounted(() => {
   border: 1px solid rgba(239, 68, 68, 0.15);
   word-break: break-all;
 }
+
+/* Product polish layer */
+.settings-mask {
+  background: transparent;
+}
+
+.settings-panel {
+  border-color: rgba(33, 48, 74, 0.11);
+  border-radius: 18px;
+  background:
+    url("../assets/art/paper-grain.webp"),
+    radial-gradient(circle at 8% 0%, rgba(255, 216, 92, 0.16), transparent 32%),
+    radial-gradient(circle at 88% 4%, rgba(102, 200, 255, 0.16), transparent 30%),
+    linear-gradient(155deg, rgba(255, 255, 255, 0.94), rgba(245, 251, 255, 0.82));
+  background-size: 420px 420px, auto, auto, auto;
+  box-shadow:
+    0 18px 42px rgba(33, 48, 74, 0.17),
+    inset 0 1px 0 rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(22px) saturate(1.25);
+  -webkit-backdrop-filter: blur(22px) saturate(1.25);
+}
+
+.settings-header {
+  border-bottom-color: rgba(33, 48, 74, 0.09);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.54), transparent);
+}
+
+.settings-body {
+  scrollbar-color: rgba(86, 104, 128, 0.28) transparent;
+}
+
+.section,
+.voice-options,
+.profile-item,
+.model-picker,
+.compatibility-result {
+  border-color: rgba(33, 48, 74, 0.10);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.70),
+    0 8px 18px rgba(33, 48, 74, 0.055);
+}
+
+.section h3 {
+  color: #20293a;
+  font-weight: 760;
+}
+
+.settings-tabs {
+  border-bottom-color: rgba(33, 48, 74, 0.09);
+  background: rgba(33, 48, 74, 0.035);
+}
+
+.settings-tabs .tab-btn {
+  border: 1px solid transparent;
+  border-radius: 10px;
+}
+
+.settings-tabs .tab-btn:hover {
+  border-color: rgba(33, 48, 74, 0.08);
+  background: rgba(255, 255, 255, 0.66);
+}
+
+.settings-tabs .tab-btn.active {
+  border-color: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.20);
+  box-shadow: 0 8px 18px rgba(var(--pet-primary-rgb, 255, 107, 107), 0.12);
+}
+
+.field-row select,
+.field-row input[type="text"],
+.voice-search,
+.form-group input,
+.form-group select {
+  border-color: rgba(33, 48, 74, 0.11);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.74);
+}
+
+.field-row select:focus,
+.field-row input[type="text"]:focus,
+.voice-search:focus,
+.form-group input:focus,
+.form-group select:focus {
+  border-color: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.34);
+  background: #ffffff;
+  box-shadow: 0 0 0 4px rgba(var(--pet-primary-rgb, 255, 107, 107), 0.12);
+}
+
+.action-btn,
+.preview-btn,
+.avatar-btn,
+.backend-btn,
+.mini-action-btn,
+.profile-delete-btn,
+.preset-badge,
+.thinking-option,
+.skin-item,
+.character-item,
+.font-color-item,
+.bg-opt {
+  transition:
+    transform 0.16s ease,
+    border-color 0.16s ease,
+    background 0.16s ease,
+    color 0.16s ease,
+    box-shadow 0.16s ease,
+    opacity 0.16s ease;
+}
+
+.action-btn:hover:not(:disabled),
+.preview-btn:hover:not(:disabled),
+.avatar-btn:hover:not(:disabled),
+.backend-btn:hover,
+.mini-action-btn:hover:not(:disabled),
+.profile-delete-btn:hover:not(:disabled),
+.preset-badge:hover,
+.thinking-option:hover,
+.skin-item:hover,
+.character-item:hover,
+.font-color-item:hover,
+.bg-opt:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 22px rgba(33, 48, 74, 0.08);
+}
+
+.action-btn:active:not(:disabled),
+.preview-btn:active:not(:disabled),
+.avatar-btn:active:not(:disabled),
+.backend-btn:active,
+.mini-action-btn:active:not(:disabled),
+.profile-delete-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.backend-btn.active,
+.thinking-option.active,
+.skin-item.active,
+.character-item.active,
+.font-color-item.active,
+.bg-opt.active {
+  box-shadow:
+    0 8px 18px rgba(var(--pet-primary-rgb, 255, 107, 107), 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-panel,
+  .action-btn,
+  .preview-btn,
+  .avatar-btn,
+  .backend-btn,
+  .mini-action-btn,
+  .profile-delete-btn,
+  .preset-badge,
+  .thinking-option,
+  .skin-item,
+  .character-item,
+  .font-color-item,
+  .bg-opt {
+    animation: none !important;
+    transition-duration: 1ms !important;
+    transform: none !important;
+  }
+}
 </style>

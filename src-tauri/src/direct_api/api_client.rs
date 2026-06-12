@@ -117,6 +117,8 @@ pub struct SseParser {
     current_event: String,
 }
 
+const SSE_BUFFER_MAX_BYTES: usize = 4 * 1024 * 1024;
+
 impl SseParser {
     pub fn new() -> Self {
         Self {
@@ -130,6 +132,11 @@ impl SseParser {
     /// 对于 Responses API 格式，event_type 为事件类型（如 "response.output_text.delta"）。
     pub fn push(&mut self, text: &str) -> Vec<(String, String)> {
         self.buffer.push_str(text);
+        if self.buffer.len() > SSE_BUFFER_MAX_BYTES {
+            let keep_from = self.buffer.len() - SSE_BUFFER_MAX_BYTES;
+            let safe_start = self.buffer.ceil_char_boundary(keep_from);
+            self.buffer.drain(..safe_start);
+        }
         let mut results = Vec::new();
 
         while let Some(newline_pos) = self.buffer.find('\n') {

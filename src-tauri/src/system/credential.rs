@@ -14,6 +14,9 @@ pub fn get_api_key(profile_id: &str) -> Option<String> {
 
 pub fn delete_api_key(profile_id: &str) -> Result<(), String> {
     let entry = Entry::new(SERVICE_NAME, profile_id).map_err(|e| e.to_string())?;
-    let _ = entry.delete_credential();
-    Ok(())
+    match entry.delete_credential() {
+        Ok(()) => Ok(()),
+        Err(keyring_core::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
 }

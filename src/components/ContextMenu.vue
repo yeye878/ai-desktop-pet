@@ -163,4 +163,72 @@ async function action(name: string) {
   background: rgba(15, 23, 42, 0.07);
   margin: 4px 8px;
 }
+
+/* Product polish layer */
+.context-menu {
+  border-radius: 14px;
+  border-color: rgba(33, 48, 74, 0.11);
+  background:
+    url("../assets/art/paper-grain.webp"),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(246, 252, 255, 0.92)),
+    var(--pet-bg-glass, rgba(255, 255, 255, 0.95));
+  background-size: 380px 380px, auto, auto;
+  color: #334155;
+  box-shadow:
+    0 18px 38px rgba(33, 48, 74, 0.18),
+    0 1px 0 rgba(255, 255, 255, 0.82) inset;
+}
+
+.menu-item {
+  min-height: 34px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: #475569;
+  font-weight: 650;
+  text-shadow: none;
+}
+
+.menu-item:hover {
+  border-color: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.20);
+  background:
+    linear-gradient(135deg, rgba(var(--pet-primary-rgb, 255, 107, 107), 0.92), rgba(var(--pet-accent-rgb, 255, 142, 83), 0.82));
+  transform: translateY(-1px);
+  box-shadow: 0 10px 20px rgba(var(--pet-primary-rgb, 255, 107, 107), 0.18);
+}
+
+.menu-item:active {
+  transform: translateY(1px);
+}
+
+.exit-item:hover {
+  background: linear-gradient(135deg, #f59e0b, #ef7f47);
+}
+
+.menu-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 20px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.46);
+  color: #64748b;
+  font-size: 12px;
+}
+
+.menu-item:hover .menu-icon {
+  background: rgba(255, 255, 255, 0.20);
+}
+
+.menu-divider {
+  background: rgba(33, 48, 74, 0.08);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .context-menu,
+  .menu-item {
+    animation: none !important;
+    transition-duration: 1ms !important;
+    transform: none !important;
+  }
+}
 </style>

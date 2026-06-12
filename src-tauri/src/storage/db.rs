@@ -98,8 +98,28 @@ impl Database {
     pub fn new(db_path: &PathBuf) -> Result<Self> {
         let conn = Connection::open(db_path)?;
         let db = Self { conn };
+        db.configure_pragmas()?;
         db.init_tables()?;
+        db.ensure_indexes()?;
         Ok(db)
+    }
+
+    fn configure_pragmas(&self) -> Result<()> {
+        self.conn.pragma_update(None, "journal_mode", "WAL")?;
+        self.conn.pragma_update(None, "synchronous", "NORMAL")?;
+        self.conn.pragma_update(None, "foreign_keys", "ON")?;
+        self.conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        Ok(())
+    }
+
+    fn ensure_indexes(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_pet_memory_category_key ON pet_memory(category, key);
+             CREATE INDEX IF NOT EXISTS idx_chat_history_created_at ON chat_history(created_at);
+             CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_enabled_due ON scheduled_tasks(enabled, due_at);
+             CREATE INDEX IF NOT EXISTS idx_clipboard_items_pinned_id ON clipboard_items(pinned DESC, id DESC);",
+        )?;
+        Ok(())
     }
 
     fn init_tables(&self) -> Result<()> {
@@ -396,7 +416,7 @@ impl Database {
         limit: u32,
     ) -> Result<Vec<MemoryItem>> {
         let limit = limit.min(30);
-        let like_pattern = format!("%{}%", query);
+        let like_pattern = format!("%{}%", escape_like_pattern(query));
         let sql = if category.is_some() {
             "SELECT id, category, key, value, created_at
              FROM pet_memory
@@ -692,6 +712,20 @@ fn scheduled_task_from_row(row: &rusqlite::Row<'_>) -> Result<ScheduledTask> {
         created_at: row.get(7)?,
         updated_at: row.get(8)?,
     })
+}
+
+fn escape_like_pattern(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '\\' | '%' | '_' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 fn custom_pet_asset_from_row(row: &rusqlite::Row<'_>) -> Result<CustomPetAsset> {

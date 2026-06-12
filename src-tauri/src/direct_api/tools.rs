@@ -1,10 +1,19 @@
 use crate::{computer_use, system};
+use chrono::{Duration as ChronoDuration, Local, NaiveDate};
 use serde_json::json;
 use std::{
+    collections::HashSet,
     ffi::OsString,
     path::{Component, Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+const DEFAULT_SEARCH_RESULTS: usize = 5;
+const MAX_SEARCH_RESULTS: usize = 8;
+const SEARCH_CANDIDATE_LIMIT: usize = 12;
+const MAX_SEARCH_SNIPPET_CHARS: usize = 240;
+const MAX_WEBPAGE_CHARS: usize = 12_000;
+const MAX_WEBPAGE_EXCERPTS: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SearchProvider {
@@ -18,6 +27,15 @@ struct SearchResult {
     title: String,
     url: String,
     snippet: String,
+}
+
+#[derive(Debug, Clone)]
+struct SearchOptions {
+    query: String,
+    max_results: usize,
+    site: Option<String>,
+    exclude_domains: Vec<String>,
+    recency_days: Option<u32>,
 }
 
 impl SearchProvider {
@@ -49,6 +67,144 @@ fn provider_order(preferred_provider: &str) -> [SearchProvider; 3] {
             SearchProvider::BingHtml,
             SearchProvider::DuckDuckGoHtml,
         ],
+    }
+}
+
+fn infer_recency_days(query: &str) -> Option<u32> {
+    let lower = query.trim().to_lowercase();
+    if lower.is_empty() {
+        return None;
+    }
+
+    if contains_any(
+        &lower,
+        &[
+            "今天",
+            "今日",
+            "当天",
+            "日报",
+            "早报",
+            "晚报",
+            "速览",
+            "快讯",
+            "breaking",
+            "today",
+            "daily briefing",
+            "daily brief",
+        ],
+    ) {
+        return Some(2);
+    }
+
+    if contains_any(&lower, &["昨天", "昨日", "yesterday"]) {
+        return Some(3);
+    }
+
+    if contains_any(&lower, &["本周", "这周", "近一周", "最近一周", "this week"]) {
+        return Some(7);
+    }
+
+    if contains_any(
+        &lower,
+        &["本月", "这个月", "近一个月", "最近一个月", "this month"],
+    ) {
+        return Some(31);
+    }
+
+    if contains_any(&lower, &["今年", "this year"]) {
+        return Some(365);
+    }
+
+    if contains_any(
+        &lower,
+        &[
+            "最近", "最新", "近期", "新闻", "动态", "现状", "进展", "更新", "latest", "recent",
+            "news", "current", "update",
+        ],
+    ) {
+        return Some(7);
+    }
+
+    None
+}
+
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
+}
+
+impl SearchOptions {
+    fn new(query: &str) -> Self {
+        Self {
+            query: query.trim().to_string(),
+            max_results: DEFAULT_SEARCH_RESULTS,
+            site: None,
+            exclude_domains: Vec::new(),
+            recency_days: infer_recency_days(query),
+        }
+    }
+
+    fn from_tool_args(args: &serde_json::Value) -> Result<Self, String> {
+        let query = args["query"]
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "搜索词不能为空".to_string())?;
+
+        let max_results = args["max_results"]
+            .as_u64()
+            .map(|value| (value as usize).clamp(1, MAX_SEARCH_RESULTS))
+            .unwrap_or(DEFAULT_SEARCH_RESULTS);
+
+        let site = args["site"].as_str().and_then(normalize_domain_filter);
+
+        let exclude_domains = args["exclude_domains"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str())
+                    .filter_map(normalize_domain_filter)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let recency_days = args["recency_days"]
+            .as_u64()
+            .map(|value| (value as u32).clamp(1, 365))
+            .or_else(|| infer_recency_days(query));
+
+        Ok(Self {
+            query: query.to_string(),
+            max_results,
+            site,
+            exclude_domains,
+            recency_days,
+        })
+    }
+
+    fn effective_query(&self) -> String {
+        self.effective_query_for_date(Local::now().date_naive())
+    }
+
+    fn effective_query_for_date(&self, today: NaiveDate) -> String {
+        let query = self.query.trim();
+        let lower = query.to_lowercase();
+        let mut parts = vec![query.to_string()];
+
+        if let Some(days) = self.recency_days {
+            if !lower.contains("after:") && !lower.contains("before:") {
+                let start_date = today - ChronoDuration::days(days as i64);
+                parts.push(format!("after:{}", start_date.format("%Y-%m-%d")));
+            }
+        }
+
+        if let Some(site) = self.site.as_deref() {
+            if !lower.contains("site:") {
+                parts.push(format!("site:{site}"));
+            }
+        }
+
+        parts.join(" ")
     }
 }
 
@@ -301,11 +457,19 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
             "type": "function",
             "function": {
                 "name": "web_search",
-                "description": "实时网页搜索，搜索最新的资讯、天气或技术文档，返回包含标题、链接及简短描述的结果列表",
+                "description": "实时网页搜索。请使用具体查询词、关键实体、日期、版本号或 site 限定，避免宽泛搜索；结果会本地去重、去噪并按相关性重排。",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "query": { "type": "string", "description": "要搜索的查询词" }
+                        "query": { "type": "string", "description": "具体搜索查询词，优先包含专名、版本、日期、错误码、文件名或关键短语" },
+                        "max_results": { "type": "integer", "description": "可选，返回结果数量，默认 5，上限 8" },
+                        "recency_days": { "type": "integer", "description": "可选，只关注最近 N 天内容；新闻、日报、最新动态优先设置为 1-7，长期资料可不传" },
+                        "site": { "type": "string", "description": "可选，只搜索指定域名，例如 openai.com、docs.rs、github.com" },
+                        "exclude_domains": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "可选，排除明显无关或低质量的域名"
+                        }
                     },
                     "required": ["query"]
                 }
@@ -315,11 +479,12 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
             "type": "function",
             "function": {
                 "name": "read_webpage",
-                "description": "读取指定网页的正文内容，支持从搜索结果中的链接获取详细信息。最大返回 32KB 文本内容，超时 15 秒。",
+                "description": "读取指定网页正文。若正在验证某个问题，请传入 query，工具会只返回最相关正文片段以减少噪音；未传 query 时返回压缩后的正文开头。",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "url": { "type": "string", "description": "要读取的网页 URL（必须是 http 或 https 链接）" }
+                        "url": { "type": "string", "description": "要读取的网页 URL（必须是 http 或 https 链接）" },
+                        "query": { "type": "string", "description": "可选，用于提取相关片段的问题或关键词" }
                     },
                     "required": ["url"]
                 }
@@ -610,11 +775,20 @@ pub async fn execute_tool(
         }
         "run_command" => exec_run_command(args).await.unwrap_or_else(|e| e),
         "web_search" => {
-            let query = args["query"].as_str().unwrap_or("");
-            if query.is_empty() {
-                "搜索词不能为空".to_string()
+            let options = match SearchOptions::from_tool_args(args) {
+                Ok(options) => options,
+                Err(message) => return message,
+            };
+            let has_advanced_options = args.get("max_results").is_some()
+                || args.get("site").is_some()
+                || args.get("exclude_domains").is_some()
+                || args.get("recency_days").is_some();
+            if has_advanced_options {
+                web_search_with_options(&options, preferred_search_provider)
+                    .await
+                    .unwrap_or_else(|e| e)
             } else {
-                web_search(query, preferred_search_provider)
+                web_search(&options.query, preferred_search_provider)
                     .await
                     .unwrap_or_else(|e| e)
             }
@@ -624,8 +798,15 @@ pub async fn execute_tool(
             if url.is_empty() {
                 "URL 不能为空".to_string()
             } else {
-                match tokio::time::timeout(std::time::Duration::from_secs(15), read_webpage(url))
-                    .await
+                let focus_query = args["query"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(15),
+                    read_webpage(url, focus_query),
+                )
+                .await
                 {
                     Ok(result) => result.unwrap_or_else(|e| e),
                     Err(_) => "读取网页超时 (15秒)".to_string(),
@@ -659,9 +840,20 @@ pub async fn execute_tool(
 
 async fn exec_read_file(args: &serde_json::Value) -> Result<String, String> {
     let path = args["path"].as_str().ok_or("缺少 'path' 参数")?;
+    const MAX_READ_BYTES: u64 = 512 * 1024;
     let path_buf = is_path_allowed(path)?;
     if !path_buf.is_file() {
         return Err(format!("路径不是一个文件: {path}"));
+    }
+    let size = tokio::fs::metadata(&path_buf)
+        .await
+        .map(|m| m.len())
+        .unwrap_or(0);
+    if size > MAX_READ_BYTES {
+        return Err(format!(
+            "文件过大：{} 字节（上限 {} 字节 / 512KB）",
+            size, MAX_READ_BYTES
+        ));
     }
 
     // Office/PDF 二进制或压缩格式需要特殊处理
@@ -1009,6 +1201,14 @@ fn read_pdf_text(path: &Path) -> Result<String, String> {
 async fn exec_write_file(args: &serde_json::Value) -> Result<String, String> {
     let path = args["path"].as_str().ok_or("缺少 'path' 参数")?;
     let content = args["content"].as_str().ok_or("缺少 'content' 参数")?;
+    const MAX_WRITE_BYTES: usize = 512 * 1024;
+    if content.len() > MAX_WRITE_BYTES {
+        return Err(format!(
+            "写入内容过大：{} 字节（上限 {} 字节 / 512KB）",
+            content.len(),
+            MAX_WRITE_BYTES
+        ));
+    }
     let path_buf = is_path_allowed(path)?;
 
     if let Some(parent) = path_buf.parent() {
@@ -1150,6 +1350,14 @@ async fn exec_run_command(args: &serde_json::Value) -> Result<String, String> {
 }
 
 pub async fn web_search(query: &str, preferred_provider: &str) -> Result<String, String> {
+    let options = SearchOptions::new(query);
+    web_search_with_options(&options, preferred_provider).await
+}
+
+async fn web_search_with_options(
+    options: &SearchOptions,
+    preferred_provider: &str,
+) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(12))
@@ -1159,15 +1367,40 @@ pub async fn web_search(query: &str, preferred_provider: &str) -> Result<String,
 
     let providers = provider_order(preferred_provider);
     let mut failures = Vec::new();
+    let mut source_names = Vec::new();
+    let mut all_results = Vec::new();
+    let effective_query = options.effective_query();
 
     for provider in providers {
-        match search_with_provider(&client, provider, query).await {
+        if source_names.len() >= 2 || all_results.len() >= SEARCH_CANDIDATE_LIMIT {
+            break;
+        }
+        match search_with_provider(&client, provider, &effective_query).await {
             Ok(results) if !results.is_empty() => {
-                return Ok(format_search_results(provider.name(), &results));
+                source_names.push(provider.name());
+                for result in results {
+                    push_unique_search_result(&mut all_results, result);
+                }
             }
             Ok(_) => failures.push(format!("{} 未找到结果", provider.name())),
             Err(e) => failures.push(e),
         }
+    }
+
+    let results = rank_search_results(
+        &options.query,
+        all_results,
+        &options.exclude_domains,
+        options.site.as_deref(),
+        options.recency_days,
+    );
+    if !results.is_empty() {
+        let limit = options.max_results.min(results.len());
+        return Ok(format_search_results(
+            &source_names.join(" + "),
+            options,
+            &results[..limit],
+        ));
     }
 
     Err(format!(
@@ -1177,7 +1410,7 @@ pub async fn web_search(query: &str, preferred_provider: &str) -> Result<String,
 }
 
 /// 读取网页正文内容
-async fn read_webpage(url: &str) -> Result<String, String> {
+async fn read_webpage(url: &str, focus_query: Option<&str>) -> Result<String, String> {
     // 验证 URL 格式
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Err("URL 必须以 http:// 或 https:// 开头".to_string());
@@ -1221,19 +1454,8 @@ async fn read_webpage(url: &str) -> Result<String, String> {
 
     let body = res.text().await.map_err(|e| format!("读取响应失败: {e}"))?;
 
-    // 提取正文内容
-    let text = html_to_text(&body);
-
-    // 限制输出大小
-    if text.len() > 32768 {
-        let safe_end = text.floor_char_boundary(32768);
-        Ok(format!(
-            "{}\n\n... [内容已截断，仅显示前 32KB]",
-            &text[..safe_end]
-        ))
-    } else {
-        Ok(text)
-    }
+    let text = compact_webpage_text(&html_to_text(&body));
+    Ok(format_webpage_result(url, &text, focus_query))
 }
 
 /// 将 HTML 转换为纯文本
@@ -1367,6 +1589,140 @@ fn html_to_text(html: &str) -> String {
     cleaned.trim().to_string()
 }
 
+fn compact_webpage_text(text: &str) -> String {
+    let mut seen = HashSet::new();
+    let mut lines = Vec::new();
+
+    for raw_line in text.lines() {
+        let line = raw_line.split_whitespace().collect::<Vec<_>>().join(" ");
+        let line = line.trim();
+        if line.is_empty() || is_boilerplate_line(line) {
+            continue;
+        }
+        let fingerprint = line.to_lowercase();
+        if !seen.insert(fingerprint) {
+            continue;
+        }
+        lines.push(truncate_chars(line, 1_200));
+    }
+
+    lines.join("\n")
+}
+
+fn is_boilerplate_line(line: &str) -> bool {
+    let lower = line.to_lowercase();
+    if line.chars().count() <= 1 {
+        return true;
+    }
+    matches!(
+        lower.as_str(),
+        "home"
+            | "menu"
+            | "login"
+            | "sign in"
+            | "sign up"
+            | "subscribe"
+            | "privacy policy"
+            | "terms of service"
+            | "cookie policy"
+            | "联系我们"
+            | "关于我们"
+            | "登录"
+            | "注册"
+            | "订阅"
+            | "隐私政策"
+            | "服务条款"
+    ) || lower.contains("enable javascript")
+        || lower.contains("accept cookies")
+        || lower.contains("all rights reserved")
+        || lower.contains("版权所有")
+}
+
+fn format_webpage_result(url: &str, text: &str, focus_query: Option<&str>) -> String {
+    if let Some(query) = focus_query.map(str::trim).filter(|value| !value.is_empty()) {
+        if let Some(excerpts) = relevant_webpage_excerpts(text, query, MAX_WEBPAGE_CHARS) {
+            return format!(
+                "来源: {url}\n聚焦问题: {query}\n提示: 以下为按问题筛出的相关正文片段，不是全文。\n\n{excerpts}"
+            );
+        }
+    }
+
+    let truncated = truncate_chars(text, MAX_WEBPAGE_CHARS);
+    if truncated.chars().count() < text.chars().count() {
+        format!(
+            "来源: {url}\n\n{truncated}\n\n... [内容已压缩截断，仅显示前 {MAX_WEBPAGE_CHARS} 字符]"
+        )
+    } else {
+        format!("来源: {url}\n\n{truncated}")
+    }
+}
+
+fn relevant_webpage_excerpts(text: &str, query: &str, max_chars: usize) -> Option<String> {
+    let terms = query_terms(query);
+    if terms.is_empty() {
+        return None;
+    }
+
+    let mut scored = text
+        .lines()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            let line = line.trim();
+            if line.chars().count() < 20 {
+                return None;
+            }
+            let score = score_text_for_terms(line, query, &terms);
+            (score > 0).then_some((score, index, line.to_string()))
+        })
+        .collect::<Vec<_>>();
+
+    if scored.is_empty() {
+        return None;
+    }
+
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    scored.truncate(MAX_WEBPAGE_EXCERPTS);
+    scored.sort_by_key(|(_, index, _)| *index);
+
+    let mut output = String::new();
+    for (excerpt_index, (_, _, line)) in scored.into_iter().enumerate() {
+        let block = format!(
+            "[片段 {}]\n{}\n\n",
+            excerpt_index + 1,
+            truncate_chars(&line, 1_500)
+        );
+        if output.chars().count() + block.chars().count() > max_chars {
+            break;
+        }
+        output.push_str(&block);
+    }
+
+    if output.trim().is_empty() {
+        None
+    } else {
+        Some(output.trim().to_string())
+    }
+}
+
+fn score_text_for_terms(text: &str, query: &str, terms: &[String]) -> i32 {
+    let lower = text.to_lowercase();
+    let normalized_query = normalize_query_phrase(query);
+    let mut score = 0;
+
+    if !normalized_query.is_empty() && lower.contains(&normalized_query) {
+        score += 20;
+    }
+    for term in terms {
+        if lower.contains(term) {
+            score += 4;
+        }
+    }
+    if text.chars().count() > 1_500 {
+        score -= 2;
+    }
+    score
+}
+
 async fn search_with_provider(
     client: &reqwest::Client,
     provider: SearchProvider,
@@ -1409,19 +1765,453 @@ async fn search_with_provider(
         SearchProvider::BingRss => parse_bing_rss(&body),
         SearchProvider::BingHtml => parse_bing_html(&body),
     };
-    results.truncate(5);
+    results.truncate(SEARCH_CANDIDATE_LIMIT);
     Ok(results)
 }
 
-fn format_search_results(provider_name: &str, results: &[SearchResult]) -> String {
-    let mut output = format!("搜索来源: {provider_name}\n");
-    for result in results {
+fn format_search_results(
+    provider_name: &str,
+    options: &SearchOptions,
+    results: &[SearchResult],
+) -> String {
+    let source = if provider_name.trim().is_empty() {
+        "未知".to_string()
+    } else {
+        provider_name.to_string()
+    };
+    let mut output = format!(
+        "搜索来源: {source}\n查询: {}\n提示: 结果已去重并按本地相关性重排。优先只读取标题/摘要直接匹配任务的 1-2 个网页；如果结果偏题，请换更具体的查询词或使用 site 限定。\n",
+        options.effective_query()
+    );
+    for (index, result) in results.iter().enumerate() {
         output.push_str(&format!(
-            "\n* 标题: {}\n  链接: {}\n  摘要: {}\n",
-            result.title, result.url, result.snippet
+            "\n[{}] 标题: {}\n链接: {}\n摘要: {}\n",
+            index + 1,
+            result.title,
+            result.url,
+            result.snippet
         ));
     }
     output
+}
+
+fn push_unique_search_result(results: &mut Vec<SearchResult>, result: SearchResult) {
+    let normalized = comparable_url(&result.url);
+    if results
+        .iter()
+        .any(|item| comparable_url(&item.url) == normalized)
+    {
+        return;
+    }
+    results.push(result);
+}
+
+fn rank_search_results(
+    query: &str,
+    results: Vec<SearchResult>,
+    exclude_domains: &[String],
+    site: Option<&str>,
+    recency_days: Option<u32>,
+) -> Vec<SearchResult> {
+    let terms = query_terms(query);
+    let site = site.and_then(normalize_domain_filter);
+    let today = Local::now().date_naive();
+    let mut scored = Vec::new();
+
+    for (index, result) in results.into_iter().enumerate() {
+        if !is_usable_search_result(&result) {
+            continue;
+        }
+        let domain = result_domain(&result.url);
+        if let Some(domain) = domain.as_deref() {
+            if exclude_domains
+                .iter()
+                .any(|excluded| domain_matches_filter(domain, excluded))
+            {
+                continue;
+            }
+            if site
+                .as_deref()
+                .is_some_and(|site| !domain_matches_filter(domain, site))
+            {
+                continue;
+            }
+        }
+
+        let score = score_search_result(&result, query, &terms, recency_days, today);
+        scored.push((score, index, compact_search_result(result)));
+    }
+
+    let positive_count = scored.iter().filter(|(score, _, _)| *score > 0).count();
+    if positive_count >= 3 {
+        scored.retain(|(score, _, _)| *score > 0);
+    }
+
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    scored.into_iter().map(|(_, _, result)| result).collect()
+}
+
+fn score_search_result(
+    result: &SearchResult,
+    query: &str,
+    terms: &[String],
+    recency_days: Option<u32>,
+    today: NaiveDate,
+) -> i32 {
+    let title = result.title.to_lowercase();
+    let snippet = result.snippet.to_lowercase();
+    let url = result.url.to_lowercase();
+    let domain = result_domain(&result.url).unwrap_or_default();
+    let normalized_query = normalize_query_phrase(query);
+
+    let mut score = 0;
+    if !normalized_query.is_empty() {
+        if title.contains(&normalized_query) {
+            score += 28;
+        }
+        if snippet.contains(&normalized_query) {
+            score += 16;
+        }
+        if url.contains(&normalized_query.replace(' ', "-")) {
+            score += 8;
+        }
+    }
+
+    for term in terms {
+        if title.contains(term) {
+            score += 10;
+        }
+        if snippet.contains(term) {
+            score += 5;
+        }
+        if domain.contains(term) {
+            score += 4;
+        } else if url.contains(term) {
+            score += 2;
+        }
+    }
+
+    if result.snippet == "无描述" {
+        score -= 4;
+    }
+    if looks_like_search_or_listing_page(&result.url, &result.title) {
+        score -= 10;
+    }
+    if is_low_signal_domain(&domain) {
+        score -= 4;
+    }
+    score += score_result_freshness(result, recency_days, today);
+
+    score
+}
+
+fn score_result_freshness(
+    result: &SearchResult,
+    recency_days: Option<u32>,
+    today: NaiveDate,
+) -> i32 {
+    let Some(days) = recency_days else {
+        return 0;
+    };
+    let text = format!("{} {} {}", result.title, result.snippet, result.url).to_lowercase();
+    let current_year = today.format("%Y").to_string();
+    let today_iso = today.format("%Y-%m-%d").to_string();
+
+    if text.contains("小时前")
+        || text.contains("分钟前")
+        || text.contains("just now")
+        || text.contains("hours ago")
+        || text.contains("minutes ago")
+        || text.contains(&today_iso)
+    {
+        return 28;
+    }
+
+    let mut score = 0;
+    if text.contains(&current_year) {
+        score += if days <= 7 { 12 } else { 8 };
+    }
+
+    let current_year_num = today.format("%Y").to_string().parse::<i32>().unwrap_or(0);
+    for year in (current_year_num.saturating_sub(10))..current_year_num {
+        if text.contains(&year.to_string()) {
+            score -= if days <= 31 {
+                20
+            } else if days <= 365 {
+                10
+            } else {
+                4
+            };
+        }
+    }
+
+    score
+}
+
+fn compact_search_result(result: SearchResult) -> SearchResult {
+    SearchResult {
+        title: compact_line(&result.title, 120),
+        url: result.url,
+        snippet: compact_line(&result.snippet, MAX_SEARCH_SNIPPET_CHARS),
+    }
+}
+
+fn compact_line(value: &str, max_chars: usize) -> String {
+    let compact = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate_chars(&compact, max_chars)
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    let count = value.chars().count();
+    if count <= max_chars {
+        return value.to_string();
+    }
+    let mut truncated = value.chars().take(max_chars).collect::<String>();
+    truncated.push_str("...");
+    truncated
+}
+
+fn normalize_query_phrase(query: &str) -> String {
+    query
+        .to_lowercase()
+        .split_whitespace()
+        .filter(|part| !part.starts_with("site:"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn query_terms(query: &str) -> Vec<String> {
+    let mut raw_terms = Vec::new();
+    let mut current = String::new();
+    let mut current_kind: Option<TermKind> = None;
+
+    for ch in query.to_lowercase().chars() {
+        let kind = if ch.is_ascii_alphanumeric() {
+            Some(TermKind::Ascii)
+        } else if is_cjk(ch) {
+            Some(TermKind::Cjk)
+        } else {
+            None
+        };
+
+        if kind.is_none() || (current_kind.is_some() && current_kind != kind) {
+            push_raw_term(&mut raw_terms, &mut current);
+        }
+        if let Some(kind) = kind {
+            current.push(ch);
+            current_kind = Some(kind);
+        } else {
+            current_kind = None;
+        }
+    }
+    push_raw_term(&mut raw_terms, &mut current);
+
+    let mut terms = Vec::new();
+    for term in raw_terms {
+        if should_skip_query_term(&term) {
+            continue;
+        }
+        if term.chars().all(is_cjk) {
+            push_unique_term(&mut terms, &term);
+            add_cjk_windows(&mut terms, &term);
+        } else {
+            push_unique_term(&mut terms, &term);
+        }
+        if terms.len() >= 24 {
+            break;
+        }
+    }
+    terms
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TermKind {
+    Ascii,
+    Cjk,
+}
+
+fn push_raw_term(terms: &mut Vec<String>, current: &mut String) {
+    let term = current.trim().to_string();
+    if !term.is_empty() {
+        terms.push(term);
+    }
+    current.clear();
+}
+
+fn push_unique_term(terms: &mut Vec<String>, term: &str) {
+    if !terms.iter().any(|item| item == term) {
+        terms.push(term.to_string());
+    }
+}
+
+fn add_cjk_windows(terms: &mut Vec<String>, term: &str) {
+    let chars = term.chars().collect::<Vec<_>>();
+    if chars.len() <= 2 {
+        return;
+    }
+    for window in chars.windows(2) {
+        let item = window.iter().collect::<String>();
+        if !should_skip_query_term(&item) {
+            push_unique_term(terms, &item);
+        }
+    }
+}
+
+fn should_skip_query_term(term: &str) -> bool {
+    let term = term.trim();
+    if term.is_empty() || term.starts_with("site") || term.starts_with("http") {
+        return true;
+    }
+    if term.is_ascii() && term.len() < 2 {
+        return true;
+    }
+    matches!(
+        term,
+        "the"
+            | "and"
+            | "for"
+            | "with"
+            | "from"
+            | "what"
+            | "when"
+            | "where"
+            | "how"
+            | "is"
+            | "are"
+            | "was"
+            | "were"
+            | "一个"
+            | "这个"
+            | "那个"
+            | "怎么"
+            | "如何"
+            | "什么"
+            | "以及"
+            | "或者"
+            | "是否"
+    )
+}
+
+fn is_cjk(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{3400}'..='\u{4dbf}'
+            | '\u{4e00}'..='\u{9fff}'
+            | '\u{f900}'..='\u{faff}'
+    )
+}
+
+fn is_usable_search_result(result: &SearchResult) -> bool {
+    let Ok(parsed) = url::Url::parse(&result.url) else {
+        return false;
+    };
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return false;
+    }
+    let Some(host) = parsed.host_str().map(normalize_host) else {
+        return false;
+    };
+    if matches!(
+        host.as_str(),
+        "bing.com" | "cn.bing.com" | "duckduckgo.com" | "html.duckduckgo.com"
+    ) {
+        return false;
+    }
+    let title = result.title.to_lowercase();
+    !(title.contains("captcha") || title.contains("robot check"))
+}
+
+fn looks_like_search_or_listing_page(url: &str, title: &str) -> bool {
+    let lower_url = url.to_lowercase();
+    let lower_title = title.to_lowercase();
+    lower_url.contains("/search?")
+        || lower_url.contains("?q=")
+        || lower_url.contains("/tag/")
+        || lower_url.contains("/tags/")
+        || lower_title == "search"
+        || lower_title.ends_with(" search results")
+        || lower_title.contains("搜索结果")
+}
+
+fn is_low_signal_domain(domain: &str) -> bool {
+    [
+        "pinterest.com",
+        "facebook.com",
+        "x.com",
+        "twitter.com",
+        "instagram.com",
+        "tiktok.com",
+    ]
+    .iter()
+    .any(|blocked| domain_matches_filter(domain, blocked))
+}
+
+fn result_domain(url: &str) -> Option<String> {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(normalize_host))
+}
+
+fn normalize_host(host: &str) -> String {
+    host.trim().trim_start_matches("www.").to_ascii_lowercase()
+}
+
+fn normalize_domain_filter(value: &str) -> Option<String> {
+    let mut value = value.trim().to_ascii_lowercase();
+    value = value
+        .trim_start_matches("site:")
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_start_matches("www.")
+        .to_string();
+    let domain = value
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_matches('.');
+    if domain.is_empty() || domain.contains(char::is_whitespace) {
+        None
+    } else {
+        Some(domain.to_string())
+    }
+}
+
+fn domain_matches_filter(domain: &str, filter: &str) -> bool {
+    domain == filter || domain.ends_with(&format!(".{filter}"))
+}
+
+fn comparable_url(url: &str) -> String {
+    let Ok(mut parsed) = url::Url::parse(url) else {
+        return url.trim().to_lowercase();
+    };
+    parsed.set_fragment(None);
+    let tracking_keys = [
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "utm_term",
+        "utm_content",
+        "fbclid",
+        "gclid",
+    ];
+    let query_pairs = parsed
+        .query_pairs()
+        .filter(|(key, _)| {
+            !tracking_keys
+                .iter()
+                .any(|tracking| key.as_ref() == *tracking)
+        })
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    parsed.set_query(None);
+    if !query_pairs.is_empty() {
+        let mut pairs = parsed.query_pairs_mut();
+        for (key, value) in query_pairs {
+            pairs.append_pair(&key, &value);
+        }
+    }
+    parsed.as_str().trim_end_matches('/').to_lowercase()
 }
 
 fn parse_duckduckgo_html(html: &str) -> Vec<SearchResult> {
@@ -1482,7 +2272,7 @@ fn parse_duckduckgo_html(html: &str) -> Vec<SearchResult> {
         push_search_result(&mut results, title, url, snippet);
 
         search_pos = next_snippet_start;
-        if results.len() >= 5 {
+        if results.len() >= SEARCH_CANDIDATE_LIMIT {
             break;
         }
     }
@@ -1512,7 +2302,7 @@ fn parse_bing_rss(xml: &str) -> Vec<SearchResult> {
         }
 
         search_pos = item_end + "</item>".len();
-        if results.len() >= 5 {
+        if results.len() >= SEARCH_CANDIDATE_LIMIT {
             break;
         }
     }
@@ -1546,7 +2336,7 @@ fn parse_bing_html(html: &str) -> Vec<SearchResult> {
         push_search_result(&mut results, title, url, snippet);
 
         search_pos = item_end;
-        if results.len() >= 5 {
+        if results.len() >= SEARCH_CANDIDATE_LIMIT {
             break;
         }
     }
@@ -1936,7 +2726,7 @@ async fn exec_search_memory(args: &serde_json::Value) -> Result<String, String> 
     let db_path = get_db_path_for_tools()?;
     let conn = rusqlite::Connection::open(&db_path).map_err(|e| format!("打开数据库失败: {e}"))?;
 
-    let like_pattern = format!("%{}%", query);
+    let like_pattern = format!("%{}%", escape_like(query));
     let limit = limit.min(30);
 
     let (sql, params): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(cat) = category {
@@ -2039,7 +2829,6 @@ async fn exec_open_app(args: &serde_json::Value) -> Result<String, String> {
     let app_args = args["args"].as_str().unwrap_or("");
     let mut resolved = resolve_app_name(app);
 
-    // 检查数据库中是否存在用户拖入并注册的快捷方式应用路径
     if let Ok(db_path) = get_db_path_for_tools() {
         if let Ok(conn) = rusqlite::Connection::open(&db_path) {
             let stmt = conn.prepare("SELECT value FROM pet_memory WHERE category = 'app_path' AND LOWER(key) = LOWER(?1)");
@@ -2054,10 +2843,39 @@ async fn exec_open_app(args: &serde_json::Value) -> Result<String, String> {
         }
     }
 
-    let mut cmd = tokio::process::Command::new("cmd");
-    cmd.args(["/C", "start", "", &resolved]);
-    if !app_args.is_empty() {
-        cmd.arg(app_args);
+    // 拒绝 shell 元字符：避免通过 AI 控制的 resolved 路径触发命令注入
+    if resolved
+        .chars()
+        .any(|c| matches!(c, '&' | '|' | '<' | '>' | '^' | ';' | '`' | '$' | '\n' | '\r' | '"'))
+    {
+        return Err(format!("解析出的应用路径包含不允许的字符: {resolved}"));
+    }
+    if app_args
+        .chars()
+        .any(|c| matches!(c, '&' | '|' | '<' | '>' | '^' | ';' | '`' | '$' | '\n' | '\r' | '"'))
+    {
+        return Err("args 包含不允许的 shell 元字符".to_string());
+    }
+    let resolved_path = std::path::Path::new(&resolved);
+    if !resolved_path.exists() {
+        return Err(format!("应用路径不存在: {resolved}"));
+    }
+
+    // 解析额外参数，按空格切分但保留双引号包裹（仅最基础切分）
+    let arg_list: Vec<String> = if app_args.trim().is_empty() {
+        Vec::new()
+    } else {
+        app_args
+            .split_whitespace()
+            .map(|s| s.trim_matches('"').to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    };
+
+    // 直接以 resolved 路径作为可执行文件启动，避免 cmd.exe 解析器介入
+    let mut cmd = tokio::process::Command::new(&resolved);
+    for arg in &arg_list {
+        cmd.arg(arg);
     }
 
     #[cfg(target_os = "windows")]
@@ -2192,6 +3010,20 @@ fn format_file_size(bytes: u64) -> String {
     } else {
         format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
     }
+}
+
+fn escape_like(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '\\' | '%' | '_' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -2377,6 +3209,116 @@ mod tests {
     }
 
     #[test]
+    fn reranks_search_results_by_query_terms_and_filters_search_pages() {
+        let results = vec![
+            SearchResult {
+                title: "Bing search results".to_string(),
+                url: "https://cn.bing.com/search?q=deepseek+api".to_string(),
+                snippet: "Search page".to_string(),
+            },
+            SearchResult {
+                title: "DeepSeek stock price today".to_string(),
+                url: "https://finance.example.com/deepseek-stock".to_string(),
+                snippet: "Market quote and unrelated trading news.".to_string(),
+            },
+            SearchResult {
+                title: "DeepSeek API chat completions guide".to_string(),
+                url: "https://api-docs.deepseek.com/guides/chat-completions".to_string(),
+                snippet: "Use the chat completions endpoint with model deepseek-chat and OpenAI compatible messages.".to_string(),
+            },
+        ];
+
+        let ranked = rank_search_results("DeepSeek chat completions API", results, &[], None, None);
+
+        assert_eq!(
+            ranked.first().map(|item| item.url.as_str()),
+            Some("https://api-docs.deepseek.com/guides/chat-completions")
+        );
+        assert!(!ranked.iter().any(|item| item.url.contains("bing.com")));
+    }
+
+    #[test]
+    fn rank_search_results_respects_site_and_excluded_domains() {
+        let results = vec![
+            SearchResult {
+                title: "reqwest proxy examples".to_string(),
+                url: "https://blog.example.com/reqwest-proxy".to_string(),
+                snippet: "A casual blog post about proxy setup.".to_string(),
+            },
+            SearchResult {
+                title: "reqwest Proxy official docs".to_string(),
+                url: "https://docs.rs/reqwest/latest/reqwest/struct.Proxy.html".to_string(),
+                snippet: "Official Rust documentation for reqwest Proxy configuration.".to_string(),
+            },
+        ];
+
+        let ranked = rank_search_results(
+            "rust reqwest proxy official docs",
+            results,
+            &["blog.example.com".to_string()],
+            Some("docs.rs"),
+            None,
+        );
+
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(
+            ranked[0].url,
+            "https://docs.rs/reqwest/latest/reqwest/struct.Proxy.html"
+        );
+    }
+
+    #[test]
+    fn recent_news_queries_infer_recency_window() {
+        assert_eq!(infer_recency_days("帮我整理最近的国际新闻"), Some(7));
+        assert_eq!(infer_recency_days("今天国际新闻速览"), Some(2));
+        assert_eq!(infer_recency_days("本周 AI 行业新闻"), Some(7));
+        assert_eq!(infer_recency_days("DeepSeek API 文档"), None);
+    }
+
+    #[test]
+    fn effective_query_adds_after_operator_for_recency() {
+        let mut options = SearchOptions::new("最近的国际新闻");
+        options.recency_days = Some(7);
+        let query =
+            options.effective_query_for_date(chrono::NaiveDate::from_ymd_opt(2026, 6, 10).unwrap());
+
+        assert!(query.contains("after:2026-06-03"));
+    }
+
+    #[test]
+    fn freshness_score_penalizes_old_news_for_recent_queries() {
+        let old = SearchResult {
+            title: "International news roundup 2023".to_string(),
+            url: "https://news.example.com/2023/roundup".to_string(),
+            snippet: "A 2023 roundup of world events.".to_string(),
+        };
+        let fresh = SearchResult {
+            title: "International news roundup 2026".to_string(),
+            url: "https://news.example.com/2026/roundup".to_string(),
+            snippet: "Updated 2026 international headlines.".to_string(),
+        };
+
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 10).unwrap();
+        assert!(
+            score_result_freshness(&fresh, Some(7), today)
+                > score_result_freshness(&old, Some(7), today)
+        );
+    }
+
+    #[test]
+    fn focused_webpage_excerpts_keep_relevant_text() {
+        let text = compact_webpage_text(
+            "Home\nAccept cookies\nA long unrelated paragraph about cooking rice and weekend plans.\nDeepSeek chat completions API supports OpenAI-compatible messages and the deepseek-chat model.\nPrivacy Policy\nAnother unrelated section about account settings.",
+        );
+
+        let excerpts =
+            relevant_webpage_excerpts(&text, "DeepSeek chat completions API", 800).unwrap();
+
+        assert!(excerpts.contains("DeepSeek chat completions API"));
+        assert!(!excerpts.contains("Accept cookies"));
+    }
+
+    #[test]
     fn tool_definitions_include_weather_query() {
         let tools = tool_definitions();
         let has_weather = tools.iter().any(|tool| {
@@ -2386,5 +3328,35 @@ mod tests {
         });
 
         assert!(has_weather);
+    }
+
+    #[test]
+    fn web_search_tool_accepts_recency_days() {
+        let tools = tool_definitions();
+        let web_search = tools
+            .iter()
+            .find(|tool| {
+                tool["function"]["name"]
+                    .as_str()
+                    .is_some_and(|name| name == "web_search")
+            })
+            .unwrap();
+
+        assert!(web_search["function"]["parameters"]["properties"]["recency_days"].is_object());
+    }
+
+    #[test]
+    fn read_webpage_tool_accepts_focus_query() {
+        let tools = tool_definitions();
+        let read_webpage = tools
+            .iter()
+            .find(|tool| {
+                tool["function"]["name"]
+                    .as_str()
+                    .is_some_and(|name| name == "read_webpage")
+            })
+            .unwrap();
+
+        assert!(read_webpage["function"]["parameters"]["properties"]["query"].is_object());
     }
 }

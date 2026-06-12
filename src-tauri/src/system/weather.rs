@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-pub const DEFAULT_WEATHER_API_URL: &str = "http://wttr.in";
+pub const DEFAULT_WEATHER_API_URL: &str = "https://wttr.in";
 const LEGACY_HTTPS_WTTR_API_URL: &str = "https://wttr.in";
 const WEATHER_REQUEST_TIMEOUT_SECS: u64 = 20;
 const FALLBACK_WEATHER_API_URL: &str = "https://api.52vmy.cn/api/query/tian";
@@ -163,7 +163,39 @@ fn validate_weather_url(url: &str) -> Result<(), String> {
     if parsed.host_str().unwrap_or_default().is_empty() {
         return Err("天气API地址缺少主机名".to_string());
     }
+    if let Some(host) = parsed.host_str() {
+        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+            if is_private_or_loopback_ip(&ip) {
+                return Err("天气API地址不允许指向私网/回环 IP".to_string());
+            }
+        } else {
+            let lower = host.to_ascii_lowercase();
+            if lower == "localhost" || lower.ends_with(".local") || lower.ends_with(".internal") {
+                return Err("天气API地址不允许指向本地主机".to_string());
+            }
+        }
+    }
     Ok(())
+}
+
+fn is_private_or_loopback_ip(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+        }
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (v6.segments()[0] & 0xfe00) == 0xfc00
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+        }
+    }
 }
 
 fn weather_api_label(url: &str) -> String {
@@ -604,7 +636,7 @@ mod tests {
         };
         assert_eq!(
             build_weather_url(&auto).expect("auto url"),
-            "http://wttr.in/?format=j1"
+            "https://wttr.in/?format=j1"
         );
 
         let city = WeatherConfig {
@@ -614,7 +646,7 @@ mod tests {
         };
         assert_eq!(
             build_weather_url(&city).expect("city url"),
-            "http://wttr.in/%E4%B8%8A%E6%B5%B7?format=j1"
+            "https://wttr.in/%E4%B8%8A%E6%B5%B7?format=j1"
         );
 
         let template = WeatherConfig {
