@@ -163,7 +163,8 @@ pub async fn run_direct_api_agent(
             }
             "auto" | _ => {
                 // 自动模式或流式模式：使用流式调用，支持重试
-                const MAX_STREAM_RETRIES: u32 = 3;
+                // 重试上限提高到 5 次：用户的中转服务 (xiaomimimo 等) 经常中途断流
+                const MAX_STREAM_RETRIES: u32 = 5;
                 let mut stream_success = false;
                 let mut raw_buffer = String::new();
 
@@ -241,15 +242,26 @@ pub async fn run_direct_api_agent(
                             Ok(bytes) => bytes,
                             Err(e) => {
                                 let message = e.to_string();
+                                let content_len =
+                                    turn_text.trim().len() + full_thinking.trim().len();
+                                eprintln!(
+                                    "[stream-error] content={}B recoverable={} err={}",
+                                    content_len,
+                                    is_recoverable_stream_error(&message),
+                                    message
+                                );
                                 if is_recoverable_stream_error(&message) {
-                                    if !turn_text.trim().is_empty()
-                                        || !full_thinking.trim().is_empty()
-                                    {
-                                        // 有内容 -> 恢复
+                                    // 早期流中断（总内容 < 100 字符）：
+                                    // 重试比保留部分响应更有价值——中转服务经常在
+                                    // 模型刚输出几个 token 时切断连接
+                                    if content_len < 100 {
+                                        eprintln!(
+                                            "[stream-retry] early stream termination, will retry"
+                                        );
+                                        stream_eof = true;
                                         break;
                                     }
-                                    // 无内容 -> 标记 EOF，让外层重试
-                                    stream_eof = true;
+                                    // 已有较多内容 -> 保留
                                     break;
                                 }
                                 // 非可恢复错误：如果有部分内容，保留它而非丢弃
@@ -674,7 +686,12 @@ pub async fn run_direct_api_agent(
                 let approved_tool_types = state.approved_tool_types.lock().await;
                 approved_tool_types.contains(&tc_name)
             };
-            let requires_confirm = mode_requires_confirmation(&config, &tc_name, already_approved);
+            // 🔥 关键修复: 每次 tool call 前从 state 读最新 config,
+            // 而不是用 turn 开头传入的快照 (用户在思考途中切无审查模式会立即生效)
+            let latest_config = state.direct_api_config.lock().await.clone();
+            let effective_config = latest_config.as_ref().unwrap_or(&config);
+            let requires_confirm =
+                mode_requires_confirmation(effective_config, &tc_name, already_approved);
             let focus_snapshot = if requires_confirm
                 && crate::computer_use::should_restore_focus_after_confirmation(&tc_name)
             {
@@ -1049,12 +1066,20 @@ fn is_recoverable_stream_error(message: &str) -> bool {
         || lower.contains("connection reset")
         // 管道断裂
         || lower.contains("broken pipe")
-        // 连接被关闭
+        // 连接被关闭（通用）
         || lower.contains("connection closed")
+        // hyper 特定：响应体未接收完成就被关闭
+        || lower.contains("before message completed")
         // 通用 EOF (body 相关)
         || (lower.contains("unexpected eof") && lower.contains("body"))
         // TLS 握手阶段 EOF
         || (lower.contains("unexpected eof") && lower.contains("handshake"))
+        // 远端主动关闭
+        || lower.contains("peer closed")
+        // reqwest 传输层错误
+        || lower.contains("error decoding response body")
+        // 请求中途被取消（区分于用户主动中止）
+        || lower.contains("request was canceled")
 }
 
 fn append_active_thinking(state: &tauri::State<'_, AppState>, text: &str) {
@@ -1130,7 +1155,9 @@ async fn request_tool_confirmation(
             let _ = app_handle.emit("ai-thinking", &approved_msg);
             {
                 let mut approved_tool_types = state.approved_tool_types.lock().await;
-                approved_tool_types.insert(tool_name.to_string());
+                if !is_high_risk_tool(tool_name) {
+                    approved_tool_types.insert(tool_name.to_string());
+                }
             }
             emit_tool_event(
                 app_handle,
@@ -1271,13 +1298,43 @@ fn append_visual_tool_message(
         .get("height")
         .and_then(|item| item.as_i64())
         .unwrap_or(0);
+    let image_width = value
+        .get("image_width")
+        .and_then(|item| item.as_i64())
+        .unwrap_or(width);
+    let image_height = value
+        .get("image_height")
+        .and_then(|item| item.as_i64())
+        .unwrap_or(height);
+    let screen_x = value
+        .get("screen_x")
+        .and_then(|item| item.as_i64())
+        .unwrap_or(0);
+    let screen_y = value
+        .get("screen_y")
+        .and_then(|item| item.as_i64())
+        .unwrap_or(0);
+    let display = value
+        .get("display")
+        .and_then(|item| item.as_i64())
+        .unwrap_or(0);
+    let scale_x = value
+        .get("scale_x")
+        .and_then(|item| item.as_f64())
+        .unwrap_or(1.0);
+    let scale_y = value
+        .get("scale_y")
+        .and_then(|item| item.as_f64())
+        .unwrap_or(1.0);
 
     api_messages.push(json!({
         "role": "user",
         "content": [
             {
                 "type": "text",
-                "text": format!("{summary}\nUse this screenshot to decide the next UI action. Original screen size: {width}x{height}.")
+                "text": format!(
+                    "{summary}\nUse this screenshot to decide the next UI action. Screenshot image size: {image_width}x{image_height}. Captured display: {display}. Captured screen area: origin ({screen_x},{screen_y}), original size {width}x{height}. Image-to-screen scale: x={scale_x:.4}, y={scale_y:.4}. For mouse actions based on this screenshot, prefer computer_mouse with coordinate_space=\"image\" and image x/y coordinates; the tool maps them to screen coordinates automatically."
+                )
             },
             {
                 "type": "image_url",
@@ -1362,6 +1419,13 @@ fn compact_for_event(input: &str, max_chars: usize) -> String {
     let mut value = input.chars().take(max_chars).collect::<String>();
     value.push_str("\n... [已截断]");
     value
+}
+
+/// 工具被批准一次后是否仍要求每次都弹窗确认。
+/// 高风险（命令执行、文件写入、外部程序）默认不缓存：每次都让用户看一遍。
+/// 低风险（鼠标键盘、读取）可缓存：避免连续操作时弹窗淹没自动化。
+fn is_high_risk_tool(tool_name: &str) -> bool {
+    matches!(tool_name, "run_command" | "write_file" | "open_app")
 }
 
 fn tool_command(tool_name: &str, args: &serde_json::Value) -> Option<String> {
@@ -1621,6 +1685,38 @@ mod tests {
     }
 
     #[test]
+    fn connection_closed_before_message_completed_is_recoverable() {
+        assert!(is_recoverable_stream_error(
+            "error sending request for url (https://example.com/v1/chat/completions): connection closed before message completed"
+        ));
+    }
+
+    #[test]
+    fn peer_closed_is_recoverable() {
+        assert!(is_recoverable_stream_error(
+            "peer closed connection without sending TLS close_notify"
+        ));
+    }
+
+    #[test]
+    fn decode_response_body_error_is_recoverable() {
+        assert!(is_recoverable_stream_error(
+            "error decoding response body: invalid UTF-8"
+        ));
+    }
+
+    #[test]
+    fn request_canceled_is_recoverable() {
+        assert!(is_recoverable_stream_error("request was canceled"));
+    }
+
+    #[test]
+    fn unrelated_error_is_not_recoverable() {
+        assert!(!is_recoverable_stream_error("invalid API key"));
+        assert!(!is_recoverable_stream_error("rate limit exceeded"));
+    }
+
+    #[test]
     fn unreviewed_mode_does_not_force_computer_use_confirmation() {
         let mut config = DirectApiConfig::default();
         config.execution_mode = "unreviewed".to_string();
@@ -1695,5 +1791,19 @@ private reasoning that should not be replayed
         assert!(message.contains("继续"));
         assert!(message.contains("[当前工具进度摘要]"));
         assert!(message.contains("Screenshot captured"));
+    }
+
+    #[test]
+    fn is_high_risk_tool_classifies_correctly() {
+        // 高风险：每次都要弹窗
+        assert!(is_high_risk_tool("run_command"));
+        assert!(is_high_risk_tool("write_file"));
+        assert!(is_high_risk_tool("open_app"));
+
+        // 低风险：一次批准后可缓存
+        assert!(!is_high_risk_tool("computer_mouse"));
+        assert!(!is_high_risk_tool("read_file"));
+        assert!(!is_high_risk_tool("read_webpage"));
+        assert!(!is_high_risk_tool("search_web"));
     }
 }

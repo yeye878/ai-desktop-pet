@@ -78,6 +78,19 @@ const statusLabel = computed(() => {
   return "准备就绪";
 });
 const displayText = computed(() => interimText.value || transcript.value || errorText.value || "按下按钮后直接说话");
+const copyStateLabel = computed(() => {
+  if (errorText.value) return "需要处理";
+  if (interimText.value) return "实时识别";
+  if (transcript.value) return "待发送";
+  return "语音输入";
+});
+const stageLabel = computed(() => {
+  if (status.value === "listening") return "LIVE INPUT";
+  if (status.value === "speaking" || isGenerating.value) return "VOICE OUT";
+  if (chat.isLoading || isSending.value) return "THINKING";
+  if (errorText.value) return "ATTENTION";
+  return "READY";
+});
 const primaryLabel = computed(() => {
   if (status.value === "listening") return "停止";
   if (transcript.value) return "重说";
@@ -176,6 +189,24 @@ function clearSendTimeout() {
   }
 }
 
+async function hideVoicePanelForTask() {
+  clearAutoListenTimer();
+  try {
+    await currentWindow.hide();
+  } catch {
+    // Hiding is best-effort; failing to hide should not block the user's request.
+  }
+}
+
+async function showVoicePanelForRetry() {
+  try {
+    await currentWindow.show();
+    await currentWindow.setFocus();
+  } catch {
+    // If the window cannot be restored, the chat error state still records the failure.
+  }
+}
+
 async function sendTranscript() {
   const message = transcript.value.trim();
   if (!message || chat.isLoading || isSending.value) return;
@@ -199,10 +230,12 @@ async function sendTranscript() {
   }, 60_000);
 
   try {
+    await hideVoicePanelForTask();
     await invoke<{ started: boolean }>("send_to_ai", { message, attachments: [] });
     transcript.value = "";
     await currentWindow.emit("voice-message-sent", message);
   } catch (err) {
+    await showVoicePanelForRetry();
     clearSendTimeout();
     chat.isLoading = false;
     isSending.value = false;
@@ -252,12 +285,12 @@ onMounted(async () => {
     const ctx = canvas.getContext("2d");
     if (ctx) {
       const dpr = window.devicePixelRatio || 1;
-      const W = 240;
-      const H = 150;
+      const W = Math.max(320, Math.round(canvas.parentElement?.clientWidth || 336));
+      const H = Math.max(208, Math.round(canvas.parentElement?.clientHeight || 214));
       canvas.width = W * dpr;
       canvas.height = H * dpr;
-      canvas.style.width = W + "px";
-      canvas.style.height = H + "px";
+      canvas.style.width = "100%";
+      canvas.style.height = "100%";
       ctx.scale(dpr, dpr);
 
       const render = (timestamp: number) => {
@@ -265,29 +298,64 @@ onMounted(async () => {
         ctx.clearRect(0, 0, W, H);
 
         const cx = W / 2;
-        const cy = H / 2 - 12;
-        const R = 32;
+        const cy = H / 2 - 4;
+        const R = 46;
+        const isActive = status.value === "listening";
+        const isOutput = status.value === "speaking" || isGenerating.value;
+        const isBusy = chat.isLoading || isSending.value;
+        const amp = isActive ? 1 : isOutput ? 0.72 : isBusy ? 0.46 : 0.18;
 
-        // Particle generation in listening mode
-        if (status.value === "listening" && Math.random() < 0.35) {
+        const accent = isActive
+          ? { a: "#31d489", b: "#51c7ff", soft: "rgba(49, 212, 137, 0.18)" }
+          : isOutput
+            ? { a: "#7c6cf2", b: "#52c3ff", soft: "rgba(124, 108, 242, 0.17)" }
+            : isBusy
+              ? { a: "#ffb15c", b: "#ff6f6f", soft: "rgba(255, 177, 92, 0.16)" }
+              : { a: "#7b8ca5", b: "#c5d5e8", soft: "rgba(123, 140, 165, 0.12)" };
+
+        const bg = ctx.createLinearGradient(0, 0, W, H);
+        bg.addColorStop(0, "rgba(255, 255, 255, 0.34)");
+        bg.addColorStop(0.48, accent.soft);
+        bg.addColorStop(1, "rgba(255, 255, 255, 0.16)");
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, W, H);
+
+        ctx.save();
+        ctx.strokeStyle = "rgba(33, 48, 74, 0.055)";
+        ctx.lineWidth = 1;
+        for (let x = 24; x < W; x += 24) {
+          ctx.beginPath();
+          ctx.moveTo(x, 18);
+          ctx.lineTo(x, H - 18);
+          ctx.stroke();
+        }
+        for (let y = 28; y < H; y += 28) {
+          ctx.beginPath();
+          ctx.moveTo(18, y);
+          ctx.lineTo(W - 18, y);
+          ctx.stroke();
+        }
+        ctx.restore();
+
+        if ((isActive || isOutput) && Math.random() < 0.22) {
           const angle = Math.random() * Math.PI * 2;
+          const speed = 0.6 + Math.random() * 1.2;
           sparks.value.push({
-            x: cx + Math.cos(angle) * R,
-            y: cy + Math.sin(angle) * R,
-            vx: Math.cos(angle) * (0.8 + Math.random() * 1.5),
-            vy: Math.sin(angle) * (0.8 + Math.random() * 1.5),
+            x: cx + Math.cos(angle) * (R + 16),
+            y: cy + Math.sin(angle) * (R + 16),
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
             life: 1.0,
-            size: 1.2 + Math.random() * 1.5,
-            color: Math.random() < 0.5 ? "#4ade80" : "#22d3ee"
+            size: 1 + Math.random() * 1.2,
+            color: Math.random() < 0.5 ? accent.a : accent.b,
           });
         }
 
-        // Draw sparks
         for (let i = sparks.value.length - 1; i >= 0; i--) {
           const s = sparks.value[i];
           s.x += s.vx;
           s.y += s.vy;
-          s.life -= 0.025;
+          s.life -= 0.020;
           if (s.life <= 0) {
             sparks.value.splice(i, 1);
             continue;
@@ -303,34 +371,16 @@ onMounted(async () => {
           ctx.restore();
         }
 
-        // Render overlapping fluid layers
-        const drawBlob = (color: string, speedMult: number, phaseOffset: number, scale: number) => {
+        const drawOrb = (radius: number, colorA: string, colorB: string, phase: number) => {
           ctx.save();
-          ctx.fillStyle = color;
-          ctx.shadowColor = color;
-          ctx.shadowBlur = 10;
-          ctx.globalCompositeOperation = "screen";
-
           ctx.beginPath();
-          const numPoints = 64;
+          const numPoints = 96;
           for (let i = 0; i < numPoints; i++) {
             const theta = (i / numPoints) * Math.PI * 2;
-            let offset = 0;
-
-            if (status.value === "listening") {
-              offset += Math.sin(theta * 3 + time * 14 * speedMult + phaseOffset) * 8;
-              offset += Math.cos(theta * 5 - time * 18 * speedMult) * 4;
-            } else if (status.value === "speaking" || isGenerating.value) {
-              const speakAmp = status.value === "speaking" ? 11 : 6;
-              offset += Math.sin(theta * 2 + time * 9 * speedMult + phaseOffset) * speakAmp;
-              offset += Math.cos(theta * 4 - time * 13 * speedMult) * (speakAmp * 0.4);
-            } else {
-              // Gentle breathing/morphing blob
-              offset += Math.sin(theta * 2.5 + time * 2.2 * speedMult + phaseOffset) * 3;
-              offset += Math.cos(theta * 3.5 - time * 2.8 * speedMult) * 1.5;
-            }
-
-            const r = (R + offset) * scale;
+            const offset =
+              Math.sin(theta * 3 + time * (2.2 + amp * 7) + phase) * (3 + amp * 9) +
+              Math.cos(theta * 6 - time * (1.6 + amp * 4.5) + phase) * (1.4 + amp * 4);
+            const r = radius + offset;
             const x = cx + Math.cos(theta) * r;
             const y = cy + Math.sin(theta) * r;
 
@@ -338,59 +388,65 @@ onMounted(async () => {
             else ctx.lineTo(x, y);
           }
           ctx.closePath();
+          const fill = ctx.createRadialGradient(cx - 18, cy - 24, 6, cx, cy, radius + 28);
+          fill.addColorStop(0, "rgba(255,255,255,0.78)");
+          fill.addColorStop(0.38, colorA);
+          fill.addColorStop(1, colorB);
+          ctx.fillStyle = fill;
+          ctx.shadowBlur = 28;
+          ctx.shadowColor = colorA;
+          ctx.globalAlpha = 0.76;
           ctx.fill();
           ctx.restore();
         };
 
-        // Draw background shadow layer
-        ctx.globalAlpha = 0.16;
-        drawBlob("#4338ca", 0.8, Math.PI, 1.1);
-
-        // Core cyan fluid blob
-        const cyanCol = status.value === "listening" ? "rgba(74, 222, 128, 0.42)" : "rgba(56, 189, 248, 0.45)";
-        ctx.globalAlpha = 0.65;
-        drawBlob(cyanCol, 1.0, 0, 1.0);
-
-        // Core violet fluid blob
-        const violetCol = status.value === "listening" ? "rgba(34, 211, 238, 0.38)" : "rgba(167, 139, 250, 0.4)";
-        ctx.globalAlpha = 0.55;
-        drawBlob(violetCol, 1.1, Math.PI * 0.5, 0.95);
-
-        // Draw waves
-        ctx.globalAlpha = 0.85;
-        const wave1Col = status.value === "listening" ? "rgba(74, 222, 128, 0.45)" : "rgba(56, 189, 248, 0.45)";
-        const wave2Col = status.value === "listening" ? "rgba(34, 211, 238, 0.35)" : "rgba(167, 139, 250, 0.35)";
-
-        // Render 2 continuous wave channels
-        const drawSpectrumWave = (color: string, ampMult: number, phase: number) => {
-          ctx.strokeStyle = color;
-          ctx.lineWidth = 1.8;
+        ctx.save();
+        ctx.translate(cx, cy);
+        for (let i = 0; i < 3; i++) {
+          const radius = R + 26 + i * 22 + Math.sin(time * 1.2 + i) * (2 + amp * 4);
           ctx.beginPath();
-          const wavePoints = 36;
+          ctx.ellipse(0, 0, radius * 1.55, radius * 0.62, -0.08 + i * 0.18, 0, Math.PI * 2);
+          ctx.strokeStyle = i === 0 ? "rgba(255,255,255,0.50)" : `rgba(33, 48, 74, ${0.10 - i * 0.02})`;
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
+        ctx.restore();
+
+        drawOrb(R + 10, `${accent.a}99`, `${accent.b}4d`, 0);
+        drawOrb(R - 8, "rgba(255,255,255,0.72)", `${accent.a}42`, Math.PI * 0.7);
+
+        const drawSpectrumWave = (color: string, ampMult: number, phase: number, yBase: number) => {
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 1.35;
+          ctx.beginPath();
+          const wavePoints = 72;
           for (let i = 0; i <= wavePoints; i++) {
             const x = (i / wavePoints) * W;
-            let y = H - 24;
-
-            let amp = 2;
-            let freq = 0.08;
-            let speed = 4;
-            if (status.value === "listening") {
-              amp = 18; freq = 0.11; speed = 16;
-            } else if (status.value === "speaking" || isGenerating.value) {
-              amp = 12; freq = 0.09; speed = 11;
-            } else {
-              amp = 1.5; freq = 0.05; speed = 2.5;
-            }
-
-            y += Math.sin(i * freq + time * speed + phase) * amp * ampMult;
+            const y = yBase +
+              Math.sin(i * 0.22 + time * (2.2 + amp * 7) + phase) * (2 + amp * 18) * ampMult +
+              Math.cos(i * 0.09 - time * (1.8 + amp * 5) + phase) * (1 + amp * 6) * ampMult;
             if (i === 0) ctx.moveTo(x, y);
             else ctx.lineTo(x, y);
           }
           ctx.stroke();
         };
 
-        drawSpectrumWave(wave1Col, 1.0, 0);
-        drawSpectrumWave(wave2Col, 0.8, Math.PI * 0.6);
+        ctx.globalAlpha = 0.82;
+        drawSpectrumWave(`${accent.a}99`, 1, 0, H - 42);
+        ctx.globalAlpha = 0.54;
+        drawSpectrumWave(`${accent.b}88`, 0.78, Math.PI * 0.8, H - 32);
+
+        const bars = 34;
+        for (let i = 0; i < bars; i++) {
+          const x = 24 + i * ((W - 48) / (bars - 1));
+          const pulse = Math.sin(time * (2.8 + amp * 8) + i * 0.62) * 0.5 + 0.5;
+          const barH = 5 + pulse * (10 + amp * 34);
+          const grd = ctx.createLinearGradient(x, H - 18 - barH, x, H - 18);
+          grd.addColorStop(0, `${accent.a}b8`);
+          grd.addColorStop(1, "rgba(255,255,255,0.22)");
+          ctx.fillStyle = grd;
+          ctx.fillRect(x, H - 18 - barH, 2, barH);
+        }
 
         animId = requestAnimationFrame(render);
       };
@@ -453,14 +509,7 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="voice-panel" :class="{ active: status === 'listening', speaking: status === 'speaking', generating: isGenerating }">
-    <div class="cyber-scanlines"></div>
     <div class="panel-glow"></div>
-
-    <!-- Tech telemetry readouts in the corners -->
-    <div class="tech-tag top-left">[SYS_RECOG: WEB_SPEECH]</div>
-    <div class="tech-tag top-right">[GAIN_FACTOR: 1.2X]</div>
-    <div class="tech-tag bottom-left">[DECODE: ACTIVE]</div>
-    <div class="tech-tag bottom-right">[SYS_SAMPLING: 44.1KHZ]</div>
 
     <div class="voice-header">
       <div class="header-left">
@@ -473,7 +522,7 @@ onBeforeUnmount(() => {
       </button>
     </div>
 
-    <div class="visual-core">
+    <div class="visual-core voice-stage">
       <!-- Dynamic fluid canvas rendering both the blob core and the bottom waves -->
       <div class="canvas-container">
         <canvas ref="fluidCanvasRef" class="fluid-canvas"></canvas>
@@ -493,16 +542,13 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div class="content-area">
-      <textarea
-        v-model="transcript"
-        class="transcript"
-        :placeholder="displayText"
-        :disabled="status === 'listening' || isSending || chat.isLoading"
-        rows="2"
-      />
-      <div v-if="interimText || errorText" class="live-caption" :class="{ error: !!errorText }">
-        {{ interimText || errorText }}
+    <div class="content-area voice-overlay">
+      <div class="voice-copy-card" :class="{ error: !!errorText, active: !!interimText, ready: !!transcript }">
+        <div class="voice-copy-head">
+          <span>{{ copyStateLabel }}</span>
+          <b>{{ stageLabel }}</b>
+        </div>
+        <p class="voice-copy-text">{{ displayText }}</p>
       </div>
     </div>
 
@@ -1077,5 +1123,309 @@ onBeforeUnmount(() => {
     animation: none !important;
     transition-duration: 1ms !important;
   }
+}
+
+/* Voice window redesign: compact command surface */
+.voice-panel {
+  padding: 18px;
+  gap: 12px;
+  background:
+    url("../assets/art/paper-grain.webp"),
+    radial-gradient(circle at 18% 0%, rgba(102, 200, 255, 0.18), transparent 34%),
+    radial-gradient(circle at 88% 6%, rgba(142, 230, 168, 0.14), transparent 31%),
+    linear-gradient(155deg, rgba(255, 255, 255, 0.94), rgba(240, 248, 255, 0.86));
+  background-size: 420px 420px, auto, auto, auto;
+}
+
+.voice-panel::before {
+  content: "";
+  position: absolute;
+  inset: 10px;
+  pointer-events: none;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: 14px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  z-index: 1;
+}
+
+.voice-panel > * {
+  position: relative;
+  z-index: 2;
+}
+
+.panel-glow {
+  opacity: 0.62;
+}
+
+.voice-header {
+  min-height: 32px;
+  margin-bottom: 0;
+}
+
+.badge {
+  min-height: 22px;
+  display: inline-flex;
+  align-items: center;
+  letter-spacing: 0.08em;
+}
+
+.status-indicator {
+  width: 7px;
+  height: 7px;
+}
+
+.visual-core {
+  flex: 1 1 auto;
+  min-height: 0;
+  align-items: stretch;
+}
+
+.canvas-container {
+  width: 100%;
+  height: 232px;
+  border-color: rgba(33, 48, 74, 0.10);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(243, 250, 255, 0.38));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.78),
+    inset 0 -1px 0 rgba(33, 48, 74, 0.04),
+    0 14px 34px rgba(33, 48, 74, 0.10);
+}
+
+.fluid-canvas {
+  width: 100%;
+  height: 100%;
+}
+
+.core-overlay-icon {
+  width: 54px;
+  height: 54px;
+  transform: translate(-50%, -50%);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.84), rgba(246, 250, 255, 0.62));
+  border-color: rgba(33, 48, 74, 0.12);
+  color: #526175;
+  backdrop-filter: blur(12px) saturate(1.2);
+  -webkit-backdrop-filter: blur(12px) saturate(1.2);
+}
+
+.content-area {
+  flex: 0 0 auto;
+  margin-top: 0;
+}
+
+.voice-copy-card {
+  min-height: 72px;
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid rgba(33, 48, 74, 0.10);
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(248, 252, 255, 0.50));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.72),
+    0 8px 22px rgba(33, 48, 74, 0.065);
+}
+
+.voice-copy-card.active {
+  border-color: rgba(22, 134, 80, 0.18);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(241, 253, 247, 0.58));
+}
+
+.voice-copy-card.ready {
+  border-color: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.20);
+}
+
+.voice-copy-card.error {
+  border-color: rgba(220, 38, 38, 0.20);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(255, 244, 244, 0.56));
+}
+
+.voice-copy-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #718096;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.voice-copy-head b {
+  color: #42516a;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.voice-copy-text {
+  margin: 0;
+  max-height: 38px;
+  overflow: hidden;
+  color: #243047;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+}
+
+.voice-copy-card:not(.active):not(.ready):not(.error) .voice-copy-text {
+  color: #7c899a;
+  font-weight: 600;
+}
+
+.voice-copy-card.error .voice-copy-text {
+  color: #b91c1c;
+}
+
+.actions {
+  padding-top: 0;
+}
+
+.action-btn {
+  height: 40px;
+}
+
+.action-btn.secondary {
+  width: 68px;
+}
+
+.shortcut-hint {
+  padding-top: 0;
+}
+
+/* Integrated page treatment: the sound field is the window, not a card. */
+.voice-panel {
+  padding: 18px 18px 16px;
+  gap: 10px;
+  isolation: isolate;
+  background:
+    url("../assets/art/paper-grain.webp"),
+    radial-gradient(circle at 50% 32%, rgba(255, 255, 255, 0.72), transparent 26%),
+    radial-gradient(circle at 24% 18%, rgba(102, 200, 255, 0.22), transparent 34%),
+    radial-gradient(circle at 88% 18%, rgba(142, 230, 168, 0.16), transparent 32%),
+    linear-gradient(150deg, #fbfdff 0%, #edf8ff 48%, #fff9ef 100%);
+  background-size: 420px 420px, auto, auto, auto, auto;
+}
+
+.voice-panel::before {
+  inset: 0;
+  border: 0;
+  border-radius: inherit;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.42), transparent 24%, rgba(255, 255, 255, 0.30)),
+    linear-gradient(90deg, rgba(33, 48, 74, 0.045) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(33, 48, 74, 0.035) 1px, transparent 1px);
+  background-size: auto, 28px 28px, 28px 28px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.84);
+  opacity: 0.72;
+  mask-image: linear-gradient(180deg, transparent 0, #000 36px, #000 calc(100% - 18px), transparent 100%);
+}
+
+.voice-panel::after {
+  content: "";
+  position: absolute;
+  inset: 58px 18px 96px;
+  z-index: 1;
+  pointer-events: none;
+  border-radius: 28px;
+  background:
+    radial-gradient(ellipse at center, rgba(255, 255, 255, 0.54), transparent 44%),
+    radial-gradient(ellipse at center, rgba(102, 200, 255, 0.12), transparent 62%);
+  filter: blur(2px);
+}
+
+.voice-header,
+.voice-overlay,
+.actions,
+.shortcut-hint {
+  z-index: 4;
+}
+
+.voice-stage {
+  position: absolute;
+  inset: 58px 18px 108px;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.voice-stage .canvas-container {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.voice-stage .fluid-canvas {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.voice-stage .core-overlay-icon {
+  top: 47%;
+  width: 58px;
+  height: 58px;
+  pointer-events: auto;
+  background:
+    radial-gradient(circle at 35% 22%, rgba(255, 255, 255, 0.98), rgba(255, 255, 255, 0.72) 46%, rgba(242, 248, 255, 0.52));
+  border-color: rgba(255, 255, 255, 0.70);
+  box-shadow:
+    0 0 0 1px rgba(33, 48, 74, 0.08),
+    0 18px 42px rgba(33, 48, 74, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.84);
+}
+
+.voice-overlay {
+  margin-top: auto;
+  padding-top: 250px;
+}
+
+.voice-copy-card {
+  min-height: 68px;
+  border-color: rgba(255, 255, 255, 0.58);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.54), rgba(255, 255, 255, 0.30));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.76),
+    0 12px 30px rgba(33, 48, 74, 0.08);
+  backdrop-filter: blur(18px) saturate(1.18);
+  -webkit-backdrop-filter: blur(18px) saturate(1.18);
+}
+
+.voice-copy-card.active,
+.voice-copy-card.ready,
+.voice-copy-card.error {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.62), rgba(255, 255, 255, 0.34));
+}
+
+.voice-copy-card.error {
+  border-color: rgba(220, 38, 38, 0.18);
+}
+
+.actions {
+  padding-top: 2px;
+}
+
+.action-btn {
+  backdrop-filter: blur(12px) saturate(1.18);
+  -webkit-backdrop-filter: blur(12px) saturate(1.18);
+}
+
+.shortcut-hint {
+  margin-top: -2px;
 }
 </style>

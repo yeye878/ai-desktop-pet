@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from "vue";
+import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -32,9 +32,12 @@ import {
   type TtsSettings,
   type TtsVoice,
 } from "../services/tts";
+import { useSkillsStore, type Skill } from "../stores/skills";
+import { AVAILABLE_TOOL_NAMES, toolLabel } from "../services/tools";
 
 const emit = defineEmits<{ close: [] }>();
 const pet = usePetStore();
+const skillsStore = useSkillsStore();
 const currentWindow = getCurrentWindow();
 
 const systemInfo = ref({ cpu: 0, memory: 0 });
@@ -621,6 +624,119 @@ async function resetModel() {
   }
 }
 
+// ===== 自定义系统提示 + 技能 =====
+
+const customPromptDraft = ref("");
+const customPromptSaved = ref(false);
+watch(
+  () => skillsStore.customPrompt,
+  (val) => {
+    if (customPromptDraft.value !== val) customPromptDraft.value = val ?? "";
+  },
+  { immediate: true }
+);
+
+async function saveCustomPrompt() {
+  try {
+    await skillsStore.saveCustomPrompt(customPromptDraft.value);
+    customPromptSaved.value = true;
+    setTimeout(() => (customPromptSaved.value = false), 2000);
+  } catch (e) {
+    alert("保存自定义提示失败: " + e);
+  }
+}
+
+function newSkillDraft(): Skill {
+  const id =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `sk_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  return {
+    id,
+    name: "",
+    description: "",
+    system_prompt: "",
+    allowed_tools: [],
+    keywords: [],
+    is_active: false,
+    created_at: Math.floor(Date.now() / 1000),
+    updated_at: Math.floor(Date.now() / 1000),
+  };
+}
+
+const editingSkill = ref<Skill | null>(null);
+const skillToolFilter = ref("");
+
+const filteredSkillTools = computed(() => {
+  const q = skillToolFilter.value.trim().toLowerCase();
+  if (!q) return [...AVAILABLE_TOOL_NAMES];
+  return AVAILABLE_TOOL_NAMES.filter((t) => t.toLowerCase().includes(q) || toolLabel(t).toLowerCase().includes(q));
+});
+
+function startNewSkill() {
+  editingSkill.value = newSkillDraft();
+  skillToolFilter.value = "";
+}
+
+function startEditSkill(skill: Skill) {
+  editingSkill.value = { ...skill };
+  skillToolFilter.value = "";
+}
+
+function cancelEditSkill() {
+  editingSkill.value = null;
+  skillToolFilter.value = "";
+}
+
+function toggleSkillTool(name: string) {
+  if (!editingSkill.value) return;
+  const set = new Set(editingSkill.value.allowed_tools);
+  if (set.has(name)) set.delete(name);
+  else set.add(name);
+  editingSkill.value.allowed_tools = AVAILABLE_TOOL_NAMES.filter((t) => set.has(t));
+}
+
+function isSkillToolChecked(name: string): boolean {
+  return !!editingSkill.value?.allowed_tools.includes(name);
+}
+
+async function saveEditingSkill() {
+  if (!editingSkill.value) return;
+  if (!editingSkill.value.name.trim()) {
+    alert("请填写技能名称");
+    return;
+  }
+  const updated: Skill = {
+    ...editingSkill.value,
+    keywords: editingSkill.value.keywords ?? [],
+    updated_at: Math.floor(Date.now() / 1000),
+  };
+  try {
+    await skillsStore.upsert(updated);
+    editingSkill.value = null;
+  } catch (e) {
+    alert("保存技能失败: " + e);
+  }
+}
+
+async function removeSkill(id: string) {
+  if (!confirm("确认删除该技能？")) return;
+  try {
+    await skillsStore.remove(id);
+    if (editingSkill.value?.id === id) cancelEditSkill();
+  } catch (e) {
+    alert("删除技能失败: " + e);
+  }
+}
+
+async function activateSkill(id: string | null) {
+  try {
+    await skillsStore.setActive(id);
+  } catch (e) {
+    alert("切换激活技能失败: " + e);
+  }
+}
+
 async function startClaudeConfig() {
   try {
     await invoke("open_claude_config");
@@ -851,6 +967,7 @@ onMounted(async () => {
   loadProfession();
   loadVoiceSettings();
   loadBackendSettings();
+  skillsStore.load();
 
   const params = new URLSearchParams(window.location.search);
   const tabParam = params.get("tab");
@@ -1281,6 +1398,158 @@ onUnmounted(() => {
 
       <!-- SYSTEM TAB -->
       <template v-else-if="activeTab === 'system'">
+        <!-- 自定义系统提示 -->
+        <div class="section">
+          <h3>📝 自定义系统提示</h3>
+          <p class="hint">
+            追加到系统提示末尾，对所有对话与两个后端生效。留空则不追加。
+          </p>
+          <textarea
+            class="settings-textarea"
+            rows="4"
+            v-model="customPromptDraft"
+            placeholder="例如：你每次回复都以『汪！』开头，并且使用简洁的短句。"
+          />
+          <div class="action-row">
+            <button class="action-btn" @click="saveCustomPrompt">
+              {{ customPromptSaved ? "✅ 已保存" : "💾 保存" }}
+            </button>
+            <span v-if="customPromptDraft.trim().length === 0" class="muted-hint">
+              （留空将不追加任何内容）
+            </span>
+          </div>
+        </div>
+
+        <!-- 技能 -->
+        <div class="section">
+          <h3>🧩 技能</h3>
+          <p class="hint">
+            把一组“提示追加 + 免确认工具 + 触发关键词”打包成可复用技能。
+            手动激活后会持续生效；未激活时，用户消息含关键词会自动激活本轮。
+            技能不影响可用工具列表，只影响是否需要用户确认。
+          </p>
+
+          <div class="action-row">
+            <button class="action-btn primary" @click="startNewSkill">＋ 新建技能</button>
+            <span v-if="skillsStore.activeSkill" class="muted-hint">
+              当前激活：<b>{{ skillsStore.activeSkill.name }}</b>
+            </span>
+            <button
+              v-else-if="skillsStore.skills.length > 0"
+              class="action-btn"
+              @click="activateSkill(null)"
+            >
+              清除激活
+            </button>
+          </div>
+
+          <div v-if="skillsStore.skills.length === 0" class="empty-hint">
+            还没有任何技能，点击“新建技能”开始。
+          </div>
+
+          <div v-else class="skill-list">
+            <div
+              v-for="s in skillsStore.skills"
+              :key="s.id"
+              class="skill-card"
+              :class="{ active: s.is_active }"
+            >
+              <div class="skill-card-main">
+                <div class="skill-card-header">
+                  <span class="skill-card-name">{{ s.name || "(未命名)" }}</span>
+                  <span v-if="s.is_active" class="skill-active-badge">已激活</span>
+                </div>
+                <div v-if="s.description" class="skill-card-desc">{{ s.description }}</div>
+                <div class="skill-card-meta">
+                  <span>工具 {{ s.allowed_tools.length }} 个</span>
+                  <span v-if="s.system_prompt.trim()">提示追加 ✓</span>
+                </div>
+              </div>
+              <div class="skill-card-actions">
+                <button class="mini-action-btn" @click="startEditSkill(s)">编辑</button>
+                <button
+                  v-if="!s.is_active"
+                  class="mini-action-btn"
+                  @click="activateSkill(s.id)"
+                >
+                  激活
+                </button>
+                <button
+                  v-else
+                  class="mini-action-btn"
+                  @click="activateSkill(null)"
+                >
+                  取消激活
+                </button>
+                <button class="mini-action-btn danger" @click="removeSkill(s.id)">删除</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 编辑面板 -->
+          <div v-if="editingSkill" class="skill-editor">
+            <h4>编辑技能</h4>
+            <label class="form-label">
+              名称 *
+              <input
+                class="settings-input"
+                v-model="editingSkill.name"
+                placeholder="例如：翻译官"
+              />
+            </label>
+            <label class="form-label">
+              描述
+              <input
+                class="settings-input"
+                v-model="editingSkill.description"
+                placeholder="一句话说明这个技能做什么"
+              />
+            </label>
+            <label class="form-label">
+              系统提示追加
+              <textarea
+                class="settings-textarea"
+                rows="4"
+                v-model="editingSkill.system_prompt"
+                placeholder="留空表示只影响工具确认策略，不追加提示。"
+              />
+              <span v-if="!editingSkill.system_prompt.trim()" class="muted-hint">
+                （无提示追加）
+              </span>
+            </label>
+            <div class="form-label">
+              允许免确认使用的工具
+              <input
+                class="settings-input"
+                v-model="skillToolFilter"
+                placeholder="搜索工具..."
+              />
+            </div>
+            <div class="tool-grid">
+              <label
+                v-for="t in filteredSkillTools"
+                :key="t"
+                class="tool-row"
+              >
+                <input
+                  type="checkbox"
+                  :checked="isSkillToolChecked(t)"
+                  @change="toggleSkillTool(t)"
+                />
+                <span class="tool-row-label">{{ toolLabel(t) }}</span>
+                <span class="tool-row-name">{{ t }}</span>
+              </label>
+              <div v-if="filteredSkillTools.length === 0" class="muted-hint">
+                没有匹配的工具
+              </div>
+            </div>
+            <div class="action-row">
+              <button class="action-btn primary" @click="saveEditingSkill">保存技能</button>
+              <button class="action-btn" @click="cancelEditSkill">取消</button>
+            </div>
+          </div>
+        </div>
+
         <!-- 系统状态 -->
         <div class="section">
           <h3>&#x1F4CA; 系统状态</h3>
@@ -1770,6 +2039,180 @@ onUnmounted(() => {
   color: #94a3b8;
   margin-bottom: 8px;
   line-height: 1.5;
+}
+
+.settings-textarea,
+.settings-input {
+  width: 100%;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.86);
+  color: #1f2937;
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+  resize: vertical;
+  box-sizing: border-box;
+  margin-bottom: 8px;
+}
+
+.settings-input:focus,
+.settings-textarea:focus {
+  border-color: var(--pet-primary, #ff6b6b);
+  box-shadow: 0 0 0 3px rgba(var(--pet-primary-rgb, 255, 107, 107), 0.15);
+}
+
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 8px 0 4px;
+}
+
+.action-row .action-btn {
+  width: auto;
+  padding: 6px 14px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.action-row .action-btn.primary {
+  background: var(--pet-primary, #ff6b6b);
+}
+
+.muted-hint {
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.empty-hint {
+  font-size: 12px;
+  color: #94a3b8;
+  padding: 10px 0;
+}
+
+.skill-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.skill-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  border-radius: 10px;
+}
+
+.skill-card.active {
+  border-color: var(--pet-primary, #ff6b6b);
+  background: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.08);
+}
+
+.skill-card-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.skill-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.skill-active-badge {
+  font-size: 10px;
+  background: var(--pet-primary, #ff6b6b);
+  color: white;
+  padding: 1px 6px;
+  border-radius: 6px;
+}
+
+.skill-card-desc {
+  font-size: 12px;
+  color: #475569;
+  margin-top: 2px;
+}
+
+.skill-card-meta {
+  display: flex;
+  gap: 10px;
+  font-size: 11px;
+  color: #94a3b8;
+  margin-top: 4px;
+}
+
+.skill-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.skill-editor {
+  margin-top: 14px;
+  padding: 12px;
+  background: rgba(15, 23, 42, 0.03);
+  border: 1px dashed rgba(15, 23, 42, 0.12);
+  border-radius: 10px;
+}
+
+.skill-editor h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: #1f2937;
+}
+
+.form-label {
+  display: block;
+  font-size: 11px;
+  color: #475569;
+  margin-bottom: 8px;
+}
+
+.tool-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 4px 12px;
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 4px 0 8px;
+  border: 1px solid rgba(15, 23, 42, 0.05);
+  border-radius: 8px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.tool-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #1f2937;
+  cursor: pointer;
+}
+
+.tool-row-label {
+  font-weight: 600;
+}
+
+.tool-row-name {
+  color: #94a3b8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+}
+
+.mini-action-btn.danger {
+  background: rgba(239, 68, 68, 0.12);
+  color: #b91c1c;
 }
 
 .action-btn {

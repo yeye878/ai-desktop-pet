@@ -2,6 +2,8 @@ use rusqlite::{Connection, OptionalExtension, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use super::Skill;
+
 #[derive(Debug, Serialize)]
 pub struct ChatMessage {
     pub role: String,
@@ -117,7 +119,8 @@ impl Database {
             "CREATE INDEX IF NOT EXISTS idx_pet_memory_category_key ON pet_memory(category, key);
              CREATE INDEX IF NOT EXISTS idx_chat_history_created_at ON chat_history(created_at);
              CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_enabled_due ON scheduled_tasks(enabled, due_at);
-             CREATE INDEX IF NOT EXISTS idx_clipboard_items_pinned_id ON clipboard_items(pinned DESC, id DESC);",
+             CREATE INDEX IF NOT EXISTS idx_clipboard_items_pinned_id ON clipboard_items(pinned DESC, id DESC);
+             CREATE INDEX IF NOT EXISTS idx_skills_is_active ON skills(is_active) WHERE is_active = 1;",
         )?;
         Ok(())
     }
@@ -168,7 +171,30 @@ impl Database {
                 preview_path TEXT NOT NULL DEFAULT '',
                 created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
                 updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
-            );",
+            );
+            CREATE TABLE IF NOT EXISTS skills (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                system_prompt TEXT NOT NULL DEFAULT '',
+                allowed_tools_json TEXT NOT NULL DEFAULT '[]',
+                keywords_json TEXT NOT NULL DEFAULT '[]',
+                is_active INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+                updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+            );
+            CREATE TRIGGER IF NOT EXISTS skills_single_active_update
+            BEFORE UPDATE OF is_active ON skills
+            WHEN NEW.is_active = 1
+            BEGIN
+                UPDATE skills SET is_active = 0 WHERE id != NEW.id;
+            END;
+            CREATE TRIGGER IF NOT EXISTS skills_single_active_insert
+            BEFORE INSERT ON skills
+            WHEN NEW.is_active = 1
+            BEGIN
+                UPDATE skills SET is_active = 0;
+            END;",
         )?;
         self.ensure_chat_thinking_column()?;
         self.ensure_clipboard_pinned_column()?;
@@ -312,11 +338,9 @@ impl Database {
     /// 返回 chat_history 表中最大的 id，无消息时返回 0
     pub fn get_max_message_id(&self) -> Result<i64> {
         self.conn
-            .query_row(
-                "SELECT COALESCE(MAX(id), 0) FROM chat_history",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT COALESCE(MAX(id), 0) FROM chat_history", [], |row| {
+                row.get(0)
+            })
             .map_err(|e| e.into())
     }
 
@@ -342,9 +366,9 @@ impl Database {
     }
 
     pub fn get_memory_by_id(&self, id: i64) -> Result<Option<MemoryItem>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, category, key, value, created_at FROM pet_memory WHERE id = ?1",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, category, key, value, created_at FROM pet_memory WHERE id = ?1")?;
         let mut rows = stmt.query_map([id], |row| {
             Ok(MemoryItem {
                 id: row.get(0)?,
@@ -405,7 +429,8 @@ impl Database {
     }
 
     pub fn delete_memory(&self, id: i64) -> Result<()> {
-        self.conn.execute("DELETE FROM pet_memory WHERE id = ?1", [id])?;
+        self.conn
+            .execute("DELETE FROM pet_memory WHERE id = ?1", [id])?;
         Ok(())
     }
 
@@ -432,18 +457,15 @@ impl Database {
              LIMIT ?3"
         };
         let mut stmt = self.conn.prepare(sql)?;
-        let rows = stmt.query_map(
-            rusqlite::params![like_pattern, category, limit],
-            |row| {
-                Ok(MemoryItem {
-                    id: row.get(0)?,
-                    category: row.get(1)?,
-                    key: row.get(2)?,
-                    value: row.get(3)?,
-                    created_at: row.get(4)?,
-                })
-            },
-        )?;
+        let rows = stmt.query_map(rusqlite::params![like_pattern, category, limit], |row| {
+            Ok(MemoryItem {
+                id: row.get(0)?,
+                category: row.get(1)?,
+                key: row.get(2)?,
+                value: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })?;
         let mut results = Vec::new();
         for row in rows {
             results.push(row?);
@@ -696,6 +718,104 @@ impl Database {
             _ => Ok(None),
         }
     }
+
+    // ===== 技能 =====
+
+    pub fn list_skills(&self) -> Result<Vec<Skill>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, description, system_prompt,
+                    allowed_tools_json, keywords_json, is_active,
+                    created_at, updated_at
+             FROM skills
+             ORDER BY created_at ASC, id ASC",
+        )?;
+        let rows = stmt.query_map([], skill_from_row)?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
+    pub fn get_active_skill(&self) -> Result<Option<Skill>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, description, system_prompt,
+                    allowed_tools_json, keywords_json, is_active,
+                    created_at, updated_at
+             FROM skills
+             WHERE is_active = 1
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map([], skill_from_row)?;
+        match rows.next() {
+            Some(Ok(item)) => Ok(Some(item)),
+            Some(Err(err)) => Err(err),
+            None => Ok(None),
+        }
+    }
+
+    /// 保存 / 更新技能（**不会**改动 `is_active`，激活走 `set_active_skill`）
+    pub fn save_skill(&self, skill: &Skill) -> Result<()> {
+        let allowed_tools_json = serde_json::to_string(&skill.allowed_tools)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        let keywords_json = serde_json::to_string(&skill.keywords)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        self.conn.execute(
+            "INSERT INTO skills (
+                id, name, description, system_prompt,
+                allowed_tools_json, keywords_json,
+                created_at, updated_at
+             ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, strftime('%s', 'now')
+             )
+             ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                description = excluded.description,
+                system_prompt = excluded.system_prompt,
+                allowed_tools_json = excluded.allowed_tools_json,
+                keywords_json = excluded.keywords_json,
+                updated_at = excluded.updated_at",
+            (
+                &skill.id,
+                &skill.name,
+                &skill.description,
+                &skill.system_prompt,
+                &allowed_tools_json,
+                &keywords_json,
+                skill.created_at,
+            ),
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_skill(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM skills WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// `id = Some(...)` 激活该技能（其它行会被 DB 触发器自动置 0），
+    /// `id = None` 清除所有激活。
+    pub fn set_active_skill(&self, id: Option<&str>) -> Result<()> {
+        match id {
+            Some(id) => {
+                self.conn.execute(
+                    "UPDATE skills
+                     SET is_active = CASE WHEN id = ?1 THEN 1 ELSE 0 END,
+                         updated_at = strftime('%s', 'now')",
+                    [id],
+                )?;
+            }
+            None => {
+                self.conn.execute(
+                    "UPDATE skills
+                     SET is_active = 0, updated_at = strftime('%s', 'now')",
+                    [],
+                )?;
+            }
+        }
+        Ok(())
+    }
 }
 
 fn scheduled_task_from_row(row: &rusqlite::Row<'_>) -> Result<ScheduledTask> {
@@ -738,5 +858,23 @@ fn custom_pet_asset_from_row(row: &rusqlite::Row<'_>) -> Result<CustomPetAsset> 
         preview_path: row.get(5)?,
         created_at: row.get(6)?,
         updated_at: row.get(7)?,
+    })
+}
+
+fn skill_from_row(row: &rusqlite::Row<'_>) -> Result<Skill> {
+    let allowed_tools_json: String = row.get(4)?;
+    let keywords_json: String = row.get(5)?;
+    let allowed_tools = serde_json::from_str(&allowed_tools_json).unwrap_or_default();
+    let keywords = serde_json::from_str(&keywords_json).unwrap_or_default();
+    Ok(Skill {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        description: row.get(2)?,
+        system_prompt: row.get(3)?,
+        allowed_tools,
+        keywords,
+        is_active: row.get::<_, i64>(6)? != 0,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
     })
 }

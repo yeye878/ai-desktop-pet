@@ -93,8 +93,15 @@
   --dash-focus: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.18);
   --dash-sidebar-width: 252px;
   --dash-titlebar-height: 40px;
-  --dash-transition: 200ms cubic-bezier(0.22, 0.68, 0, 1);
-  --dash-transition-slow: 340ms cubic-bezier(0.22, 0.68, 0, 1);
+  --dash-transition: 200ms cubic-bezier(0.22, 1, 0.36, 1);
+  --dash-transition-slow: 340ms cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* unified motion language */
+  --dash-ease-out: cubic-bezier(0.22, 1, 0.36, 1);   /* smooth decel, no overshoot */
+  --dash-ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1); /* gentle springy pop */
+  --dash-ease-in: cubic-bezier(0.4, 0, 1, 1);         /* quick exit */
+  --dash-dur-fast: 120ms;
+  --dash-dur-base: 200ms;
 }
 
 /* ---------- resets ---------- */
@@ -457,11 +464,10 @@ button {
   font-weight: 560;
   text-align: left;
   transition:
-    background var(--dash-transition),
-    border-color var(--dash-transition),
-    color var(--dash-transition),
-    transform var(--dash-transition),
-    box-shadow var(--dash-transition);
+    background var(--dash-dur-fast) var(--dash-ease-out),
+    border-color var(--dash-dur-fast) var(--dash-ease-out),
+    color var(--dash-dur-fast) var(--dash-ease-out),
+    transform var(--dash-dur-fast) var(--dash-ease-out);
 }
 
 .sidebar-item:hover {
@@ -469,6 +475,11 @@ button {
   border-color: rgba(24, 42, 72, 0.07);
   color: var(--dash-text-primary);
   transform: translateX(4px) rotate(-1deg);
+}
+
+.sidebar-item:active {
+  transform: translateX(2px) scale(0.97);
+  transition-duration: 60ms;
 }
 
 .sidebar-item.active {
@@ -976,6 +987,93 @@ button {
   color: rgb(var(--pet-primary-rgb, 204, 112, 82));
   font-size: 12px;
   font-weight: 800;
+}
+
+.dash-card-subtitle {
+  font-size: 12px;
+  color: var(--dash-text-secondary);
+  margin-bottom: 12px;
+  line-height: 1.55;
+}
+
+.dash-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.dash-mini-btn {
+  border: 1px solid var(--dash-card-border);
+  background: var(--dash-card-bg, rgba(255, 255, 255, 0.78));
+  color: var(--dash-text-primary);
+  border-radius: 10px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.dash-mini-btn:hover {
+  background: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.12);
+  border-color: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.4);
+}
+
+.dash-mini-btn.primary {
+  background: var(--pet-primary, #ff6b6b);
+  color: white;
+  border-color: transparent;
+}
+
+.dash-mini-btn.primary:hover {
+  background: var(--pet-primary-dark, #e55a5a);
+}
+
+.dash-skill-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dash-skill-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid var(--dash-card-border);
+  border-radius: 10px;
+}
+
+.dash-skill-row.active {
+  border-color: var(--pet-primary, #ff6b6b);
+  background: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.08);
+}
+
+.dash-skill-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dash-skill-name {
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--dash-text-primary);
+}
+
+.dash-skill-badge {
+  font-size: 10px;
+  background: var(--pet-primary, #ff6b6b);
+  color: white;
+  padding: 1px 6px;
+  border-radius: 6px;
+}
+
+.dash-skill-desc {
+  font-size: 12px;
+  color: var(--dash-text-secondary);
 }
 
 /* ---------- home grid ---------- */
@@ -4138,18 +4236,54 @@ button {
   background: rgba(255, 255, 255, 0.50);
 }
 
-/* ---------- page transitions ---------- */
+/* ---------- page transitions ----------
+   Paired with <Transition mode="out-in">: leave runs first (short),
+   then enter. Keep both on GPU-composited props (opacity/transform)
+   and keep total perceived time tight (~90ms + ~190ms). */
 .page-fade-enter-active {
-  animation: float-in 280ms ease both;
+  transition:
+    opacity var(--dash-dur-base) var(--dash-ease-out),
+    transform var(--dash-dur-base) var(--dash-ease-out);
+  will-change: opacity, transform;
 }
 
 .page-fade-leave-active {
-  transition: opacity 140ms ease, transform 140ms ease;
+  transition:
+    opacity 90ms var(--dash-ease-in),
+    transform 90ms var(--dash-ease-in);
+  will-change: opacity, transform;
+}
+
+.page-fade-enter-from {
+  opacity: 0;
+  transform: translateY(8px) scale(0.992);
 }
 
 .page-fade-leave-to {
   opacity: 0;
-  transform: translateY(-4px) scale(0.99);
+  transform: translateY(-5px) scale(0.996);
+}
+
+/* ---------- reduced motion ----------
+   Honor the OS-level "reduce motion" setting: collapse all transitions
+   and animations to a near-instant cross-fade, kill transform-based
+   movement and infinite loops, and drop will-change hints so we don't
+   pin idle layers onto the compositor. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+    will-change: auto !important;
+  }
+
+  .page-fade-enter-from,
+  .page-fade-leave-to {
+    transform: none;
+  }
 }
 
 /* ---------- responsive ---------- */
@@ -4653,16 +4787,6 @@ button {
   max-height: 0;
   padding-top: 0;
   padding-bottom: 0;
-}
-
-.page-fade-enter-active,
-.page-fade-leave-active {
-  transition: opacity 0.2s ease;
-}
-
-.page-fade-enter-from,
-.page-fade-leave-to {
-  opacity: 0;
 }
 
 .fade-enter-active,

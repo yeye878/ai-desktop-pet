@@ -13,6 +13,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset", "tray-icon"] }
 tauri-plugin-shell = "2"
+tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
@@ -31,12 +32,19 @@ reqwest = { version = "0.11", features = ["json", "native-tls", "stream"] }
 futures-util = "0.3"
 tokio-util = { version = "0.7", features = ["rt"] }
 base64 = "0.22"
-keyring-core = "1.0.0"
+# 替换 keyring-core 1.0.0 (trait-only, 无平台实现, 实际写不进 keyring)
+# keyring 3.x 提供真正的平台后端, API key 不再丢
+keyring = { version = "3", default-features = false, features = [
+    "windows-native",         # Windows: Credential Manager
+    "apple-native",           # macOS:   Keychain
+    "sync-secret-service",    # Linux:   Secret Service (DBus, 同步)
+] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 pdf-extract = "0.10"
 walkdir = "2"
 chrono = "0.4"
 urlencoding = "2"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
@@ -44,6 +52,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Threading",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
 ] }
 
 

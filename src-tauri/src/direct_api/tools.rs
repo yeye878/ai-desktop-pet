@@ -4,6 +4,7 @@ use serde_json::json;
 use std::{
     collections::HashSet,
     ffi::OsString,
+    net::ToSocketAddrs,
     path::{Component, Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -382,6 +383,14 @@ fn is_command_safe(command: &str) -> Result<(), String> {
         "reg add",
         "net user",
         "net localgroup",
+        "diskpart",
+        "vssadmin delete",
+        "wbadmin delete",
+        "bcdedit /delete",
+        "cipher /w",
+        "mkfs",
+        "dd if=/dev/",
+        ":(){:|:&};:",
     ];
 
     let cmd_lower = command.to_lowercase();
@@ -522,11 +531,11 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
             "type": "function",
             "function": {
                 "name": "computer_screenshot",
-                "description": "Capture the user's desktop as an image for visual inspection. Requires Computer Use to be enabled in settings. Use before mouse/keyboard actions when the current UI state matters.",
+                "description": "Capture the user's desktop as an image for visual inspection. Requires Computer Use to be enabled in settings. Use before mouse/keyboard actions when the current UI state matters. Returns screen origin, image size, scale, and monitor bounds for coordinate mapping.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "display": { "type": "integer", "description": "Optional display index. Defaults to 0." },
+                        "display": { "type": "integer", "description": "Optional display index. Defaults to 0. Use -1 to capture the whole virtual desktop across monitors." },
                         "max_width": { "type": "integer", "description": "Optional max image width for compression. Defaults to 1024." }
                     }
                 }
@@ -536,19 +545,26 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
             "type": "function",
             "function": {
                 "name": "computer_mouse",
-                "description": "Control the mouse after observing the screen. Actions: move, click, double_click, right_click, drag, scroll. Coordinates are absolute screen pixels.",
+                "description": "Control the mouse after observing the screen. Actions: move, click, double_click, right_click, drag, scroll. Coordinates default to absolute screen pixels. If using coordinates from the latest screenshot image, set coordinate_space to image and pass the image x/y; the tool maps them to the captured screen area automatically.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "action": { "type": "string", "enum": ["move", "click", "double_click", "right_click", "drag", "scroll"] },
-                        "x": { "type": "integer", "description": "Absolute screen x coordinate." },
-                        "y": { "type": "integer", "description": "Absolute screen y coordinate." },
-                        "to_x": { "type": "integer", "description": "Drag destination x coordinate." },
-                        "to_y": { "type": "integer", "description": "Drag destination y coordinate." },
-                        "dx": { "type": "integer", "description": "Relative x delta for drag when to_x is omitted." },
-                        "dy": { "type": "integer", "description": "Relative y delta for drag or scroll." },
+                        "coordinate_space": { "type": "string", "enum": ["screen", "image"], "description": "screen means absolute desktop pixels. image means coordinates from the latest screenshot image or from explicit mapping fields." },
+                        "x": { "type": "integer", "description": "X coordinate in coordinate_space. For image mode, this is the screenshot image x." },
+                        "y": { "type": "integer", "description": "Y coordinate in coordinate_space. For image mode, this is the screenshot image y." },
+                        "to_x": { "type": "integer", "description": "Drag destination x coordinate in coordinate_space." },
+                        "to_y": { "type": "integer", "description": "Drag destination y coordinate in coordinate_space." },
+                        "dx": { "type": "integer", "description": "Relative x delta for drag when to_x is omitted. In image mode this is scaled to screen pixels." },
+                        "dy": { "type": "integer", "description": "Relative y delta for drag or scroll. In image mode this is scaled to screen pixels." },
                         "amount": { "type": "integer", "description": "Mouse wheel notches for scroll. Positive scrolls up, negative scrolls down." },
-                        "button": { "type": "string", "enum": ["left", "right"], "description": "Mouse button for click. Defaults to left." }
+                        "button": { "type": "string", "enum": ["left", "right"], "description": "Mouse button for click. Defaults to left." },
+                        "screen_x": { "type": "integer", "description": "Optional explicit mapping: captured screen area's left coordinate." },
+                        "screen_y": { "type": "integer", "description": "Optional explicit mapping: captured screen area's top coordinate." },
+                        "screen_width": { "type": "integer", "description": "Optional explicit mapping: captured screen area's original width." },
+                        "screen_height": { "type": "integer", "description": "Optional explicit mapping: captured screen area's original height." },
+                        "image_width": { "type": "integer", "description": "Optional explicit mapping: screenshot image width." },
+                        "image_height": { "type": "integer", "description": "Optional explicit mapping: screenshot image height." }
                     },
                     "required": ["action"]
                 }
@@ -650,7 +666,7 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "display": { "type": "integer", "description": "Optional display index. Defaults to 0." },
+                        "display": { "type": "integer", "description": "Optional display index. Defaults to 0. Use -1 to capture the whole virtual desktop across monitors." },
                         "max_width": { "type": "integer", "description": "Optional max image width for compression. Defaults to 1024." }
                     }
                 }
@@ -1416,21 +1432,30 @@ async fn read_webpage(url: &str, focus_query: Option<&str>) -> Result<String, St
         return Err("URL 必须以 http:// 或 https:// 开头".to_string());
     }
 
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(12))
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .build()
-        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+    // 解析并校验初始 URL。
+    // 防御 DNS 重绑定：先把主机解析成 IP 走白名单校验，然后用 client.resolve() 把这些 IP
+    // 钉死在本次连接的 client 上，reqwest 不会再次发起 DNS 查询，杜绝公网 → 内网反弹。
+    let mut current = url::Url::parse(url).map_err(|e| format!("URL 解析失败: {e}"))?;
+    let mut res = fetch_with_pinned_dns(&current).await?;
 
-    let res = client
-        .get(url)
-        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-        .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.7")
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-        .send()
-        .await
-        .map_err(|e| format!("请求失败: {e}"))?;
+    const MAX_HOPS: usize = 5;
+    let mut hops_left = MAX_HOPS;
+    while res.status().is_redirection() && hops_left > 0 {
+        let location = res
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| "重定向缺少 Location 头".to_string())?;
+        current = current
+            .join(location)
+            .map_err(|e| format!("相对跳转目标解析失败: {e}"))?;
+        // 每次重定向都重新做一次"解析 + 校验 + 钉死 IP"全流程。
+        res = fetch_with_pinned_dns(&current).await?;
+        hops_left -= 1;
+    }
+    if res.status().is_redirection() {
+        return Err(format!("重定向次数超过上限 ({MAX_HOPS})"));
+    }
 
     let status = res.status();
     if !status.is_success() {
@@ -1456,6 +1481,93 @@ async fn read_webpage(url: &str, focus_query: Option<&str>) -> Result<String, St
 
     let text = compact_webpage_text(&html_to_text(&body));
     Ok(format_webpage_result(url, &text, focus_query))
+}
+
+/// SSRF 防御：拒绝指向私网/回环/链路本地/云元数据地址的 URL
+fn is_forbidden_ip(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.octets()[0] == 0
+                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 0x40) // CGNAT 100.64/10
+        }
+        std::net::IpAddr::V6(v6) => {
+            if v6.is_loopback() || v6.is_unspecified() {
+                return true;
+            }
+            // IPv4 映射地址按 IPv4 规则走
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_forbidden_ip(&std::net::IpAddr::V4(v4));
+            }
+            let s = v6.segments()[0];
+            (s & 0xfe00) == 0xfc00   // fc00::/7 唯一本地地址
+            || (s & 0xffc0) == 0xfe80 // fe80::/10 链路本地
+        }
+    }
+}
+
+/// 解析 URL 的主机并校验解析到的所有 IP 都不在私网/回环范围内。
+/// 返回所有解析到的合法 SocketAddr，供 fetch_with_pinned_dns 钉死 IP。
+fn resolve_and_validate_public(
+    u: &url::Url,
+) -> Result<(String, u16, Vec<std::net::SocketAddr>), String> {
+    let host = u
+        .host_str()
+        .ok_or_else(|| "URL 缺少主机名".to_string())?
+        .to_string();
+    let port = u.port_or_known_default().unwrap_or(443);
+    let mut addrs = Vec::new();
+    for addr in (host.as_str(), port)
+        .to_socket_addrs()
+        .map_err(|e| format!("无法解析主机 {host}: {e}"))?
+    {
+        if is_forbidden_ip(&addr.ip()) {
+            return Err(format!("出于安全考虑，已拒绝访问内网/本机地址: {host}"));
+        }
+        addrs.push(addr);
+    }
+    if addrs.is_empty() {
+        return Err(format!("无法解析主机 {host}"));
+    }
+    Ok((host, port, addrs))
+}
+
+/// 防御 DNS 重绑定：对目标 URL 做"解析 → IP 白名单校验 → 钉死 IP"全流程，
+/// 然后用 reqwest client.resolve() 把这些 IP 显式绑定到本次 client 上，
+/// reqwest 不会再发起 DNS 查询，避免攻击者在两次解析间切换返回公网/私网 IP。
+async fn fetch_with_pinned_dns(u: &url::Url) -> Result<reqwest::Response, String> {
+    let (host, _port, addrs) = resolve_and_validate_public(u)?;
+
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(12))
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+             (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        );
+    for addr in &addrs {
+        builder = builder.resolve(&host, *addr);
+    }
+    let client = builder
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+
+    client
+        .get(u.as_str())
+        .header(
+            "Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
+        .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.7")
+        .send()
+        .await
+        .map_err(|e| format!("请求失败: {e}"))
 }
 
 /// 将 HTML 转换为纯文本
@@ -2529,6 +2641,14 @@ fn get_db_path_for_tools() -> Result<std::path::PathBuf, String> {
     Ok(path)
 }
 
+/// 统一打开 pet.db 并设置 busy_timeout，避免短瞬的写锁争用误报错误。
+/// 保留多连接并发模式（WAL 下读写互不阻塞），仅修复秒级锁错误。
+fn open_pet_db(path: &std::path::Path) -> Result<rusqlite::Connection, String> {
+    let conn = rusqlite::Connection::open(path).map_err(|e| format!("打开数据库失败: {e}"))?;
+    let _ = conn.busy_timeout(Duration::from_secs(5));
+    Ok(conn)
+}
+
 const WEATHER_CONFIG_KEY_FOR_TOOLS: &str = "weather_config";
 
 fn unix_now_for_tools() -> i64 {
@@ -2540,8 +2660,7 @@ fn unix_now_for_tools() -> i64 {
 
 fn load_weather_config_for_tools() -> Result<system::weather::WeatherConfig, String> {
     let db_path = get_db_path_for_tools()?;
-    let conn =
-        rusqlite::Connection::open(&db_path).map_err(|e| format!("打开天气设置数据库失败: {e}"))?;
+    let conn = open_pet_db(&db_path).map_err(|e| format!("打开天气设置数据库失败: {e}"))?;
     let mut stmt = conn
         .prepare("SELECT value FROM pet_settings WHERE key = ?1")
         .map_err(|e| format!("读取天气设置失败: {e}"))?;
@@ -2647,7 +2766,7 @@ async fn exec_create_scheduled_task(args: &serde_json::Value) -> Result<String, 
     let repeat = normalize_task_repeat_for_tools(args["repeat"].as_str().unwrap_or("once"));
 
     let db_path = get_db_path_for_tools()?;
-    let conn = rusqlite::Connection::open(&db_path).map_err(|e| format!("打开数据库失败: {e}"))?;
+    let conn = open_pet_db(&db_path).map_err(|e| format!("打开数据库失败: {e}"))?;
     ensure_scheduled_tasks_table(&conn)?;
     conn.execute(
         "INSERT INTO scheduled_tasks (title, note, due_at, repeat, enabled, updated_at)
@@ -2665,7 +2784,7 @@ async fn exec_create_scheduled_task(args: &serde_json::Value) -> Result<String, 
 
 async fn exec_list_scheduled_tasks() -> Result<String, String> {
     let db_path = get_db_path_for_tools()?;
-    let conn = rusqlite::Connection::open(&db_path).map_err(|e| format!("打开数据库失败: {e}"))?;
+    let conn = open_pet_db(&db_path).map_err(|e| format!("打开数据库失败: {e}"))?;
     ensure_scheduled_tasks_table(&conn)?;
 
     let mut stmt = conn
@@ -2724,7 +2843,7 @@ async fn exec_search_memory(args: &serde_json::Value) -> Result<String, String> 
     let limit = args["limit"].as_u64().unwrap_or(10) as u32;
 
     let db_path = get_db_path_for_tools()?;
-    let conn = rusqlite::Connection::open(&db_path).map_err(|e| format!("打开数据库失败: {e}"))?;
+    let conn = open_pet_db(&db_path).map_err(|e| format!("打开数据库失败: {e}"))?;
 
     let like_pattern = format!("%{}%", escape_like(query));
     let limit = limit.min(30);
@@ -2795,7 +2914,7 @@ async fn exec_save_memory(args: &serde_json::Value) -> Result<String, String> {
     let value = args["value"].as_str().ok_or("缺少 'value' 参数")?;
 
     let db_path = get_db_path_for_tools()?;
-    let conn = rusqlite::Connection::open(&db_path).map_err(|e| format!("打开数据库失败: {e}"))?;
+    let conn = open_pet_db(&db_path).map_err(|e| format!("打开数据库失败: {e}"))?;
 
     conn.execute(
         "INSERT INTO pet_memory (category, key, value) VALUES (?1, ?2, ?3)",
@@ -2811,7 +2930,7 @@ async fn exec_delete_memory(args: &serde_json::Value) -> Result<String, String> 
     let id = args["id"].as_i64().ok_or("缺少 'id' 参数")?;
 
     let db_path = get_db_path_for_tools()?;
-    let conn = rusqlite::Connection::open(&db_path).map_err(|e| format!("打开数据库失败: {e}"))?;
+    let conn = open_pet_db(&db_path).map_err(|e| format!("打开数据库失败: {e}"))?;
 
     let affected = conn
         .execute("DELETE FROM pet_memory WHERE id = ?1", [id])
@@ -2830,7 +2949,7 @@ async fn exec_open_app(args: &serde_json::Value) -> Result<String, String> {
     let mut resolved = resolve_app_name(app);
 
     if let Ok(db_path) = get_db_path_for_tools() {
-        if let Ok(conn) = rusqlite::Connection::open(&db_path) {
+        if let Ok(conn) = open_pet_db(&db_path) {
             let stmt = conn.prepare("SELECT value FROM pet_memory WHERE category = 'app_path' AND LOWER(key) = LOWER(?1)");
             if let Ok(mut s) = stmt {
                 let rows = s.query_map([app], |row| row.get::<_, String>(0));
@@ -2844,16 +2963,20 @@ async fn exec_open_app(args: &serde_json::Value) -> Result<String, String> {
     }
 
     // 拒绝 shell 元字符：避免通过 AI 控制的 resolved 路径触发命令注入
-    if resolved
-        .chars()
-        .any(|c| matches!(c, '&' | '|' | '<' | '>' | '^' | ';' | '`' | '$' | '\n' | '\r' | '"'))
-    {
+    if resolved.chars().any(|c| {
+        matches!(
+            c,
+            '&' | '|' | '<' | '>' | '^' | ';' | '`' | '$' | '\n' | '\r' | '"'
+        )
+    }) {
         return Err(format!("解析出的应用路径包含不允许的字符: {resolved}"));
     }
-    if app_args
-        .chars()
-        .any(|c| matches!(c, '&' | '|' | '<' | '>' | '^' | ';' | '`' | '$' | '\n' | '\r' | '"'))
-    {
+    if app_args.chars().any(|c| {
+        matches!(
+            c,
+            '&' | '|' | '<' | '>' | '^' | ';' | '`' | '$' | '\n' | '\r' | '"'
+        )
+    }) {
         return Err("args 包含不允许的 shell 元字符".to_string());
     }
     let resolved_path = std::path::Path::new(&resolved);
@@ -3358,5 +3481,49 @@ mod tests {
             .unwrap();
 
         assert!(read_webpage["function"]["parameters"]["properties"]["query"].is_object());
+    }
+
+    #[test]
+    fn is_forbidden_ip_blocks_private_loopback_and_metadata() {
+        let v4_forbidden = [
+            "127.0.0.1",       // loopback
+            "10.0.0.5",        // RFC1918
+            "192.168.1.1",     // RFC1918
+            "172.16.0.1",      // RFC1918
+            "169.254.169.254", // AWS / Azure metadata
+            "0.0.0.0",         // unspecified
+            "255.255.255.255", // broadcast
+            "100.64.0.1",      // CGNAT
+            "192.0.2.1",       // documentation
+        ];
+        for s in v4_forbidden {
+            let ip: std::net::IpAddr = s.parse().unwrap();
+            assert!(is_forbidden_ip(&ip), "应被拒: {s}");
+        }
+
+        let v6_forbidden = [
+            "::1",              // loopback
+            "fc00::1",          // ULA
+            "fe80::1",          // link-local
+            "::ffff:127.0.0.1", // IPv4-mapped loopback
+        ];
+        for s in v6_forbidden {
+            let ip: std::net::IpAddr = s.parse().unwrap();
+            assert!(is_forbidden_ip(&ip), "应被拒: {s}");
+        }
+    }
+
+    #[test]
+    fn is_forbidden_ip_allows_public_addresses() {
+        let public = [
+            "8.8.8.8",
+            "1.1.1.1",
+            "93.184.216.34",
+            "2606:4700:4700::1111",
+        ];
+        for s in public {
+            let ip: std::net::IpAddr = s.parse().unwrap();
+            assert!(!is_forbidden_ip(&ip), "公网应通过: {s}");
+        }
     }
 }

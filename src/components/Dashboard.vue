@@ -7,6 +7,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import CustomPixelPetWorkshop from "./CustomPixelPetWorkshop.vue";
 import PetCanvas from "./PetCanvas.vue";
 import { usePetStore, THEMES, FONT_COLORS, resolveSkinId } from "../stores/pet";
+import { useSkillsStore } from "../stores/skills";
 import { useChatStore, type Message } from "../stores/chat";
 import {
   PET_CHARACTERS,
@@ -53,6 +54,36 @@ const currentWindow = getCurrentWindow();
 type NavPage = "home" | "chat" | "memory" | "appearance" | "voice" | "system" | "about";
 const activePage = ref<NavPage>("home");
 const isPetActive = ref(false);
+const skillsStore = useSkillsStore();
+
+// 自定义提示（Dashboard 速览面板）
+const customPromptDraft = ref("");
+const customPromptSaved = ref(false);
+watch(
+  () => skillsStore.customPrompt,
+  (val) => {
+    if (customPromptDraft.value !== val) customPromptDraft.value = val ?? "";
+  },
+  { immediate: true }
+);
+
+async function saveCustomPrompt() {
+  try {
+    await skillsStore.saveCustomPrompt(customPromptDraft.value);
+    customPromptSaved.value = true;
+    setTimeout(() => (customPromptSaved.value = false), 2000);
+  } catch (e) {
+    alert("保存自定义提示失败: " + e);
+  }
+}
+
+async function activateSkill(id: string | null) {
+  try {
+    await skillsStore.setActive(id);
+  } catch (e) {
+    alert("切换激活技能失败: " + e);
+  }
+}
 
 type MemoryItem = {
   id: number;
@@ -1340,6 +1371,7 @@ let unlistenAnswerDelta: UnlistenFn | null = null;
 let unlistenAiFinished: UnlistenFn | null = null;
 let unlistenAiError: UnlistenFn | null = null;
 let unlistenChatCleared: UnlistenFn | null = null;
+let unlistenSkillActivated: UnlistenFn | null = null;
 let unlistenSyncMessage: UnlistenFn | null = null;
 let unlistenToolEvent: UnlistenFn | null = null;
 let unlistenToolConfirm: UnlistenFn | null = null;
@@ -1826,6 +1858,7 @@ onMounted(async () => {
   loadBackendSettings();
   loadClaudeStatus();
   void loadWeatherConfig().then(() => loadWeather());
+  void skillsStore.load();
 
   sysInfoTimer = setInterval(loadSystemInfo, 5000);
   weatherTimer = setInterval(loadWeather, 300000); // 每5分钟更新天气
@@ -1895,6 +1928,17 @@ onMounted(async () => {
     resetDashChatUi();
     void loadMemories();
   });
+
+  unlistenSkillActivated = await listen<{ skill_id: string; skill_name: string; source: string }>(
+    "ai-skill-activated",
+    (event) => {
+      const sourceLabel = event.payload.source === "manual" ? "手动" : "关键词触发";
+      chat.addMessage(
+        "assistant",
+        `🧩 已激活技能：${event.payload.skill_name}（${sourceLabel}）`,
+      );
+    }
+  );
 
   unlistenSyncMessage = await listen<any>("sync-chat-message", (event) => {
     const payload = event.payload;
@@ -1987,6 +2031,7 @@ onUnmounted(() => {
   unlistenScheduledTaskTriggered?.();
   unlistenWeatherUpdate?.();
   unlistenDragDrop?.();
+  unlistenSkillActivated?.();
 });
 </script>
 
@@ -3027,6 +3072,63 @@ onUnmounted(() => {
               <div class="page-kicker">System</div>
               <h1 class="page-title">系统设置</h1>
               <p class="page-subtitle">配置 AI 后端、性格和职业定位</p>
+            </div>
+
+            <!-- 自定义系统提示 -->
+            <div class="dash-card lab-module">
+              <div class="dash-card-title"><span class="card-icon">📝</span> 自定义系统提示</div>
+              <p class="dash-card-subtitle">追加到系统提示末尾，对所有对话生效。留空则不追加。</p>
+              <textarea
+                class="dash-textarea"
+                rows="3"
+                v-model="customPromptDraft"
+                placeholder="例如：你每次回复都以『汪！』开头..."
+              />
+              <div class="dash-card-actions">
+                <button class="dash-mini-btn primary" @click="saveCustomPrompt">
+                  {{ customPromptSaved ? "✅ 已保存" : "💾 保存" }}
+                </button>
+                <span v-if="skillsStore.activeSkill" class="dash-card-subtitle">
+                  当前激活技能：<b>{{ skillsStore.activeSkill.name }}</b>
+                </span>
+              </div>
+            </div>
+
+            <!-- 技能（只读摘要） -->
+            <div class="dash-card lab-module">
+              <div class="dash-card-title"><span class="card-icon">🧩</span> 技能</div>
+              <p class="dash-card-subtitle">
+                编辑请到设置页。这里只展示摘要与激活切换。
+              </p>
+              <div v-if="skillsStore.skills.length === 0" class="dash-card-subtitle">
+                还没有任何技能。
+              </div>
+              <div v-else class="dash-skill-list">
+                <div
+                  v-for="s in skillsStore.skills"
+                  :key="s.id"
+                  class="dash-skill-row"
+                  :class="{ active: s.is_active }"
+                >
+                  <div class="dash-skill-info">
+                    <span class="dash-skill-name">{{ s.name }}</span>
+                    <span v-if="s.is_active" class="dash-skill-badge">已激活</span>
+                  </div>
+                  <div class="dash-skill-desc">{{ s.description || "(无描述)" }}</div>
+                  <div class="dash-card-actions">
+                    <button
+                      v-if="!s.is_active"
+                      class="dash-mini-btn"
+                      @click="activateSkill(s.id)"
+                    >激活</button>
+                    <button
+                      v-else
+                      class="dash-mini-btn"
+                      @click="activateSkill(null)"
+                    >取消激活</button>
+                  </div>
+                </div>
+              </div>
             </div>
 
             <!-- AI 后端 -->

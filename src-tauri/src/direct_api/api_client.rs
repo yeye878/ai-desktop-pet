@@ -631,9 +631,9 @@ pub async fn call_chat_completions_stream(
         req = req.header("Authorization", format!("Bearer {}", config.api_key.trim()));
     }
 
-    let res = tokio::time::timeout(Duration::from_secs(45), req.send())
+    let res = tokio::time::timeout(Duration::from_secs(60), req.send())
         .await
-        .map_err(|_| "API 请求超过 45 秒没有响应，请检查网络、Base URL 或代理配置。".to_string())?
+        .map_err(|_| "API 请求超过 60 秒没有响应，请检查网络、Base URL 或代理配置。".to_string())?
         .map_err(|e| format!("{e}"))?;
 
     if !res.status().is_success() {
@@ -693,9 +693,9 @@ pub async fn call_chat_completions_non_stream(
         req = req.header("Authorization", format!("Bearer {}", config.api_key.trim()));
     }
 
-    let res = tokio::time::timeout(Duration::from_secs(45), req.send())
+    let res = tokio::time::timeout(Duration::from_secs(60), req.send())
         .await
-        .map_err(|_| "API 请求超过 45 秒没有响应，请检查网络、Base URL 或代理配置。".to_string())?
+        .map_err(|_| "API 请求超过 60 秒没有响应，请检查网络、Base URL 或代理配置。".to_string())?
         .map_err(|e| format!("{e}"))?;
 
     if !res.status().is_success() {
@@ -875,10 +875,10 @@ pub async fn list_models(
         req = req.header("Authorization", format!("Bearer {}", api_key.trim()));
     }
 
-    let res = tokio::time::timeout(Duration::from_secs(45), req.send())
+    let res = tokio::time::timeout(Duration::from_secs(60), req.send())
         .await
         .map_err(|_| {
-            "获取模型列表超过 45 秒没有响应，请检查网络、Base URL 或代理配置。".to_string()
+            "获取模型列表超过 60 秒没有响应，请检查网络、Base URL 或代理配置。".to_string()
         })?
         .map_err(|e| format!("获取模型列表失败: {e}"))?;
     let status = res.status();

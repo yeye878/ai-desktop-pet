@@ -11,7 +11,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
 import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { cursorPosition, getCurrentWindow } from "@tauri-apps/api/window";
+import { cursorPosition, getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import { resolveSkinId, usePetStore } from "./stores/pet";
@@ -216,13 +216,24 @@ async function openToolConfirmPanel(payload: ToolConfirmPayload) {
   const url = `${baseUrl}?window=tool-confirm`;
   const size = new LogicalSize(spec.width, spec.height);
   localStorage.setItem(TOOL_CONFIRM_PAYLOAD_KEY, JSON.stringify(payload));
+  // 🔥 智能弹窗: 仅在 chat/main 窗口获焦时才置顶+抢焦, 否则仅显示+通知
+  const focused = await isChatWindowFocused();
   const existing = await WebviewWindow.getByLabel("tool-confirm");
   if (existing) {
     await existing.setSize(size);
     await existing.center();
-    await existing.setAlwaysOnTop(true);
+    if (focused) {
+      await existing.setAlwaysOnTop(true);
+      await existing.setFocus();
+    } else {
+      await existing.setAlwaysOnTop(false);
+    }
     await existing.show();
-    await existing.setFocus();
+    if (!focused) {
+      // 后台: 任务栏闪烁 + 系统通知
+      await requestUserAttentionSafely(existing);
+      await sendToolConfirmNotification(payload);
+    }
     await existing.emit("tool-confirm-payload", payload);
     return;
   }
@@ -235,12 +246,53 @@ async function openToolConfirmPanel(payload: ToolConfirmPayload) {
     center: true,
     transparent: false,
     decorations: false,
-    alwaysOnTop: true,
+    alwaysOnTop: focused,
     resizable: false,
-    skipTaskbar: true,
+    skipTaskbar: !focused,
     shadow: true,
-    focus: true,
+    focus: focused,
   });
+  // 通知必须等窗口建好后调用, 否则 IPC 会因目标窗口不存在而失败
+  if (!focused) {
+    setTimeout(async () => {
+      const win = await WebviewWindow.getByLabel("tool-confirm");
+      if (win) {
+        await requestUserAttentionSafely(win);
+        await sendToolConfirmNotification(payload);
+      }
+    }, 200);
+  }
+}
+
+/// 当前窗口是否是 chat 或 main (用户在使用 AI 对话)
+async function isChatWindowFocused(): Promise<boolean> {
+  try {
+    const win = getCurrentWindow();
+    const focused = await win.isFocused();
+    if (!focused) return false;
+    return win.label === "chat" || win.label === "main";
+  } catch {
+    return false;
+  }
+}
+
+async function requestUserAttentionSafely(win: WebviewWindow) {
+  try {
+    await win.requestUserAttention(UserAttentionType.Critical);
+  } catch {
+    // 某些平台/窗口不支持, 静默失败
+  }
+}
+
+async function sendToolConfirmNotification(payload: ToolConfirmPayload) {
+  try {
+    await invoke("send_tool_confirm_notification", {
+      summary: payload.summary,
+      toolName: payload.tool_name,
+    });
+  } catch (err) {
+    console.warn("send_tool_confirm_notification failed:", err);
+  }
 }
 
 async function closeCurrentWindow() {

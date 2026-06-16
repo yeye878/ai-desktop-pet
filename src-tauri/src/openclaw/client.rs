@@ -1,7 +1,7 @@
 use serde::Serialize;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Mutex;
-use std::path::PathBuf;
 use tauri::Manager;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::{Child, Command};
@@ -117,7 +117,10 @@ impl ClaudeAdapter {
             let bundled_node_dir = resource_dir.join("node");
             let path_options = vec![
                 bundled_node_dir.join("claude.cmd"),
-                bundled_node_dir.join("node_modules").join(".bin").join("claude.cmd"),
+                bundled_node_dir
+                    .join("node_modules")
+                    .join(".bin")
+                    .join("claude.cmd"),
             ];
 
             for path in path_options {
@@ -130,7 +133,7 @@ impl ClaudeAdapter {
         }
 
         let mut cmd = Command::new(cmd_path);
-        
+
         // 如果找到了内置的便携路径，将其临时注入子进程的 PATH 中
         // 这样 claude.cmd 内部调用 node.exe 时就能成功执行了
         if let Some(ref node_path) = extra_path {
@@ -246,11 +249,14 @@ impl StreamParseState {
                             Some("thinking") => {
                                 if let Some(thinking) = block["thinking"].as_str() {
                                     if thinking.len() > self.thinking_len {
-                                        let delta = if thinking.is_char_boundary(self.thinking_len) {
+                                        let delta = if thinking.is_char_boundary(self.thinking_len)
+                                        {
                                             thinking[self.thinking_len..].to_string()
                                         } else {
                                             let mut start = self.thinking_len;
-                                            while start < thinking.len() && !thinking.is_char_boundary(start) {
+                                            while start < thinking.len()
+                                                && !thinking.is_char_boundary(start)
+                                            {
                                                 start += 1;
                                             }
                                             thinking[start..].to_string()

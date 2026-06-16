@@ -2,6 +2,7 @@ mod behavior;
 mod computer_use;
 mod direct_api;
 mod openclaw;
+mod skills;
 mod storage;
 mod system;
 mod tts;
@@ -94,6 +95,7 @@ pub struct AppState {
     pub chat_start_id: StdMutex<i64>,
     pub http_client: reqwest::Client,
     pub weather_cache: tokio::sync::Mutex<Option<system::WeatherInfo>>,
+    pub last_active_skill_id: tokio::sync::Mutex<Option<String>>,
 }
 
 fn unix_now() -> i64 {
@@ -738,12 +740,18 @@ fn save_api_profiles(
     let mut db_profiles = profiles.to_vec();
     for profile in &mut db_profiles {
         if !profile.api_key.is_empty() && !is_masked_api_key(&profile.api_key) {
-            if system::credential::set_api_key(&profile.id, &profile.api_key).is_ok() {
-                profile.api_key = String::new();
+            // keyring 失败时拒绝落明文到数据库：日志记录失败，
+            // 本会话（调用方持有的 profiles 副本）仍含真 key 可继续工作，
+            // 但重启后该 profile 需要用户重新输入。
+            if let Err(e) = system::credential::set_api_key(&profile.id, &profile.api_key) {
+                eprintln!(
+                    "[credential] 写入密钥库失败，拒绝明文持久化 (profile {}): {e}",
+                    profile.id
+                );
             }
-        } else if is_masked_api_key(&profile.api_key) {
-            profile.api_key = String::new();
         }
+        // 任何情况下都不在 DB 中保存可解出的明文 key
+        profile.api_key = String::new();
     }
     let json = serde_json::to_string(&db_profiles).map_err(|e| e.to_string())?;
     db.save_setting(API_PROFILES_KEY, &json)
@@ -995,6 +1003,101 @@ async fn attach_registered_apps_prompt(
         }
     }
     system_prompt
+}
+
+fn attach_custom_prompt(system_prompt: String, custom: &str) -> String {
+    if custom.trim().is_empty() {
+        return system_prompt;
+    }
+    format!(
+        "{}\n\n【用户自定义系统提示】\n{}",
+        system_prompt,
+        custom.trim()
+    )
+}
+
+async fn attach_skill_prompt(
+    system_prompt: String,
+    active: Option<&storage::Skill>,
+    all_skills: &[storage::Skill],
+    is_direct_api: bool,
+) -> String {
+    // 1) 把"技能清单（name + description）"注入系统提示，让 AI 知道有哪些可用技能，可以主动调用相关工具。
+    //    清单只列名称和用途描述，不追加规则；具体规则由用户激活的那一个技能注入。
+    let catalog = build_skill_catalog(all_skills);
+    let system_prompt = if catalog.is_empty() {
+        system_prompt
+    } else {
+        format!("{}\n\n{}", system_prompt, catalog)
+    };
+
+    // 2) 当前激活技能的追加系统提示。
+    let Some(skill) = active else {
+        return system_prompt;
+    };
+    if skill.system_prompt.trim().is_empty() {
+        return system_prompt;
+    }
+    let description = if skill.description.trim().is_empty() {
+        "(无描述)".to_string()
+    } else {
+        skill.description.trim().to_string()
+    };
+
+    // 工具白名单仅在 direct_api 后端下有效：openclaw 走的是 Claude CLI 子进程，
+    // 不消费 DirectApiConfig，is_high_risk_tool / mode_requires_confirmation 这类
+    // 免确认机制对它不起作用。在 openclaw 路径下告诉 AI "可免确认" 等于说谎。
+    if is_direct_api {
+        let tools = if skill.allowed_tools.is_empty() {
+            "(无)".to_string()
+        } else {
+            skill.allowed_tools.join(", ")
+        };
+        format!(
+            "{}\n\n【当前激活技能】{}\n描述：{}\n追加规则：\n{}\n允许免确认使用的工具：{}",
+            system_prompt, skill.name, description, skill.system_prompt, tools
+        )
+    } else {
+        format!(
+            "{}\n\n【当前激活技能】{}\n描述：{}\n追加规则：\n{}\n注：当前为 Claude CLI 后端，技能工具白名单不生效，所有工具调用仍受 CLI 自身权限控制。",
+            system_prompt, skill.name, description, skill.system_prompt
+        )
+    }
+}
+
+/// 生成"技能清单"段落，所有技能（不论是否激活）都向 AI 公开名称 + 描述，
+/// 让 AI 在判断任务时知道哪些技能适用。格式严格，避免被注入：
+/// - 每个技能用同一段固定模板
+/// - 名称 / 描述按行输出（不解析 Markdown）
+/// - 空描述 / 空名称直接跳过
+fn build_skill_catalog(skills: &[storage::Skill]) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    lines.push("【可用技能清单】以下是当前配置的技能名称与用途描述。AI 应根据用户需求自主判断是否需要调用相关技能对应的工具；只有被用户手动激活的技能会追加专属规则并把工具加入免确认白名单。".to_string());
+    for skill in skills {
+        let name = skill.name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let description = skill.description.trim();
+        let description_part = if description.is_empty() {
+            "（无描述）".to_string()
+        } else {
+            description.replace('\n', " ")
+        };
+        let status = if skill.is_active {
+            "（已激活）"
+        } else {
+            ""
+        };
+        lines.push(format!("- {name}{status}：{description_part}"));
+    }
+    lines.join("\n")
+}
+
+/// 解析本轮消息应使用的技能：完全由用户手动激活决定。
+/// 关键词不再参与匹配；`all_skills` 保留形参仅用于拼接"技能清单"。
+fn resolve_skill_for_message(db_active: Option<&storage::Skill>) -> Option<storage::Skill> {
+    db_active.cloned()
 }
 
 #[cfg(test)]
@@ -1332,9 +1435,18 @@ async fn run_ai_message(
             return;
         };
 
-        let system_prompt = {
+        let (system_prompt, all_skills, active_skill) = {
             let personality = state.personality.lock().await.clone();
             let profession = state.profession.lock().await.clone();
+            let db = state.db.lock().await;
+            let custom_prompt = db
+                .get_setting("custom_system_prompt")
+                .unwrap_or(None)
+                .unwrap_or_default();
+            let all_skills = db.list_skills().unwrap_or_default();
+            let active_skill = db.get_active_skill().unwrap_or(None);
+            drop(db);
+
             let base = openclaw::build_system_prompt(&personality, &profession);
             let base = attach_runtime_identity_prompt(base, &config);
             let base = attach_execution_mode_prompt(base, &config);
@@ -1342,7 +1454,10 @@ async fn run_ai_message(
             let base = attach_weather_prompt(base);
             let base = attach_search_prompt(base);
             let base = attach_memory_prompt(base);
-            attach_registered_apps_prompt(base, &state).await
+            let base = attach_registered_apps_prompt(base, &state).await;
+            let base = attach_custom_prompt(base, &custom_prompt);
+            let base = attach_skill_prompt(base, active_skill.as_ref(), &all_skills, true).await;
+            (base, all_skills, active_skill)
         };
 
         let chat_history = {
@@ -1364,6 +1479,38 @@ async fn run_ai_message(
             history
         };
 
+        // 解析本轮技能（仅手动激活），并把技能白名单合入 config
+        let effective_skill = resolve_skill_for_message(active_skill.as_ref());
+        let mut effective_config = config;
+        if let Some(s) = &effective_skill {
+            let mut seen: std::collections::HashSet<String> = effective_config
+                .auto_approved_tools
+                .iter()
+                .cloned()
+                .collect();
+            for t in &s.allowed_tools {
+                if seen.insert(t.clone()) {
+                    effective_config.auto_approved_tools.push(t.clone());
+                }
+            }
+            // 仅在激活技能 ID 发生变化时 emit，避免每轮都提示
+            let mut last_id = state.last_active_skill_id.lock().await;
+            if last_id.as_deref() != Some(s.id.as_str()) {
+                *last_id = Some(s.id.clone());
+                let _ = app_handle.emit(
+                    "ai-skill-activated",
+                    serde_json::json!({
+                        "skill_id": s.id,
+                        "skill_name": s.name,
+                        "source": "manual",
+                    }),
+                );
+            }
+        } else {
+            let mut last_id = state.last_active_skill_id.lock().await;
+            *last_id = None;
+        }
+
         // 创建新的 CancellationToken
         let token = tokio_util::sync::CancellationToken::new();
         {
@@ -1374,7 +1521,7 @@ async fn run_ai_message(
         direct_api::run_direct_api_agent(
             app_handle.clone(),
             message,
-            config,
+            effective_config,
             system_prompt,
             chat_history,
             attachments,
@@ -1390,14 +1537,47 @@ async fn run_ai_message(
     }
 
     // 启动 Claude CLI 流式子进程
-    let system_prompt = {
+    let (system_prompt, all_skills, active_skill) = {
         let state = app_handle.state::<AppState>();
         let personality = state.personality.lock().await.clone();
         let profession = state.profession.lock().await.clone();
+        let db = state.db.lock().await;
+        let custom_prompt = db
+            .get_setting("custom_system_prompt")
+            .unwrap_or(None)
+            .unwrap_or_default();
+        let all_skills = db.list_skills().unwrap_or_default();
+        let active_skill = db.get_active_skill().unwrap_or(None);
+        drop(db);
+
         let base = openclaw::build_system_prompt(&personality, &profession);
         let base = attach_memory_prompt(base);
-        attach_registered_apps_prompt(base, &state).await
+        let base = attach_registered_apps_prompt(base, &state).await;
+        let base = attach_custom_prompt(base, &custom_prompt);
+        let base = attach_skill_prompt(base, active_skill.as_ref(), &all_skills, false).await;
+        (base, all_skills, active_skill)
     };
+
+    // openclaw 走的是 CLI 子进程，不消费 DirectApiConfig，因此只触发事件，不动 auto_approved_tools
+    if let Some(effective) = resolve_skill_for_message(active_skill.as_ref()) {
+        let state = app_handle.state::<AppState>();
+        let mut last_id = state.last_active_skill_id.lock().await;
+        if last_id.as_deref() != Some(effective.id.as_str()) {
+            *last_id = Some(effective.id.clone());
+            let _ = app_handle.emit(
+                "ai-skill-activated",
+                serde_json::json!({
+                    "skill_id": effective.id,
+                    "skill_name": effective.name,
+                    "source": "manual",
+                }),
+            );
+        }
+    } else {
+        let state = app_handle.state::<AppState>();
+        let mut last_id = state.last_active_skill_id.lock().await;
+        *last_id = None;
+    }
 
     let child_result = {
         let state = app_handle.state::<AppState>();
@@ -1842,9 +2022,9 @@ async fn test_api_connection(
         req = req.header("Authorization", format!("Bearer {}", resolved_key.trim()));
     }
 
-    let res = tokio::time::timeout(std::time::Duration::from_secs(45), req.send())
+    let res = tokio::time::timeout(std::time::Duration::from_secs(60), req.send())
         .await
-        .map_err(|_| "连接测试超过 45 秒没有响应，请检查网络、Base URL 或代理配置。".to_string())?
+        .map_err(|_| "连接测试超过 60 秒没有响应，请检查网络、Base URL 或代理配置。".to_string())?
         .map_err(|e| format!("连接请求发送失败: {e}"))?;
 
     let status = res.status();
@@ -1915,9 +2095,9 @@ async fn test_api_compatibility(
     }
 
     let start_time = Instant::now();
-    let res = tokio::time::timeout(std::time::Duration::from_secs(45), req.send())
+    let res = tokio::time::timeout(std::time::Duration::from_secs(60), req.send())
         .await
-        .map_err(|_| "连接测试超过 45 秒没有响应，请检查网络、Base URL 或代理配置。".to_string())?
+        .map_err(|_| "连接测试超过 60 秒没有响应，请检查网络、Base URL 或代理配置。".to_string())?
         .map_err(|e| format!("连接请求发送失败: {e}"))?;
 
     let elapsed_ms = start_time.elapsed().as_millis();
@@ -2040,6 +2220,28 @@ async fn test_api_compatibility(
         "raw_preview": full_text.chars().take(500).collect::<String>(),
         "errors": errors
     }))
+}
+
+/// 系统通知: 工具确认请求 (用于 chat 窗口未获焦时, 替代强制弹窗)
+#[tauri::command]
+async fn send_tool_confirm_notification(
+    app_handle: tauri::AppHandle,
+    summary: Option<String>,
+    tool_name: Option<String>,
+) -> Result<(), String> {
+    use tauri_plugin_notification::NotificationExt;
+    let title = "AI 桌宠需要确认工具调用";
+    let body = summary
+        .or(tool_name)
+        .unwrap_or_else(|| "AI 请求执行一个工具, 请点击桌宠查看详情".to_string());
+    app_handle
+        .notification()
+        .builder()
+        .title(title)
+        .body(&body)
+        .show()
+        .map_err(|e| format!("发送通知失败: {e}"))?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -2347,7 +2549,10 @@ async fn save_memory(
     state: tauri::State<'_, AppState>,
 ) -> Result<storage::MemoryItem, String> {
     if category.len() > MAX_MEMORY_CATEGORY_BYTES {
-        return Err(format!("分类名称过长（上限 {} 字节）", MAX_MEMORY_CATEGORY_BYTES));
+        return Err(format!(
+            "分类名称过长（上限 {} 字节）",
+            MAX_MEMORY_CATEGORY_BYTES
+        ));
     }
     if key.len() > MAX_MEMORY_KEY_BYTES {
         return Err(format!("键名过长（上限 {} 字节）", MAX_MEMORY_KEY_BYTES));
@@ -2921,6 +3126,60 @@ async fn get_profession(state: tauri::State<'_, AppState>) -> Result<String, Str
     Ok(p.clone())
 }
 
+// ===== 自定义系统提示 + 技能 =====
+
+#[tauri::command]
+async fn get_custom_system_prompt(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let db = state.db.lock().await;
+    db.get_setting("custom_system_prompt")
+        .map(|opt| opt.unwrap_or_default())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn set_custom_system_prompt(
+    text: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.save_setting("custom_system_prompt", text.trim())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn list_skills(state: tauri::State<'_, AppState>) -> Result<Vec<storage::Skill>, String> {
+    let db = state.db.lock().await;
+    db.list_skills().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn save_skill(
+    skill: storage::Skill,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    if skill.id.trim().is_empty() {
+        return Err("技能 id 不能为空".into());
+    }
+    let db = state.db.lock().await;
+    db.save_skill(&skill).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn delete_skill(id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.delete_skill(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn set_active_skill(
+    id: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.set_active_skill(id.as_deref())
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn eat_files(paths: Vec<String>) -> Result<(), String> {
     if paths.is_empty() {
@@ -2944,7 +3203,9 @@ async fn eat_files(paths: Vec<String>) -> Result<(), String> {
 async fn get_shortcut_target_path(lnk_path: &str) -> Result<String, String> {
     #[cfg(target_os = "windows")]
     {
-        // 路径安全验证：必须是绝对路径、以 .lnk 结尾、不包含 PowerShell 特殊字符
+        // 路径安全验证：必须是绝对路径、以 .lnk 结尾。
+        // 真实桌面/开始菜单路径里常含空格、括号、&、`-` 等字符，
+        // 不能用"出现特定字符就拒"的简单黑名单。
         let p = std::path::Path::new(lnk_path);
         if !p.is_absolute() {
             return Err("快捷方式路径必须是绝对路径".to_string());
@@ -2953,15 +3214,13 @@ async fn get_shortcut_target_path(lnk_path: &str) -> Result<String, String> {
         if !ext.eq_ignore_ascii_case("lnk") {
             return Err("仅支持 .lnk 快捷方式文件".to_string());
         }
-        // 拒绝包含 PowerShell 注入特征的字符
-        if lnk_path.contains(';') || lnk_path.contains('`') || lnk_path.contains("$(") {
-            return Err("快捷方式路径包含不允许的特殊字符".to_string());
-        }
 
         let script = format!(
             "$sh = New-Object -ComObject WScript.Shell; \
-             $target = $sh.CreateShortcut('{}').TargetPath; \
-             Write-Output $target",
+             $sc = $sh.CreateShortcut('{}'); \
+             $tp = $sc.TargetPath; \
+             if ([string]::IsNullOrEmpty($tp)) {{ Write-Output '__EMPTY__' }} \
+             else {{ Write-Output $tp }}",
             lnk_path.replace('\'', "''")
         );
 
@@ -2978,6 +3237,11 @@ async fn get_shortcut_target_path(lnk_path: &str) -> Result<String, String> {
         }
 
         let target = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if target == "__EMPTY__" || target.is_empty() {
+            return Err(
+                "此快捷方式没有 TargetPath（可能是 UWP 应用、协议链接或网络位置）".to_string(),
+            );
+        }
         Ok(target)
     }
     #[cfg(not(target_os = "windows"))]
@@ -3012,9 +3276,6 @@ async fn register_shortcut_file(
     }
 
     let target_path = get_shortcut_target_path(&path).await?;
-    if target_path.trim().is_empty() {
-        return Err("解析快捷方式目标路径失败或目标路径为空".to_string());
-    }
 
     let db = state.db.lock().await;
     db.save_memory("app_path", &app_name, &target_path)
@@ -3331,6 +3592,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(move |app| {
             let http_client = reqwest::Client::builder()
@@ -3361,6 +3623,7 @@ pub fn run() {
                 chat_start_id: StdMutex::new(chat_start_id),
                 http_client,
                 weather_cache: tokio::sync::Mutex::new(None),
+                last_active_skill_id: tokio::sync::Mutex::new(None),
             };
             app.manage(app_state);
             start_scheduled_task_runner(app.handle().clone());
@@ -3443,6 +3706,7 @@ pub fn run() {
             test_api_compatibility,
             list_api_models,
             confirm_tool,
+            send_tool_confirm_notification,
             check_claude_status,
             get_weather_config,
             set_weather_config,
@@ -3450,6 +3714,12 @@ pub fn run() {
             get_weather,
             refresh_weather,
             check_and_send_weather,
+            get_custom_system_prompt,
+            set_custom_system_prompt,
+            list_skills,
+            save_skill,
+            delete_skill,
+            set_active_skill,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

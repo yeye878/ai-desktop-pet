@@ -1,4 +1,4 @@
-use keyring_core::Entry;
+use keyring::Entry;
 
 const SERVICE_NAME: &str = "ai-desktop-pet";
 
@@ -16,7 +16,7 @@ pub fn delete_api_key(profile_id: &str) -> Result<(), String> {
     let entry = Entry::new(SERVICE_NAME, profile_id).map_err(|e| e.to_string())?;
     match entry.delete_credential() {
         Ok(()) => Ok(()),
-        Err(keyring_core::Error::NoEntry) => Ok(()),
+        Err(keyring::Error::NoEntry) => Ok(()),
         Err(e) => Err(e.to_string()),
     }
 }

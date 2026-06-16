@@ -27,7 +27,7 @@ export interface WeatherConfig {
 export const DEFAULT_WEATHER_CONFIG: WeatherConfig = {
   enabled: true,
   location: "",
-  api_url: "http://wttr.in",
+  api_url: "https://wttr.in",
 };
 
 function finiteNumber(value: unknown, fallback = 0): number {

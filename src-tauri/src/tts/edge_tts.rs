@@ -1,12 +1,12 @@
 use crate::tts::{TtsRequest, TtsVoice};
-use tokio::time::Duration;
-use tokio_tungstenite::{connect_async, tungstenite};
-use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::tungstenite::http::Request;
 use futures_util::{SinkExt, StreamExt};
-use sha2::{Sha256, Digest};
-use uuid::Uuid;
+use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::time::Duration;
+use tokio_tungstenite::tungstenite::http::Request;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{connect_async, tungstenite};
+use uuid::Uuid;
 
 const TRUSTED_TOKEN: &str = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
 const VOICES_URL: &str = "https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/voices/list?trustedclienttoken=6A5AA1D4EAFF4E9FB37E23D68491D6F4";
@@ -38,15 +38,21 @@ pub async fn list_voices() -> Result<Vec<TtsVoice>, String> {
         .send()
         .await
         .map_err(|e| format!("获取声音列表失败: {e}"))?;
-    let items: Vec<serde_json::Value> = resp.json().await.map_err(|e| format!("解析声音列表失败: {e}"))?;
-    let voices = items.iter().filter_map(|v| {
-        Some(TtsVoice {
-            id: v.get("ShortName")?.as_str()?.to_string(),
-            name: v.get("FriendlyName")?.as_str()?.to_string(),
-            language: v.get("Locale")?.as_str()?.to_string(),
-            gender: v.get("Gender")?.as_str()?.to_string(),
+    let items: Vec<serde_json::Value> = resp
+        .json()
+        .await
+        .map_err(|e| format!("解析声音列表失败: {e}"))?;
+    let voices = items
+        .iter()
+        .filter_map(|v| {
+            Some(TtsVoice {
+                id: v.get("ShortName")?.as_str()?.to_string(),
+                name: v.get("FriendlyName")?.as_str()?.to_string(),
+                language: v.get("Locale")?.as_str()?.to_string(),
+                gender: v.get("Gender")?.as_str()?.to_string(),
+            })
         })
-    }).collect();
+        .collect();
     Ok(voices)
 }
 
@@ -70,18 +76,18 @@ pub async fn synthesize(req: &TtsRequest) -> Result<Vec<u8>, String> {
         .header("Connection", "Upgrade")
         .header("Upgrade", "websocket")
         .header("Sec-WebSocket-Version", "13")
-        .header("Sec-WebSocket-Key", tungstenite::handshake::client::generate_key())
+        .header(
+            "Sec-WebSocket-Key",
+            tungstenite::handshake::client::generate_key(),
+        )
         .header("Cookie", format!("muid={muid};"))
         .body(())
         .map_err(|e| format!("构建请求失败: {e}"))?;
 
-    let (ws_stream, _) = tokio::time::timeout(
-        Duration::from_secs(15),
-        connect_async(request),
-    )
-    .await
-    .map_err(|_| "WebSocket 连接超时".to_string())?
-    .map_err(|e| format!("WebSocket 连接失败: {e}"))?;
+    let (ws_stream, _) = tokio::time::timeout(Duration::from_secs(15), connect_async(request))
+        .await
+        .map_err(|_| "WebSocket 连接超时".to_string())?
+        .map_err(|e| format!("WebSocket 连接失败: {e}"))?;
 
     let (mut write, mut read) = ws_stream.split();
 
@@ -91,7 +97,10 @@ pub async fn synthesize(req: &TtsRequest) -> Result<Vec<u8>, String> {
         \"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"}},\
         \"outputFormat\":\"{OUTPUT_FORMAT}\"}}}}}}}}"
     );
-    write.send(Message::Text(config_msg)).await.map_err(|e| format!("发送配置失败: {e}"))?;
+    write
+        .send(Message::Text(config_msg))
+        .await
+        .map_err(|e| format!("发送配置失败: {e}"))?;
 
     let ssml = build_ssml(&req.voice, req.rate, req.pitch, req.volume, &req.text);
     let request_id = Uuid::new_v4().to_string().replace('-', "");
@@ -99,7 +108,10 @@ pub async fn synthesize(req: &TtsRequest) -> Result<Vec<u8>, String> {
         "X-RequestId:{request_id}\r\nContent-Type:application/ssml+xml\r\n\
         Path:ssml\r\n\r\n{ssml}"
     );
-    write.send(Message::Text(ssml_msg)).await.map_err(|e| format!("发送 SSML 失败: {e}"))?;
+    write
+        .send(Message::Text(ssml_msg))
+        .await
+        .map_err(|e| format!("发送 SSML 失败: {e}"))?;
 
     let mut audio_data: Vec<u8> = Vec::new();
     let header_separator = b"Path:audio\r\n";
@@ -144,8 +156,16 @@ pub async fn synthesize(req: &TtsRequest) -> Result<Vec<u8>, String> {
 }
 
 fn build_ssml(voice: &str, rate: i32, pitch: i32, volume: i32, text: &str) -> String {
-    let rate_str = if rate >= 0 { format!("+{rate}%") } else { format!("{rate}%") };
-    let pitch_str = if pitch >= 0 { format!("+{pitch}Hz") } else { format!("{pitch}Hz") };
+    let rate_str = if rate >= 0 {
+        format!("+{rate}%")
+    } else {
+        format!("{rate}%")
+    };
+    let pitch_str = if pitch >= 0 {
+        format!("+{pitch}Hz")
+    } else {
+        format!("{pitch}Hz")
+    };
     let escaped = text
         .replace('&', "&amp;")
         .replace('<', "&lt;")
