@@ -51,6 +51,17 @@ type MockCustomPetAsset = {
   created_at: number;
   updated_at: number;
 };
+type MockAgent = {
+  id: string;
+  name: string;
+  avatar: string;
+  description: string;
+  system_prompt: string;
+  model: string;
+  allowed_tools: string[];
+  created_at: number;
+  updated_at: number;
+};
 type MockWeatherConfig = {
   enabled: boolean;
   location: string;
@@ -67,6 +78,30 @@ let nextMemoryId = 3;
 let nextScheduledTaskId = 2;
 let nextCustomPetId = 1;
 let customPetAssets: MockCustomPetAsset[] = [];
+let mockAgents: MockAgent[] = [
+  {
+    id: "mock-agent-code",
+    name: "代码侠",
+    avatar: "🧑‍💻",
+    description: "分析报错、写代码、给修改方案",
+    system_prompt: "你是代码搭档。先理解项目结构和约束，再给出最小可行修改；排查问题优先读取相关文件，不要大范围重构。",
+    model: "",
+    allowed_tools: ["read_file", "list_directory"],
+    created_at: 1,
+    updated_at: 1,
+  },
+  {
+    id: "mock-agent-writer",
+    name: "文案师",
+    avatar: "✍️",
+    description: "润色文案、写周报、做摘要",
+    system_prompt: "你是文案助手。保留原意和语气，给出直接可用的改写结果，必要时附简短说明。",
+    model: "",
+    allowed_tools: [],
+    created_at: 2,
+    updated_at: 2,
+  },
+];
 let weatherConfig: MockWeatherConfig = {
   enabled: true,
   location: "Tokyo",
@@ -135,6 +170,54 @@ const edgeVoices = [
   { id: "en-US-JennyNeural", name: "Jenny - English US", language: "en-US", gender: "Female" },
   { id: "ja-JP-NanamiNeural", name: "Nanami - 日本語", language: "ja-JP", gender: "Female" },
 ];
+
+function base64FromBytes(bytes: Uint8Array) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function createMockTtsAudio(text = "") {
+  const sampleRate = 22050;
+  const durationSeconds = 0.72;
+  const samples = Math.floor(sampleRate * durationSeconds);
+  const bytes = new Uint8Array(44 + samples * 2);
+  const view = new DataView(bytes.buffer);
+  const writeText = (offset: number, value: string) => {
+    for (let i = 0; i < value.length; i++) bytes[offset + i] = value.charCodeAt(i);
+  };
+
+  writeText(0, "RIFF");
+  view.setUint32(4, 36 + samples * 2, true);
+  writeText(8, "WAVE");
+  writeText(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeText(36, "data");
+  view.setUint32(40, samples * 2, true);
+
+  const frequency = 520 + Math.min(text.length, 80) * 2;
+  for (let i = 0; i < samples; i++) {
+    const t = i / sampleRate;
+    const fadeIn = Math.min(1, i / (sampleRate * 0.04));
+    const fadeOut = Math.min(1, (samples - i) / (sampleRate * 0.08));
+    const envelope = Math.min(fadeIn, fadeOut);
+    const wave = Math.sin(2 * Math.PI * frequency * t) * 0.28
+      + Math.sin(2 * Math.PI * frequency * 1.5 * t) * 0.08;
+    const sample = Math.max(-1, Math.min(1, wave * envelope));
+    view.setInt16(44 + i * 2, sample * 32767, true);
+  }
+
+  return `data:audio/wav;base64,${base64FromBytes(bytes)}`;
+}
 
 function getMockSetting(args: MockPayload) {
   const key = String(args?.key || "");
@@ -433,6 +516,15 @@ function handleMockCommand(cmd: string, args: MockPayload) {
     }
     case "tts_list_voices":
       return edgeVoices;
+    case "tts_play":
+      return null;
+    case "tts_stop":
+      return null;
+    case "tts_synthesize":
+      return {
+        audio_path: createMockTtsAudio(readArg(args, "text", "text")),
+        cached: false,
+      };
     case "test_api_connection":
       return "Preview connection ok";
     case "test_api_compatibility":
@@ -455,6 +547,44 @@ function handleMockCommand(cmd: string, args: MockPayload) {
         "qwen-plus",
         "qwen2.5:7b",
       ];
+    case "list_agents":
+      return mockAgents;
+    case "save_agent": {
+      const draft = (args?.agent || {}) as Record<string, unknown>;
+      const now = Math.floor(Date.now() / 1000);
+      const next: MockAgent = {
+        id: String(draft.id || "mock-agent-" + Date.now().toString(36)),
+        name: String(draft.name || "新智能体"),
+        avatar: String(draft.avatar || "🤖"),
+        description: String(draft.description || ""),
+        system_prompt: String(draft.system_prompt || ""),
+        model: String(draft.model || ""),
+        allowed_tools: Array.isArray(draft.allowed_tools) ? (draft.allowed_tools as string[]) : [],
+        created_at: now,
+        updated_at: now,
+      };
+      const existing = mockAgents.findIndex((item) => item.id === next.id);
+      if (existing >= 0) mockAgents[existing] = next;
+      else mockAgents = [next, ...mockAgents];
+      return null;
+    }
+    case "delete_agent": {
+      const id = readArg(args, "id", "id");
+      mockAgents = mockAgents.filter((item) => item.id !== id);
+      return null;
+    }
+    case "generate_agent_spec": {
+      const desc = readArg(args, "description", "description", "").trim();
+      if (!desc) throw new Error("请先描述你想创建的智能体");
+      return {
+        name: "预览智能体",
+        avatar: "🤖",
+        description: "在预览模式下由描述生成的示例智能体",
+        system_prompt:
+          "你是「预览智能体」。用户的需求是：" + desc + "。请以专业、简洁的方式帮助用户完成相关任务。",
+        allowed_tools: [] as string[],
+      };
+    }
     default:
       return null;
   }

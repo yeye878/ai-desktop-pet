@@ -45,6 +45,8 @@ walkdir = "2"
 chrono = "0.4"
 urlencoding = "2"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
+minimp3 = "0.5"
+rodio = { version = "0.22.2", default-features = false, features = ["playback", "hound"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
@@ -54,5 +56,3 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Gdi",
 ] }
-
-

@@ -1,16 +1,30 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { useChatStore, type FileAttachment, type Message } from "../stores/chat";
+import { useChatStore, type FileAttachment, type Message, type MessageAgent } from "../stores/chat";
 import { usePetStore } from "../stores/pet";
+import { useSkillsStore, type Skill } from "../stores/skills";
+import { useAgentsStore, type Agent } from "../stores/agents";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, type DragDropEvent } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import BgCanvas from "./BgCanvas.vue";
 import {
+  SLASH_COMMANDS,
+  slashCommandMatches,
+  slashQueryFromInput,
+  type SlashCommand,
+} from "../services/slashCommands";
+import {
+  extractMentionNames,
+  insertMentionAt,
+  mentionQueryFromInput,
+  splitMentionSegments,
+} from "../services/mentions";
+import {
   DEFAULT_VOICE_SETTINGS,
-  VoiceController,
   isSpeechRecognitionSupported,
   parseVoiceSettings,
   type VoiceSettings,
@@ -20,6 +34,8 @@ import {
 const emit = defineEmits<{ close: [] }>();
 const chat = useChatStore();
 const pet = usePetStore();
+const skillsStore = useSkillsStore();
+const agentsStore = useAgentsStore();
 
 type ActiveTab = "chat" | "clipboard";
 type ClipboardItem = {
@@ -33,6 +49,11 @@ type ChatHistoryItem = {
   content: string;
   thinking?: string | null;
   created_at?: string | number;
+  quoted_role?: string | null;
+  quoted_content?: string | null;
+  agent_id?: string | null;
+  agent_name?: string | null;
+  agent_avatar?: string | null;
 };
 type ActiveChat = {
   message: string;
@@ -42,6 +63,9 @@ type ActiveChat = {
 type AiFinishedPayload = {
   text: string;
   thinking: string | null;
+  agentId?: string | null;
+  agentName?: string | null;
+  agentAvatar?: string | null;
 };
 type AiErrorPayload = {
   message: string;
@@ -63,17 +87,37 @@ type ApiProfile = {
   search_provider: string;
   auto_approved_tools: string[];
 };
+type SlashPickerItem =
+  | {
+      type: "skill";
+      key: string;
+      title: string;
+      description: string;
+      hint: string;
+      skill: Skill;
+    }
+  | {
+      type: "command";
+      key: string;
+      title: string;
+      description: string;
+      hint: string;
+      command: SlashCommand;
+    };
 
 const ACTIVE_TAB_KEY = "ai-desktop-pet.active-chat-tab";
 const currentWindow = getCurrentWindow();
 const activeTab = ref<ActiveTab>(loadActiveTab());
 const input = ref("");
+const inputRef = ref<HTMLInputElement | null>(null);
 const clipboardItems = ref<ClipboardItem[]>([]);
 const clipboardSearch = ref("");
 const chatBubbleRef = ref<HTMLDivElement | null>(null);
 const messagesRef = ref<HTMLDivElement | null>(null);
 const chatEndRef = ref<HTMLDivElement | null>(null);
 const activeMessageMenuId = ref<number | null>(null);
+const slashSelectedIndex = ref(0);
+const mentionSelectedIndex = ref(0);
 const isFileOver = ref(false);
 const BG_KEY = "ai-desktop-pet.chat-bg";
 const CUSTOM_BG_KEY = "ai-desktop-pet.chat-bg-custom";
@@ -81,7 +125,6 @@ const VOICE_SETTINGS_KEY = "voice_settings";
 const chatBg = ref(localStorage.getItem(BG_KEY) || "none");
 const customBgImage = ref(localStorage.getItem(CUSTOM_BG_KEY) || "");
 const bgCanvasRef = ref<InstanceType<typeof BgCanvas> | null>(null);
-const voice = new VoiceController();
 const voiceStatus = ref<VoiceStatus>("idle");
 const voiceInterimText = ref("");
 const voiceError = ref("");
@@ -110,6 +153,7 @@ interface ToolConfirmPayload {
 const pendingConfirm = ref<ToolConfirmPayload | null>(null);
 let unlistenToolConfirm: UnlistenFn | null = null;
 let unlistenToolConfirmResolved: UnlistenFn | null = null;
+let unlistenAskUser: UnlistenFn | null = null;
 
 interface PendingFile {
   id: string;
@@ -151,9 +195,7 @@ const userAvatar = computed(() => {
 const voiceButtonTitle = computed(() => {
   if (!voiceSettings.value.enabled) return "语音交互已关闭";
   if (!isSpeechRecognitionSupported()) return "当前 WebView 不支持语音识别";
-  if (voiceStatus.value === "listening") return "停止识别";
-  if (voiceStatus.value === "speaking") return "停止播报并开始说话";
-  return "开始语音输入";
+  return voiceStatus.value === "speaking" ? "打开语音面板" : "打开语音输入";
 });
 const filteredClipboardItems = computed(() => {
   const keyword = clipboardSearch.value.trim().toLowerCase();
@@ -166,6 +208,67 @@ const filteredClipboardItems = computed(() => {
     return getClipboardTime(b.created_at) - getClipboardTime(a.created_at);
   });
 });
+const slashQuery = computed(() => {
+  if (activeTab.value === "chat" && chat.isLoading) return null;
+  return slashQueryFromInput(input.value);
+});
+const slashItems = computed<SlashPickerItem[]>(() => {
+  const query = slashQuery.value;
+  if (query === null) return [];
+
+  const skillItems: SlashPickerItem[] =
+    activeTab.value === "chat"
+      ? skillsStore.skills
+          .filter((skill) => skillMatchesSlashQuery(skill, query))
+          .map((skill) => ({
+            type: "skill",
+            key: `skill:${skill.id}`,
+            title: skill.name || "(未命名技能)",
+            description: skill.description || "激活这个 skill 并继续输入你的需求",
+            hint: skill.is_active ? "已激活" : "/skill",
+            skill,
+          }))
+      : [];
+
+  const commandItems: SlashPickerItem[] = SLASH_COMMANDS
+    .filter((command) => slashCommandMatches(command, query, "pet"))
+    .map((command) => ({
+      type: "command",
+      key: `command:${command.id}`,
+      title: command.title,
+      description: command.description,
+      hint: command.trigger,
+      command,
+    }));
+
+  return [...skillItems, ...commandItems].slice(0, 10);
+});
+const showSlashMenu = computed(() => slashQuery.value !== null && slashItems.value.length > 0);
+
+// === @ 提及智能体 ===
+const mentionQuery = computed(() => {
+  if (activeTab.value !== "chat" || chat.isLoading) return null;
+  return mentionQueryFromInput(input.value);
+});
+const mentionItems = computed<Agent[]>(() => {
+  const query = mentionQuery.value;
+  if (query === null) return [];
+  const q = query.query.toLowerCase();
+  return agentsStore.agents
+    .filter((agent) => {
+      if (!q) return true;
+      return [agent.name, agent.description].some((v) => v.toLowerCase().includes(q));
+    })
+    .slice(0, 8);
+});
+const showMentionMenu = computed(
+  () => mentionQuery.value !== null && mentionItems.value.length > 0,
+);
+
+/** 用户消息里被 @ 的智能体名字（用于发送时传给后端） */
+function petMentionNames(text: string): string[] {
+  return extractMentionNames(text).filter((name) => agentsStore.findByName(name));
+}
 
 // Loading 超时保底机制
 let loadingTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -211,7 +314,14 @@ onMounted(async () => {
 
   unlistenAiFinished = await listen<AiFinishedPayload>("ai-finished", (event) => {
     clearLoadingTimeout(); // 清除超时
-    appendAssistantOnce(event.payload.text, event.payload.thinking ?? undefined);
+    const replyAgent: MessageAgent | null = event.payload.agentName
+      ? {
+          id: event.payload.agentId || undefined,
+          name: event.payload.agentName,
+          avatar: event.payload.agentAvatar || undefined,
+        }
+      : null;
+    appendAssistantOnce(event.payload.text, event.payload.thinking ?? undefined, replyAgent);
     chat.isLoading = false;
     thinkingContent.value = "";
     streamingAnswer.value = "";
@@ -219,7 +329,6 @@ onMounted(async () => {
     pendingConfirm.value = null;
     pet.setState("speaking");
     pet.updateMood({ happiness: 0.05 });
-    void speakAssistantReply(event.payload.text);
 
     setTimeout(() => {
       if (pet.state === "speaking") pet.setState("idle");
@@ -282,6 +391,15 @@ onMounted(async () => {
     }
   });
 
+  // ask_user 兜底: 小窗不做完整弹窗, 提示用户到控制台作答
+  unlistenAskUser = await listen<{ id: string; question: string }>("ai-ask-user", (event) => {
+    chat.addMessage(
+      "assistant",
+      `❓ ${event.payload.question}\n（智能体在等你的回答，请打开控制台对话页作答；不作答 5 分钟后它会自行继续。）`,
+    );
+    scrollToBottomAfterRender();
+  });
+
   unlistenScheduledTaskTriggered = await listen<{ message: string }>("scheduled-task-triggered", () => {
     pet.setState("happy");
     scrollToBottomAfterRender();
@@ -291,6 +409,8 @@ onMounted(async () => {
   });
 
   try {
+    void skillsStore.load().catch(() => {});
+    void agentsStore.load().catch(() => {});
     await loadVoiceSettings();
     await loadApiState();
     await refreshChatState();
@@ -349,6 +469,10 @@ onBeforeUnmount(() => {
     unlistenToolConfirmResolved();
     unlistenToolConfirmResolved = null;
   }
+  if (unlistenAskUser) {
+    unlistenAskUser();
+    unlistenAskUser = null;
+  }
   if (unlistenChatCleared) {
     unlistenChatCleared();
     unlistenChatCleared = null;
@@ -375,8 +499,6 @@ onBeforeUnmount(() => {
   }
   window.removeEventListener("storage", handleStorageChange);
   window.removeEventListener("voice-settings-changed", handleVoiceSettingsChanged);
-  voice.abortListening();
-  voice.stopSpeaking();
 });
 
 watch(chatBg, () => {
@@ -395,6 +517,7 @@ function handleVoiceSettingsChanged() {
   void loadVoiceSettings();
 }
 
+
 watch(
   () => [
     activeTab.value,
@@ -407,6 +530,20 @@ watch(
     scrollToBottomAfterRender();
   },
   { flush: "post" },
+);
+
+watch(
+  () => [slashQuery.value, slashItems.value.length],
+  () => {
+    slashSelectedIndex.value = 0;
+  },
+);
+
+watch(
+  () => [mentionQuery.value?.query ?? "", mentionItems.value.length],
+  () => {
+    mentionSelectedIndex.value = 0;
+  },
 );
 
 async function sendMessage() {
@@ -465,6 +602,7 @@ async function sendMessage() {
     await invoke<{ started: boolean }>("send_to_ai", {
       message: fullMessage,
       attachments: aiAttachments,
+      mentionAgents: petMentionNames(text),
     });
   } catch (err) {
     chat.isLoading = false;
@@ -472,6 +610,118 @@ async function sendMessage() {
     chat.addMessage("assistant", `出错了: ${err}`);
     pet.setState("confused");
   }
+}
+
+function skillMatchesSlashQuery(skill: Skill, query: string): boolean {
+  if (!query) return true;
+  const haystack = [
+    skill.name,
+    skill.description,
+    skill.id,
+    ...skill.keywords,
+  ].join(" ").toLowerCase();
+  return haystack.includes(query);
+}
+
+function moveSlashSelection(delta: number) {
+  const total = slashItems.value.length;
+  if (total === 0) return;
+  slashSelectedIndex.value = (slashSelectedIndex.value + delta + total) % total;
+}
+
+async function chooseSlashItem(item = slashItems.value[slashSelectedIndex.value]) {
+  if (!item) return;
+  if (item.type === "skill") {
+    await activateSlashSkill(item.skill);
+  } else {
+    await runSlashCommand(item.command);
+  }
+}
+
+async function activateSlashSkill(skill: Skill) {
+  try {
+    await skillsStore.setActive(skill.id);
+    input.value = `请使用「${skill.name || "这个"}」技能：`;
+    slashSelectedIndex.value = 0;
+    pet.updateMood({ happiness: 0.02 });
+    await nextTick();
+    inputRef.value?.focus();
+  } catch (err) {
+    appendAssistantOnce(`切换技能失败：${err}`);
+    pet.setState("confused");
+  }
+}
+
+async function runSlashCommand(command: SlashCommand) {
+  input.value = "";
+  slashSelectedIndex.value = 0;
+
+  switch (command.id) {
+    case "clear-skill":
+      try {
+        await skillsStore.setActive(null);
+        appendAssistantOnce("已清除当前激活的 skill。");
+      } catch (err) {
+        appendAssistantOnce(`清除技能失败：${err}`);
+      }
+      break;
+    case "new-chat":
+      await startNewConversation();
+      break;
+    case "clear-chat":
+      await clearChat();
+      break;
+    case "skills":
+      await openSkillsSettingsPanel();
+      break;
+    case "chat":
+      switchTab("chat");
+      break;
+    case "clipboard":
+      switchTab("clipboard");
+      break;
+  }
+
+  await nextTick();
+  inputRef.value?.focus();
+}
+
+async function openSkillsSettingsPanel() {
+  const size = new LogicalSize(380, 460);
+  const pos = await currentWindow.outerPosition().catch(() => null);
+  const scale = await currentWindow.scaleFactor().catch(() => window.devicePixelRatio || 1);
+  const x = pos ? Math.round(pos.x / scale + 16) : 220;
+  const y = pos ? Math.round(pos.y / scale) : 180;
+  const position = new LogicalPosition(x, y);
+  const existing = await WebviewWindow.getByLabel("settings");
+
+  if (existing) {
+    await existing.setSize(size);
+    await existing.setPosition(position);
+    await existing.setAlwaysOnTop(true);
+    await existing.show();
+    await existing.setFocus();
+    await existing.emit("switch-tab", "system");
+    return;
+  }
+
+  const baseUrl = window.location.href.split("#")[0].split("?")[0];
+  new WebviewWindow("settings", {
+    url: `${baseUrl}?window=settings&tab=system`,
+    x: position.x,
+    y: position.y,
+    width: size.width,
+    height: size.height,
+    title: "AI Desktop Pet Settings",
+    transparent: true,
+    decorations: false,
+    alwaysOnTop: true,
+    resizable: false,
+    skipTaskbar: true,
+    shadow: false,
+    focus: true,
+    parent: "pet",
+  });
 }
 
 function openMessageMenu(msg: Message) {
@@ -507,21 +757,6 @@ async function resendMessage(msg: Message) {
 async function toggleVoiceInput() {
   const mainWindow = await WebviewWindow.getByLabel("main");
   await (mainWindow ?? currentWindow).emit("open-voice-panel");
-}
-
-async function speakAssistantReply(text: string) {
-  if (!voiceSettings.value.enabled || !voiceSettings.value.autoSpeak) return;
-
-  voiceStatus.value = "speaking";
-  try {
-    await voice.speak(text, voiceSettings.value);
-  } catch (err) {
-    voiceError.value = err instanceof Error ? err.message : String(err);
-  } finally {
-    if (voiceStatus.value === "speaking") {
-      voiceStatus.value = "idle";
-    }
-  }
 }
 
 async function abortAi() {
@@ -618,13 +853,26 @@ function normalizeChatHistoryItem(item: ChatHistoryItem) {
     content: item.content,
     thinking: item.thinking || undefined,
     timestamp: getChatTime(item.created_at),
+    quote: item.quoted_content
+      ? {
+          role: item.quoted_role === "assistant" ? "assistant" as const : "user" as const,
+          content: item.quoted_content,
+        }
+      : undefined,
+    agent: item.agent_name
+      ? {
+          id: item.agent_id || undefined,
+          name: item.agent_name,
+          avatar: item.agent_avatar || undefined,
+        }
+      : undefined,
   };
 }
 
-function appendAssistantOnce(content: string, thinking?: string) {
+function appendAssistantOnce(content: string, thinking?: string, agent?: MessageAgent | null) {
   const last = chat.messages[chat.messages.length - 1];
   if (last?.role === "assistant" && last.content === content) return;
-  chat.addMessage("assistant", content, thinking);
+  chat.addMessage("assistant", content, thinking, undefined, undefined, undefined, agent);
   scrollToBottomAfterRender();
 }
 
@@ -676,6 +924,10 @@ async function toggleClipboardPinned(item: ClipboardItem) {
 }
 
 async function clearClipboard() {
+  if (clipboardItems.value.length === 0) return;
+  const confirmed = window.confirm("确定要清空全部剪切板暂存内容吗？此操作不可撤销。");
+  if (!confirmed) return;
+
   try {
     await invoke("clear_clipboard_items");
     clipboardItems.value = [];
@@ -962,7 +1214,73 @@ function onBgClick(e: MouseEvent) {
   }
 }
 
+function moveMentionSelection(delta: number) {
+  const total = mentionItems.value.length;
+  if (total === 0) return;
+  mentionSelectedIndex.value = (mentionSelectedIndex.value + delta + total) % total;
+}
+
+/** 选中一个智能体：把 @查询 替换成 @名字 并继续输入 */
+function chooseMentionItem(agent = mentionItems.value[mentionSelectedIndex.value]) {
+  const query = mentionQuery.value;
+  if (!agent || !query) return;
+  input.value = insertMentionAt(input.value, query, agent.name);
+  mentionSelectedIndex.value = 0;
+  void nextTick(() => inputRef.value?.focus());
+}
+
 function onKeyDown(e: KeyboardEvent) {
+  if (showMentionMenu.value) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      moveMentionSelection(1);
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      moveMentionSelection(-1);
+      return;
+    }
+    if (e.key === "Enter" || e.key === "Tab") {
+      e.preventDefault();
+      void chooseMentionItem();
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      const query = mentionQuery.value;
+      if (query) {
+        input.value = input.value.slice(0, query.start);
+      }
+      mentionSelectedIndex.value = 0;
+      return;
+    }
+  }
+
+  if (showSlashMenu.value) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      moveSlashSelection(1);
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      moveSlashSelection(-1);
+      return;
+    }
+    if (e.key === "Enter" || e.key === "Tab") {
+      e.preventDefault();
+      void chooseSlashItem();
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      input.value = "";
+      slashSelectedIndex.value = 0;
+      return;
+    }
+  }
+
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     sendMessage();
@@ -1118,6 +1436,10 @@ function formatClipboardTime(value: string | number): string {
           </div>
 
           <div class="msg-body">
+            <div v-if="msg.agent && msg.role === 'assistant'" class="msg-agent-badge">
+              <span class="msg-agent-avatar">{{ msg.agent.avatar || "🤖" }}</span>
+              <span class="msg-agent-name">{{ msg.agent.name }}</span>
+            </div>
             <div v-if="msg.thinking" class="thinking-section">
               <div class="thinking-header" @click="toggleThinking(msg.id)">
                 <span class="thinking-toggle">{{ expandedThinking.has(msg.id) ? '&#x25BE;' : '&#x25B8;' }}</span>
@@ -1130,7 +1452,12 @@ function formatClipboardTime(value: string | number): string {
               </Transition>
             </div>
 
-            <div class="bubble">{{ msg.content }}</div>
+            <div class="bubble">
+              <template v-for="(mseg, mi) in splitMentionSegments(msg.content)" :key="mi">
+                <span v-if="mseg.type === 'mention'" class="bubble-mention">@{{ mseg.content }}</span>
+                <template v-else>{{ mseg.content }}</template>
+              </template>
+            </div>
             <div v-if="msg.files && msg.files.length > 0" class="msg-files">
               <div v-for="(file, fi) in msg.files" :key="fi" class="msg-file-tag">
                 <span>{{ file.isImage ? "\u{1F4F7}" : getFileIcon(file.extension) }}</span>
@@ -1345,6 +1672,48 @@ function formatClipboardTime(value: string | number): string {
       </div>
     </Transition>
 
+    <Transition name="slide-up">
+      <div v-if="showMentionMenu" class="mention-menu" @mousedown.prevent>
+        <button
+          v-for="(agent, index) in mentionItems"
+          :key="agent.id"
+          type="button"
+          class="mention-item"
+          :class="{ active: index === mentionSelectedIndex }"
+          @mouseenter="mentionSelectedIndex = index"
+          @click="chooseMentionItem(agent)"
+        >
+          <span class="mention-avatar">{{ agent.avatar || "🤖" }}</span>
+          <span class="mention-main">
+            <span class="mention-title">@{{ agent.name }}</span>
+            <span class="mention-desc">{{ agent.description || "自定义智能体" }}</span>
+          </span>
+          <span class="mention-hint">Tab</span>
+        </button>
+      </div>
+    </Transition>
+
+    <Transition name="slide-up">
+      <div v-if="showSlashMenu" class="slash-menu" @mousedown.prevent>
+        <button
+          v-for="(item, index) in slashItems"
+          :key="item.key"
+          type="button"
+          class="slash-item"
+          :class="{ active: index === slashSelectedIndex, skill: item.type === 'skill' }"
+          @mouseenter="slashSelectedIndex = index"
+          @click="chooseSlashItem(item)"
+        >
+          <span class="slash-item-mark">{{ item.type === "skill" ? "#" : "/" }}</span>
+          <span class="slash-item-main">
+            <span class="slash-item-title">{{ item.title }}</span>
+            <span class="slash-item-desc">{{ item.description }}</span>
+          </span>
+          <span class="slash-item-hint">{{ item.hint }}</span>
+        </button>
+      </div>
+    </Transition>
+
     <div class="chat-input">
       <button
         v-if="activeTab === 'chat'"
@@ -1364,6 +1733,7 @@ function formatClipboardTime(value: string | number): string {
         </svg>
       </button>
       <input
+        ref="inputRef"
         v-model="input"
         :placeholder="activeTab === 'chat' ? (voiceStatus === 'listening' ? '正在听你说话...' : '说点什么...') : '保存到剪切板...'"
         @keydown="onKeyDown"
@@ -2161,6 +2531,96 @@ function formatClipboardTime(value: string | number): string {
   box-shadow: 0 6px 12px rgba(239, 68, 68, 0.1);
 }
 
+.slash-menu {
+  position: relative;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 12px 8px;
+  padding: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid rgba(24, 42, 72, 0.10);
+  border-radius: 14px;
+  background:
+    url("../assets/art/paper-grain.webp"),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(255, 249, 238, 0.90));
+  background-size: 420px 420px, auto;
+  box-shadow:
+    0 12px 24px rgba(24, 42, 72, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.slash-item {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 46px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: #334155;
+  text-align: left;
+  cursor: pointer;
+}
+
+.slash-item.active {
+  border-color: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.26);
+  background: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.09);
+}
+
+.slash-item.skill.active {
+  background:
+    linear-gradient(90deg, rgba(102, 200, 255, 0.16), rgba(var(--pet-primary-rgb, 255, 107, 107), 0.08));
+}
+
+.slash-item-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--pet-primary, #ff6b6b);
+  font-size: 13px;
+  font-weight: 800;
+  box-shadow: inset 0 0 0 1px rgba(24, 42, 72, 0.06);
+}
+
+.slash-item-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.slash-item-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.slash-item-desc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #64748b;
+  font-size: 11px;
+}
+
+.slash-item-hint {
+  color: #94a3b8;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
 .chat-input {
   position: relative;
   z-index: 2;
@@ -2863,5 +3323,121 @@ function formatClipboardTime(value: string | number): string {
     transition-duration: 1ms !important;
     transform: none !important;
   }
+}
+
+/* ========== @ 提及智能体 ========== */
+
+.mention-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+  margin-bottom: 8px;
+  padding: 6px;
+  border: 1px solid rgba(24, 42, 72, 0.10);
+  border-radius: 14px;
+  background:
+    url("../assets/art/paper-grain.webp"),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 249, 238, 0.8));
+  background-size: 420px 420px, auto;
+  box-shadow: 0 12px 24px rgba(24, 42, 72, 0.10);
+}
+
+.mention-item {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 46px;
+  padding: 7px 9px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: #1c2a48;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.18s ease, background 0.18s ease;
+}
+
+.mention-item.active {
+  border-color: rgba(204, 112, 82, 0.32);
+  background: rgba(204, 112, 82, 0.1);
+}
+
+.mention-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: linear-gradient(145deg, rgba(204, 112, 82, 0.18), rgba(255, 255, 255, 0.7));
+  font-size: 17px;
+}
+
+.mention-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.mention-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1c2a48;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mention-desc {
+  font-size: 11px;
+  color: rgba(24, 42, 72, 0.55);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mention-hint {
+  font-size: 10px;
+  color: rgba(24, 42, 72, 0.38);
+}
+
+/* 气泡里的 @名字 高亮 */
+.bubble-mention {
+  display: inline-block;
+  padding: 0 5px;
+  margin: 0 1px;
+  border-radius: 6px;
+  background: rgba(204, 112, 82, 0.12);
+  color: #c95e3c;
+  font-weight: 600;
+}
+
+/* 回复归属的智能体徽章 */
+.msg-agent-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  padding: 3px 10px 3px 5px;
+  border-radius: 999px;
+  background: rgba(24, 42, 72, 0.055);
+  border: 1px solid rgba(24, 42, 72, 0.10);
+  font-size: 12px;
+  color: rgba(24, 42, 72, 0.6);
+  width: fit-content;
+}
+
+.msg-agent-avatar {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.msg-agent-name {
+  font-weight: 600;
 }
 </style>

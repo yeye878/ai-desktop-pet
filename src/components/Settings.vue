@@ -729,6 +729,15 @@ async function removeSkill(id: string) {
   }
 }
 
+async function restoreBuiltinSkills() {
+  if (!confirm("将恢复所有被删除的内置技能，自定义技能不受影响。继续？")) return;
+  try {
+    await skillsStore.resetBuiltin();
+  } catch (e) {
+    alert("恢复内置技能失败: " + e);
+  }
+}
+
 async function activateSkill(id: string | null) {
   try {
     await skillsStore.setActive(id);
@@ -901,6 +910,8 @@ async function updateTtsSettings(patch: Partial<TtsSettings>) {
       key: TTS_SETTINGS_KEY,
       value: JSON.stringify(ttsSettings.value),
     });
+    window.dispatchEvent(new CustomEvent("tts-settings-changed"));
+    await currentWindow.emit("tts-settings-changed");
   } catch {}
 }
 
@@ -1431,6 +1442,9 @@ onUnmounted(() => {
 
           <div class="action-row">
             <button class="action-btn primary" @click="startNewSkill">＋ 新建技能</button>
+            <button class="action-btn" @click="restoreBuiltinSkills">
+              恢复内置技能
+            </button>
             <span v-if="skillsStore.activeSkill" class="muted-hint">
               当前激活：<b>{{ skillsStore.activeSkill.name }}</b>
             </span>

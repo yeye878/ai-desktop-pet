@@ -29,6 +29,21 @@ struct ToolConfirmPayload {
     path: Option<String>,
 }
 
+/// ask_user 工具弹窗里的单个候选项。
+#[derive(Clone, Serialize)]
+pub struct AskUserOption {
+    label: String,
+    description: Option<String>,
+}
+
+/// ai-ask-user 事件载荷: 智能体主动向用户提问, 前端渲染内嵌弹窗。
+#[derive(Clone, Serialize)]
+pub struct AskUserPayload {
+    id: String,
+    question: String,
+    options: Vec<AskUserOption>,
+}
+
 #[derive(Clone, Serialize)]
 struct ToolEventPayload {
     id: String,
@@ -60,6 +75,8 @@ pub async fn run_direct_api_agent(
     system_prompt: String,
     chat_history: Vec<ChatMessage>,
     attachments: Vec<UserAttachment>,
+    quote: Option<(String, String)>,
+    agent: Option<crate::AgentContext>,
 ) {
     let state = app_handle.state::<AppState>();
 
@@ -71,7 +88,7 @@ pub async fn run_direct_api_agent(
 
     for msg in chat_history {
         let content = if msg.role == "assistant" {
-            assistant_history_content_for_context(&msg.content, msg.thinking.as_deref())
+            assistant_history_content_for_context(&msg, agent.as_ref())
         } else {
             msg.content
         };
@@ -83,7 +100,7 @@ pub async fn run_direct_api_agent(
 
     api_messages.push(json!({
         "role": "user",
-        "content": build_user_content(&message, &attachments).await
+        "content": build_user_content(&apply_quote_context(&message, quote.as_ref()), &attachments).await
     }));
 
     let mut current_turn = 0;
@@ -682,6 +699,23 @@ pub async fn run_direct_api_agent(
                 continue;
             }
 
+            // 🔥 ask_user 特殊分支: 不走确认/执行流程, 直接弹内嵌询问弹窗等用户作答。
+            // 用户的回答会作为工具结果回传给模型, 让它据此决定后续方向。
+            if tc_name == "ask_user" {
+                let tool_output =
+                    request_user_answer(&state, &app_handle, &mut full_thinking, &tc_id, &tc_args)
+                        .await;
+
+                let output_for_log = tool_output_for_log(&tool_output);
+                let output_display = format!("[执行结果]\n{}\n", output_for_log);
+                full_thinking.push_str(&output_display);
+                append_active_thinking(&state, &output_display);
+                let _ = app_handle.emit("ai-thinking", &output_display);
+                push_tool_message(&mut api_messages, &tc_id, &tc_name, &tool_output);
+                append_visual_tool_message(&mut api_messages, &tc_name, &tool_output);
+                continue;
+            }
+
             let already_approved = {
                 let approved_tool_types = state.approved_tool_types.lock().await;
                 approved_tool_types.contains(&tc_name)
@@ -781,9 +815,10 @@ pub async fn run_direct_api_agent(
         return;
     }
 
+    let single_agent = agent.as_ref().and_then(|ctx| ctx.single());
     {
         let db = state.db.lock().await;
-        let _ = db.save_message_with_thinking(
+        let _ = db.save_message_with_agent(
             "assistant",
             &full_text,
             if full_thinking.is_empty() {
@@ -791,6 +826,9 @@ pub async fn run_direct_api_agent(
             } else {
                 Some(&full_thinking)
             },
+            single_agent.map(|a| a.id.as_str()),
+            single_agent.map(|a| a.name.as_str()),
+            single_agent.map(|a| a.avatar.as_str()),
         );
     }
 
@@ -813,6 +851,9 @@ pub async fn run_direct_api_agent(
             } else {
                 Some(full_thinking)
             },
+            agent_id: single_agent.map(|a| a.id.clone()),
+            agent_name: single_agent.map(|a| a.name.clone()),
+            agent_avatar: single_agent.map(|a| a.avatar.clone()),
         },
     );
 }
@@ -865,22 +906,54 @@ fn append_attachment_warnings(message: &str, warnings: &[String]) -> String {
     format!("{}\n\n[系统提示：{}]", message, warnings.join("；"))
 }
 
-fn assistant_history_content_for_context(content: &str, thinking: Option<&str>) -> String {
+/// 把用户引用的前文对话拼装进发送给模型的用户消息
+fn apply_quote_context(message: &str, quote: Option<&(String, String)>) -> String {
+    let Some((quoted_role, quoted_content)) = quote else {
+        return message.to_string();
+    };
+    let speaker = if quoted_role == "assistant" {
+        "助手（你）"
+    } else {
+        "用户"
+    };
+    let body = if message.trim().is_empty() {
+        "（用户仅发送了引用，没有输入其他文字）".to_string()
+    } else {
+        message.to_string()
+    };
+    format!(
+        "[引用回复]\n被引用的原文（说话者：{speaker}）：\n{quoted_content}\n\n用户针对这条引用的输入：\n{body}"
+    )
+}
+
+fn assistant_history_content_for_context(
+    msg: &ChatMessage,
+    agent: Option<&crate::AgentContext>,
+) -> String {
+    let content = msg.content.as_str();
+    let thinking = msg.thinking.as_deref();
+
+    // 带智能体归属的历史消息：前缀 【名字】，让模型知道每句话是谁说的。
+    let content = match (agent, msg.agent_name.as_deref()) {
+        (Some(_), Some(name)) if !name.trim().is_empty() => format!("【{name}】\n{content}"),
+        _ => content.to_string(),
+    };
+
     let Some(thinking) = thinking else {
-        return content.to_string();
+        return content;
     };
     if content.contains("工具进度摘要") {
-        return content.to_string();
+        return content;
     }
     let should_restore_progress = content.contains("[执行中断]")
         || content.contains("[思考中，已被中止]")
         || content.contains("已达到最大迭代限制")
         || content.contains("⚠️");
     if !should_restore_progress {
-        return content.to_string();
+        return content;
     }
     let Some(progress) = compact_execution_progress_for_context(thinking) else {
-        return content.to_string();
+        return content;
     };
     format!("{content}\n\n[上次工具进度摘要]\n{progress}")
 }
@@ -1238,6 +1311,168 @@ fn push_tool_message(
     }));
 }
 
+/// ask_user 工具处理: 向前端弹内嵌询问弹窗, 等待用户选择选项或填写自定义答案。
+/// 返回的字符串会作为工具结果回传给模型。
+async fn request_user_answer(
+    state: &tauri::State<'_, AppState>,
+    app_handle: &tauri::AppHandle,
+    full_thinking: &mut String,
+    event_id: &str,
+    args: &serde_json::Value,
+) -> String {
+    let question = args["question"]
+        .as_str()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "智能体想向你确认一个问题。".to_string());
+    let options = args["options"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let label = item["label"].as_str()?.trim().to_string();
+                    if label.is_empty() {
+                        return None;
+                    }
+                    Some(AskUserOption {
+                        description: item["description"].as_str().map(|value| value.to_string()),
+                        label,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let waiting_msg = format!("[等待用户回答] {}\n", question);
+    full_thinking.push_str(&waiting_msg);
+    append_active_thinking(state, &waiting_msg);
+    let _ = app_handle.emit("ai-thinking", &waiting_msg);
+    emit_tool_event(app_handle, event_id, "ask_user", "waiting", args, None, None);
+
+    let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+    let question_id = format!("ask_{}", crate::unix_now());
+    {
+        let mut questions = state.pending_questions.lock().await;
+        questions.insert(question_id.clone(), tx);
+    }
+
+    let _ = app_handle.emit(
+        "ai-ask-user",
+        AskUserPayload {
+            id: question_id.clone(),
+            question: question.clone(),
+            options: options.clone(),
+        },
+    );
+
+    // 同时监听: 用户回答 / 5 分钟超时 / 用户中止整个对话
+    let answer_result = tokio::select! {
+        result = rx => Some(result),
+        _ = tokio::time::sleep(std::time::Duration::from_secs(300)) => None,
+        cancelled = is_cancelled(state) => {
+            if cancelled {
+                let _ = app_handle.emit(
+                    "ai-ask-user-resolved",
+                    json!({ "id": question_id, "answered": false }),
+                );
+                {
+                    let mut questions = state.pending_questions.lock().await;
+                    questions.remove(&question_id);
+                }
+                emit_tool_event(
+                    app_handle,
+                    event_id,
+                    "ask_user",
+                    "denied",
+                    args,
+                    Some("操作已被用户中止。"),
+                    Some(false),
+                );
+                return "操作已被用户中止。".to_string();
+            }
+            None
+        }
+    };
+
+    {
+        let mut questions = state.pending_questions.lock().await;
+        questions.remove(&question_id);
+    }
+
+    match answer_result {
+        Some(Ok(answer)) => {
+            let _ = app_handle.emit(
+                "ai-ask-user-resolved",
+                json!({ "id": question_id, "answered": true }),
+            );
+            let display_answer = if answer.trim().is_empty() {
+                "（跳过，未作答）".to_string()
+            } else {
+                answer.trim().to_string()
+            };
+            let answered_msg = format!("[用户已回答] {}\n", display_answer);
+            full_thinking.push_str(&answered_msg);
+            append_active_thinking(state, &answered_msg);
+            let _ = app_handle.emit("ai-thinking", &answered_msg);
+            emit_tool_event(
+                app_handle,
+                event_id,
+                "ask_user",
+                "completed",
+                args,
+                Some(&display_answer),
+                Some(true),
+            );
+            if answer.trim().is_empty() {
+                "用户跳过了这个问题（未作答）。请根据已有信息按你的最佳判断继续，不必再次询问。"
+                    .to_string()
+            } else {
+                format!("用户的回答：{}", answer.trim())
+            }
+        }
+        Some(Err(_)) => {
+            // oneshot 发送端被丢弃 (通道失效)
+            let _ = app_handle.emit(
+                "ai-ask-user-resolved",
+                json!({ "id": question_id, "answered": false }),
+            );
+            emit_tool_event(
+                app_handle,
+                event_id,
+                "ask_user",
+                "denied",
+                args,
+                Some("询问通道失效。"),
+                Some(false),
+            );
+            "询问通道失效，未能取得用户回答。请根据已有信息按你的最佳判断继续。".to_string()
+        }
+        None => {
+            // 5 分钟超时: 用户不在, 让智能体自主决策而不是无限等待
+            let _ = app_handle.emit(
+                "ai-ask-user-resolved",
+                json!({ "id": question_id, "answered": false }),
+            );
+            let timeout_msg = "[用户未在 5 分钟内回答，继续自主处理]\n".to_string();
+            full_thinking.push_str(&timeout_msg);
+            append_active_thinking(state, &timeout_msg);
+            let _ = app_handle.emit("ai-thinking", &timeout_msg);
+            emit_tool_event(
+                app_handle,
+                event_id,
+                "ask_user",
+                "completed",
+                args,
+                Some("用户未作答（超时）。"),
+                Some(true),
+            );
+            "用户未在 5 分钟内回答这个问题。请根据已有信息按你的最佳判断继续，并在最终回复中说明你的假设，方便用户事后纠正。"
+                .to_string()
+        }
+    }
+}
+
 fn tool_output_for_log(output: &str) -> String {
     redact_visual_payload(output).unwrap_or_else(|| output.to_string())
 }
@@ -1362,17 +1597,29 @@ fn mode_requires_confirmation(
             | "window_focus"
             | "browser_open"
             | "browser_navigate"
+            | "browser_click"
+            | "browser_type"
+            | "browser_press"
+            | "browser_scroll"
+            | "browser_back"
+            | "browser_forward"
+            | "browser_close"
     ) {
         return true;
     }
     // read_file、web_search、get_weather 和 list_scheduled_tasks 为安全/只读工具，在任何模式下均不需要弹窗确认；
     // 敏感工具如 run_command 和 open_app 需要等待确认（open_app 启动本地应用，具有敏感性）。
+    // ask_user 本身就是询问用户，弹窗即是它的功能，无需再叠加确认流程。
+    // code_search 是只读的内容搜索，与 read_file 同级。
+    // edit_file 不在此列（写操作需确认一次），但也不在 is_high_risk_tool 中——确认一次后会话内免重复弹窗，保证调试循环流畅。
     if tool_name == "read_file"
         || tool_name == "web_search"
         || tool_name == "get_weather"
         || tool_name == "list_scheduled_tasks"
         || tool_name == "search_memory"
         || tool_name == "save_memory"
+        || tool_name == "ask_user"
+        || tool_name == "code_search"
     {
         return false;
     }
@@ -1443,6 +1690,17 @@ fn tool_command(tool_name: &str, args: &serde_json::Value) -> Option<String> {
         "computer_mouse" => args["action"].as_str().map(|action| action.to_string()),
         "computer_keyboard" => args["action"].as_str().map(|action| action.to_string()),
         "browser_open" | "browser_navigate" => args["url"].as_str().map(|url| url.to_string()),
+        "browser_type" => args["text"].as_str().map(|text| text.to_string()),
+        "browser_press" => args["key"].as_str().map(|key| key.to_string()),
+        "browser_click" => args["selector"]
+            .as_str()
+            .map(|selector| selector.to_string())
+            .or_else(|| {
+                let x = args["x"].as_f64()?;
+                let y = args["y"].as_f64()?;
+                Some(format!("坐标 ({x:.0}, {y:.0})"))
+            }),
+        "browser_scroll" => args["direction"].as_str().map(|d| d.to_string()),
         "window_focus" => args["title"]
             .as_str()
             .map(|value| value.to_string())
@@ -1453,7 +1711,7 @@ fn tool_command(tool_name: &str, args: &serde_json::Value) -> Option<String> {
 
 fn tool_path(tool_name: &str, args: &serde_json::Value) -> Option<String> {
     match tool_name {
-        "read_file" | "write_file" | "list_directory" => {
+        "read_file" | "write_file" | "edit_file" | "list_directory" => {
             args["path"].as_str().map(|value| value.to_string())
         }
         "file_search" => args["directory"].as_str().map(|value| value.to_string()),
@@ -1502,6 +1760,28 @@ fn tool_summary(tool_name: &str, args: &serde_json::Value) -> String {
         "browser_open" => format!("打开浏览器 {}", args["url"].as_str().unwrap_or("默认首页")),
         "browser_navigate" => format!("浏览器导航 {}", args["url"].as_str().unwrap_or("未知 URL")),
         "browser_snapshot" => "查看浏览器截图".to_string(),
+        "browser_extract" => "读取浏览器页面内容".to_string(),
+        "browser_click" => {
+            if let Some(selector) = args["selector"].as_str() {
+                format!("浏览器点击 {}", selector)
+            } else {
+                format!(
+                    "浏览器点击 ({}, {})",
+                    args["x"].as_f64().unwrap_or(0.0) as i64,
+                    args["y"].as_f64().unwrap_or(0.0) as i64
+                )
+            }
+        }
+        "browser_type" => format!("浏览器输入 {}", args["text"].as_str().unwrap_or("未知文本")),
+        "browser_press" => format!("浏览器按键 {}", args["key"].as_str().unwrap_or("未知按键")),
+        "browser_scroll" => format!(
+            "浏览器滚动 {}",
+            args["direction"].as_str().unwrap_or("down")
+        ),
+        "browser_back" => "浏览器返回上一页".to_string(),
+        "browser_forward" => "浏览器前进下一页".to_string(),
+        "browser_status" => "查询浏览器状态".to_string(),
+        "browser_close" => "关闭浏览器".to_string(),
         "create_scheduled_task" => {
             format!(
                 "创建定时任务 {}",
@@ -1516,6 +1796,26 @@ fn tool_summary(tool_name: &str, args: &serde_json::Value) -> String {
             args["key"].as_str().unwrap_or("无标题")
         ),
         "delete_memory" => format!("删除记忆 #{}", args["id"].as_i64().unwrap_or(0)),
+        "code_search" => format!(
+            "搜索代码内容 '{}'{}",
+            args["query"].as_str().unwrap_or("未知内容"),
+            args["directory"]
+                .as_str()
+                .map(|d| format!(" 在 {}", d))
+                .unwrap_or_default()
+        ),
+        "edit_file" => format!(
+            "修改文件 {}",
+            args["path"].as_str().unwrap_or("未知路径")
+        ),
+        "create_docx" => format!(
+            "生成 Word 文档 {}",
+            args["path"].as_str().unwrap_or("未指定路径")
+        ),
+        "ask_user" => format!(
+            "向用户提问: {}",
+            args["question"].as_str().unwrap_or("未指定问题")
+        ),
         "file_search" => format!(
             "搜索文件 '{}'{}",
             args["pattern"].as_str().unwrap_or("*"),
@@ -1773,7 +2073,18 @@ private reasoning that should not be replayed
 }
 "#;
 
-        let content = assistant_history_content_for_context("[执行中断] 测试", Some(thinking));
+        let msg = crate::storage::ChatMessage {
+            role: "assistant".to_string(),
+            content: "[执行中断] 测试".to_string(),
+            thinking: Some(thinking.to_string()),
+            created_at: 0,
+            quoted_role: None,
+            quoted_content: None,
+            agent_id: None,
+            agent_name: None,
+            agent_avatar: None,
+        };
+        let content = assistant_history_content_for_context(&msg, None);
 
         assert!(content.contains("[上次工具进度摘要]"));
         assert!(content.contains("[调用工具] 打开应用 notepad"));

@@ -50,9 +50,20 @@ const PANEL_SPECS: Record<PanelLabel, { width: number; height: number; title: st
 };
 const VOICE_SETTINGS_KEY = "voice_settings";
 const TOOL_CONFIRM_PAYLOAD_KEY = "ai-desktop-pet.tool-confirm-payload";
+const APP_WINDOW_LABELS = new Set<AppWindowLabel>([
+  "main",
+  "pet",
+  "chat",
+  "context-menu",
+  "settings",
+  "voice",
+  "tool-confirm",
+]);
 
 const currentWindow = getCurrentWindow();
-const currentLabel = currentWindow.label as AppWindowLabel;
+const currentLabel: AppWindowLabel = APP_WINDOW_LABELS.has(currentWindow.label as AppWindowLabel)
+  ? currentWindow.label as AppWindowLabel
+  : "main";
 const petStore = usePetStore();
 const isDraggingPet = ref(false);
 let cursorHitTestTimer: ReturnType<typeof setInterval> | null = null;

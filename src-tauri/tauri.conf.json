@@ -23,7 +23,8 @@
         "resizable": true,
         "skipTaskbar": false,
         "shadow": true,
-        "center": true
+        "center": true,
+        "create": false
       }
     ],
     "security": {
@@ -32,6 +33,7 @@
         "enable": true,
         "scope": [
           "$APPDATA/ai-desktop-pet/**",
+          "$APPDATA/com.ai-desktop-pet.app/**",
           "$APPDATA/ai-desktop-pet/custom_pets/**",
           "$LOCALDATA/ai-desktop-pet/**",
           "$RESOURCE/**"

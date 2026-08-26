@@ -114,17 +114,13 @@ pub async fn synthesize(req: &TtsRequest) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("发送 SSML 失败: {e}"))?;
 
     let mut audio_data: Vec<u8> = Vec::new();
-    let header_separator = b"Path:audio\r\n";
 
     let read_result = tokio::time::timeout(Duration::from_secs(30), async {
         while let Some(msg) = read.next().await {
             match msg {
                 Ok(Message::Binary(data)) => {
-                    if let Some(pos) = find_subsequence(&data, header_separator) {
-                        let audio_start = pos + header_separator.len();
-                        if audio_start < data.len() {
-                            audio_data.extend_from_slice(&data[audio_start..]);
-                        }
+                    if let Some(payload) = extract_audio_payload(&data) {
+                        audio_data.extend_from_slice(payload);
                     }
                 }
                 Ok(Message::Text(text)) => {
@@ -151,6 +147,9 @@ pub async fn synthesize(req: &TtsRequest) -> Result<Vec<u8>, String> {
 
     if audio_data.is_empty() {
         return Err("未收到音频数据".to_string());
+    }
+    if !looks_like_mp3(&audio_data) {
+        return Err("Edge TTS 返回的音频数据不是有效 MP3".to_string());
     }
     Ok(audio_data)
 }
@@ -192,6 +191,30 @@ fn build_ssml(voice: &str, rate: i32, pitch: i32, volume: i32, text: &str) -> St
 
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+fn looks_like_mp3(data: &[u8]) -> bool {
+    data.starts_with(b"ID3")
+        || matches!(data.get(0..2), Some([0xFF, second]) if second & 0xE0 == 0xE0)
+}
+
+fn extract_audio_payload(data: &[u8]) -> Option<&[u8]> {
+    if data.len() >= 2 {
+        let header_len = u16::from_be_bytes([data[0], data[1]]) as usize;
+        let payload_start = 2 + header_len;
+        if payload_start <= data.len() {
+            let header = &data[2..payload_start];
+            if find_subsequence(header, b"Path:audio").is_some() {
+                return Some(&data[payload_start..]);
+            }
+        }
+    }
+
+    if find_subsequence(data, b"Path:audio").is_none() {
+        return None;
+    }
+
+    find_subsequence(data, b"\r\n\r\n").and_then(|pos| data.get(pos + 4..))
 }
 
 #[cfg(test)]

@@ -19,6 +19,19 @@ export interface ToolEventItem {
   approved?: boolean;
 }
 
+export interface QuotedMessage {
+  /** 被引用消息的说话者 */
+  role: "user" | "assistant";
+  /** 被引用消息的原文 */
+  content: string;
+}
+
+export interface MessageAgent {
+  id?: string;
+  name: string;
+  avatar?: string;
+}
+
 export interface Message {
   id: number;
   role: "user" | "assistant" | "system";
@@ -27,6 +40,10 @@ export interface Message {
   timestamp: number;
   files?: FileAttachment[];
   toolEvents?: ToolEventItem[];
+  /** 用户引用的前文对话（微信式引用） */
+  quote?: QuotedMessage;
+  /** 回复来自哪个智能体（@ 提及后由该智能体作答） */
+  agent?: MessageAgent | null;
 }
 
 export type MessageDraft = Omit<Message, "id">;
@@ -42,6 +59,8 @@ export const useChatStore = defineStore("chat", () => {
     thinking?: string,
     files?: FileAttachment[],
     toolEvents?: ToolEventItem[],
+    quote?: QuotedMessage,
+    agent?: MessageAgent | null,
   ) {
     const message = {
       id: nextId++,
@@ -50,6 +69,8 @@ export const useChatStore = defineStore("chat", () => {
       thinking,
       files,
       toolEvents,
+      quote,
+      agent,
       timestamp: Date.now(),
     };
     messages.value.push(message);

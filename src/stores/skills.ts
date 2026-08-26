@@ -54,6 +54,12 @@ export const useSkillsStore = defineStore("skills", () => {
     await load();
   }
 
+  /** 逃生口：恢复被删掉的所有内置技能（不动自定义技能，也不改激活状态）。 */
+  async function resetBuiltin() {
+    await invoke("reset_builtin_skills");
+    await load();
+  }
+
   return {
     skills,
     customPrompt,
@@ -64,5 +70,6 @@ export const useSkillsStore = defineStore("skills", () => {
     upsert,
     remove,
     setActive,
+    resetBuiltin,
   };
 });

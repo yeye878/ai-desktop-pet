@@ -24,6 +24,10 @@ export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
   voiceName: "",
 };
 
+const SPEECH_SILENCE_STOP_MS = 1_400;
+const NO_SPEECH_STOP_MS = 10_000;
+const STOP_FALLBACK_MS = 1_500;
+
 type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
 
 interface SpeechRecognitionResultLike {
@@ -97,24 +101,31 @@ export function serializeVoiceSettings(settings: VoiceSettings) {
   return JSON.stringify(normalizeVoiceSettings(settings));
 }
 
+let availableVoicesPromise: Promise<SpeechSynthesisVoice[]> | null = null;
+
 export function getAvailableVoices(): Promise<SpeechSynthesisVoice[]> {
   if (!isSpeechSynthesisSupported()) return Promise.resolve([]);
 
   const voices = window.speechSynthesis.getVoices();
   if (voices.length > 0) return Promise.resolve(voices);
+  if (availableVoicesPromise) return availableVoicesPromise;
 
-  return new Promise((resolve) => {
-    const timeout = window.setTimeout(() => {
+  availableVoicesPromise = new Promise((resolve) => {
+    const finish = () => {
       window.speechSynthesis.onvoiceschanged = null;
+      availableVoicesPromise = null;
       resolve(window.speechSynthesis.getVoices());
+    };
+    const timeout = window.setTimeout(() => {
+      finish();
     }, 600);
 
     window.speechSynthesis.onvoiceschanged = () => {
       window.clearTimeout(timeout);
-      window.speechSynthesis.onvoiceschanged = null;
-      resolve(window.speechSynthesis.getVoices());
+      finish();
     };
   });
+  return availableVoicesPromise;
 }
 
 export class VoiceController {
@@ -136,17 +147,31 @@ export class VoiceController {
       let interimText = "";
       let settled = false;
       let listenTimer: ReturnType<typeof setTimeout> | null = null;
+      let silenceTimer: ReturnType<typeof setTimeout> | null = null;
+      let noSpeechTimer: ReturnType<typeof setTimeout> | null = null;
+      let stopFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+      let stopRequested = false;
       const recognition = new Recognition();
       this.recognition = recognition;
+
+      const clearTimer = (timer: ReturnType<typeof setTimeout> | null) => {
+        if (timer) clearTimeout(timer);
+      };
 
       const finish = (error?: Error) => {
         if (settled) return;
         settled = true;
-        if (listenTimer) {
-          clearTimeout(listenTimer);
-          listenTimer = null;
+        clearTimer(listenTimer);
+        clearTimer(silenceTimer);
+        clearTimer(noSpeechTimer);
+        clearTimer(stopFallbackTimer);
+        recognition.onstart = null;
+        recognition.onend = null;
+        recognition.onerror = null;
+        recognition.onresult = null;
+        if (this.recognition === recognition) {
+          this.recognition = null;
         }
-        this.recognition = null;
         if (error) {
           reject(error);
         } else {
@@ -154,10 +179,24 @@ export class VoiceController {
         }
       };
 
+      const requestStop = () => {
+        if (settled || stopRequested) return;
+        stopRequested = true;
+        try {
+          recognition.stop();
+          stopFallbackTimer = setTimeout(() => finish(), STOP_FALLBACK_MS);
+        } catch {
+          finish();
+        }
+      };
+
       // 60秒最大监听时长，防止永久挂起
       listenTimer = setTimeout(() => {
-        finish();
+        requestStop();
       }, 60_000);
+      noSpeechTimer = setTimeout(() => {
+        requestStop();
+      }, NO_SPEECH_STOP_MS);
 
       recognition.lang = settings.language || DEFAULT_VOICE_SETTINGS.language;
       recognition.continuous = false;
@@ -174,7 +213,15 @@ export class VoiceController {
             interimText += transcript;
           }
         }
-        onInterim?.((finalText + interimText).trim());
+        const currentText = (finalText + interimText).trim();
+        onInterim?.(currentText);
+        if (currentText) {
+          clearTimer(noSpeechTimer);
+          clearTimer(silenceTimer);
+          silenceTimer = setTimeout(() => {
+            requestStop();
+          }, SPEECH_SILENCE_STOP_MS);
+        }
       };
       recognition.onerror = (event) => {
         const message = formatSpeechError(event.error, event.message);

@@ -50,9 +50,10 @@ let animId = 0;
 let unlistenAiFinished: UnlistenFn | null = null;
 let unlistenAiError: UnlistenFn | null = null;
 let unlistenStartListening: UnlistenFn | null = null;
+let unlistenVoiceSettingsChanged: UnlistenFn | null = null;
+let unlistenTtsSettingsChanged: UnlistenFn | null = null;
 let sendTimeoutId: ReturnType<typeof setTimeout> | null = null;
 let autoListenTimer: ReturnType<typeof setTimeout> | null = null;
-let speakGeneration = 0;
 
 interface Spark {
   x: number;
@@ -111,6 +112,10 @@ async function loadSettings() {
   } catch {
     ttsSettings.value = { ...DEFAULT_TTS_SETTINGS };
   }
+}
+
+function handleSettingsChanged() {
+  void loadSettings();
 }
 
 function clearAutoListenTimer() {
@@ -211,6 +216,9 @@ async function sendTranscript() {
   const message = transcript.value.trim();
   if (!message || chat.isLoading || isSending.value) return;
 
+  if (settings.value.enabled && settings.value.autoSpeak) {
+    ttsPlayer.preparePlayback();
+  }
   chat.addMessage("user", message);
   errorText.value = "";
   isSending.value = true;
@@ -454,29 +462,14 @@ onMounted(async () => {
     }
   }
 
-  unlistenAiFinished = await listen<AiFinishedPayload>("ai-finished", async (event) => {
+  unlistenAiFinished = await listen<AiFinishedPayload>("ai-finished", async () => {
     clearSendTimeout();
     isSending.value = false;
     chat.isLoading = false;
     pet.setState("speaking");
-    if (settings.value.enabled && settings.value.autoSpeak) {
-      const gen = ++speakGeneration;
-      isGenerating.value = true;
-      status.value = "speaking";
-      try {
-        await ttsPlayer.speak(event.payload.text, ttsSettings.value);
-      } catch (err: any) {
-        if (err?.message !== "Aborted") {
-          errorText.value = err instanceof Error ? err.message : String(err);
-          status.value = "error";
-        }
-      }
-      // 若已被新的 TTS 请求取代，跳过状态恢复
-      if (gen !== speakGeneration) return;
-      isGenerating.value = false;
-    }
-    if (status.value === "speaking") status.value = "idle";
-    if (pet.state === "speaking" && status.value !== "error") pet.setState("idle");
+    status.value = "idle";
+    isGenerating.value = false;
+    if (pet.state === "speaking") pet.setState("idle");
   });
 
   unlistenAiError = await listen<AiErrorPayload>("ai-error", (event) => {
@@ -491,6 +484,14 @@ onMounted(async () => {
   unlistenStartListening = await listen("voice-start-listening", () => {
     scheduleStartListening();
   });
+  window.addEventListener("voice-settings-changed", handleSettingsChanged);
+  window.addEventListener("tts-settings-changed", handleSettingsChanged);
+  unlistenVoiceSettingsChanged = await listen("voice-settings-changed", () => {
+    handleSettingsChanged();
+  });
+  unlistenTtsSettingsChanged = await listen("tts-settings-changed", () => {
+    handleSettingsChanged();
+  });
 });
 
 onBeforeUnmount(() => {
@@ -500,6 +501,10 @@ onBeforeUnmount(() => {
   unlistenAiFinished?.();
   unlistenAiError?.();
   unlistenStartListening?.();
+  unlistenVoiceSettingsChanged?.();
+  unlistenTtsSettingsChanged?.();
+  window.removeEventListener("voice-settings-changed", handleSettingsChanged);
+  window.removeEventListener("tts-settings-changed", handleSettingsChanged);
   voice.abortListening();
   ttsPlayer.stop();
   isSending.value = false;

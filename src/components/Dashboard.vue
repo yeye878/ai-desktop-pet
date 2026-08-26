@@ -7,8 +7,26 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import CustomPixelPetWorkshop from "./CustomPixelPetWorkshop.vue";
 import PetCanvas from "./PetCanvas.vue";
 import { usePetStore, THEMES, FONT_COLORS, resolveSkinId } from "../stores/pet";
-import { useSkillsStore } from "../stores/skills";
-import { useChatStore, type Message } from "../stores/chat";
+import { useSkillsStore, type Skill } from "../stores/skills";
+import { useChatStore, type Message, type MessageAgent, type QuotedMessage } from "../stores/chat";
+import { useAgentsStore, type Agent } from "../stores/agents";
+import {
+  parseQuoteSegments,
+  stripQuoteMarkers,
+  truncateQuoteContent,
+} from "../services/quoteParser";
+import {
+  SLASH_COMMANDS,
+  slashCommandMatches,
+  slashQueryFromInput,
+  type SlashCommand,
+} from "../services/slashCommands";
+import {
+  extractMentionNames,
+  insertMentionAt,
+  mentionQueryFromInput,
+  splitMentionSegments,
+} from "../services/mentions";
 import {
   PET_CHARACTERS,
   PET_CHARACTER_SETTING_KEY,
@@ -51,10 +69,11 @@ const chat = useChatStore();
 const currentWindow = getCurrentWindow();
 
 // === 导航 ===
-type NavPage = "home" | "chat" | "memory" | "appearance" | "voice" | "system" | "about";
+type NavPage = "home" | "chat" | "memory" | "agents" | "appearance" | "voice" | "system" | "about";
 const activePage = ref<NavPage>("home");
 const isPetActive = ref(false);
 const skillsStore = useSkillsStore();
+const agentsStore = useAgentsStore();
 
 // 自定义提示（Dashboard 速览面板）
 const customPromptDraft = ref("");
@@ -143,9 +162,38 @@ type ToolConfirmPayload = {
   path?: string | null;
 };
 
+type AskUserOption = {
+  label: string;
+  description?: string | null;
+};
+
+type AskUserPayload = {
+  id: string;
+  question: string;
+  options: AskUserOption[];
+};
+
 type AnswerDeltaPayload = {
   text: string;
 };
+
+type DashSlashPickerItem =
+  | {
+      type: "skill";
+      key: string;
+      title: string;
+      description: string;
+      hint: string;
+      skill: Skill;
+    }
+  | {
+      type: "command";
+      key: string;
+      title: string;
+      description: string;
+      hint: string;
+      command: SlashCommand;
+    };
 
 // === 系统信息 ===
 const systemInfo = ref({ cpu: 0, memory: 0 });
@@ -197,6 +245,14 @@ const selectedFetchedModel = ref("");
 const isAddingFetchedModel = ref(false);
 const activeDashMessageMenuId = ref<number | null>(null);
 
+// === 引用回复（微信式引用前文对话） ===
+const pendingQuote = ref<QuotedMessage | null>(null);
+
+/** 引用块里显示的说话者昵称 */
+function quoteSpeakerLabel(role: "user" | "assistant"): string {
+  return role === "assistant" ? "小家伙" : "我";
+}
+
 // === Claude Code 状态 ===
 const claudeStatus = ref({
   logged_in: false,
@@ -242,7 +298,10 @@ const ttsSettings = ref<TtsSettings>({ ...DEFAULT_TTS_SETTINGS });
 const edgeVoices = ref<TtsVoice[]>([]);
 const edgeVoiceSearch = ref("");
 const showAllEdgeVoices = ref(false);
-const ttsPreviewPlayer = new TtsPlayer();
+// 试听与自动播报共用同一个 TtsPlayer：后端 state.tts_playback 是单会话播放器，
+// 两条路径若各持一个实例会互相抢后端（play_wav_file 起手 self.stop() 杀对方会话）。
+// 合并为单实例后，新 speak 通过 stopLocal() 递增共享 playbackToken，让旧循环优雅退出。
+const ttsPlayer = new TtsPlayer();
 const isPreviewing = ref(false);
 
 // === 性格/职业 ===
@@ -378,6 +437,207 @@ const contextUsageLabel = computed(() => {
   return `${chars} 字符 / 约 ${approxTokens} tokens`;
 });
 
+const dashSlashQuery = computed(() => {
+  if (chat.isLoading) return null;
+  return slashQueryFromInput(chatInput.value);
+});
+const dashSlashItems = computed<DashSlashPickerItem[]>(() => {
+  const query = dashSlashQuery.value;
+  if (query === null) return [];
+
+  const skillItems: DashSlashPickerItem[] = skillsStore.skills
+    .filter((skill) => skillMatchesSlashQuery(skill, query))
+    .map((skill) => ({
+      type: "skill",
+      key: `skill:${skill.id}`,
+      title: skill.name || "(未命名技能)",
+      description: skill.description || "激活这个 skill 并继续输入你的需求",
+      hint: skill.is_active ? "已激活" : "/skill",
+      skill,
+    }));
+
+  const commandItems: DashSlashPickerItem[] = SLASH_COMMANDS
+    .filter((command) => slashCommandMatches(command, query, "dashboard"))
+    .map((command) => ({
+      type: "command",
+      key: `command:${command.id}`,
+      title: command.title,
+      description: command.description,
+      hint: command.trigger,
+      command,
+    }));
+
+  return [...skillItems, ...commandItems].slice(0, 10);
+});
+const showDashSlashMenu = computed(
+  () => dashSlashQuery.value !== null && dashSlashItems.value.length > 0,
+);
+
+// === @ 提及智能体 ===
+const dashMentionQuery = computed(() => {
+  if (chat.isLoading) return null;
+  return mentionQueryFromInput(chatInput.value);
+});
+const dashMentionItems = computed<Agent[]>(() => {
+  const query = dashMentionQuery.value;
+  if (query === null) return [];
+  const q = query.query.toLowerCase();
+  return agentsStore.agents
+    .filter((agent) => {
+      if (!q) return true;
+      return [agent.name, agent.description].some((v) => v.toLowerCase().includes(q));
+    })
+    .slice(0, 8);
+});
+const showDashMentionMenu = computed(
+  () => dashMentionQuery.value !== null && dashMentionItems.value.length > 0,
+);
+
+/** 用户消息里被 @ 的智能体名字（用于发送时传给后端） */
+function dashMentionNames(text: string): string[] {
+  return extractMentionNames(text).filter((name) => agentsStore.findByName(name));
+}
+
+// === 智能体管理（智能体工坊） ===
+const AGENT_AVATARS = [
+  "🤖", "🧑‍💻", "📚", "✍️", "🗂️", "🧮", "🔍", "🌍",
+  "🎨", "💼", "🧭", "🛠️", "🧠", "🕵️", "🎯", "✈️",
+];
+const agentEditorOpen = ref(false);
+const editingAgentId = ref<string | null>(null);
+const agentDraft = ref({
+  id: "",
+  name: "",
+  avatar: "🤖",
+  description: "",
+  system_prompt: "",
+  model: "",
+  allowed_tools: [] as string[],
+});
+const agentSaveError = ref("");
+const agentSaved = ref(false);
+const agentDeletingId = ref<string | null>(null);
+const agentGenDesc = ref("");
+const agentGenLoading = ref(false);
+const agentGenError = ref("");
+
+function openAgentsPage() {
+  activePage.value = "agents";
+  void agentsStore.load();
+}
+
+function openAgentEditor(agent?: Agent) {
+  if (agent) {
+    editingAgentId.value = agent.id;
+    agentDraft.value = {
+      id: agent.id,
+      name: agent.name,
+      avatar: agent.avatar || "🤖",
+      description: agent.description,
+      system_prompt: agent.system_prompt,
+      model: agent.model,
+      allowed_tools: [...agent.allowed_tools],
+    };
+  } else {
+    editingAgentId.value = null;
+    agentDraft.value = {
+      id: "agent-" + Date.now().toString(36),
+      name: "",
+      avatar: "🤖",
+      description: "",
+      system_prompt: "",
+      model: "",
+      allowed_tools: [],
+    };
+  }
+  agentSaveError.value = "";
+  agentSaved.value = false;
+  agentEditorOpen.value = true;
+}
+
+function closeAgentEditor() {
+  agentEditorOpen.value = false;
+}
+
+function toggleAgentTool(toolId: string, enabled: boolean) {
+  const set = new Set(agentDraft.value.allowed_tools);
+  if (enabled) set.add(toolId);
+  else set.delete(toolId);
+  agentDraft.value.allowed_tools = Array.from(set).sort();
+}
+
+async function saveAgentDraft() {
+  agentSaveError.value = "";
+  const name = agentDraft.value.name.trim();
+  if (!name) {
+    agentSaveError.value = "请填写智能体名字";
+    return;
+  }
+  if (/s|@/.test(name)) {
+    agentSaveError.value = "名字不能包含空格或 @（名字会用于对话中的 @ 提及）";
+    return;
+  }
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    await agentsStore.upsert({
+      id: agentDraft.value.id,
+      name,
+      avatar: agentDraft.value.avatar.trim() || "🤖",
+      description: agentDraft.value.description.trim(),
+      system_prompt: agentDraft.value.system_prompt.trim(),
+      model: agentDraft.value.model.trim(),
+      allowed_tools: agentDraft.value.allowed_tools,
+      created_at: now,
+      updated_at: now,
+    });
+    agentEditorOpen.value = false;
+    agentSaved.value = true;
+    setTimeout(() => (agentSaved.value = false), 2000);
+  } catch (e) {
+    agentSaveError.value = String(e);
+  }
+}
+
+async function deleteAgentDraft(agent: Agent) {
+  if (!window.confirm("确定删除智能体「" + agent.name + "」吗？此操作不可撤销。")) return;
+  agentDeletingId.value = agent.id;
+  try {
+    await agentsStore.remove(agent.id);
+  } catch (e) {
+    alert("删除失败: " + e);
+  } finally {
+    agentDeletingId.value = null;
+  }
+}
+
+/** 用 AI 根据自然语言描述生成智能体定义并预填表单 */
+async function generateAgentFromDesc() {
+  const desc = agentGenDesc.value.trim();
+  if (!desc || agentGenLoading.value) return;
+  agentGenLoading.value = true;
+  agentGenError.value = "";
+  try {
+    const spec = await agentsStore.generateSpec(desc);
+    editingAgentId.value = null;
+    agentDraft.value = {
+      id: "agent-" + Date.now().toString(36),
+      name: spec.name || "新智能体",
+      avatar: spec.avatar || "🤖",
+      description: spec.description || "",
+      system_prompt: spec.system_prompt || "",
+      model: "",
+      allowed_tools: spec.allowed_tools || [],
+    };
+    agentSaveError.value = "";
+    agentSaved.value = false;
+    agentEditorOpen.value = true;
+  } catch (e) {
+    agentGenError.value = String(e);
+  } finally {
+    agentGenLoading.value = false;
+  }
+}
+
 function thinkingDepthLabel(value: string) {
   return thinkingDepthOptions.find((item) => item.value === value)?.label || "自动";
 }
@@ -422,6 +682,10 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function delay(ms: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
 async function loadWeatherConfig() {
   try {
     const loaded = await invoke<WeatherConfig>("get_weather_config");
@@ -446,6 +710,15 @@ async function loadWeather(forceRefresh = false) {
     weatherInfo.value = normalizeWeatherInfo(weather);
     weatherError.value = "";
   } catch (e) {
+    if (!forceRefresh) {
+      await delay(1200);
+      try {
+        const weather = await invoke<WeatherInfo | null>("get_weather");
+        weatherInfo.value = normalizeWeatherInfo(weather);
+        weatherError.value = "";
+        return;
+      } catch {}
+    }
     weatherInfo.value = null;
     weatherError.value = errorMessage(e);
     console.error("获取天气失败:", e);
@@ -456,6 +729,17 @@ async function loadWeather(forceRefresh = false) {
 
 async function refreshWeather() {
   await loadWeather(true);
+}
+
+function handleWeatherUpdate(event: { payload: WeatherUpdateEvent }) {
+  void loadWeather();
+  if (event.payload.sent_today && event.payload.message) {
+    const last = chat.messages[chat.messages.length - 1];
+    if (!(last?.role === "system" && last.content === event.payload.message)) {
+      chat.addSystemMessage(event.payload.message);
+    }
+  }
+  scrollDashChatToBottom();
 }
 
 async function saveWeatherConfig() {
@@ -1083,6 +1367,9 @@ async function saveMemoryDraft() {
 
 async function deleteMemoryItem(id: number) {
   if (memoryDeletingId.value !== null) return;
+  const item = memories.value.find((memory) => memory.id === id);
+  const confirmed = window.confirm(`确定删除记忆“${item?.key || "未命名"}”吗？`);
+  if (!confirmed) return;
   memoryDeletingId.value = id;
   try {
     await invoke("delete_memory", { id });
@@ -1193,6 +1480,9 @@ async function toggleScheduledTask(task: ScheduledTask) {
 
 async function deleteScheduledTask(id: number) {
   if (taskDeletingId.value !== null) return;
+  const task = scheduledTasks.value.find((item) => item.id === id);
+  const confirmed = window.confirm(`确定删除提醒“${task?.title || "未命名"}”吗？`);
+  if (!confirmed) return;
   taskDeletingId.value = id;
   taskError.value = "";
   try {
@@ -1256,15 +1546,28 @@ async function updateTtsSettings(patch: Partial<TtsSettings>) {
   ttsSettings.value = { ...ttsSettings.value, ...patch };
   try {
     await invoke("set_setting_value", { key: TTS_SETTINGS_KEY, value: JSON.stringify(ttsSettings.value) });
+    window.dispatchEvent(new CustomEvent("tts-settings-changed"));
+    await currentWindow.emit("tts-settings-changed");
   } catch {}
 }
 
 async function previewVoice() {
-  if (isPreviewing.value) { ttsPreviewPlayer.stop(); isPreviewing.value = false; return; }
+if (isPreviewing.value) { ttsPlayer.stop(); isPreviewing.value = false; return; }
   isPreviewing.value = true;
-  try { await ttsPreviewPlayer.speak("你好，我是你的桌宠伙伴，很高兴认识你。", ttsSettings.value); }
+  try { await ttsPlayer.speak("你好，我是你的桌宠伙伴，很高兴认识你。", ttsSettings.value); }
   catch (e: any) { if (e.message !== "Aborted") alert("试听失败: " + (e.message || e)); }
   isPreviewing.value = false;
+}
+
+async function speakDashboardReply(text: string) {
+  if (!voiceSettings.value.enabled || !voiceSettings.value.autoSpeak) return;
+  try {
+    await ttsPlayer.speak(text, ttsSettings.value);
+  } catch (e: any) {
+    if (e?.message !== "Aborted") {
+      console.warn("Dashboard auto speech failed:", e);
+    }
+  }
 }
 
 async function updateVoiceSettings(patch: Partial<VoiceSettings>) {
@@ -1357,10 +1660,18 @@ async function toggleMaximize() {
 
 // === 对话框与消息同步 ===
 const chatInput = ref("");
+const dashChatInputRef = ref<HTMLInputElement | null>(null);
+const dashSlashSelectedIndex = ref(0);
+const dashMentionSelectedIndex = ref(0);
 const thinkingContent = ref("");
 const streamingAnswer = ref("");
 const toolEvents = ref<ToolEvent[]>([]);
 const pendingConfirm = ref<ToolConfirmPayload | null>(null);
+// === 智能体主动询问弹窗 (ask_user) ===
+const pendingQuestion = ref<AskUserPayload | null>(null);
+const askUserSelected = ref("");
+const askUserAnswer = ref("");
+const askUserSubmitting = ref(false);
 const dashChatMessagesRef = ref<HTMLDivElement | null>(null);
 const dashChatEndRef = ref<HTMLDivElement | null>(null);
 let dashChatScrollFrame: number | null = null;
@@ -1376,10 +1687,14 @@ let unlistenSyncMessage: UnlistenFn | null = null;
 let unlistenToolEvent: UnlistenFn | null = null;
 let unlistenToolConfirm: UnlistenFn | null = null;
 let unlistenToolConfirmResolved: UnlistenFn | null = null;
+let unlistenAskUser: UnlistenFn | null = null;
+let unlistenAskUserResolved: UnlistenFn | null = null;
 let unlistenScheduledTasksChanged: UnlistenFn | null = null;
 let unlistenScheduledTaskTriggered: UnlistenFn | null = null;
 let unlistenWeatherUpdate: UnlistenFn | null = null;
 let unlistenDragDrop: UnlistenFn | null = null;
+let unlistenVoiceSettingsChanged: UnlistenFn | null = null;
+let unlistenTtsSettingsChanged: UnlistenFn | null = null;
 
 // === 文件拖拽与预加载相关数据 ===
 interface PendingFile {
@@ -1599,9 +1914,22 @@ async function refreshChatState() {
     const history = await invoke<any[]>("get_chat_history");
     chat.setMessages(history.map(item => ({
       role: item.role === "assistant" ? "assistant" as const : "user" as const,
-      content: item.content,
+      content: item.content || (item.quoted_content ? "（引用消息）" : item.content),
       thinking: item.thinking || undefined,
       timestamp: typeof item.created_at === 'number' ? item.created_at : new Date(item.created_at).getTime(),
+      quote: item.quoted_content
+        ? {
+            role: item.quoted_role === "assistant" ? "assistant" as const : "user" as const,
+            content: item.quoted_content,
+          }
+        : undefined,
+      agent: item.agent_name
+        ? {
+            id: item.agent_id || undefined,
+            name: item.agent_name,
+            avatar: item.agent_avatar || undefined,
+          }
+        : undefined,
     })));
     scrollDashChatToBottom();
   } catch {}
@@ -1614,6 +1942,7 @@ function resetDashChatUi() {
   streamingAnswer.value = "";
   toolEvents.value = [];
   pendingConfirm.value = null;
+  pendingQuestion.value = null;
 }
 
 async function abortAi() {
@@ -1622,6 +1951,7 @@ async function abortAi() {
   streamingAnswer.value = "";
   toolEvents.value = [];
   pendingConfirm.value = null;  // Clear pending tool confirmation on abort
+  pendingQuestion.value = null; // Clear pending ask_user popup on abort
   try {
     await invoke("abort_ai");
   } catch {}
@@ -1631,10 +1961,14 @@ async function sendDashboardMessage() {
 
   const text = chatInput.value.trim();
   const files = [...pendingFiles.value];
+  const quote = pendingQuote.value ? { ...pendingQuote.value } : undefined;
 
-  if (!text && files.length === 0) return;
+  if (!text && files.length === 0 && !quote) return;
   if (chat.isLoading) return;
   closeDashMessageMenu();
+  if (voiceSettings.value.enabled && voiceSettings.value.autoSpeak) {
+    ttsPlayer.preparePlayback();
+  }
 
   const fullMessage = buildMessageWithFiles(text, files);
 
@@ -1653,9 +1987,10 @@ async function sendDashboardMessage() {
         }))
       : [];
 
-  const displayText = text || "(已发送文件)";
-  chat.addMessage("user", displayText, undefined, fileAttachments);
+  const displayText = text || (quote ? "（引用消息）" : "(已发送文件)");
+  chat.addMessage("user", displayText, undefined, fileAttachments, undefined, quote);
   chatInput.value = "";
+  pendingQuote.value = null;
   clearPendingFiles();
   chat.isLoading = true;
   resetLoadingTimeout(); // 启动超时保底
@@ -1666,15 +2001,197 @@ async function sendDashboardMessage() {
   pet.setState("thinking");
 
   // Broadcast user message to other windows (like the pet chat bubble)
-  await currentWindow.emit("sync-chat-message", { role: "user", content: displayText, files: fileAttachments });
+  await currentWindow.emit("sync-chat-message", { role: "user", content: displayText, files: fileAttachments, quote });
 
   try {
-    await invoke("send_to_ai", { message: fullMessage, attachments: aiAttachments });
+    await invoke("send_to_ai", {
+      message: fullMessage,
+      attachments: aiAttachments,
+      quotedRole: quote?.role,
+      quotedContent: quote ? truncateQuoteContent(quote.content) : undefined,
+      mentionAgents: dashMentionNames(text),
+    });
   } catch (err) {
     chat.isLoading = false;
     streamingAnswer.value = "";
     chat.addMessage("assistant", `出错了: ${err}`);
     pet.setState("confused");
+  }
+}
+
+function skillMatchesSlashQuery(skill: Skill, query: string): boolean {
+  if (!query) return true;
+  const haystack = [
+    skill.name,
+    skill.description,
+    skill.id,
+    ...skill.keywords,
+  ].join(" ").toLowerCase();
+  return haystack.includes(query);
+}
+
+function moveDashSlashSelection(delta: number) {
+  const total = dashSlashItems.value.length;
+  if (total === 0) return;
+  dashSlashSelectedIndex.value = (dashSlashSelectedIndex.value + delta + total) % total;
+}
+
+async function chooseDashSlashItem(item = dashSlashItems.value[dashSlashSelectedIndex.value]) {
+  if (!item) return;
+  if (item.type === "skill") {
+    await activateDashSlashSkill(item.skill);
+  } else {
+    await runDashSlashCommand(item.command);
+  }
+}
+
+async function activateDashSlashSkill(skill: Skill) {
+  try {
+    await skillsStore.setActive(skill.id);
+    chatInput.value = `请使用「${skill.name || "这个"}」技能：`;
+    dashSlashSelectedIndex.value = 0;
+    activePage.value = "chat";
+    await nextTick();
+    dashChatInputRef.value?.focus();
+  } catch (err) {
+    chat.addMessage("assistant", `切换技能失败：${err}`);
+  }
+}
+
+async function runDashSlashCommand(command: SlashCommand) {
+  chatInput.value = "";
+  dashSlashSelectedIndex.value = 0;
+
+  switch (command.id) {
+    case "clear-skill":
+      try {
+        await skillsStore.setActive(null);
+        chat.addMessage("assistant", "已清除当前激活的 skill。");
+      } catch (err) {
+        chat.addMessage("assistant", `清除技能失败：${err}`);
+      }
+      break;
+    case "new-chat":
+      await startDashboardNewConversation();
+      break;
+    case "clear-chat":
+      await clearDashboardChatWithConfirm();
+      break;
+    case "skills":
+      activePage.value = "system";
+      await skillsStore.load();
+      break;
+    case "chat":
+    case "clipboard":
+      break;
+  }
+
+  await nextTick();
+  dashChatInputRef.value?.focus();
+}
+
+async function startDashboardNewConversation() {
+  try {
+    await invoke("start_new_conversation");
+    chat.isLoading = false;
+    thinkingContent.value = "";
+    streamingAnswer.value = "";
+    pendingConfirm.value = null;
+    toolEvents.value = [];
+    if (chat.messages.length > 0) {
+      chat.addSystemMessage("新对话");
+    }
+    await loadMemories();
+  } catch (err) {
+    chat.addMessage("assistant", `新对话创建失败：${err}`);
+  }
+}
+
+async function clearDashboardChatWithConfirm() {
+  const confirmed = window.confirm("确定要清空所有聊天记录吗？此操作不可撤销。");
+  if (!confirmed) return;
+
+  try {
+    await invoke("clear_chat_history");
+    resetDashChatUi();
+    await loadMemories();
+    await currentWindow.emit("chat-history-cleared");
+  } catch (err) {
+    chat.addMessage("assistant", `对话清空失败：${err}`);
+  }
+}
+
+function moveDashMentionSelection(delta: number) {
+  const total = dashMentionItems.value.length;
+  if (total === 0) return;
+  dashMentionSelectedIndex.value = (dashMentionSelectedIndex.value + delta + total) % total;
+}
+
+/** 选中一个智能体：把 @查询 替换成 @名字 并继续输入 */
+function chooseDashMentionItem(agent = dashMentionItems.value[dashMentionSelectedIndex.value]) {
+  const query = dashMentionQuery.value;
+  if (!agent || !query) return;
+  chatInput.value = insertMentionAt(chatInput.value, query, agent.name);
+  dashMentionSelectedIndex.value = 0;
+  void nextTick(() => dashChatInputRef.value?.focus());
+}
+
+function onDashboardChatKeyDown(e: KeyboardEvent) {
+  if (showDashMentionMenu.value) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      moveDashMentionSelection(1);
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      moveDashMentionSelection(-1);
+      return;
+    }
+    if (e.key === "Enter" || e.key === "Tab") {
+      e.preventDefault();
+      void chooseDashMentionItem();
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      // 只还原正在输入的 @ 片段，保留消息其余部分
+      const query = dashMentionQuery.value;
+      if (query) {
+        chatInput.value = chatInput.value.slice(0, query.start);
+      }
+      dashMentionSelectedIndex.value = 0;
+      return;
+    }
+  }
+
+  if (showDashSlashMenu.value) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      moveDashSlashSelection(1);
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      moveDashSlashSelection(-1);
+      return;
+    }
+    if (e.key === "Enter" || e.key === "Tab") {
+      e.preventDefault();
+      void chooseDashSlashItem();
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      chatInput.value = "";
+      dashSlashSelectedIndex.value = 0;
+      return;
+    }
+  }
+
+  if (e.key === "Enter") {
+    e.preventDefault();
+    void sendDashboardMessage();
   }
 }
 
@@ -1695,6 +2212,23 @@ async function copyDashMessage(msg: Message) {
   } finally {
     closeDashMessageMenu();
   }
+}
+
+/** 引用某条消息：填充输入框上方的引用预览条 */
+function quoteDashMessage(msg: Message) {
+  if (msg.role === "system") return;
+  pendingQuote.value = {
+    role: msg.role === "assistant" ? "assistant" : "user",
+    content: msg.content,
+  };
+  closeDashMessageMenu();
+  activePage.value = "chat";
+  void nextTick(() => dashChatInputRef.value?.focus());
+}
+
+/** 清除待发送的引用 */
+function clearPendingQuote() {
+  pendingQuote.value = null;
 }
 
 async function resendDashMessage(msg: Message) {
@@ -1731,6 +2265,32 @@ async function handleDashboardToolConfirm(approved: boolean) {
     }
   } finally {
     pendingConfirm.value = null;
+  }
+}
+
+// === 智能体主动询问 (ask_user) 弹窗逻辑 ===
+function selectAskUserOption(label: string) {
+  askUserSelected.value = label;
+  askUserAnswer.value = "";
+}
+
+async function submitAskUserAnswer(skip = false) {
+  if (!pendingQuestion.value || askUserSubmitting.value) return;
+  const questionId = pendingQuestion.value.id;
+  // 自定义输入优先于选项; 跳过时发送空字符串
+  const answer = skip ? "" : (askUserAnswer.value.trim() || askUserSelected.value);
+  if (!skip && !answer) return;
+  askUserSubmitting.value = true;
+  try {
+    await invoke("answer_question", { id: questionId, answer });
+  } catch (e) {
+    const errStr = String(e);
+    if (!errStr.includes("无效的问题 ID")) {
+      alert("提交回答失败: " + e);
+    }
+  } finally {
+    pendingQuestion.value = null;
+    askUserSubmitting.value = false;
   }
 }
 
@@ -1797,6 +2357,20 @@ watch(() => [
   scrollDashChatToBottom();
 }, { flush: "post" });
 
+watch(
+  () => [dashSlashQuery.value, dashSlashItems.value.length],
+  () => {
+    dashSlashSelectedIndex.value = 0;
+  },
+);
+
+watch(
+  () => [dashMentionQuery.value?.query ?? "", dashMentionItems.value.length],
+  () => {
+    dashMentionSelectedIndex.value = 0;
+  },
+);
+
 watch(activePage, (newPage) => {
   if (newPage === 'chat') {
     scrollDashChatToBottom();
@@ -1842,6 +2416,8 @@ function clearLoadingTimeout() {
 }
 
 onMounted(async () => {
+  unlistenWeatherUpdate = await listen<WeatherUpdateEvent>("weather-update", handleWeatherUpdate);
+
   resetTaskDraftTime();
   loadSystemInfo();
   loadMemories();
@@ -1859,6 +2435,7 @@ onMounted(async () => {
   loadClaudeStatus();
   void loadWeatherConfig().then(() => loadWeather());
   void skillsStore.load();
+  void agentsStore.load();
 
   sysInfoTimer = setInterval(loadSystemInfo, 5000);
   weatherTimer = setInterval(loadWeather, 300000); // 每5分钟更新天气
@@ -1887,15 +2464,23 @@ onMounted(async () => {
     const toolSnapshot = toolEvents.value.length > 0
       ? JSON.parse(JSON.stringify(toolEvents.value)) as any[]
       : undefined;
+    const replyAgent: MessageAgent | null = event.payload.agentName
+      ? {
+          id: event.payload.agentId || undefined,
+          name: event.payload.agentName,
+          avatar: event.payload.agentAvatar || undefined,
+        }
+      : null;
     const last = chat.messages[chat.messages.length - 1];
     if (!(last?.role === "assistant" && last.content === event.payload.text)) {
-      chat.addMessage("assistant", event.payload.text, event.payload.thinking || undefined, undefined, toolSnapshot);
+      chat.addMessage("assistant", event.payload.text, event.payload.thinking || undefined, undefined, toolSnapshot, undefined, replyAgent);
     }
     chat.isLoading = false;
     thinkingContent.value = "";
     streamingAnswer.value = "";
     toolEvents.value = [];
     pendingConfirm.value = null;
+    void speakDashboardReply(stripQuoteMarkers(event.payload.text));
   });
 
   unlistenAiError = await listen<any>("ai-error", (event) => {
@@ -1946,7 +2531,10 @@ onMounted(async () => {
     if (last && last.role === payload.role && last.content === payload.content) {
       return;
     }
-    chat.addMessage(payload.role, payload.content, undefined, payload.files ?? payload.fileAttachments);
+    const syncAgent: MessageAgent | null = payload.agent?.name
+      ? { id: payload.agent.id || undefined, name: payload.agent.name, avatar: payload.agent.avatar || undefined }
+      : null;
+    chat.addMessage(payload.role, payload.content, undefined, payload.files ?? payload.fileAttachments, undefined, payload.quote, syncAgent);
     if (payload.role === "user") {
       chat.isLoading = true;
       thinkingContent.value = "";
@@ -1971,6 +2559,21 @@ onMounted(async () => {
     }
   });
 
+  // 智能体主动询问 (ask_user): 收到问题弹出内嵌询问层
+  unlistenAskUser = await listen<AskUserPayload>("ai-ask-user", (event) => {
+    pendingQuestion.value = event.payload;
+    askUserSelected.value = event.payload.options[0]?.label ?? "";
+    askUserAnswer.value = "";
+    askUserSubmitting.value = false;
+  });
+
+  unlistenAskUserResolved = await listen<{ id: string; answered: boolean }>("ai-ask-user-resolved", (event) => {
+    if (pendingQuestion.value?.id === event.payload.id) {
+      pendingQuestion.value = null;
+      askUserSubmitting.value = false;
+    }
+  });
+
   unlistenScheduledTasksChanged = await listen("scheduled-tasks-changed", () => {
     void loadScheduledTasks();
   });
@@ -1979,27 +2582,18 @@ onMounted(async () => {
     void loadScheduledTasks();
   });
 
-  // 监听天气更新事件
-  unlistenWeatherUpdate = await listen<WeatherUpdateEvent>("weather-update", (event) => {
-    // 重新加载天气信息
-    void loadWeather();
-    // 添加天气系统消息
-    if (event.payload.sent_today && event.payload.message) {
-      const last = chat.messages[chat.messages.length - 1];
-      if (!(last?.role === "system" && last.content === event.payload.message)) {
-        chat.addSystemMessage(event.payload.message);
-      }
-    }
-    // 滚动到底部
-    scrollDashChatToBottom();
-  });
-
   // 检查桌宠窗口是否已存在
   const existing = await WebviewWindow.getByLabel("pet");
   isPetActive.value = !!existing;
 
   unlistenPetStatus = await listen("pet-window-closed", () => {
     isPetActive.value = false;
+  });
+  unlistenVoiceSettingsChanged = await listen("voice-settings-changed", () => {
+    void loadVoiceSettings();
+  });
+  unlistenTtsSettingsChanged = await listen("tts-settings-changed", () => {
+    void loadVoiceSettings();
   });
 
   // 注册控制台文件拖拽事件
@@ -2027,11 +2621,16 @@ onUnmounted(() => {
   unlistenToolEvent?.();
   unlistenToolConfirm?.();
   unlistenToolConfirmResolved?.();
+  unlistenAskUser?.();
+  unlistenAskUserResolved?.();
   unlistenScheduledTasksChanged?.();
   unlistenScheduledTaskTriggered?.();
   unlistenWeatherUpdate?.();
   unlistenDragDrop?.();
+  unlistenVoiceSettingsChanged?.();
+  unlistenTtsSettingsChanged?.();
   unlistenSkillActivated?.();
+ttsPlayer.stop();
 });
 </script>
 
@@ -2111,6 +2710,13 @@ onUnmounted(() => {
           >
             <span class="sidebar-item-icon">◐</span>
             <span>个性外观</span>
+          </button>
+          <button
+            :class="['sidebar-item', { active: activePage === 'agents' }]"
+            @click="openAgentsPage()"
+          >
+            <span class="sidebar-item-icon">🧩</span>
+            <span>智能体</span>
           </button>
           <button
             :class="['sidebar-item', { active: activePage === 'voice' }]"
@@ -2393,13 +2999,35 @@ onUnmounted(() => {
                   </div>
                 </div>
                 <div v-if="msg.role !== 'system'" class="dash-msg-bubble">
+                  <div v-if="msg.agent && msg.role === 'assistant'" class="dash-msg-agent-badge">
+                    <span class="dash-msg-agent-avatar">{{ msg.agent.avatar || "🤖" }}</span>
+                    <span class="dash-msg-agent-name">{{ msg.agent.name }}</span>
+                  </div>
                   <div v-if="msg.thinking" class="dash-msg-thinking">
                     <details>
                       <summary>思考过程</summary>
                       <p>{{ msg.thinking }}</p>
                     </details>
                   </div>
-                  <div class="dash-msg-text">{{ msg.content }}</div>
+                  <!-- 用户引用的前文对话（微信式引用块） -->
+                  <div v-if="msg.quote" class="dash-msg-quote" :title="msg.quote.content">
+                    <div class="dash-msg-quote-name">{{ quoteSpeakerLabel(msg.quote.role) }}：</div>
+                    <div class="dash-msg-quote-text">{{ msg.quote.content }}</div>
+                  </div>
+                  <!-- AI 回复中的 [QUOTE] 标记渲染为引用块 -->
+                  <div class="dash-msg-text">
+                    <template v-for="(seg, si) in parseQuoteSegments(msg.content)" :key="si">
+                      <div v-if="seg.type === 'quote'" class="dash-msg-quote ai-quote" :title="seg.content">
+                        <div class="dash-msg-quote-text">{{ seg.content }}</div>
+                      </div>
+                      <template v-else>
+                        <template v-for="(mseg, mi) in splitMentionSegments(seg.content)" :key="si + '-' + mi">
+                          <span v-if="mseg.type === 'mention'" class="dash-msg-mention">@{{ mseg.content }}</span>
+                          <template v-else>{{ mseg.content }}</template>
+                        </template>
+                      </template>
+                    </template>
+                  </div>
 
                   <!-- 显示已发送的本地文件信息 -->
                   <div v-if="msg.files && msg.files.length > 0" class="dash-msg-files">
@@ -2416,6 +3044,7 @@ onUnmounted(() => {
                   @contextmenu.prevent.stop
                 >
                   <button type="button" @click="copyDashMessage(msg)">复制</button>
+                  <button type="button" @click="quoteDashMessage(msg)">引用</button>
                   <button type="button" :disabled="chat.isLoading" @click="resendDashMessage(msg)">重新发送</button>
                 </div>
               </div>
@@ -2473,7 +3102,14 @@ onUnmounted(() => {
                       <p>{{ thinkingContent }}</p>
                     </details>
                   </div>
-                  <div v-if="streamingAnswer" class="dash-msg-text">{{ streamingAnswer }}</div>
+                  <div v-if="streamingAnswer" class="dash-msg-text">
+                    <template v-for="(seg, si) in parseQuoteSegments(streamingAnswer, true)" :key="si">
+                      <div v-if="seg.type === 'quote'" class="dash-msg-quote ai-quote" :title="seg.content">
+                        <div class="dash-msg-quote-text">{{ seg.content }}</div>
+                      </div>
+                      <template v-else>{{ seg.content }}</template>
+                    </template>
+                  </div>
                   <div class="dash-typing-dots">
                     <span class="dot"></span>
                     <span class="dot"></span>
@@ -2485,6 +3121,19 @@ onUnmounted(() => {
             </div>
 
             <div class="dash-chat-composer">
+              <!-- 引用回复预览条（微信式） -->
+              <Transition name="slide-up">
+                <div v-if="pendingQuote" class="dash-quote-preview">
+                  <div class="dash-quote-preview-bar">
+                    <div class="dash-quote-preview-content">
+                      <span class="dash-quote-preview-name">{{ quoteSpeakerLabel(pendingQuote.role) }}：</span>
+                      <span class="dash-quote-preview-text">{{ pendingQuote.content }}</span>
+                    </div>
+                    <button type="button" class="dash-quote-remove-btn" title="取消引用" @click="clearPendingQuote">&times;</button>
+                  </div>
+                </div>
+              </Transition>
+
               <!-- 文件校验错误提示 -->
               <Transition name="fade">
                 <div v-if="fileValidationError" class="dash-file-validation-error">
@@ -2533,11 +3182,65 @@ onUnmounted(() => {
                 </div>
               </Transition>
 
+              <Transition name="slide-up">
+                <div v-if="showDashMentionMenu" class="dash-mention-menu" @mousedown.prevent>
+                  <button
+                    v-for="(agent, index) in dashMentionItems"
+                    :key="agent.id"
+                    type="button"
+                    class="dash-mention-item"
+                    :class="{ active: index === dashMentionSelectedIndex }"
+                    @mouseenter="dashMentionSelectedIndex = index"
+                    @click="chooseDashMentionItem(agent)"
+                  >
+                    <span class="dash-mention-avatar">{{ agent.avatar || "🤖" }}</span>
+                    <span class="dash-mention-main">
+                      <span class="dash-mention-title">@{{ agent.name }}</span>
+                      <span class="dash-mention-desc">{{ agent.description || "自定义智能体" }}</span>
+                    </span>
+                    <span class="dash-mention-hint">Tab 选择</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="dash-mention-item dash-mention-new"
+                    @click="openAgentEditor(); activePage = 'agents'"
+                  >
+                    <span class="dash-mention-avatar">＋</span>
+                    <span class="dash-mention-main">
+                      <span class="dash-mention-title">新建智能体</span>
+                      <span class="dash-mention-desc">打开智能体工坊，自由定义或用 AI 生成</span>
+                    </span>
+                  </button>
+                </div>
+              </Transition>
+
+              <Transition name="slide-up">
+                <div v-if="showDashSlashMenu" class="dash-slash-menu" @mousedown.prevent>
+                  <button
+                    v-for="(item, index) in dashSlashItems"
+                    :key="item.key"
+                    type="button"
+                    class="dash-slash-item"
+                    :class="{ active: index === dashSlashSelectedIndex, skill: item.type === 'skill' }"
+                    @mouseenter="dashSlashSelectedIndex = index"
+                    @click="chooseDashSlashItem(item)"
+                  >
+                    <span class="dash-slash-mark">{{ item.type === "skill" ? "#" : "/" }}</span>
+                    <span class="dash-slash-main">
+                      <span class="dash-slash-title">{{ item.title }}</span>
+                      <span class="dash-slash-desc">{{ item.description }}</span>
+                    </span>
+                    <span class="dash-slash-hint">{{ item.hint }}</span>
+                  </button>
+                </div>
+              </Transition>
+
               <div class="dash-chat-input-area">
                 <input
+                  ref="dashChatInputRef"
                   type="text"
                   v-model="chatInput"
-                  @keydown.enter="sendDashboardMessage"
+                  @keydown="onDashboardChatKeyDown"
                   placeholder="发送消息或拖入文件/应用快捷方式给桌宠..."
                   :disabled="chat.isLoading"
                   class="dash-chat-input"
@@ -2555,7 +3258,7 @@ onUnmounted(() => {
                 </select>
                 <button
                   @click="sendDashboardMessage"
-                  :disabled="(!chatInput.trim() && pendingFiles.length === 0) || chat.isLoading"
+                  :disabled="(!chatInput.trim() && pendingFiles.length === 0 && !pendingQuote) || chat.isLoading"
                   class="dash-chat-send-btn"
                 >
                   发送
@@ -2749,6 +3452,131 @@ onUnmounted(() => {
                     <p>{{ memory.value }}</p>
                   </div>
                 </section>
+              </div>
+            </div>
+          </div>
+
+          <!-- ========== 智能体工坊 ========== -->
+          <div v-else-if="activePage === 'agents'" key="agents" class="dash-agents-page">
+            <div class="page-header">
+              <div class="page-kicker">Agents</div>
+              <h1 class="page-title">智能体工坊</h1>
+              <p class="page-subtitle">创建专属智能体，在对话里输入 @ 就能召唤它工作</p>
+            </div>
+
+            <div class="dash-agents-layout">
+              <div class="dash-card dash-agents-list-panel">
+                <div class="dash-card-title">
+                  <span class="card-icon">🧩</span> 我的智能体
+                  <button class="dash-agents-add-btn" @click="openAgentEditor()">＋ 新建</button>
+                </div>
+                <div v-if="agentSaved" class="dash-agents-saved-tip">✓ 已保存</div>
+                <div v-if="agentsStore.agents.length === 0" class="dash-agents-empty">
+                  还没有自定义智能体。<br />点击「＋ 新建」自由定义，或用下方的 AI 帮你生成一个。
+                </div>
+                <div v-for="agent in agentsStore.agents" :key="agent.id" class="dash-agent-card">
+                  <span class="dash-agent-card-avatar">{{ agent.avatar || "🤖" }}</span>
+                  <div class="dash-agent-card-main">
+                    <div class="dash-agent-card-name">@{{ agent.name }}</div>
+                    <div class="dash-agent-card-desc">{{ agent.description || "（无描述）" }}</div>
+                    <div class="dash-agent-card-meta">
+                      {{ agent.allowed_tools.length }} 个免确认工具{{ agent.model ? " · " + agent.model : "" }}
+                    </div>
+                  </div>
+                  <div class="dash-agent-card-actions">
+                    <button class="dash-mini-btn" @click="openAgentEditor(agent)">编辑</button>
+                    <button
+                      class="dash-mini-btn danger"
+                      :disabled="agentDeletingId === agent.id"
+                      @click="deleteAgentDraft(agent)"
+                    >
+                      删除
+                    </button>
+                  </div>
+                </div>
+
+                <div class="dash-card-title" style="margin-top: 18px;">
+                  <span class="card-icon">✨</span> 用 AI 创建
+                </div>
+                <p class="dash-agents-ai-hint">描述你想要的智能体，AI 会生成名字、头像、角色设定和工具权限，你确认后即可保存。</p>
+                <textarea
+                  v-model="agentGenDesc"
+                  class="dash-agents-gen-input"
+                  rows="3"
+                  placeholder="例如：一个帮我写周报的智能体，语气正式，善于从零散信息里提炼重点……"
+                ></textarea>
+                <div class="dash-agents-gen-row">
+                  <button
+                    class="dash-primary-btn"
+                    :disabled="agentGenLoading || !agentGenDesc.trim()"
+                    @click="generateAgentFromDesc"
+                  >
+                    {{ agentGenLoading ? "生成中…" : "生成智能体" }}
+                  </button>
+                  <span v-if="agentGenError" class="dash-agents-gen-error">{{ agentGenError }}</span>
+                </div>
+              </div>
+
+              <div v-if="agentEditorOpen" class="dash-card dash-agent-editor-panel">
+                <div class="dash-card-title">
+                  <span class="card-icon">{{ agentDraft.avatar || "🤖" }}</span>
+                  {{ editingAgentId ? "编辑智能体" : "新建智能体" }}
+                  <button class="dash-agents-close-btn" @click="closeAgentEditor()">×</button>
+                </div>
+                <div class="dash-form-group">
+                  <label>名字（对话中 @ 它用，不能含空格和 @）</label>
+                  <input v-model="agentDraft.name" type="text" placeholder="例如：周报助手" maxlength="40" />
+                </div>
+                <div class="dash-form-group">
+                  <label>头像</label>
+                  <div class="dash-avatar-picker">
+                    <button
+                      v-for="emoji in AGENT_AVATARS"
+                      :key="emoji"
+                      type="button"
+                      class="dash-avatar-option"
+                      :class="{ active: agentDraft.avatar === emoji }"
+                      @click="agentDraft.avatar = emoji"
+                    >
+                      {{ emoji }}
+                    </button>
+                  </div>
+                </div>
+                <div class="dash-form-group">
+                  <label>一句话描述</label>
+                  <input v-model="agentDraft.description" type="text" placeholder="它擅长什么（会显示在 @ 列表中）" maxlength="100" />
+                </div>
+                <div class="dash-form-group">
+                  <label>角色设定（system prompt）</label>
+                  <textarea
+                    v-model="agentDraft.system_prompt"
+                    rows="6"
+                    maxlength="4000"
+                    placeholder="用第二人称描述它的身份、职责、工作方式和边界，例如：你是用户的周报助手……"
+                  ></textarea>
+                </div>
+                <div class="dash-form-group">
+                  <label>专属模型（留空 = 使用当前模型）</label>
+                  <input v-model="agentDraft.model" type="text" placeholder="例如：gpt-4o-mini / deepseek-chat" />
+                </div>
+                <div class="dash-form-group">
+                  <label>免确认工具（该智能体被 @ 时自动授权）</label>
+                  <div class="dash-tool-perm-list">
+                    <label v-for="tool in toolPermissionOptions" :key="tool.id" class="dash-tool-perm-item">
+                      <input
+                        type="checkbox"
+                        :checked="agentDraft.allowed_tools.includes(tool.id)"
+                        @change="toggleAgentTool(tool.id, ($event.target as HTMLInputElement).checked)"
+                      />
+                      <span>{{ tool.label }}</span>
+                    </label>
+                  </div>
+                </div>
+                <div class="dash-agents-editor-actions">
+                  <span v-if="agentSaveError" class="dash-agents-gen-error">{{ agentSaveError }}</span>
+                  <button class="dash-primary-btn" @click="saveAgentDraft()">保存智能体</button>
+                  <button class="dash-mini-btn" @click="closeAgentEditor()">取消</button>
+                </div>
               </div>
             </div>
           </div>
@@ -3614,6 +4442,57 @@ onUnmounted(() => {
               <div class="dash-tool-confirm-actions">
                 <button class="dash-btn secondary" @click="handleDashboardToolConfirm(false)">拒绝</button>
                 <button class="dash-btn primary" @click="handleDashboardToolConfirm(true)">允许</button>
+              </div>
+            </div>
+          </div>
+        </Transition>
+
+        <!-- 智能体主动询问弹窗 (ask_user, 全局，任何页面可见) -->
+        <Transition name="slide-up">
+          <div v-if="pendingQuestion" class="dash-floating-confirm-overlay">
+            <div class="dash-ask-user-card">
+              <div class="dash-ask-user-header">
+                <span class="dash-ask-user-kicker">AI 有个问题</span>
+                <strong class="dash-ask-user-question">{{ pendingQuestion.question }}</strong>
+              </div>
+
+              <div v-if="pendingQuestion.options.length" class="dash-ask-user-options">
+                <button
+                  v-for="option in pendingQuestion.options"
+                  :key="option.label"
+                  type="button"
+                  :class="['dash-ask-option', { selected: askUserSelected === option.label && !askUserAnswer.trim() }]"
+                  @click="selectAskUserOption(option.label)"
+                >
+                  <span class="dash-ask-option-label">{{ option.label }}</span>
+                  <span v-if="option.description" class="dash-ask-option-desc">{{ option.description }}</span>
+                </button>
+              </div>
+
+              <div class="dash-ask-user-input">
+                <input
+                  v-model="askUserAnswer"
+                  type="text"
+                  placeholder="或自己填写答案…"
+                  @keydown.enter.prevent="submitAskUserAnswer()"
+                />
+              </div>
+
+              <div class="dash-tool-confirm-actions">
+                <button
+                  class="dash-btn secondary"
+                  :disabled="askUserSubmitting"
+                  @click="submitAskUserAnswer(true)"
+                >
+                  跳过
+                </button>
+                <button
+                  class="dash-btn primary"
+                  :disabled="askUserSubmitting || (!askUserAnswer.trim() && !askUserSelected)"
+                  @click="submitAskUserAnswer()"
+                >
+                  提交回答
+                </button>
               </div>
             </div>
           </div>

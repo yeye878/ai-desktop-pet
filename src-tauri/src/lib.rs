@@ -4,6 +4,7 @@ mod direct_api;
 mod openclaw;
 mod skills;
 mod storage;
+mod subprocess;
 mod system;
 mod tts;
 
@@ -12,6 +13,8 @@ use serde::{Deserialize, Serialize};
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use std::{
+    fs::OpenOptions,
+    io::Write,
     path::PathBuf,
     sync::Mutex as StdMutex,
     time::{SystemTime, UNIX_EPOCH},
@@ -37,6 +40,29 @@ pub struct ActiveChatState {
 struct AiFinishedPayload {
     text: String,
     thinking: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_avatar: Option<String>,
+}
+
+/// 本轮消息被 @ 提及的智能体运行时信息（传给 direct_api 用于保存归属与事件载荷）。
+#[derive(Clone, Serialize)]
+pub struct AgentContext {
+    pub agents: Vec<storage::Agent>,
+}
+
+impl AgentContext {
+    /// 单智能体时返回该智能体的归属信息，多智能体（面板模式）返回 None。
+    pub fn single(&self) -> Option<&storage::Agent> {
+        if self.agents.len() == 1 {
+            self.agents.first()
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -86,16 +112,20 @@ pub struct AppState {
     pub active_ai_pid: tokio::sync::Mutex<Option<u32>>,
     pub active_chat: StdMutex<ActiveChatState>,
     pub tts: tts::TtsManager,
+    pub tts_playback: tts::playback::NativeAudioPlayer,
     pub backend_type: tokio::sync::Mutex<String>,
     pub direct_api_config: tokio::sync::Mutex<Option<direct_api::DirectApiConfig>>,
     pub pending_confirms:
         tokio::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>>,
+    pub pending_questions:
+        tokio::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<String>>>,
     pub approved_tool_types: tokio::sync::Mutex<std::collections::HashSet<String>>,
     pub abort_token: tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>,
     pub chat_start_id: StdMutex<i64>,
     pub http_client: reqwest::Client,
     pub weather_cache: tokio::sync::Mutex<Option<system::WeatherInfo>>,
     pub last_active_skill_id: tokio::sync::Mutex<Option<String>>,
+    pub subprocs: subprocess::SubprocessManager,
 }
 
 fn unix_now() -> i64 {
@@ -157,6 +187,9 @@ fn validate_schedule_input(title: &str, due_at: i64) -> Result<(), String> {
     if title.trim().is_empty() {
         return Err("任务标题不能为空".to_string());
     }
+    if title.chars().count() > 120 {
+        return Err("任务标题不能超过 120 个字符".to_string());
+    }
     if due_at < unix_now() + SCHEDULE_MIN_DUE_OFFSET_SECS {
         return Err("提醒时间必须晚于当前时间至少 5 秒".to_string());
     }
@@ -204,6 +237,124 @@ fn app_data_root(app_handle: &tauri::AppHandle) -> PathBuf {
             .unwrap_or_else(|| PathBuf::from("."))
             .join("ai-desktop-pet")
     })
+}
+
+fn weather_debug_log_path() -> PathBuf {
+    let mut path = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
+    path.push("ai-desktop-pet");
+    path.push("weather-debug.log");
+    path
+}
+
+fn log_weather_debug(kind: &str, message: &str) {
+    let path = weather_debug_log_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+    let line = format!("[{timestamp}] [{kind}] {message}\n");
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = file.write_all(line.as_bytes());
+    }
+}
+
+fn weather_proxy_env_summary() -> String {
+    let keys = [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+    ];
+
+    keys.iter()
+        .map(|key| {
+            let value = std::env::var(key)
+                .ok()
+                .filter(|value| !value.trim().is_empty());
+            match value {
+                Some(value) => format!("{key}={value}"),
+                None => format!("{key}=<unset>"),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+fn build_weather_proxy_client() -> Option<reqwest::Client> {
+    // 仅在用户显式设置了代理环境变量时才启用代理重试，
+    // 不再硬编码 127.0.0.1:7890 兜底——那会在没有 Clash 的机器上
+    // 凭空引入 15s 的 connect_timeout 延迟和误导性的「显式代理重试也失败」错误。
+    let proxy_url = std::env::var("HTTPS_PROXY")
+        .or_else(|_| std::env::var("HTTP_PROXY"))
+        .or_else(|_| std::env::var("https_proxy"))
+        .or_else(|_| std::env::var("http_proxy"))
+        .ok()
+        .filter(|value| !value.trim().is_empty())?;
+
+    let proxy = match reqwest::Proxy::all(&proxy_url) {
+        Ok(proxy) => proxy,
+        Err(error) => {
+            log_weather_debug(
+                "weather_proxy_client_err",
+                &format!("invalid_proxy={proxy_url} error={error}"),
+            );
+            return None;
+        }
+    };
+
+    match reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .tcp_keepalive(std::time::Duration::from_secs(60))
+        .pool_idle_timeout(std::time::Duration::from_secs(90))
+        .proxy(proxy)
+        .build()
+    {
+        Ok(client) => {
+            log_weather_debug("weather_proxy_client", &format!("proxy={proxy_url}"));
+            Some(client)
+        }
+        Err(error) => {
+            log_weather_debug("weather_proxy_client_err", &format!("error={error}"));
+            None
+        }
+    }
+}
+
+async fn get_weather_with_proxy_retry(
+    default_client: &reqwest::Client,
+    config: &system::weather::WeatherConfig,
+) -> Result<system::WeatherInfo, String> {
+    match system::weather::get_weather_with_client(default_client, config).await {
+        Ok(weather) => Ok(weather),
+        Err(primary_error) => {
+            log_weather_debug("weather_default_client_err", &primary_error);
+            let Some(proxy_client) = build_weather_proxy_client() else {
+                return Err(primary_error);
+            };
+
+            match system::weather::get_weather_with_client(&proxy_client, config).await {
+                Ok(weather) => {
+                    log_weather_debug(
+                        "weather_proxy_retry_ok",
+                        &format!("city={} temp={}", weather.city, weather.temperature),
+                    );
+                    Ok(weather)
+                }
+                Err(proxy_error) => {
+                    log_weather_debug("weather_proxy_retry_err", &proxy_error);
+                    Err(format!(
+                        "{}\n显式代理重试也失败: {}",
+                        primary_error, proxy_error
+                    ))
+                }
+            }
+        }
+    }
 }
 
 fn custom_pet_assets_root(app_handle: &tauri::AppHandle) -> PathBuf {
@@ -827,7 +978,7 @@ fn attach_execution_mode_prompt(
 }
 
 fn attach_computer_use_prompt(system_prompt: String) -> String {
-    let note = "Computer Use tools are available only when the user enables them in settings. When using them, inspect the current UI with computer_screenshot or browser_snapshot before the first mouse/keyboard action when the UI state matters. Continue the task until it is actually complete: after launching an app, wait/focus/inspect as needed and proceed with the next requested step. Batch safe low-risk actions such as typing a known text string, pressing Enter after typing, or using a common hotkey; do not screenshot after every keystroke or every tiny mouse movement. Wait and inspect again after actions that materially change the UI, when target focus is uncertain, or before irreversible actions. Never type passwords, verification codes, API keys, tokens, payment data, or other secrets. If the user says to continue after an interruption, use the saved tool progress in the conversation and take a fresh screenshot before deciding the next UI action. If the user has not clearly asked for desktop/browser control, explain what you need before requesting an action.";
+    let note = "Computer Use tools are available only when the user enables them in settings. When using them, inspect the current UI with computer_screenshot or browser_snapshot before the first mouse/keyboard action when the UI state matters. For browser tasks prefer the browser_* family: browser_open starts the AI-managed browser, browser_navigate/browser_back/browser_forward move between pages, browser_extract reads page text and links, browser_click/browser_type/browser_press interact with elements, browser_scroll moves the page, and browser_snapshot captures the page viewport. Use browser_* instead of desktop computer_mouse/computer_keyboard whenever the target is inside a browser tab. Continue the task until it is actually complete: after launching an app, wait/focus/inspect as needed and proceed with the next requested step. Batch safe low-risk actions such as typing a known text string, pressing Enter after typing, or using a common hotkey; do not screenshot after every keystroke or every tiny mouse movement. Wait and inspect again after actions that materially change the UI, when target focus is uncertain, or before irreversible actions. Never type passwords, verification codes, API keys, tokens, payment data, or other secrets. If the user says to continue after an interruption, use the saved tool progress in the conversation and take a fresh screenshot before deciding the next UI action. If the user has not clearly asked for desktop/browser control, explain what you need before requesting an action.";
     format!("{}\n\n{}", system_prompt, note)
 }
 
@@ -990,7 +1141,7 @@ async fn attach_registered_apps_prompt(
     if let Ok(memories) = db.get_memories_by_category("app_path") {
         if !memories.is_empty() {
             let mut app_notes = vec![
-                "\n\n【重要系统级信息】用户已经在系统中注册并保存了以下自定义应用程序（快捷方式路径）记忆：".to_string()
+                "\n\n【重要系统级信息】用户已经在系统中注册并保存了以下自定义应用程序（快捷方式路径）记忆。".to_string()
             ];
             for app in memories {
                 app_notes.push(format!(
@@ -998,7 +1149,7 @@ async fn attach_registered_apps_prompt(
                     app.key, app.value
                 ));
             }
-            app_notes.push("当用户要求你“打开”、“运行”、“启动”这些应用时，你拥有完整的预知记忆。请直接调用 `open_app` 工具，并以其对应的应用别名/名称（例如 \"微信\"、\"Chrome\" 等）作为 `app` 参数！底层已实现了对注册键名的自动匹配和物理路径运行，你不需要向用户询问其物理路径。".to_string());
+            app_notes.push("当用户要求你“打开”、“运行”、“启动”这些应用时，你拥有完整的预知记忆。请直接调用 `open_app` 工具，并以其对应的应用别名/名称（例如\"微信\"、\"Chrome\" 等）作为 `app` 参数！底层已实现了对注册键名的自动匹配和物理路径运行，你不需要向用户询问其物理路径。".to_string());
             return format!("{}{}", system_prompt, app_notes.join("\n"));
         }
     }
@@ -1016,13 +1167,172 @@ fn attach_custom_prompt(system_prompt: String, custom: &str) -> String {
     )
 }
 
+/// 告知 AI 引用回复机制：用户消息可能带 [引用回复] 前缀；AI 也可用 [QUOTE] 标记引用前文
+fn attach_quote_prompt(system_prompt: String) -> String {
+    format!(
+        "{}\n\n引用回复能力：用户消息若带有「[引用回复]」标记，表示用户引用了之前对话中的某条消息并针对性回复，\
+        请优先围绕被引用的内容作答。当你（助手）自己需要明确引用之前对话中的某段原文时，\
+        使用引用标记语法：把要引用的原文放在 [QUOTE] 和 [/QUOTE] 之间，例如：\n\
+        [QUOTE]用户之前说过的话[/QUOTE]\n\
+        针对上面引用的内容，我的回应是……\n\
+        前端会把标记内的内容渲染成引用块。注意：只引用对话中真实出现过的原文，不要编造；\
+        引用标记之外的部分正常书写；不需要引用时完全不使用该标记。",
+        system_prompt
+    )
+}
+
+/// 告知 AI 文档生成能力与主动询问原则（direct_api 后端专用）
+fn attach_word_and_ask_prompt(system_prompt: String) -> String {
+    format!(
+        "{}
+
+【Word 文档生成能力】
+你可以使用 create_docx 工具把内容写到 .docx 文件（Word 文档）。当用户要求生成 Word 文档、\
+导出报告、写论文/方案并保存为文档时，优先用 create_docx 而不用 write_file 写纯文本。用法：
+- content 参数是 Markdown 内容，支持：# ## ### 多级标题、段落、**粗体** *斜体* `行内代码`、   - 无序列表、 . 有序列表、  引用块、```代码块```、| 表格 | 语法。
+- path 参数是保存位置；用户未指定路径时保存到桌面，文件名根据内容主题拟定。
+- title 参数可选，作为文档首页大标题。
+- 生成成功后在回复中告知用户完整保存路径。
+- 若用户要求修改已有 .docx 的内容，先用 read_file 读取，确认需求后用 create_docx 重新生成覆盖。
+
+【主动询问用户】
+你有 ask_user 工具，可以在遇到不确定的事情或方向时主动向用户提问，弹窗会让用户选择你给出的选项或自行填写答案。适合使用的场景：
+1. 用户的要求存在多种明显不同的理解方向（做 A 还是做 B）；
+2. 缺少关键参数且无法从上下文推断（如保存路径、格式、受众、篇幅）；
+3. 即将执行的 操作代价较高或不可逆（覆盖重要文件、大批量修改），需用户拍板；
+4. 生成的文档内容涉及用户的个人偏好（文风、结构取舍）， 提问时把候选答案放到 options（每个 label 简短、description 说明含义），通常 2-4 个选项为宜。 原则：只在真正影响结果方向的事情上提问；琐碎小事（措辞、常见默认值）按最佳判断直接做，\
+不要为小事频繁打断用户；纯闲聊和事实问答不要调用 ask_user。用户跳过或超时未答时，\
+按你的最佳判断继续并在回复中说明你的假设。",
+        system_prompt
+    )
+}
+
+/// 告知 AI 代码工具用法与调试方法论（direct_api 后端专用）
+fn attach_coding_prompt(system_prompt: String) -> String {
+    format!(
+        "{}
+
+【编程与代码调试能力】
+用户让你处理代码任务（修 bug、加功能、重构、解释项目）时，按下面的方法和工具工作：
+
+【代码工具用法】
+- code_search：按内容搜代码，返回 文件:行号:行内容。找函数定义、调用点、报错关键字、配置项都用它；配合 glob（如 \"*.rs;*.ts;*.vue\"）缩小范围。找文件名用 file_search，找内容用 code_search。
+- read_file：读文件。代码文件用 offset/limit 分页读（返回带行号的行范围，单次最多 2000 行），大文件不要整读。
+- edit_file：改代码首选。把要替换的原文（old_text）和改后内容（new_text）传入，只动这一处、其余内容保持不变。old_text 必须与文件实际内容完全一致（含缩进换行）且在文件中唯一；不唯一就多带几行上下文。新建文件或大范围重写才用 write_file。
+- run_command：跑构建/测试/命令验证修改。cargo build、npm install、pytest 等耗时命令必须带 timeout_secs（300-600），默认 30 秒会超时中断。
+
+【调试工作流】
+1. 理解：先看项目结构（list_directory）和关键文件，不要凭猜测动手。读报错信息、日志、相关代码，找到问题真正发生的位置（用 code_search 从报错关键字/函数名定位）；
+2. 定位修改点：用 read_file 分页读目标文件的相关行范围，确认要改的确切内容；
+3. 最小修改：用 edit_file 只改必要的部分，不做无关重构、不顺手改格式。修改与任务无关的代码必须避免。
+4. 验证：改完立即用 run_command 跑构建或测试（如 cargo check、npm test）。失败就读完整报错，回到第 2 步迭代——不要没验证就宣称完成，也不要在没读懂报错时盲目重复尝试。
+【纪律】
+- 修改前必须先读到原文：没读过原 edit_file 大概率匹配失败。
+- 一次只改一个逻辑点，改完验证再继续，避免多改动叠加导致难以定位新问题。
+- 修改属于不可逆或影响面大的操作（删文件、改配置、批量替换）而方向不明确时，先用 ask_user 跟用户确认。
+- 向用户汇报时说明：改了哪些文件哪几处、如何验证的、结果如何。",
+        system_prompt
+    )
+}
+
+/// 把用户引用的前文对话拼装进发送给后端的用户消息（openclaw CLI 模式使用。
+fn apply_quote_context(message: &str, quote: Option<&(String, String)>) -> String {
+    let Some((quoted_role, quoted_content)) = quote else {
+        return message.to_string();
+    };
+    let speaker = if quoted_role == "assistant" {
+        "助手（你）"
+    } else {
+        "用户"
+    };
+    let body = if message.trim().is_empty() {
+        "（用户仅发送了引用，没有输入其他文字）".to_string()
+    } else {
+        message.to_string()
+    };
+    format!(
+        "[引用回复]\n被引用的原文（说话者：{speaker}）：\n{quoted_content}\n\n用户针对这条引用的输入：\n{body}"
+    )
+}
+
+/// 把被 @ 提及的智能体人格注入系统提示。
+/// - 单个智能体：AI 完全以该智能体的身份回复；
+/// - 多个智能体：面板模式，AI 依次以每个智能体身份作答。
+///   每个回复以「【智能体名】」标题行开头。
+fn attach_agent_prompt(system_prompt: String, agents: &[storage::Agent]) -> String {
+    if agents.is_empty() {
+        return system_prompt;
+    }
+
+    if agents.len() == 1 {
+        let agent = &agents[0];
+        let description = if agent.description.trim().is_empty() {
+            "（无描述）".to_string()
+        } else {
+            agent.description.trim().to_string()
+        };
+        let persona = if agent.system_prompt.trim().is_empty() {
+            "沿用你的基础人格与能力回答。".to_string()
+        } else {
+            agent.system_prompt.trim().to_string()
+        };
+        return format!(
+            "{}
+
+【当前被 @ 的智能体】
+名字：{}
+头像符号：{}
+描述：{}
+角色设定：
+{}
+你现在就是这个智能体。请完全以「{}」的身份、语气和能力范围回复用户，不要提及你正在扮演智能体，也不要把整段回复用【】括起来。",
+            system_prompt, agent.name, agent.avatar, description, persona, agent.name
+        );
+    }
+
+    let mut catalog = String::new();
+    for agent in agents {
+        let description = if agent.description.trim().is_empty() {
+            "（无描述）".to_string()
+        } else {
+            agent.description.trim().replace('\n', " ")
+        };
+        catalog.push_str(&format!("- {}：{}
+", agent.name, description));
+    }
+    let mut personas = String::new();
+    for agent in agents {
+        let persona = if agent.system_prompt.trim().is_empty() {
+            "以通用助手身份回答。".to_string()
+        } else {
+            agent.system_prompt.trim().to_string()
+        };
+        personas.push_str(&format!("
+### {}
+{}
+", agent.name, persona));
+    }
+
+    format!(
+        "{}
+
+【用户 @ 了多个智能体】
+用户本轮同时提到了以下智能体：
+{catalog}
+请依次扮演每个智能体给出各自的回复。每个回复的第一行必须是「【智能体名字】」，智能体名字要与上面列表完全一致；标题行之后换行输出该智能体的回复正文。各智能体按自己的设定独立作答，允许观点不同，不要相互复读、不要互相替对方说话。
+各智能体角色设定：
+{personas}",
+        system_prompt
+    )
+}
+
 async fn attach_skill_prompt(
     system_prompt: String,
     active: Option<&storage::Skill>,
     all_skills: &[storage::Skill],
     is_direct_api: bool,
 ) -> String {
-    // 1) 把"技能清单（name + description）"注入系统提示，让 AI 知道有哪些可用技能，可以主动调用相关工具。
+    // 1) 把"技能清单（name + description） 注入系统提示，让 AI 知道有哪些可用技能，可以主动调用相关工具。
     //    清单只列名称和用途描述，不追加规则；具体规则由用户激活的那一个技能注入。
     let catalog = build_skill_catalog(all_skills);
     let system_prompt = if catalog.is_empty() {
@@ -1039,7 +1349,7 @@ async fn attach_skill_prompt(
         return system_prompt;
     }
     let description = if skill.description.trim().is_empty() {
-        "(无描述)".to_string()
+        "（无描述）".to_string()
     } else {
         skill.description.trim().to_string()
     };
@@ -1049,7 +1359,7 @@ async fn attach_skill_prompt(
     // 免确认机制对它不起作用。在 openclaw 路径下告诉 AI "可免确认" 等于说谎。
     if is_direct_api {
         let tools = if skill.allowed_tools.is_empty() {
-            "(无)".to_string()
+            "（无）".to_string()
         } else {
             skill.allowed_tools.join(", ")
         };
@@ -1059,7 +1369,7 @@ async fn attach_skill_prompt(
         )
     } else {
         format!(
-            "{}\n\n【当前激活技能】{}\n描述：{}\n追加规则：\n{}\n注：当前为 Claude CLI 后端，技能工具白名单不生效，所有工具调用仍受 CLI 自身权限控制。",
+            "{}\n\n【当前激活技能】{}\n描述：{}\n追加规则：\n{}\n注：当前为 Claude CLI 后端，技能工具白名单不生效，所有工具调用仍由 CLI 自身权限控制。",
             system_prompt, skill.name, description, skill.system_prompt
         )
     }
@@ -1110,6 +1420,8 @@ mod tests {
             content: content.to_string(),
             thinking: None,
             created_at,
+            quoted_role: None,
+            quoted_content: None,
         }
     }
 
@@ -1148,6 +1460,13 @@ mod tests {
         assert_eq!(task.repeat, storage::TaskRepeat::Daily);
 
         assert!(parse_schedule_request("帮我整理一下计划", 1_000).is_none());
+    }
+
+    #[test]
+    fn schedule_validation_rejects_oversized_titles() {
+        let title = "a".repeat(121);
+        let error = validate_schedule_input(&title, unix_now() + 60).expect_err("long title");
+        assert!(error.contains("120"));
     }
 
     #[test]
@@ -1209,6 +1528,68 @@ mod tests {
         assert!(prompt.contains("recency_days"));
         assert!(prompt.contains("当前日期"));
         assert!(prompt.contains("发布时间"));
+    }
+
+    fn sample_skill(id: &str, name: &str) -> storage::Skill {
+        storage::Skill {
+            id: id.to_string(),
+            name: name.to_string(),
+            description: "测试技能".to_string(),
+            system_prompt: "你是测试助手".to_string(),
+            allowed_tools: vec!["read_file".to_string(), "search_memory".to_string()],
+            keywords: vec![],
+            is_active: false,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn skill_validator_accepts_well_formed_custom() {
+        assert!(validate_skill_for_save(&sample_skill("custom-abc", "示例")).is_ok());
+    }
+
+    #[test]
+    fn skill_validator_rejects_builtin_namespace_for_custom() {
+        let mut s = sample_skill("builtin-fake-id", "假冒内置");
+        let err = validate_skill_for_save(&s).unwrap_err();
+        assert!(err.contains("保留"), "got: {err}");
+        // 真实内置 id 应允许（用户可以编辑 builtin 的 prompt）
+        s.id = "builtin-translation-polish".to_string();
+        assert!(validate_skill_for_save(&s).is_ok());
+    }
+
+    #[test]
+    fn skill_validator_rejects_oversized_prompt_and_invalid_tools() {
+        let mut s = sample_skill("custom-big", "巨型");
+        s.system_prompt = "a".repeat(4_001);
+        let err = validate_skill_for_save(&s).unwrap_err();
+        assert!(err.contains("system_prompt"), "got: {err}");
+
+        let mut s2 = sample_skill("custom-badtool", "非法工具");
+        s2.allowed_tools = vec!["read file".to_string()];
+        let err = validate_skill_for_save(&s2).unwrap_err();
+        assert!(err.contains("工具名"), "got: {err}");
+
+        let mut s3 = sample_skill("custom-badid", "非法 id");
+        s3.id = "has space".to_string();
+        assert!(validate_skill_for_save(&s3).is_err());
+    }
+
+    #[test]
+    fn reset_builtin_skills_restores_tombstoned_builtin() {
+        let db = storage::Database::open_in_memory().expect("open in-memory db");
+        db.delete_skill("builtin-translation-polish").expect("delete");
+        assert!(db
+            .list_skills()
+            .unwrap()
+            .iter()
+            .all(|s| s.id != "builtin-translation-polish"));
+
+        db.reset_builtin_skills().expect("reset");
+        let after = db.list_skills().unwrap();
+        assert!(after.iter().any(|s| s.id == "builtin-translation-polish"),
+            "reset_builtin_skills 应让被墓碑封存的内置技能回来");
     }
 }
 
@@ -1287,10 +1668,13 @@ async fn reset_conversation(
 async fn send_to_ai(
     message: String,
     attachments: Option<Vec<direct_api::UserAttachment>>,
+    quoted_role: Option<String>,
+    quoted_content: Option<String>,
+    mention_agents: Option<Vec<String>>,
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    if message.trim().is_empty() {
+    if message.trim().is_empty() && quoted_content.as_deref().unwrap_or("").trim().is_empty() {
         return Err("message is empty".to_string());
     }
 
@@ -1300,7 +1684,7 @@ async fn send_to_ai(
             .lock()
             .map_err(|_| "active chat state poisoned".to_string())?;
         if active.active.is_some() {
-            return Err("AI 正在思考中，请稍等当前回复完成。".to_string());
+            return Err("AI 正在思考中，请稍等当前回复完成后".to_string());
         }
         active.active = Some(ActiveChatSnapshot {
             message: message.clone(),
@@ -1311,8 +1695,14 @@ async fn send_to_ai(
 
     {
         let db = state.db.lock().await;
-        db.save_message("user", &message)
-            .map_err(|e| e.to_string())?;
+        db.save_message_with_quote(
+            "user",
+            &message,
+            None,
+            quoted_role.as_deref(),
+            quoted_content.as_deref(),
+        )
+        .map_err(|e| e.to_string())?;
     }
 
     if let Some(parsed_task) = parse_schedule_request(&message, unix_now()) {
@@ -1355,10 +1745,16 @@ async fn send_to_ai(
                     "已通过本地定时任务解析器创建任务 #{}。",
                     saved_task.0.id
                 )),
+                agent_id: None,
+                agent_name: None,
+                agent_avatar: None,
             },
         );
         return Ok(serde_json::json!({ "started": true, "scheduled_task_id": saved_task.0.id }));
     }
+
+    // 解析被 @ 提及的智能体（找不到的忽略，全部找不到则按普通桌宠回复）
+    let mentioned_agents = resolve_mentioned_agents(&state, mention_agents).await?;
 
     // 用户交互 + 切换到思考状态
     {
@@ -1371,11 +1767,17 @@ async fn send_to_ai(
     let app_handle_clone = app_handle.clone();
     let msg_clone = message.clone();
     let att_clone = attachments.unwrap_or_default();
+    let quote_clone = quoted_role
+        .as_deref()
+        .zip(quoted_content.as_deref())
+        .map(|(role, content)| (role.to_string(), content.to_string()));
     tauri::async_runtime::spawn(async move {
         let result = std::panic::AssertUnwindSafe(run_ai_message(
             app_handle_clone.clone(),
             msg_clone,
             att_clone,
+            quote_clone,
+            mentioned_agents,
         ))
         .catch_unwind()
         .await;
@@ -1387,7 +1789,7 @@ async fn send_to_ai(
             } else {
                 "未知内部错误".to_string()
             };
-            // panic 后清理 active_chat 状态，防止宠物卡在"思考"状态
+            // panic 后清空 active_chat 状态，防止宠物卡在"思考 状态
             let state = app_handle_clone.state::<AppState>();
             if let Ok(mut active) = state.active_chat.lock() {
                 active.active = None;
@@ -1406,10 +1808,23 @@ async fn send_to_ai(
     Ok(serde_json::json!({ "started": true }))
 }
 
+async fn resolve_mentioned_agents(
+    state: &tauri::State<'_, AppState>,
+    names: Option<Vec<String>>,
+) -> Result<Vec<storage::Agent>, String> {
+    let Some(names) = names else {
+        return Ok(Vec::new());
+    };
+    let db = state.db.lock().await;
+    db.get_agents_by_names(&names).map_err(|e| e.to_string())
+}
+
 async fn run_ai_message(
     app_handle: tauri::AppHandle,
     message: String,
     attachments: Vec<direct_api::UserAttachment>,
+    quote: Option<(String, String)>,
+    agents: Vec<storage::Agent>,
 ) {
     let state = app_handle.state::<AppState>();
     let backend = state.backend_type.lock().await.clone();
@@ -1427,7 +1842,7 @@ async fn run_ai_message(
             let _ = app_handle.emit(
                 "ai-error",
                 AiErrorPayload {
-                    message: "未配置直连 API 后端，请先在设置中配置 API Key。".to_string(),
+                    message: "未配置直接 API 后端，请先在设置中配置 API Key。".to_string(),
                     thinking: None,
                     aborted: false,
                 },
@@ -1450,6 +1865,9 @@ async fn run_ai_message(
             let base = openclaw::build_system_prompt(&personality, &profession);
             let base = attach_runtime_identity_prompt(base, &config);
             let base = attach_execution_mode_prompt(base, &config);
+            let base = attach_quote_prompt(base);
+            let base = attach_word_and_ask_prompt(base);
+            let base = attach_coding_prompt(base);
             let base = attach_computer_use_prompt(base);
             let base = attach_weather_prompt(base);
             let base = attach_search_prompt(base);
@@ -1457,6 +1875,7 @@ async fn run_ai_message(
             let base = attach_registered_apps_prompt(base, &state).await;
             let base = attach_custom_prompt(base, &custom_prompt);
             let base = attach_skill_prompt(base, active_skill.as_ref(), &all_skills, true).await;
+            let base = attach_agent_prompt(base, &agents);
             (base, all_skills, active_skill)
         };
 
@@ -1511,6 +1930,29 @@ async fn run_ai_message(
             *last_id = None;
         }
 
+        // 智能体：合并工具白名单 + 单智能体时允许模型覆盖
+        let agent_ctx = AgentContext { agents };
+        {
+            let mut seen: std::collections::HashSet<String> = effective_config
+                .auto_approved_tools
+                .iter()
+                .cloned()
+                .collect();
+            for agent in &agent_ctx.agents {
+                for tool in &agent.allowed_tools {
+                    if seen.insert(tool.clone()) {
+                        effective_config.auto_approved_tools.push(tool.clone());
+                    }
+                }
+            }
+        }
+        if let Some(agent) = agent_ctx.single() {
+            let model = agent.model.trim();
+            if !model.is_empty() {
+                effective_config.model = model.to_string();
+            }
+        }
+
         // 创建新的 CancellationToken
         let token = tokio_util::sync::CancellationToken::new();
         {
@@ -1525,10 +1967,12 @@ async fn run_ai_message(
             system_prompt,
             chat_history,
             attachments,
+            quote,
+            Some(agent_ctx),
         )
         .await;
 
-        // 执行结束，清理 abort_token
+        // 执行结束，清空 abort_token
         {
             let mut abort = state.abort_token.lock().await;
             *abort = None;
@@ -1555,10 +1999,11 @@ async fn run_ai_message(
         let base = attach_registered_apps_prompt(base, &state).await;
         let base = attach_custom_prompt(base, &custom_prompt);
         let base = attach_skill_prompt(base, active_skill.as_ref(), &all_skills, false).await;
+        let base = attach_agent_prompt(base, &agents);
         (base, all_skills, active_skill)
     };
 
-    // openclaw 走的是 CLI 子进程，不消费 DirectApiConfig，因此只触发事件，不动 auto_approved_tools
+    // openclaw 走的是 CLI 子进程，不消耗 DirectApiConfig，因此只触发事件，不改 auto_approved_tools
     if let Some(effective) = resolve_skill_for_message(active_skill.as_ref()) {
         let state = app_handle.state::<AppState>();
         let mut last_id = state.last_active_skill_id.lock().await;
@@ -1582,7 +2027,8 @@ async fn run_ai_message(
     let child_result = {
         let state = app_handle.state::<AppState>();
         let ai = state.ai.lock().await;
-        ai.spawn_streaming(&app_handle, &message, &system_prompt)
+        let message_for_cli = apply_quote_context(&message, quote.as_ref());
+        ai.spawn_streaming(&app_handle, &message_for_cli, &system_prompt)
     };
     let mut child = match child_result {
         Ok(child) => child,
@@ -1685,7 +2131,7 @@ async fn run_ai_message(
                 let _ = app_handle.emit(
                     "ai-error",
                     AiErrorPayload {
-                        message: "已中止".to_string(),
+                        message: "已中断".to_string(),
                         thinking: if parsed.full_thinking.is_empty() {
                             None
                         } else {
@@ -1697,11 +2143,16 @@ async fn run_ai_message(
                 return;
             }
 
-            // 保存对话
+            // 保存对话（单智能体时带上归属）
             let state = app_handle.state::<AppState>();
+            let single_agent = if agents.len() == 1 {
+                agents.first()
+            } else {
+                None
+            };
             {
                 let db = state.db.lock().await;
-                let _ = db.save_message_with_thinking(
+                let _ = db.save_message_with_agent(
                     "assistant",
                     &parsed.full_text,
                     if parsed.full_thinking.is_empty() {
@@ -1709,6 +2160,9 @@ async fn run_ai_message(
                     } else {
                         Some(parsed.full_thinking.as_str())
                     },
+                    single_agent.map(|agent| agent.id.as_str()),
+                    single_agent.map(|agent| agent.name.as_str()),
+                    single_agent.map(|agent| agent.avatar.as_str()),
                 );
             }
 
@@ -1732,11 +2186,14 @@ async fn run_ai_message(
                 AiFinishedPayload {
                     text: parsed.full_text,
                     thinking,
+                    agent_id: single_agent.map(|agent| agent.id.clone()),
+                    agent_name: single_agent.map(|agent| agent.name.clone()),
+                    agent_avatar: single_agent.map(|agent| agent.avatar.clone()),
                 },
             );
         }
         Err(_) => {
-            // 读取流出错（可能是子进程被 kill）
+            // 读取流出错（可能是子进程被 kill了
             let state = app_handle.state::<AppState>();
             let thinking = state
                 .active_chat
@@ -1752,7 +2209,7 @@ async fn run_ai_message(
             let _ = app_handle.emit(
                 "ai-error",
                 AiErrorPayload {
-                    message: "已中止".to_string(),
+                    message: "已中断".to_string(),
                     thinking,
                     aborted: true,
                 },
@@ -2173,7 +2630,7 @@ async fn test_api_compatibility(
             errors.push("响应以JSON开头但解析失败".to_string());
         }
     } else if is_sse {
-        // SSE格式：尝试解析第一个data行
+        // SSE格式：尝试解析第一个data。
         let mut found_content = false;
         for line in full_text.lines() {
             if let Some(data) = line.strip_prefix("data:") {
@@ -2233,7 +2690,7 @@ async fn send_tool_confirm_notification(
     let title = "AI 桌宠需要确认工具调用";
     let body = summary
         .or(tool_name)
-        .unwrap_or_else(|| "AI 请求执行一个工具, 请点击桌宠查看详情".to_string());
+        .unwrap_or_else(|| "AI 请求执行一个工具  请点击桌宠查看详情".to_string());
     app_handle
         .notification()
         .builder()
@@ -2271,6 +2728,22 @@ async fn confirm_tool(
         Ok(())
     } else {
         Err("无效的确认请求 ID".to_string())
+    }
+}
+
+/// 回答 ask_user 弹窗提出的问题  把用户的回答 (选项或自定义输入) 发回给等待中的智能体。
+#[tauri::command]
+async fn answer_question(
+    id: String,
+    answer: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let mut questions = state.pending_questions.lock().await;
+    if let Some(tx) = questions.remove(&id) {
+        let _ = tx.send(answer);
+        Ok(())
+    } else {
+        Err("无效的问题 ID（可能已超时或被处理）".to_string())
     }
 }
 
@@ -2349,6 +2822,16 @@ async fn fetch_weather_from_settings(
         return Ok(None);
     }
 
+    log_weather_debug(
+        "fetch_weather",
+        &format!(
+            "force_refresh={force_refresh} location={} api_url={} proxy_env={}",
+            config.location,
+            config.api_url,
+            weather_proxy_env_summary()
+        ),
+    );
+
     let cached = { state.weather_cache.lock().await.clone() };
     if !force_refresh {
         if let Some(weather) = cached.clone() {
@@ -2358,13 +2841,21 @@ async fn fetch_weather_from_settings(
         }
     }
 
-    match system::weather::get_weather_with_client(&state.http_client, &config).await {
+    match get_weather_with_proxy_retry(&state.http_client, &config).await {
         Ok(weather) => {
+            log_weather_debug(
+                "fetch_weather_ok",
+                &format!(
+                    "city={} temp={} desc={} source={}",
+                    weather.city, weather.temperature, weather.description, config.api_url
+                ),
+            );
             let mut cache = state.weather_cache.lock().await;
             *cache = Some(weather.clone());
             Ok(Some(weather))
         }
         Err(error) => {
+            log_weather_debug("fetch_weather_err", &error);
             if !force_refresh {
                 if let Some(weather) = cached {
                     return Ok(Some(weather));
@@ -2388,14 +2879,20 @@ async fn send_weather_if_due(
     };
 
     if last_sent == today {
+        log_weather_debug("send_weather_skip", &format!("already_sent_today={today}"));
         return Ok(false);
     }
 
     let Some(weather) = fetch_weather_from_settings(state, true).await? else {
+        log_weather_debug("send_weather_skip", "weather_disabled_or_unavailable");
         return Ok(false);
     };
 
     let message = system::weather::format_weather_message(&weather);
+    log_weather_debug(
+        "send_weather_ok",
+        &format!("city={} sent_today={today}", weather.city),
+    );
     app_handle
         .emit(
             "weather-update",
@@ -2454,7 +2951,31 @@ async fn test_weather_config(
         location,
         api_url,
     };
-    system::weather::get_weather_with_client(&state.http_client, &config).await
+    log_weather_debug(
+        "test_weather",
+        &format!(
+            "location={} api_url={} proxy_env={}",
+            config.location,
+            config.api_url,
+            weather_proxy_env_summary()
+        ),
+    );
+    match get_weather_with_proxy_retry(&state.http_client, &config).await {
+        Ok(weather) => {
+            log_weather_debug(
+                "test_weather_ok",
+                &format!(
+                    "city={} temp={} desc={}",
+                    weather.city, weather.temperature, weather.description
+                ),
+            );
+            Ok(weather)
+        }
+        Err(error) => {
+            log_weather_debug("test_weather_err", &error);
+            Err(error)
+        }
+    }
 }
 
 #[tauri::command]
@@ -2606,6 +3127,9 @@ async fn save_scheduled_task(
     validate_schedule_input(&title, due_at)?;
 
     let note = note.unwrap_or_default().trim().to_string();
+    if note.chars().count() > 2_000 {
+        return Err("任务备注不能超过 2000 个字符".to_string());
+    }
     let repeat = normalize_task_repeat(repeat.as_deref().unwrap_or(SCHEDULE_REPEAT_ONCE));
     let enabled = enabled.unwrap_or(true);
 
@@ -3009,6 +3533,14 @@ async fn set_font_color(
     font_color: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
+    let font_color = font_color.trim().to_string();
+    let valid_hex = font_color.is_empty()
+        || (matches!(font_color.len(), 4 | 5 | 7 | 9)
+            && font_color.starts_with('#')
+            && font_color[1..].bytes().all(|byte| byte.is_ascii_hexdigit()));
+    if !valid_hex {
+        return Err("字体颜色必须为 #RGB、#RGBA、#RRGGBB 或 #RRGGBBAA 格式".to_string());
+    }
     {
         let mut fc = state.font_color.lock().await;
         *fc = font_color.clone();
@@ -3059,7 +3591,7 @@ async fn set_setting_value(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     if !ALLOWED_SETTING_KEYS.contains(&key.as_str()) {
-        return Err(format!("不允许修改此设置键: {}", key));
+        return Err(format!("不允许修改此设置：  {}", key));
     }
     let db = state.db.lock().await;
     db.save_setting(&key, &value).map_err(|e| e.to_string())
@@ -3157,9 +3689,7 @@ async fn save_skill(
     skill: storage::Skill,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    if skill.id.trim().is_empty() {
-        return Err("技能 id 不能为空".into());
-    }
+    validate_skill_for_save(&skill)?;
     let db = state.db.lock().await;
     db.save_skill(&skill).map_err(|e| e.to_string())
 }
@@ -3171,6 +3701,92 @@ async fn delete_skill(id: String, state: tauri::State<'_, AppState>) -> Result<(
 }
 
 #[tauri::command]
+async fn reset_builtin_skills(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.reset_builtin_skills().map_err(|e| e.to_string())
+}
+
+/// 保存技能前的强校验：限制字段长度与字符集，避免巨型 prompt 撑爆上下文
+/// 并减小通过 name/description/system_prompt 注入系统提示的攻击面。
+/// `builtin-` 命名空间仅允许已存在的内置 id：自定义技能不能用 `builtin-` 前缀。
+fn validate_skill_for_save(skill: &storage::Skill) -> Result<(), String> {
+    const ID_MAX: usize = 64;
+    const NAME_MAX: usize = 80;
+    const DESC_MAX: usize = 300;
+    const PROMPT_MAX: usize = 4_000;
+    const TOOL_MAX: usize = 30;
+    const TOOL_NAME_MAX: usize = 64;
+    const KEYWORD_MAX: usize = 20;
+    const KEYWORD_MAX_LEN: usize = 32;
+
+    let id = skill.id.trim();
+    if id.is_empty() {
+        return Err("技能 id 不能为空".to_string());
+    }
+    if id.chars().count() > ID_MAX {
+        return Err(format!("技能 id 长度超过 {ID_MAX}"));
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("技能 id 只能包含字母、数字、 -' 和 '_'".to_string());
+    }
+    if id.starts_with("builtin-") && !storage::is_builtin_skill_id(id) {
+        return Err("`builtin-` 前缀为内置技能保留，自定义技能请换一个 id".to_string());
+    }
+
+    let name = skill.name.trim();
+    if name.is_empty() {
+        return Err("技能名称不能为空".to_string());
+    }
+    if name.chars().count() > NAME_MAX {
+        return Err(format!("技能名称不能超过 {NAME_MAX} 个字。"));
+    }
+    if name.chars().any(|c| c.is_control()) {
+        return Err("技能名称不能包含控制字符".to_string());
+    }
+
+    let description = skill.description.trim();
+    if description.chars().count() > DESC_MAX {
+        return Err(format!("技能描述不能超过 {DESC_MAX} 个字。"));
+    }
+    if description.chars().any(|c| c.is_control() && c != '\n') {
+        return Err("技能描述不能包含控制字符".to_string());
+    }
+
+    let system_prompt = skill.system_prompt.trim();
+    if system_prompt.chars().count() > PROMPT_MAX {
+        return Err(format!("技能 system_prompt 不能超过 {PROMPT_MAX} 个字。"));
+    }
+
+    if skill.allowed_tools.len() > TOOL_MAX {
+        return Err(format!("单个技能最多 {TOOL_MAX} 个工具"));
+    }
+    for t in &skill.allowed_tools {
+        let t = t.trim();
+        if t.is_empty() || t.chars().count() > TOOL_NAME_MAX {
+            return Err(format!("工具名长度不合法: {t:?}"));
+        }
+        if !t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Err(format!("工具名只能包含字母、数字和 '_'：{t:?}"));
+        }
+    }
+
+    if skill.keywords.len() > KEYWORD_MAX {
+        return Err(format!("单个技能最多 {KEYWORD_MAX} 个关键词"));
+    }
+    for k in &skill.keywords {
+        let k = k.trim();
+        if k.is_empty() || k.chars().count() > KEYWORD_MAX_LEN {
+            return Err("关键词长度不合法".to_string());
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 async fn set_active_skill(
     id: Option<String>,
     state: tauri::State<'_, AppState>,
@@ -3178,6 +3794,303 @@ async fn set_active_skill(
     let db = state.db.lock().await;
     db.set_active_skill(id.as_deref())
         .map_err(|e| e.to_string())
+}
+
+// ===== 智能体（多智能体） =====
+
+#[tauri::command]
+async fn list_agents(state: tauri::State<'_, AppState>) -> Result<Vec<storage::Agent>, String> {
+    let db = state.db.lock().await;
+    db.list_agents().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn save_agent(
+    agent: storage::Agent,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    validate_agent_for_save(&agent)?;
+    let db = state.db.lock().await;
+    // 名字唯一：@ 提及按名字匹配，重名会导致歧义。
+    if let Some(existing) = db
+        .get_agent_by_name(agent.name.trim())
+        .map_err(|e| e.to_string())?
+    {
+        if existing.id != agent.id {
+            return Err(format!("已存在名为「{}」的智能体，请换一个名字", agent.name.trim()));
+        }
+    }
+    db.save_agent(&agent).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn delete_agent(id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.delete_agent(&id).map_err(|e| e.to_string())
+}
+
+/// 让 AI 根据用户的自然语言描述生成智能体定义（name/avatar/description/system_prompt/allowed_tools）。
+/// 只做一次非流式调用，返回可保存的 JSON；前端拿到后预填表单供用户确认。
+#[tauri::command]
+async fn generate_agent_spec(
+    description: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    const DESC_MAX: usize = 2000;
+    if description.trim().is_empty() {
+        return Err("请先描述你想创建的智能体".to_string());
+    }
+    if description.chars().count() > DESC_MAX {
+        return Err(format!("描述不能超过 {DESC_MAX} 个字。"));
+    }
+
+    let config = {
+        let cfg = state.direct_api_config.lock().await;
+        cfg.clone()
+            .ok_or_else(|| "未配置直接 API，请先在系统设置中配置 API Key".to_string())?
+    };
+
+    let tool_names: Vec<String> = direct_api::tool_definitions()
+        .iter()
+        .filter_map(|def| def.get("function")?.get("name")?.as_str().map(str::to_string))
+        .collect();
+    let tool_catalog = if tool_names.is_empty() {
+        "（无可用工具）".to_string()
+    } else {
+        tool_names.join(", ")
+    };
+
+    let system_prompt = format!(
+        "你是「智能体工厂」。用户会描述他想要的智能体，你要生成一个可直接保存的智能体定义， 只输出一个 JSON 对象，不要输出任何解释文字，不要用 Markdown 代码块包裹。 JSON 必须包含这些字段： - name: 简短的名字（2-8 个汉字或字母，不要包含空格和 @），用于对话时 @ 提及
+- avatar: 一个最能代表它的 emoji（单个字符）
+- description: 一句话描述（20 字以内），说明它擅长什么 - system_prompt: 详细的中文角色设定（120-500 字），用第二人称「你」书写，包含身份、职责、工作方式、输出风格和边界；要具体可执行，不要照抄用户原话
+- allowed_tools: 字符串数组，从以下工具列表里只选它完成任务必需的工具，没有就不选：{}
+要求：name 不要与用户描述的智能体重名冲突；内容专业、克制，",
+        tool_catalog
+    );
+
+    let api_messages = vec![
+        serde_json::json!({ "role": "system", "content": system_prompt }),
+        serde_json::json!({ "role": "user", "content": format!("请为以下需求创建智能体：{description}") }),
+    ];
+
+    let result = direct_api::call_chat_completions_non_stream(
+        &state.http_client,
+        &config,
+        &api_messages,
+        None,
+    )
+    .await
+    .map_err(|e| format!("生成智能体定义失败  {e}"))?;
+
+    let raw = result.content.unwrap_or_default().trim().to_string();
+    let json_text = extract_json_object(&raw)
+        .ok_or_else(|| format!("AI 返回的内容不是 JSON，请重试。原始内容：{}", truncate_for_error(&raw)))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&json_text).map_err(|e| format!("解析智能体定义失败  {e}"))?;
+
+    Ok(normalize_generated_agent_spec(value, &tool_names))
+}
+
+/// 从模型输出里抠出第一个 JSON 对象（容忍 markdown 代码围栏和前后废话））
+fn extract_json_object(raw: &str) -> Option<String> {
+    let start = raw.find('{')?;
+    let end = raw.rfind('}')?;
+    if end <= start {
+        return None;
+    }
+    Some(raw[start..=end].to_string())
+}
+
+fn truncate_for_error(raw: &str) -> String {
+    let mut chars = raw.chars();
+    let head: String = chars.by_ref().take(80).collect();
+    if chars.next().is_some() {
+        format!("{head}。")
+    } else {
+        head
+    }
+}
+
+/// 把模型生成的智能体 JSON 规范化成安全可保存的结构）
+fn normalize_generated_agent_spec(
+    value: serde_json::Value,
+    tool_names: &[String],
+) -> serde_json::Value {
+    const NAME_MAX: usize = 16;
+    const DESC_MAX: usize = 100;
+    const PROMPT_MAX: usize = 2000;
+    let allowed: std::collections::HashSet<&String> = tool_names.iter().collect();
+
+    let name = value
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("新智能体")
+        .trim()
+        .replace([' ', '@', '\t', '\n'], "")
+        .chars()
+        .take(NAME_MAX)
+        .collect::<String>();
+    let avatar = value
+        .get("avatar")
+        .and_then(|v| v.as_str())
+        .unwrap_or("🤖")
+        .trim()
+        .chars()
+        .take(2)
+        .collect::<String>();
+    let description = value
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .chars()
+        .take(DESC_MAX)
+        .collect::<String>();
+    let system_prompt = value
+        .get("system_prompt")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .chars()
+        .take(PROMPT_MAX)
+        .collect::<String>();
+    let allowed_tools: Vec<String> = value
+        .get("allowed_tools")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_string))
+                .filter(|tool| allowed.contains(tool))
+                .take(30)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    serde_json::json!({
+        "name": name,
+        "avatar": avatar,
+        "description": description,
+        "system_prompt": system_prompt,
+        "allowed_tools": allowed_tools,
+    })
+}
+
+/// 保存智能体前的强校验：名字不能含空白或 @（@ 提及解析依赖这一点））
+fn validate_agent_for_save(agent: &storage::Agent) -> Result<(), String> {
+    const ID_MAX: usize = 64;
+    const NAME_MAX: usize = 40;
+    const AVATAR_MAX: usize = 8;
+    const DESC_MAX: usize = 300;
+    const PROMPT_MAX: usize = 4000;
+    const MODEL_MAX: usize = 200;
+    const TOOL_MAX: usize = 30;
+    const TOOL_NAME_MAX: usize = 64;
+
+    let id = agent.id.trim();
+    if id.is_empty() {
+        return Err("智能体 id 不能为空".to_string());
+    }
+    if id.chars().count() > ID_MAX {
+        return Err(format!("智能体 id 长度超过 {ID_MAX}"));
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("智能体 id 只能包含字母、数字、'-' 和 '_'".to_string());
+    }
+
+    let name = agent.name.trim();
+    if name.is_empty() {
+        return Err("智能体名字不能为空".to_string());
+    }
+    if name.chars().count() > NAME_MAX {
+        return Err(format!("智能体名字不能超过 {NAME_MAX} 个字。"));
+    }
+    if name.chars().any(|c| c.is_whitespace() || c == '@') {
+        return Err("智能体名字不能包含空格或 @（名字会用于对话中的 @ 提及）".to_string());
+    }
+    if name.chars().any(|c| c.is_control()) {
+        return Err("智能体名字不能包含控制字符".to_string());
+    }
+
+    if agent.avatar.chars().count() > AVATAR_MAX {
+        return Err(format!("头像符号不能超过 {AVATAR_MAX} 个字。"));
+    }
+    if agent.avatar.chars().any(|c| c.is_control()) {
+        return Err("头像符号不能包含控制字符".to_string());
+    }
+
+    if agent.description.chars().count() > DESC_MAX {
+        return Err(format!("描述不能超过 {DESC_MAX} 个字。"));
+    }
+    if agent.description.chars().any(|c| c.is_control() && c != '\n') {
+        return Err("描述不能包含控制字符".to_string());
+    }
+
+    if agent.system_prompt.chars().count() > PROMPT_MAX {
+        return Err(format!("system_prompt 不能超过 {PROMPT_MAX} 个字。"));
+    }
+
+    if agent.model.chars().count() > MODEL_MAX {
+        return Err(format!("模型名不能超过 {MODEL_MAX} 个字。"));
+    }
+    if agent.model.chars().any(|c| c.is_control()) {
+        return Err("模型名不能包含控制字符".to_string());
+    }
+
+    if agent.allowed_tools.len() > TOOL_MAX {
+        return Err(format!("单个智能体最多 {TOOL_MAX} 个工具"));
+    }
+    for tool in &agent.allowed_tools {
+        let tool = tool.trim();
+        if tool.is_empty() || tool.chars().count() > TOOL_NAME_MAX {
+            return Err(format!("工具名长度不合法: {tool:?}"));
+        }
+        if !tool.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Err(format!("工具名只能包含字母、数字和 '_'：{tool:?}"));
+        }
+    }
+
+    Ok(())
+}
+
+
+#[tauri::command]
+async fn spawn_subprocess(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    params: subprocess::SpawnParams,
+) -> Result<subprocess::ProcessInfo, String> {
+    subprocess::spawn_subprocess(app, &state.subprocs, params).await
+}
+
+#[tauri::command]
+async fn send_stdin(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    text: String,
+    append_newline: Option<bool>,
+) -> Result<(), String> {
+    subprocess::send_stdin(&state.subprocs, id, text, append_newline.unwrap_or(true)).await
+}
+
+#[tauri::command]
+async fn kill_subprocess(
+    state: tauri::State<'_, AppState>,
+    id: String,
+    force: Option<bool>,
+) -> Result<(), String> {
+    subprocess::kill_subprocess(&state.subprocs, id, force.unwrap_or(false)).await
+}
+
+#[tauri::command]
+async fn list_subprocesses(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<subprocess::ProcessInfo>, String> {
+    subprocess::list_subprocesses(&state.subprocs).await
 }
 
 #[tauri::command]
@@ -3526,8 +4439,54 @@ async fn tts_synthesize(
 }
 
 #[tauri::command]
+async fn tts_play(
+    text: String,
+    voice: String,
+    rate: Option<i32>,
+    pitch: Option<i32>,
+    volume: Option<i32>,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    if text.len() > MAX_TTS_TEXT_BYTES {
+        return Err(format!(
+            "TTS 文本过长：{} 字节（上限 {} 字节 / 4KB）",
+            text.len(),
+            MAX_TTS_TEXT_BYTES
+        ));
+    }
+    if voice.len() > 128 {
+        return Err("TTS 声音名称过长".to_string());
+    }
+    let req = tts::TtsRequest {
+        text,
+        voice,
+        rate: rate.unwrap_or(0),
+        pitch: pitch.unwrap_or(0),
+        volume: volume.unwrap_or(100),
+    };
+    let (audio_path, _) = state.tts.synthesize_to_file(&req).await?;
+    let (playback_id, player) = state.tts_playback.play_wav_file(&audio_path)?;
+    tokio::task::spawn_blocking(move || player.sleep_until_end())
+        .await
+        .map_err(|e| format!("TTS 播放任务失败: {e}"))?;
+    state.tts_playback.clear_if_current(playback_id);
+    Ok(())
+}
+
+#[tauri::command]
+fn tts_stop(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state.tts_playback.stop();
+    Ok(())
+}
+
+#[tauri::command]
 async fn tts_list_voices() -> Result<Vec<tts::TtsVoice>, String> {
     tts::TtsManager::list_voices().await
+}
+
+#[tauri::command]
+fn tts_cache_stats(state: tauri::State<'_, AppState>) -> Result<tts::TtsCacheStats, String> {
+    Ok(state.tts.cache_stats())
 }
 
 fn get_db_path() -> PathBuf {
@@ -3595,6 +4554,33 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(move |app| {
+            // 主窗口在 tauri.conf.json 中已设为 "create": false。
+            // 这里手动创建以便让 debug/release 为 WebView2 分配独立。
+            // user data 目录，避免 dev 模式写入到 localhost:1420 历史
+            // 污染 release exe，导致快捷方式偶尔出现 "localhost 拒绝连接"。
+            if let Some(main_window_config) = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|window| window.label == "main")
+            {
+                let data_directory_subdir = if cfg!(debug_assertions) {
+                    "ai-desktop-pet-dev"
+                } else {
+                    "ai-desktop-pet-release"
+                };
+                let data_directory = app
+                    .path()
+                    .local_data_dir()
+                    .ok()
+                    .unwrap_or_else(std::path::PathBuf::new)
+                    .join(data_directory_subdir);
+                tauri::WebviewWindowBuilder::from_config(app.handle(), main_window_config)?
+                    .data_directory(data_directory)
+                    .build()?;
+            }
+
             let http_client = reqwest::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(15))
                 .tcp_keepalive(std::time::Duration::from_secs(60))
@@ -3615,15 +4601,18 @@ pub fn run() {
                 active_ai_pid: tokio::sync::Mutex::new(None),
                 active_chat: StdMutex::new(ActiveChatState::default()),
                 tts: tts::TtsManager::new(tts_cache_dir(app)),
+                tts_playback: tts::playback::NativeAudioPlayer::new(),
                 backend_type: tokio::sync::Mutex::new(backend_type),
                 direct_api_config: tokio::sync::Mutex::new(direct_config),
                 pending_confirms: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+                pending_questions: tokio::sync::Mutex::new(std::collections::HashMap::new()),
                 approved_tool_types: tokio::sync::Mutex::new(std::collections::HashSet::new()),
                 abort_token: tokio::sync::Mutex::new(None),
                 chat_start_id: StdMutex::new(chat_start_id),
                 http_client,
                 weather_cache: tokio::sync::Mutex::new(None),
                 last_active_skill_id: tokio::sync::Mutex::new(None),
+                subprocs: subprocess::SubprocessManager::new(),
             };
             app.manage(app_state);
             start_scheduled_task_runner(app.handle().clone());
@@ -3694,7 +4683,10 @@ pub fn run() {
             exit_app,
             open_claude_config,
             tts_synthesize,
+            tts_play,
+            tts_stop,
             tts_list_voices,
+            tts_cache_stats,
             set_backend_type,
             get_backend_type,
             set_api_config,
@@ -3706,6 +4698,7 @@ pub fn run() {
             test_api_compatibility,
             list_api_models,
             confirm_tool,
+            answer_question,
             send_tool_confirm_notification,
             check_claude_status,
             get_weather_config,
@@ -3720,6 +4713,15 @@ pub fn run() {
             save_skill,
             delete_skill,
             set_active_skill,
+reset_builtin_skills,
+            list_agents,
+            save_agent,
+            delete_agent,
+            generate_agent_spec,
+            spawn_subprocess,
+            send_stdin,
+            kill_subprocess,
+            list_subprocesses,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

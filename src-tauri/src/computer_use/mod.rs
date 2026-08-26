@@ -5,6 +5,8 @@ use std::{
     time::Duration,
 };
 
+pub(crate) mod browser;
+
 const COMPUTER_USE_ENABLED_KEY: &str = "computer_use_enabled";
 
 #[derive(Clone, Copy, Debug)]
@@ -36,7 +38,7 @@ pub(crate) async fn screenshot(args: &Value) -> Result<String, String> {
 }
 
 pub(crate) async fn browser_snapshot(args: &Value) -> Result<String, String> {
-    screenshot(args).await
+    browser::browser_snapshot(args).await
 }
 
 pub(crate) async fn mouse(args: &Value) -> Result<String, String> {
@@ -140,36 +142,47 @@ pub(crate) async fn wait(args: &Value) -> Result<String, String> {
 }
 
 pub(crate) async fn browser_open(args: &Value) -> Result<String, String> {
-    ensure_enabled()?;
-    let url = args
-        .get("url")
-        .and_then(|value| value.as_str())
-        .unwrap_or("");
-    let browser = args
-        .get("browser")
-        .and_then(|value| value.as_str())
-        .unwrap_or("default")
-        .to_ascii_lowercase();
-
-    if !url.trim().is_empty() {
-        validate_http_url(url)?;
-    }
-
-    let target = match browser.as_str() {
-        "chrome" | "google_chrome" => Some("chrome"),
-        "edge" | "msedge" => Some("msedge"),
-        "default" | "" => None,
-        other => return Err(format!("Unsupported browser: {other}")),
-    };
-    if target.is_none() && url.trim().is_empty() {
-        return Err("Provide a URL when opening the default browser.".to_string());
-    }
-
-    run_browser_open(target, url).await
+    browser::browser_open(args).await
 }
 
 pub(crate) async fn browser_navigate(args: &Value) -> Result<String, String> {
-    browser_open(args).await
+    browser::browser_navigate(args).await
+}
+
+pub(crate) async fn browser_extract(args: &Value) -> Result<String, String> {
+    browser::browser_extract(args).await
+}
+
+pub(crate) async fn browser_click(args: &Value) -> Result<String, String> {
+    browser::browser_click(args).await
+}
+
+pub(crate) async fn browser_type(args: &Value) -> Result<String, String> {
+    browser::browser_type(args).await
+}
+
+pub(crate) async fn browser_press(args: &Value) -> Result<String, String> {
+    browser::browser_press(args).await
+}
+
+pub(crate) async fn browser_scroll(args: &Value) -> Result<String, String> {
+    browser::browser_scroll(args).await
+}
+
+pub(crate) async fn browser_back(args: &Value) -> Result<String, String> {
+    browser::browser_back(args).await
+}
+
+pub(crate) async fn browser_forward(args: &Value) -> Result<String, String> {
+    browser::browser_forward(args).await
+}
+
+pub(crate) async fn browser_status(args: &Value) -> Result<String, String> {
+    browser::browser_status(args).await
+}
+
+pub(crate) async fn browser_close(args: &Value) -> Result<String, String> {
+    browser::browser_close(args).await
 }
 
 pub(crate) async fn window_list(_args: &Value) -> Result<String, String> {
@@ -1251,41 +1264,6 @@ fn vk_for_key(key: &str) -> Result<u16, String> {
         _ => return Err(format!("Unsupported key: {key}")),
     };
     Ok(vk)
-}
-
-#[cfg(target_os = "windows")]
-async fn run_browser_open(target: Option<&str>, url: &str) -> Result<String, String> {
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let mut cmd = tokio::process::Command::new("cmd");
-    cmd.args(["/C", "start", ""]);
-    if let Some(target) = target {
-        cmd.arg(target);
-    }
-    if !url.trim().is_empty() {
-        cmd.arg(url.trim());
-    }
-    cmd.creation_flags(CREATE_NO_WINDOW);
-    cmd.spawn()
-        .map_err(|e| format!("Failed to open browser: {e}"))?;
-
-    Ok(json!({
-        "ok": true,
-        "kind": "browser",
-        "action": "open",
-        "browser": target.unwrap_or("default"),
-        "url": url,
-        "summary": if url.trim().is_empty() {
-            "Browser opened".to_string()
-        } else {
-            format!("Browser opened at {url}")
-        }
-    })
-    .to_string())
-}
-
-#[cfg(not(target_os = "windows"))]
-async fn run_browser_open(_target: Option<&str>, _url: &str) -> Result<String, String> {
-    Err("Browser computer use is currently implemented for Windows only.".to_string())
 }
 
 #[cfg(target_os = "windows")]

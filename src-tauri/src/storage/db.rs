@@ -4,12 +4,131 @@ use std::path::PathBuf;
 
 use super::Skill;
 
+struct BuiltinSkillSeed {
+    id: &'static str,
+    name: &'static str,
+    description: &'static str,
+    system_prompt: &'static str,
+    allowed_tools: &'static [&'static str],
+}
+
+const BUILTIN_SKILLS: &[BuiltinSkillSeed] = &[
+    BuiltinSkillSeed {
+        id: "builtin-daily-briefing",
+        name: "每日简报",
+        description: "整理今天需要知道的天气、日程、待办和新闻要点。",
+        system_prompt: "你是用户的每日简报助手。先确认用户想看的时间范围和主题；输出要短、分层、可执行。涉及今天、最新、新闻、价格、规则或其他可能变化的信息时，优先使用搜索或读取网页工具核实。可以结合记忆和定时任务提醒用户今天要做的事。不要编造实时信息。",
+        allowed_tools: &[
+            "get_weather",
+            "list_scheduled_tasks",
+            "search_memory",
+            "web_search",
+            "read_webpage",
+        ],
+    },
+    BuiltinSkillSeed {
+        id: "builtin-document-reader",
+        name: "文档阅读",
+        description: "阅读本地文件，提炼摘要、行动项、风险点和下一步。",
+        system_prompt: "你是文档阅读助手。用户给出文件或目录后，先读取必要内容，再给出结构化摘要、关键事实、待办、疑点和建议。遇到长文档时先分块理解，再汇总；不要只根据文件名猜测内容。引用文件内容时保持简短，并说明来自哪个文件。",
+        allowed_tools: &["read_file", "file_search", "list_directory", "search_memory"],
+    },
+    BuiltinSkillSeed {
+        id: "builtin-translation-polish",
+        name: "翻译润色",
+        description: "中英互译、改写、压缩、扩写，并保持语气一致。",
+        system_prompt: "你是翻译和润色助手。优先保留原意、语气、格式和专有名词。用户没有特别说明时，给出直接可用的译文或改写结果；必要时再附简短说明。对商务、技术、学术、口语场景要主动调整语域。不要过度解释。",
+        allowed_tools: &["read_file"],
+    },
+    BuiltinSkillSeed {
+        id: "builtin-code-partner",
+        name: "代码搭档",
+        description: "分析报错、阅读代码、设计修改方案和生成补丁建议。",
+        system_prompt: "你是代码搭档。先理解现有项目结构和约束，再给出最小可行修改。排查问题时优先读取相关文件和错误日志；解释代码时给出文件位置和原因。除非用户明确要求，不要进行大范围重构。对不确定的库行为或最新 API，使用搜索核实。",
+        allowed_tools: &[
+            "read_file",
+            "list_directory",
+            "file_search",
+            "web_search",
+            "read_webpage",
+        ],
+    },
+    BuiltinSkillSeed {
+        id: "builtin-schedule-secretary",
+        name: "日程秘书",
+        description: "拆解任务、创建提醒、查看日程，并帮用户安排优先级。",
+        system_prompt: "你是日程秘书。把用户的模糊安排转成清晰的时间、标题、备注和重复规则；时间不明确时先追问。创建提醒前复述关键信息，尽量使用简洁标题。查看已有日程时按紧急程度和时间顺序整理。",
+        allowed_tools: &[
+            "create_scheduled_task",
+            "list_scheduled_tasks",
+            "search_memory",
+            "save_memory",
+        ],
+    },
+    BuiltinSkillSeed {
+        id: "builtin-browser-research",
+        name: "浏览器研究",
+        description: "打开网页、查看浏览器内容，做资料搜集和页面摘要。",
+        system_prompt: "你是浏览器研究助手。需要网页信息时先搜索或打开目标页面，再读取网页或浏览器快照。给结论时区分事实、来源和推断；涉及最新信息必须核实。不要在没有用户授权的情况下提交表单、购买、登录或执行不可逆操作。",
+        allowed_tools: &[
+            "web_search",
+            "read_webpage",
+            "browser_open",
+            "browser_navigate",
+            "browser_snapshot",
+            "browser_extract",
+            "browser_click",
+            "browser_type",
+            "browser_press",
+            "browser_scroll",
+            "browser_back",
+            "browser_forward",
+        ],
+    },
+    BuiltinSkillSeed {
+        id: "builtin-file-organizer",
+        name: "文件整理",
+        description: "扫描目录、查找文件、提出命名和归档方案。",
+        system_prompt: "你是文件整理助手。先查看目录和文件名，必要时读取少量内容判断类别；然后给出清晰的整理方案、命名规则和可执行步骤。默认不要删除、覆盖或移动文件；如果用户要求实际执行，先列出将要改变的路径并等待确认。",
+        allowed_tools: &["list_directory", "file_search", "read_file"],
+    },
+];
+
+/// 暴露给 lib.rs：判断指定 id 是否为内置技能 id，用于在 save_skill 中保留 `builtin-` 命名空间。
+pub fn is_builtin_skill_id(id: &str) -> bool {
+    BUILTIN_SKILLS.iter().any(|s| s.id == id)
+}
+
 #[derive(Debug, Serialize)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
     pub thinking: Option<String>,
     pub created_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quoted_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quoted_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_avatar: Option<String>,
+}
+
+/// 用户自定义的智能体（可在对话中通过 @名称 唤起）。
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Agent {
+    pub id: String,
+    pub name: String,
+    pub avatar: String,
+    pub description: String,
+    pub system_prompt: String,
+    pub model: String,
+    pub allowed_tools: Vec<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -106,6 +225,16 @@ impl Database {
         Ok(db)
     }
 
+    #[cfg(test)]
+    pub fn open_in_memory() -> Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        let db = Self { conn };
+        db.configure_pragmas()?;
+        db.init_tables()?;
+        db.ensure_indexes()?;
+        Ok(db)
+    }
+
     fn configure_pragmas(&self) -> Result<()> {
         self.conn.pragma_update(None, "journal_mode", "WAL")?;
         self.conn.pragma_update(None, "synchronous", "NORMAL")?;
@@ -194,11 +323,29 @@ impl Database {
             WHEN NEW.is_active = 1
             BEGIN
                 UPDATE skills SET is_active = 0;
-            END;",
+            END;
+            CREATE TABLE IF NOT EXISTS deleted_builtin_skills (
+                id TEXT PRIMARY KEY,
+                deleted_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+            );
+            CREATE TABLE IF NOT EXISTS agents (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                avatar TEXT NOT NULL DEFAULT '🤖',
+                description TEXT NOT NULL DEFAULT '',
+                system_prompt TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                allowed_tools_json TEXT NOT NULL DEFAULT '[]',
+                created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+                updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+            );",
         )?;
         self.ensure_chat_thinking_column()?;
+        self.ensure_chat_quote_columns()?;
+        self.ensure_chat_agent_columns()?;
         self.ensure_clipboard_pinned_column()?;
         self.ensure_scheduled_tasks_columns()?;
+        self.ensure_builtin_skills()?;
         Ok(())
     }
 
@@ -214,6 +361,43 @@ impl Database {
 
         self.conn
             .execute("ALTER TABLE chat_history ADD COLUMN thinking TEXT", [])?;
+        Ok(())
+    }
+
+    fn ensure_chat_quote_columns(&self) -> Result<()> {
+        let mut stmt = self.conn.prepare("PRAGMA table_info(chat_history)")?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>>>()?;
+
+        for (name, definition) in [
+            ("quoted_role", "TEXT"),
+            ("quoted_content", "TEXT"),
+        ] {
+            if !columns.iter().any(|column| column == name) {
+                self.conn.execute(
+                    &format!("ALTER TABLE chat_history ADD COLUMN {name} {definition}"),
+                    [],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_chat_agent_columns(&self) -> Result<()> {
+        let mut stmt = self.conn.prepare("PRAGMA table_info(chat_history)")?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>>>()?;
+
+        for name in ["agent_id", "agent_name", "agent_avatar"] {
+            if !columns.iter().any(|column| column == name) {
+                self.conn.execute(
+                    &format!("ALTER TABLE chat_history ADD COLUMN {name} TEXT"),
+                    [],
+                )?;
+            }
+        }
         Ok(())
     }
 
@@ -263,6 +447,44 @@ impl Database {
         Ok(())
     }
 
+    fn ensure_builtin_skills(&self) -> Result<()> {
+        for skill in BUILTIN_SKILLS {
+            // 跳过用户主动删除过的内置技能，避免每次启动又把它插回来。
+            let deleted: Option<String> = self
+                .conn
+                .query_row(
+                    "SELECT id FROM deleted_builtin_skills WHERE id = ?1",
+                    [skill.id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if deleted.is_some() {
+                continue;
+            }
+
+            let allowed_tools_json = serde_json::to_string(&skill.allowed_tools)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            self.conn.execute(
+                "INSERT OR IGNORE INTO skills (
+                    id, name, description, system_prompt,
+                    allowed_tools_json, keywords_json,
+                    created_at, updated_at
+                 ) VALUES (
+                    ?1, ?2, ?3, ?4, ?5, '[]',
+                    strftime('%s', 'now'), strftime('%s', 'now')
+                 )",
+                (
+                    skill.id,
+                    skill.name,
+                    skill.description,
+                    skill.system_prompt,
+                    &allowed_tools_json,
+                ),
+            )?;
+        }
+        Ok(())
+    }
+
     // ===== 对话历史 =====
 
     pub fn save_message(&self, role: &str, content: &str) -> Result<()> {
@@ -282,9 +504,45 @@ impl Database {
         Ok(())
     }
 
+    /// 保存带引用信息的用户消息（quoted_role/quoted_content 记录被引用的前文对话）
+    pub fn save_message_with_quote(
+        &self,
+        role: &str,
+        content: &str,
+        thinking: Option<&str>,
+        quoted_role: Option<&str>,
+        quoted_content: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO chat_history (role, content, thinking, quoted_role, quoted_content)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            (role, content, thinking, quoted_role, quoted_content),
+        )?;
+        Ok(())
+    }
+
+    /// 保存带智能体归属的消息（agent_id/agent_name/agent_avatar 标识回复来自哪个智能体）
+    pub fn save_message_with_agent(
+        &self,
+        role: &str,
+        content: &str,
+        thinking: Option<&str>,
+        agent_id: Option<&str>,
+        agent_name: Option<&str>,
+        agent_avatar: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO chat_history (role, content, thinking, agent_id, agent_name, agent_avatar)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            (role, content, thinking, agent_id, agent_name, agent_avatar),
+        )?;
+        Ok(())
+    }
+
     pub fn get_recent_messages(&self, limit: u32) -> Result<Vec<ChatMessage>> {
         let mut stmt = self.conn.prepare(
-            "SELECT role, content, thinking, created_at
+            "SELECT role, content, thinking, created_at, quoted_role, quoted_content,
+                    agent_id, agent_name, agent_avatar
              FROM chat_history
              ORDER BY id DESC
              LIMIT ?1",
@@ -295,6 +553,11 @@ impl Database {
                 content: row.get(1)?,
                 thinking: row.get(2)?,
                 created_at: row.get(3)?,
+                quoted_role: row.get(4)?,
+                quoted_content: row.get(5)?,
+                agent_id: row.get(6)?,
+                agent_name: row.get(7)?,
+                agent_avatar: row.get(8)?,
             })
         })?;
         let mut messages = Vec::new();
@@ -313,7 +576,8 @@ impl Database {
     /// 只返回 id > after_id 的最近 limit 条消息（用于 AI 上下文隔离）
     pub fn get_recent_messages_after(&self, after_id: i64, limit: u32) -> Result<Vec<ChatMessage>> {
         let mut stmt = self.conn.prepare(
-            "SELECT role, content, thinking, created_at
+            "SELECT role, content, thinking, created_at, quoted_role, quoted_content,
+                    agent_id, agent_name, agent_avatar
              FROM chat_history
              WHERE id > ?1
              ORDER BY id DESC
@@ -325,6 +589,11 @@ impl Database {
                 content: row.get(1)?,
                 thinking: row.get(2)?,
                 created_at: row.get(3)?,
+                quoted_role: row.get(4)?,
+                quoted_content: row.get(5)?,
+                agent_id: row.get(6)?,
+                agent_name: row.get(7)?,
+                agent_avatar: row.get(8)?,
             })
         })?;
         let mut messages = Vec::new();
@@ -791,6 +1060,21 @@ impl Database {
     pub fn delete_skill(&self, id: &str) -> Result<()> {
         self.conn
             .execute("DELETE FROM skills WHERE id = ?1", [id])?;
+        // 删除的是内置技能时写墓碑，防止下次启动 ensure_builtin_skills 复活它。
+        if id.starts_with("builtin-") {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO deleted_builtin_skills (id) VALUES (?1)",
+                [id],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// 逃生口：清空删除墓碑并重新 seed 所有内置技能。
+    /// 用于用户误删内置技能后一键恢复（不删除用户自定义技能，也不改变当前激活状态）。
+    pub fn reset_builtin_skills(&self) -> Result<()> {
+        self.conn.execute("DELETE FROM deleted_builtin_skills", [])?;
+        self.ensure_builtin_skills()?;
         Ok(())
     }
 
@@ -816,6 +1100,157 @@ impl Database {
         }
         Ok(())
     }
+
+    // ===== 智能体 =====
+
+    pub fn list_agents(&self) -> Result<Vec<Agent>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, avatar, description, system_prompt,
+                    model, allowed_tools_json, created_at, updated_at
+             FROM agents
+             ORDER BY created_at ASC, id ASC",
+        )?;
+        let rows = stmt.query_map([], agent_from_row)?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
+    pub fn get_agent_by_id(&self, id: &str) -> Result<Option<Agent>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, avatar, description, system_prompt,
+                    model, allowed_tools_json, created_at, updated_at
+             FROM agents
+             WHERE id = ?1
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map([id], agent_from_row)?;
+        match rows.next() {
+            Some(Ok(item)) => Ok(Some(item)),
+            Some(Err(err)) => Err(err),
+            None => Ok(None),
+        }
+    }
+
+    pub fn get_agent_by_name(&self, name: &str) -> Result<Option<Agent>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, avatar, description, system_prompt,
+                    model, allowed_tools_json, created_at, updated_at
+             FROM agents
+             WHERE name = ?1
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map([name], agent_from_row)?;
+        match rows.next() {
+            Some(Ok(item)) => Ok(Some(item)),
+            Some(Err(err)) => Err(err),
+            None => Ok(None),
+        }
+    }
+
+    /// 按名称精确匹配返回智能体列表（保持 names 的顺序、去重）。
+    pub fn get_agents_by_names(&self, names: &[String]) -> Result<Vec<Agent>> {
+        let trimmed: Vec<String> = names
+            .iter()
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .collect();
+        if trimmed.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // 去重但保持顺序
+        let mut seen = std::collections::HashSet::new();
+        let unique: Vec<&String> = trimmed
+            .iter()
+            .filter(|name| seen.insert(name.to_string()))
+            .collect();
+        let placeholders = unique
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let sql = format!(
+            "SELECT id, name, avatar, description, system_prompt,
+                    model, allowed_tools_json, created_at, updated_at
+             FROM agents
+             WHERE name IN ({placeholders})"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(
+            rusqlite::params_from_iter(unique.iter().map(|name| name.as_str())),
+            agent_from_row,
+        )?;
+        let mut found: Vec<Agent> = Vec::new();
+        for row in rows {
+            found.push(row?);
+        }
+        // 按 unique 的顺序重排
+        found.sort_by_key(|agent| {
+            unique
+                .iter()
+                .position(|name| name.as_str() == agent.name)
+                .unwrap_or(usize::MAX)
+        });
+        Ok(found)
+    }
+
+    pub fn save_agent(&self, agent: &Agent) -> Result<()> {
+        let allowed_tools_json = serde_json::to_string(&agent.allowed_tools)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        self.conn.execute(
+            "INSERT INTO agents (
+                id, name, avatar, description, system_prompt,
+                model, allowed_tools_json, created_at, updated_at
+             ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, strftime('%s', 'now')
+             )
+             ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                avatar = excluded.avatar,
+                description = excluded.description,
+                system_prompt = excluded.system_prompt,
+                model = excluded.model,
+                allowed_tools_json = excluded.allowed_tools_json,
+                updated_at = excluded.updated_at",
+            (
+                &agent.id,
+                &agent.name,
+                &agent.avatar,
+                &agent.description,
+                &agent.system_prompt,
+                &agent.model,
+                &allowed_tools_json,
+                agent.created_at,
+            ),
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_agent(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM agents WHERE id = ?1", [id])?;
+        Ok(())
+    }
+}
+
+fn agent_from_row(row: &rusqlite::Row<'_>) -> Result<Agent> {
+    let allowed_tools_json: String = row.get(6)?;
+    Ok(Agent {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        avatar: row.get(2)?,
+        description: row.get(3)?,
+        system_prompt: row.get(4)?,
+        model: row.get(5)?,
+        allowed_tools: serde_json::from_str(&allowed_tools_json).unwrap_or_default(),
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
+    })
 }
 
 fn scheduled_task_from_row(row: &rusqlite::Row<'_>) -> Result<ScheduledTask> {
@@ -877,4 +1312,48 @@ fn skill_from_row(row: &rusqlite::Row<'_>) -> Result<Skill> {
         created_at: row.get(7)?,
         updated_at: row.get(8)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deleted_builtin_skill_does_not_respawn_on_reseed() {
+        let db = Database::open_in_memory().expect("open in-memory db");
+        let seeded: Vec<String> = db
+            .list_skills()
+            .expect("list skills")
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert!(
+            seeded.iter().any(|id| id == "builtin-translation-polish"),
+            "builtin-translation-polish 应在首次 seed 时出现"
+        );
+
+        db.delete_skill("builtin-translation-polish")
+            .expect("delete builtin");
+        assert!(db
+            .list_skills()
+            .unwrap()
+            .iter()
+            .all(|s| s.id != "builtin-translation-polish"));
+
+        db.ensure_builtin_skills().expect("re-seed");
+        let after = db.list_skills().expect("list after reseed");
+        assert!(
+            after
+                .iter()
+                .all(|s| s.id != "builtin-translation-polish"),
+            "墓碑应阻止内置技能在删除后被 ensure_builtin_skills 复活"
+        );
+
+        for id in seeded
+            .iter()
+            .filter(|id| *id != "builtin-translation-polish")
+        {
+            assert!(after.iter().any(|s| s.id == *id), "其他内置技能应仍在: {id}");
+        }
+    }
 }
