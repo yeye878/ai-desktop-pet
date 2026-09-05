@@ -96,29 +96,35 @@ export class TeamOrchestrator {
       }
       const a: AgentProfile = agent;
       jobs.push((async (): Promise<void> => {
-        trace(`▶ ${a.name} 开始执行…`);
-        const opts = new LoopOptions();
-        opts.profile = profile;
-        opts.systemPrompt = `${a.systemPrompt}\n当前处于多智能体协作模式：只负责你被分配的子任务，输出你的工作报告（不要寒暄）。`;
-        opts.history = [];
-        opts.userText = st.subtask;
-        opts.tools = ToolRegistry.defsFor(a.allowedTools);
-        opts.allowConfirm = false;
-        opts.maxTurns = 8;
-        opts.token = token;
-        const cbs: LoopCallbacks = {
-          onThinking: (_d: string) => {
-          },
-          onContent: (_d: string) => {
-          },
-          onToolTrace: (line: string) => {
-            trace(`[${a.name}] ${line}`);
-          }
-        };
-        opts.callbacks = cbs;
-        const r: LoopResult = await AgentLoop.run(opts);
-        reports.push(`【${a.name}】\n${r.content.length > 0 ? r.content : '(无输出)'}`);
-        trace(`✔ ${a.name} 完成`);
+        try {
+          trace(`▶ ${a.name} 开始执行…`);
+          const opts = new LoopOptions();
+          opts.profile = profile;
+          opts.systemPrompt = `${a.systemPrompt}\n当前处于多智能体协作模式：只负责你被分配的子任务，输出你的工作报告（不要寒暄）。`;
+          opts.history = [];
+          opts.userText = st.subtask;
+          opts.tools = ToolRegistry.defsFor(a.allowedTools);
+          opts.allowConfirm = false;
+          opts.maxTurns = 8;
+          opts.token = token;
+          const cbs: LoopCallbacks = {
+            onThinking: (_d: string) => {
+            },
+            onContent: (_d: string) => {
+            },
+            onToolTrace: (line: string) => {
+              trace(`[${a.name}] ${line}`);
+            }
+          };
+          opts.callbacks = cbs;
+          const r: LoopResult = await AgentLoop.run(opts);
+          reports.push(`【${a.name}】\n${r.content.length > 0 ? r.content : '(无输出)'}`);
+          trace(`✔ ${a.name} 完成`);
+        } catch (e) {
+          // 单成员失败不拖垮整个团队：记入报告继续综合
+          reports.push(`【${a.name}】执行异常: ${(e as Error).message}`);
+          trace(`✖ ${a.name} 异常: ${(e as Error).message}`);
+        }
       })());
     });
     await Promise.all(jobs);

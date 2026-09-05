@@ -76,6 +76,9 @@ export class KbService {
     }
     // Kit 检索器（倒排索引通道）
     try {
+      if (typeof retrieval.getRetriever !== 'function') {
+        throw new Error('retrieval module not available on this device');
+      }
       const config: retrieval.RetrievalConfig = {
         channelConfigs: [{
           channelType: retrieval.ChannelType.INVERTED_INDEX_DATABASE,

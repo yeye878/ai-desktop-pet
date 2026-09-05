@@ -15,98 +15,106 @@ interface StrBox {
  * 把自定义 LLM（任意 OpenAI 兼容云端服务）接入鸿蒙 RAG 框架：
  * rag.ChatLLM 由应用实现 streamChat/cancel，RAG 引擎负责「检索 → 拼 prompt → LLM 生成」。
  * 端侧离线链路：localChatModel（系统端侧问答模型）。
+ *
+ * ⚠️ CloudChatLlm 必须在函数体内声明（惰性求值 extends）：部分设备（如 x86 模拟器）
+ * 裁剪了 data.retrieval 原生模块，模块顶层的 `extends rag.ChatLLM` 会在加载期直接抛
+ * "TypeError: parent class is not constructor" 导致应用启动即崩，
+ * kitAvailable() 的降级逻辑永远没有机会执行。
  */
-class CloudChatLlm extends rag.ChatLLM {
-  private seq: number = 1;
-  private activeStreams: Map<number, NetStream> = new Map<number, NetStream>();
+function newCloudChatLlm(): rag.ChatLLM {
+  class CloudChatLlm extends rag.ChatLLM {
+    private seq: number = 1;
+    private activeStreams: Map<number, NetStream> = new Map<number, NetStream>();
 
-  streamChat(query: string, callback: (data: rag.LLMStreamAnswer) => void): Promise<rag.LLMRequestInfo> {
-    const chatId = CloudChatLlm.baseId() + this.seq++;
-    const task = (async (): Promise<rag.LLMRequestInfo> => {
-      const profile = await LlmProfiles.active();
-      if (profile === null) {
-        callback({ isFinished: true, chunk: '' });
-        return { chatId: chatId, status: rag.LLMRequestStatus.LLM_REQUEST_ERROR };
-      }
-      const body: Record<string, Object> = {
-        'model': profile.model,
-        'messages': [{ 'role': 'user', 'content': query } as Record<string, Object>] as Array<Object>,
-        'stream': true,
-        'temperature': 0.4
-      };
-      const box: StrBox = { text: '' };
-      return await new Promise<rag.LLMRequestInfo>((resolve: (v: rag.LLMRequestInfo) => void) => {
-        const stream = NetClient.streamPost(
-          LlmClient.joinUrl(profile.baseUrl, '/chat/completions'),
-          LlmClient.authHeaders(profile),
-          JSON.stringify(body),
-          {
-            onChunk: (t: string) => {
-              box.text += t;
-              CloudChatLlm.drainSse(box, callback);
-            },
-            onDone: () => {
-              callback({ isFinished: true, chunk: '' });
-              this.activeStreams.delete(chatId);
-            },
-            onError: (msg: string) => {
-              Log.warn(`rag llm stream error: ${msg}`);
-              callback({ isFinished: true, chunk: '' });
-              this.activeStreams.delete(chatId);
-            }
-          });
-        this.activeStreams.set(chatId, stream);
-        resolve({ chatId: chatId, status: rag.LLMRequestStatus.LLM_SUCCESS });
-      });
-    })();
-    return task;
-  }
-
-  cancel(chatId: number): void {
-    const s = this.activeStreams.get(chatId);
-    if (s) {
-      s.abort();
-      this.activeStreams.delete(chatId);
-    }
-  }
-
-  private static baseId(): number {
-    return Math.floor(Date.now() % 2147483000);
-  }
-
-  /** 极简 SSE 解析（增量正文回传给 RAG 引擎；解析完的行从缓冲中剔除） */
-  private static drainSse(box: StrBox, callback: (data: rag.LLMStreamAnswer) => void): void {
-    const buffer = box.text;
-    let idx = buffer.indexOf('\n');
-    let consumed = 0;
-    while (idx >= 0) {
-      const line = buffer.substring(consumed, idx).replace(/\r$/, '');
-      consumed = idx + 1;
-      if (line.startsWith('data:')) {
-        const payload = line.substring(5).trim();
-        if (payload.length > 0 && payload !== '[DONE]') {
-          try {
-            const obj = JSON.parse(payload) as Record<string, Object>;
-            const choices = obj['choices'] as Array<Object> | null;
-            if (choices && choices.length > 0) {
-              const first = choices[0] as Record<string, Object>;
-              const delta = first['delta'] as Record<string, Object> | null;
-              const content = delta ? delta['content'] : null;
-              if (typeof content === 'string' && (content as string).length > 0) {
-                callback({ isFinished: false, chunk: content as string });
+    streamChat(query: string, callback: (data: rag.LLMStreamAnswer) => void): Promise<rag.LLMRequestInfo> {
+      const chatId = CloudChatLlm.baseId() + this.seq++;
+      const task = (async (): Promise<rag.LLMRequestInfo> => {
+        const profile = await LlmProfiles.active();
+        if (profile === null) {
+          callback({ isFinished: true, chunk: '' });
+          return { chatId: chatId, status: rag.LLMRequestStatus.LLM_REQUEST_ERROR };
+        }
+        const body: Record<string, Object> = {
+          'model': profile.model,
+          'messages': [{ 'role': 'user', 'content': query } as Record<string, Object>] as Array<Object>,
+          'stream': true,
+          'temperature': 0.4
+        };
+        const box: StrBox = { text: '' };
+        return await new Promise<rag.LLMRequestInfo>((resolve: (v: rag.LLMRequestInfo) => void) => {
+          const stream = NetClient.streamPost(
+            LlmClient.joinUrl(profile.baseUrl, '/chat/completions'),
+            LlmClient.authHeaders(profile),
+            JSON.stringify(body),
+            {
+              onChunk: (t: string) => {
+                box.text += t;
+                CloudChatLlm.drainSse(box, callback);
+              },
+              onDone: () => {
+                callback({ isFinished: true, chunk: '' });
+                this.activeStreams.delete(chatId);
+              },
+              onError: (msg: string) => {
+                Log.warn(`rag llm stream error: ${msg}`);
+                callback({ isFinished: true, chunk: '' });
+                this.activeStreams.delete(chatId);
               }
+            });
+          this.activeStreams.set(chatId, stream);
+          resolve({ chatId: chatId, status: rag.LLMRequestStatus.LLM_SUCCESS });
+        });
+      })();
+      return task;
+    }
+
+    cancel(chatId: number): void {
+      const s = this.activeStreams.get(chatId);
+      if (s) {
+        s.abort();
+        this.activeStreams.delete(chatId);
+      }
+    }
+
+    private static baseId(): number {
+      return Math.floor(Date.now() % 2147483000);
+    }
+
+    /** 极简 SSE 解析（增量正文回传给 RAG 引擎；解析完的行从缓冲中剔除） */
+    private static drainSse(box: StrBox, callback: (data: rag.LLMStreamAnswer) => void): void {
+      const buffer = box.text;
+      let idx = buffer.indexOf('\n');
+      let consumed = 0;
+      while (idx >= 0) {
+        const line = buffer.substring(consumed, idx).replace(/\r$/, '');
+        consumed = idx + 1;
+        if (line.startsWith('data:')) {
+          const payload = line.substring(5).trim();
+          if (payload.length > 0 && payload !== '[DONE]') {
+            try {
+              const obj = JSON.parse(payload) as Record<string, Object>;
+              const choices = obj['choices'] as Array<Object> | null;
+              if (choices && choices.length > 0) {
+                const first = choices[0] as Record<string, Object>;
+                const delta = first['delta'] as Record<string, Object> | null;
+                const content = delta ? delta['content'] : null;
+                if (typeof content === 'string' && (content as string).length > 0) {
+                  callback({ isFinished: false, chunk: content as string });
+                }
+              }
+            } catch (e) {
+              // 半包忽略，等下一个 chunk
             }
-          } catch (e) {
-            // 半包忽略，等下一个 chunk
           }
         }
+        idx = buffer.indexOf('\n', consumed);
       }
-      idx = buffer.indexOf('\n', consumed);
-    }
-    if (consumed > 0) {
-      box.text = buffer.substring(consumed);
+      if (consumed > 0) {
+        box.text = buffer.substring(consumed);
+      }
     }
   }
+  return new CloudChatLlm();
 }
 
 export class RagBridge {
@@ -121,7 +129,19 @@ export class RagBridge {
 
   static kitAvailable(): boolean {
     try {
-      return canIUse('SystemCapability.DataAugmentation.RAG');
+      if (!canIUse('SystemCapability.DataAugmentation.RAG')) {
+        return false;
+      }
+      // syscap 表可能声明支持但原生模块被裁剪（如模拟器），双重验证
+      return typeof rag.createRagSession === 'function';
+    } catch (e) {
+      return false;
+    }
+  }
+
+  static localAvailable(): boolean {
+    try {
+      return typeof localChatModel.init === 'function';
     } catch (e) {
       return false;
     }
@@ -164,7 +184,7 @@ export class RagBridge {
       resultCount: 5
     };
     const config: rag.Config = {
-      llm: new CloudChatLlm(),
+      llm: newCloudChatLlm(),
       retrievalConfig: retrievalConfig,
       retrievalCondition: condition
     };
@@ -231,6 +251,9 @@ export class RagBridge {
 
   /** 端侧问答模型（离线）。prompt 建议不超过 4500 字节。 */
   static async localAnswer(prompt: string, cb: AskCallbacks): Promise<string> {
+    if (!RagBridge.localAvailable()) {
+      throw new Error('端侧问答模型不可用（设备不支持或模块被裁剪）');
+    }
     if (!localInited()) {
       const ok = await localChatModel.init();
       RagBridge.localInited = ok;

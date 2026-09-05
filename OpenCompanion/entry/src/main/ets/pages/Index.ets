@@ -1,4 +1,6 @@
 import { AppContext } from '../commons/AppContext';
+import { RdbHelper } from '../commons/RdbHelper';
+import { Log } from '../commons/Log';
 import { bus, Ev, BusEvent } from '../commons/EventBus';
 import { BehaviorEngine } from '../pet/BehaviorEngine';
 import { ChatService } from '../core/ChatService';
@@ -46,14 +48,19 @@ struct Index {
     });
     // 首帧后延迟初始化（冷启动优化：首帧前不做任何重初始化）
     AppContext.postFrame(() => {
-      AppContext.initSettings().then(() => {
+      // RdbHelper 必须最先初始化：ChatService.init → AgentRepo/loadHistory 直接查主库，
+      // 缺了这一步整个初始化链静默失败（发消息不显示、页面刷新 unhandled rejection）
+      RdbHelper.init().then(() => {
+        return AppContext.initSettings();
+      }).then(() => {
         return ChatService.init();
       }).then(() => {
         BehaviorEngine.start();
         AsrController.preheat();
         TtsController.preheat();
         this.initDone = true;
-      }).catch((_e: Error) => {
+      }).catch((e: Error) => {
+        Log.error(`init chain failed: ${e.message}`);
         this.initDone = true;
       });
     }, 60);

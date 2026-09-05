@@ -24,7 +24,9 @@ export default class PetFormAbility extends FormExtensionAbility {
         'status': status,
         'emoji': '🐹'
       });
-      formProvider.updateForm(formId, data);
+      formProvider.updateForm(formId, data).catch((e: Error) => {
+        hilog.warn(0x0C0C, 'OpenCompanion', 'updateForm failed: %{public}s', e.message);
+      });
     });
   }
 

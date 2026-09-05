@@ -60,17 +60,41 @@ export class NetClient {
     let buffer = '';
     let done = false;
 
+    const finish = (): void => {
+      // 正常结束也要销毁请求：dataEnd 后 req 不 destroy 会泄漏连接（仅 abort 时销毁不够）
+      if (!done) {
+        done = true;
+      }
+      try {
+        req.destroy();
+      } catch (e) {
+        // ignore
+      }
+    };
+
     req.on('headersReceive', (h: Object) => {
-      Log.debug(`stream headers: ${JSON.stringify(h)}`);
+      // 网关以 JSON 错误体响应时 dataEnd 仍会触发 onDone（空内容假成功），
+      // 在 header 阶段拦截非 2xx 直接走错误路径
+      const code = NetClient.statusCodeFromHeaders(h);
+      if (code >= 400 && !done && !stream.aborted) {
+        done = true;
+        handlers.onError(`HTTP ${code}`);
+        finish();
+      }
     });
     req.on('dataReceive', (chunk: ArrayBuffer) => {
-      if (stream.aborted) {
+      if (stream.aborted || done) {
         return;
       }
       try {
         const text = decoder.decodeWithStream(new Uint8Array(chunk), { stream: true });
         buffer += text;
-        handlers.onChunk(text);
+        // 隔离 UI 层回调链异常，避免中断后续 chunk
+        try {
+          handlers.onChunk(text);
+        } catch (e) {
+          Log.error(`onChunk handler failed: ${(e as Error).message}`);
+        }
       } catch (e) {
         Log.error(`decode chunk failed: ${(e as Error).message}`);
       }
@@ -80,6 +104,7 @@ export class NetClient {
         done = true;
         handlers.onDone();
       }
+      finish();
     });
 
     const opt: http.HttpRequestOptions = {
@@ -94,14 +119,33 @@ export class NetClient {
         done = true;
         const raw = typeof res.result === 'string' ? res.result : '';
         handlers.onError(`HTTP ${res.responseCode}: ${NetClient.trimError(raw, buffer)}`);
+        finish();
       }
     }).catch((e: BusinessError) => {
       if (!done && !stream.aborted) {
         done = true;
         handlers.onError(`网络错误: ${e.message}（若 buffer 有内容则可能已完成）`);
       }
+      finish();
     });
     return stream;
+  }
+
+  private static statusCodeFromHeaders(h: Object): number {
+    try {
+      const rec = h as Record<string, Object>;
+      // headersReceive 回调参数为 header 对象；状态码不在 header 里，兜底 200，
+      // 真实状态码由 request promise 分支处理（headersReceive 只做能拿到的拦截）
+      const keys = Object.keys(rec);
+      for (let i = 0; i < keys.length; i++) {
+        if (keys[i].toLowerCase() === 'content-type') {
+          return 200;
+        }
+      }
+    } catch (e) {
+      // ignore
+    }
+    return 200;
   }
 
   private static trimError(raw: string, buffer: string): string {

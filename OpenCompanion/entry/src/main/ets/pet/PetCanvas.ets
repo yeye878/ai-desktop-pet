@@ -29,6 +29,10 @@ export struct PetCanvas {
         .width(this.sizeVp)
         .height(this.sizeVp)
         .onReady(() => {
+          // onReady 可能因窗口尺寸变化重复触发，先清旧定时器避免多实例并发绘制
+          if (this.frameTimer >= 0) {
+            clearInterval(this.frameTimer);
+          }
           this.frameTimer = setInterval(() => {
             this.frame++;
             this.draw();

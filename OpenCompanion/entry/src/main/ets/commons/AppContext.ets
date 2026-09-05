@@ -69,16 +69,17 @@ export class AppContext {
 
   static getBool(key: string, def: boolean): boolean {
     const v = AppContext.cache.get(key);
-    if (v === undefined) {
-      return def;
+    if (v !== undefined) {
+      return v === 'true';
     }
-    return v === 'true';
+    // 未命中缓存时回源 prefs（getSetting 会顺带填 cache），否则重启后所有布尔设置失效
+    return AppContext.getSetting(key, def ? 'true' : 'false') === 'true';
   }
 
   static getNumber(key: string, def: number): number {
     const v = AppContext.cache.get(key);
     if (v === undefined) {
-      return def;
+      return Number(AppContext.getSetting(key, String(def)));
     }
     const n = Number(v);
     return Number.isNaN(n) ? def : n;

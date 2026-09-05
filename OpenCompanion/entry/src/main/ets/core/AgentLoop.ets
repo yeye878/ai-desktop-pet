@@ -86,6 +86,7 @@ export class AgentLoop {
 
     const approved: Set<string> = new Set<string>();
     let turn = 0;
+    let lastAssistantText = '';
 
     /** 单轮：调模型 → 工具 或 结束 */
     const step = (): void => {
@@ -98,6 +99,10 @@ export class AgentLoop {
       if (turn > o.maxTurns) {
         if (cbs) {
           cbs.onToolTrace(`已达到最大工具轮次(${o.maxTurns})，停止`);
+        }
+        if (result.content.length === 0 && lastAssistantText.length > 0) {
+          // 兜底：不丢弃模型已生成的半截回复
+          result.content = lastAssistantText;
         }
         resolve(result);
         return;
@@ -113,6 +118,7 @@ export class AgentLoop {
           }
         },
         onContent: (d: string) => {
+          lastAssistantText += d;
           if (cbs) {
             cbs.onContent(d);
           }
@@ -135,7 +141,7 @@ export class AgentLoop {
             asst.content = full;
             asst.toolCalls = calls;
             msgs.push(asst);
-            AgentLoop.executeCalls(o, calls, result, approved, msgs, step);
+            AgentLoop.executeCalls(o, calls, result, approved, msgs, step, resolve);
             return;
           }
           result.content = full;
@@ -160,7 +166,7 @@ export class AgentLoop {
 
   /** 顺序执行本轮所有工具调用，然后继续下一轮 */
   private static executeCalls(o: LoopOptions, calls: ToolCallReq[], result: LoopResult,
-    approved: Set<string>, msgs: LlmMessage[], next: () => void): void {
+    approved: Set<string>, msgs: LlmMessage[], next: () => void, resolve: (r: LoopResult) => void): void {
     const cbs = o.callbacks;
     const confirmEnabled = o.profile !== null && o.profile.confirmEnabled;
 
@@ -203,7 +209,9 @@ export class AgentLoop {
           runOne(i + 1);
         }).catch((e: Error) => {
           if (e.message === '__ABORTED__') {
+            // 中断也必须 resolve，否则外层 Promise 永久挂起（/team 的 Promise.all 整体卡死）
             result.aborted = true;
+            resolve(result);
             return;
           }
           const tm = new LlmMessage();
@@ -222,7 +230,9 @@ export class AgentLoop {
           }
           doExecute(ok);
         }).catch((_e: Error) => {
+          // 确认门被中断（abortAll reject）：必须结束循环而不是静默 return
           result.aborted = true;
+          resolve(result);
         });
       } else {
         doExecute(true);

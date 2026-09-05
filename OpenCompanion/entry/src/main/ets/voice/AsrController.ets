@@ -78,6 +78,11 @@ export class AsrController {
       },
       onResult: (sessionId: string, result: speechRecognizer.SpeechRecognitionResult) => {
         AsrController.lastPartial = result.result;
+        // 累积已确定的语音段：finish() 后 stop() 才能拿到完整多段文本（否则只余最后一段）
+        if (result.isFinal) {
+          AsrController.finalSentences += result.result;
+          AsrController.lastPartial = '';
+        }
         bus.emit(Ev.VOICE_PARTIAL, {
           'text': result.result,
           'isFinal': `${result.isFinal}`,

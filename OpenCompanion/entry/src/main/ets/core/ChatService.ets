@@ -10,6 +10,7 @@ import { TeamOrchestrator } from './TeamOrchestrator';
 import { AgentRepo } from './AgentRepo';
 import { EvolutionManager } from './EvolutionManager';
 import { ToolRegistry } from './ToolRegistry';
+import { Gates } from './Gates';
 import { KbService } from '../knowledge/KbService';
 import { TtsController } from '../voice/TtsController';
 import { AgentProfile, CancelToken, ChatMessage, ContentPart, JsonUtil, LlmMessage, SkillProfile } from './Types';
@@ -347,6 +348,7 @@ export class ChatService {
     if (ChatService.token !== null) {
       ChatService.token.cancel();
     }
+    Gates.abortAll();
     LlmClient.cancelAll();
     bus.emit(Ev.AI_TOOL, { 'text': '⏹ 已请求中断' } as Record<string, string>);
   }
@@ -383,42 +385,38 @@ export class ChatService {
 
   /** 本地文件 → base64 data url（用于多模态图片输入） */
   static async fileToDataUrl(uri: string): Promise<string | null> {
+    let f: fs.File | null = null;
     try {
-      // picker 返回的 file:// 媒体 uri 需要直接传给 fs；本地路径则原样使用
-      let stat: fs.Stat | null = null;
-      let pathForOpen = uri;
-      try {
-        stat = fs.statSync(uri);
-      } catch (e) {
-        pathForOpen = uri.startsWith('file://') ? uri.substring('file://'.length) : uri;
-        stat = fs.statSync(pathForOpen);
-      }
-      if (stat === null) {
-        return null;
-      }
+      // photoViewPicker 返回 file://media/... URI：不能 statSync（沙箱外），
+      // 必须直接 openSync(uri) 拿 fd 再 fstatSync，否则图片链路静默失败
+      f = fs.openSync(uri, fs.OpenMode.READ_ONLY);
+      const stat = fs.statSync(f.fd);
       if (stat.size > 4 * 1024 * 1024) {
         return null; // >4MB 跳过
       }
-      const f = fs.openSync(pathForOpen, fs.OpenMode.READ_ONLY);
-      let b64 = '';
-      try {
-        const buf = new ArrayBuffer(stat.size);
-        fs.readSync(f.fd, buf);
-        const helper = new util.Base64Helper();
-        b64 = helper.encodeToStringSync(new Uint8Array(buf));
-      } finally {
-        fs.closeSync(f);
-      }
+      const buf = new ArrayBuffer(stat.size);
+      fs.readSync(f.fd, buf);
+      const helper = new util.Base64Helper();
+      const b64 = helper.encodeToStringSync(new Uint8Array(buf));
       let mime = 'image/jpeg';
-      if (pathForOpen.endsWith('.png')) {
+      const lower = uri.toLowerCase();
+      if (lower.endsWith('.png')) {
         mime = 'image/png';
-      } else if (pathForOpen.endsWith('.webp')) {
+      } else if (lower.endsWith('.webp')) {
         mime = 'image/webp';
       }
       return `data:${mime};base64,${b64}`;
     } catch (e) {
       Log.warn(`fileToDataUrl failed: ${(e as Error).message}`);
       return null;
+    } finally {
+      if (f !== null) {
+        try {
+          fs.closeSync(f);
+        } catch (e) {
+          // ignore
+        }
+      }
     }
   }
 }

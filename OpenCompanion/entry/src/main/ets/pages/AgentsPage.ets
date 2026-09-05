@@ -1,4 +1,4 @@
-import { bus, Ev, BusEvent } from '../commons/EventBus';
+import { bus, Ev, BusEvent, BusListener } from '../commons/EventBus';
 import { AgentRepo } from '../core/AgentRepo';
 import { ToolRegistry } from '../core/ToolRegistry';
 import { AgentProfile, ToolDef } from '../core/Types';
@@ -19,17 +19,23 @@ export struct AgentsPage {
   @State editTools: string[] = [];
   @State generating: boolean = false;
   private allTools: ToolDef[] = [];
+  private onAgentsChanged: BusListener = (_e: BusEvent) => {
+    this.refresh();
+  };
 
   aboutToAppear(): void {
     this.refresh();
-    bus.on(Ev.AGENTS_CHANGED, (_e: BusEvent) => {
-      this.refresh();
-    });
+    bus.on(Ev.AGENTS_CHANGED, this.onAgentsChanged);
+  }
+
+  aboutToDisappear(): void {
+    bus.off(Ev.AGENTS_CHANGED, this.onAgentsChanged);
   }
 
   refresh(): void {
     AgentRepo.list().then((list: AgentProfile[]) => {
       this.agents = list;
+    }).catch((_e: Error) => {
     });
     this.allTools = ToolRegistry.all();
   }
@@ -117,10 +123,8 @@ export struct AgentsPage {
                     .backgroundColor('#FFE3EA')
                     .fontColor('#C2557E')
                     .onClick(() => {
-                      bus.emit(Ev.NAVIGATE, { 'page': 'chat' } as Record<string, string>);
-                      setTimeout(() => {
-                        // 预填输入：由 ChatPage 输入框接收（简化为提示）
-                      }, 50);
+                      // 跳转对话页并预填 @提及（draft 由 ChatPage 的 NAVIGATE 监听消费）
+                      bus.emit(Ev.NAVIGATE, { 'page': 'chat', 'draft': `@${a.name} ` } as Record<string, string>);
                     })
                   Button('编辑')
                     .height(30)
@@ -223,7 +227,9 @@ export struct AgentsPage {
               Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start }) {
                 ForEach(this.allTools, (t: ToolDef) => {
                   Row({ space: 4 }) {
-                    Checkbox()
+                    // select 绑定初始白名单：编辑已有智能体时正确回显，避免误清配置
+                    Checkbox({ name: t.name, group: 'agentTools' })
+                      .select(this.editTools.includes(t.name))
                       .selectedColor('#F76C8A')
                       .width(16)
                       .height(16)

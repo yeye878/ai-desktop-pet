@@ -1,5 +1,5 @@
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
-import { bus, Ev, BusEvent } from '../commons/EventBus';
+import { bus, Ev, BusEvent, BusListener } from '../commons/EventBus';
 import { ChatMessage } from '../core/Types';
 import { ChatService } from '../core/ChatService';
 import { AgentRepo } from '../core/AgentRepo';
@@ -39,6 +39,84 @@ export struct ChatPage {
   @State askReply: string = '';
   @State agents: AgentProfile[] = [];
   private scroller: Scroller = new Scroller();
+  // 监听器持有成员引用，aboutToDisappear 统一注销——Index 条件渲染切页会销毁组件，
+  // 不注销则旧闭包累积（静音断句时同一句话被重复发送 N 次）
+  private onChatChanged: BusListener = (e: BusEvent) => {
+    const d = e.data as Record<string, Object> | null;
+    if (d !== null && d !== undefined) {
+      const m = d['messages'];
+      const b = d['busy'];
+      this.msgs = m as ChatMessage[];
+      this.busy = b === true;
+    }
+    setTimeout(() => {
+      this.scroller.scrollEdge(Edge.Bottom);
+    }, 30);
+  };
+  private onVoicePartial: BusListener = (e: BusEvent) => {
+    const d = e.data as Record<string, string> | null;
+    if (d !== null && d !== undefined) {
+      this.voicePartial = d['text'] ?? '';
+    }
+  };
+  private onVoiceState: BusListener = (e: BusEvent) => {
+    const d = e.data as Record<string, string> | null;
+    if (d !== null && d !== undefined) {
+      this.voiceState = d['state'] ?? 'idle';
+      if (this.voiceState === 'idle' || this.voiceState === 'error') {
+        // 静音自动断句 → 自动发送
+        if (this.showVoice) {
+          const finalText = AsrController.stop();
+          if (finalText.trim().length > 0) {
+            this.sendText(finalText.trim());
+          }
+          this.showVoice = false;
+        }
+      }
+    }
+  };
+  private onToolConfirm: BusListener = (e: BusEvent) => {
+    const d = e.data as Record<string, string> | null;
+    if (d !== null && d !== undefined) {
+      this.confirmPayload = { id: d['id'] ?? '', tool: d['tool'] ?? '', args: d['args'] ?? '' };
+      this.showConfirm = true;
+    }
+  };
+  private onAskUser: BusListener = (e: BusEvent) => {
+    const d = e.data as Record<string, Object> | null;
+    if (d !== null && d !== undefined) {
+      const opts: Array<Record<string, string>> = [];
+      const raw = d['options'] as Array<Object> | undefined;
+      if (raw !== undefined) {
+        raw.forEach((o: Object) => {
+          const m = o as Record<string, string>;
+          opts.push(m);
+        });
+      }
+      this.askPayload = {
+        id: typeof d['id'] === 'string' ? d['id'] as string : '',
+        question: typeof d['question'] === 'string' ? d['question'] as string : '',
+        options: opts
+      };
+      this.showAsk = true;
+    }
+  };
+  private onAiError: BusListener = (e: BusEvent) => {
+    const d = e.data as Record<string, string> | null;
+    if (d !== null && d !== undefined) {
+      ChatService.pushLocalAssistantMessage(`⚠️ ${d['message'] ?? '未知错误'}`);
+    }
+  };
+  private onNavigate: BusListener = (e: BusEvent) => {
+    // 消费 AgentsPage/EntryAbility 携带的 draft（@提及预填/接续草稿）
+    const d = e.data as Record<string, string> | null;
+    if (d !== null && d !== undefined) {
+      const draft = d['draft'];
+      if (typeof draft === 'string' && draft.length > 0) {
+        this.input = this.input.length > 0 ? `${this.input} ${draft}` : draft;
+      }
+    }
+  };
 
   aboutToAppear(): void {
     const snap = ChatService.snapshot();
@@ -46,73 +124,25 @@ export struct ChatPage {
     this.busy = snap.busy;
     AgentRepo.list().then((list: AgentProfile[]) => {
       this.agents = list;
+    }).catch((_e: Error) => {
     });
-    bus.on(Ev.CHAT_CHANGED, (e: BusEvent) => {
-      const d = e.data as Record<string, Object> | null;
-      if (d !== null && d !== undefined) {
-        const m = d['messages'];
-        const b = d['busy'];
-        this.msgs = m as ChatMessage[];
-        this.busy = b === true;
-      }
-      setTimeout(() => {
-        this.scroller.scrollEdge(Edge.Bottom);
-      }, 30);
-    });
-    bus.on(Ev.VOICE_PARTIAL, (e: BusEvent) => {
-      const d = e.data as Record<string, string> | null;
-      if (d !== null && d !== undefined) {
-        this.voicePartial = d['text'] ?? '';
-      }
-    });
-    bus.on(Ev.VOICE_STATE, (e: BusEvent) => {
-      const d = e.data as Record<string, string> | null;
-      if (d !== null && d !== undefined) {
-        this.voiceState = d['state'] ?? 'idle';
-        if (this.voiceState === 'idle' || this.voiceState === 'error') {
-          // 静音自动断句 → 自动发送
-          if (this.showVoice) {
-            const finalText = AsrController.stop();
-            if (finalText.trim().length > 0) {
-              this.sendText(finalText.trim());
-            }
-            this.showVoice = false;
-          }
-        }
-      }
-    });
-    bus.on(Ev.TOOL_CONFIRM, (e: BusEvent) => {
-      const d = e.data as Record<string, string> | null;
-      if (d !== null && d !== undefined) {
-        this.confirmPayload = { id: d['id'] ?? '', tool: d['tool'] ?? '', args: d['args'] ?? '' };
-        this.showConfirm = true;
-      }
-    });
-    bus.on(Ev.ASK_USER, (e: BusEvent) => {
-      const d = e.data as Record<string, Object> | null;
-      if (d !== null && d !== undefined) {
-        const opts: Array<Record<string, string>> = [];
-        const raw = d['options'] as Array<Object> | undefined;
-        if (raw !== undefined) {
-          raw.forEach((o: Object) => {
-            const m = o as Record<string, string>;
-            opts.push(m);
-          });
-        }
-        this.askPayload = {
-          id: typeof d['id'] === 'string' ? d['id'] as string : '',
-          question: typeof d['question'] === 'string' ? d['question'] as string : '',
-          options: opts
-        };
-        this.showAsk = true;
-      }
-    });
-    bus.on(Ev.AI_ERROR, (e: BusEvent) => {
-      const d = e.data as Record<string, string> | null;
-      if (d !== null && d !== undefined) {
-        ChatService.pushLocalAssistantMessage(`⚠️ ${d['message'] ?? '未知错误'}`);
-      }
-    });
+    bus.on(Ev.CHAT_CHANGED, this.onChatChanged);
+    bus.on(Ev.VOICE_PARTIAL, this.onVoicePartial);
+    bus.on(Ev.VOICE_STATE, this.onVoiceState);
+    bus.on(Ev.TOOL_CONFIRM, this.onToolConfirm);
+    bus.on(Ev.ASK_USER, this.onAskUser);
+    bus.on(Ev.AI_ERROR, this.onAiError);
+    bus.on(Ev.NAVIGATE, this.onNavigate);
+  }
+
+  aboutToDisappear(): void {
+    bus.off(Ev.CHAT_CHANGED, this.onChatChanged);
+    bus.off(Ev.VOICE_PARTIAL, this.onVoicePartial);
+    bus.off(Ev.VOICE_STATE, this.onVoiceState);
+    bus.off(Ev.TOOL_CONFIRM, this.onToolConfirm);
+    bus.off(Ev.ASK_USER, this.onAskUser);
+    bus.off(Ev.AI_ERROR, this.onAiError);
+    bus.off(Ev.NAVIGATE, this.onNavigate);
   }
 
   sendText(text: string): void {
@@ -164,7 +194,7 @@ export struct ChatPage {
             ListItem() {
               this.Bubble(m)
             }
-          }, (m: ChatMessage) => `${m.id}_${m.content.length}_${m.toolEvents.length}`)
+          }, (m: ChatMessage) => m.id)
         }
         .layoutWeight(1)
         .width('100%')
@@ -526,7 +556,7 @@ export struct ChatPage {
           Column({ space: 2 }) {
             ForEach(m.toolEvents, (t: string) => {
               Text(t).fontSize(11).fontColor('#8A7A80')
-            }, (t: string, i: number) => `${i}_${t}`)
+            }, (t: string, i: number) => `${i}_${t.substring(0, 40)}`)
           }
           .width('100%')
           .padding(6)

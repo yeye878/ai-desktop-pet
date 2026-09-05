@@ -1,5 +1,5 @@
 import { EvolutionManager } from '../core/EvolutionManager';
-import { bus, Ev, BusEvent } from '../commons/EventBus';
+import { bus, Ev, BusEvent, BusListener } from '../commons/EventBus';
 
 /**
  * 进化中心（对应桌面版 EvolutionCenter：画像准则 / 进化提案 / 编年史 + 一键复盘）
@@ -17,12 +17,17 @@ export struct EvolutionPage {
   @State insights: Array<Map<string, Object>> = [];
   @State logs: Array<Map<string, Object>> = [];
   @State autoOn: boolean = true;
+  private onEvoChanged: BusListener = (_e: BusEvent) => {
+    this.refresh();
+  };
 
   aboutToAppear(): void {
     this.refresh();
-    bus.on(Ev.EVOLUTION_CHANGED, (_e: BusEvent) => {
-      this.refresh();
-    });
+    bus.on(Ev.EVOLUTION_CHANGED, this.onEvoChanged);
+  }
+
+  aboutToDisappear(): void {
+    bus.off(Ev.EVOLUTION_CHANGED, this.onEvoChanged);
   }
 
   refresh(): void {
@@ -31,15 +36,19 @@ export struct EvolutionPage {
       this.levelTitle = typeof s['title'] === 'string' ? s['title'] as string : '初识';
       this.insightCount = typeof s['insights'] === 'number' ? s['insights'] as number : 0;
       this.logCount = typeof s['appliedLogs'] === 'number' ? s['appliedLogs'] as number : 0;
+    }).catch((_e: Error) => {
     });
     EvolutionManager.listProposals().then((rows: Array<Map<string, Object>>) => {
       this.proposals = rows;
+    }).catch((_e: Error) => {
     });
     EvolutionManager.listInsights().then((rows: Array<Map<string, Object>>) => {
       this.insights = rows;
+    }).catch((_e: Error) => {
     });
     EvolutionManager.listLogs().then((rows: Array<Map<string, Object>>) => {
       this.logs = rows;
+    }).catch((_e: Error) => {
     });
     this.autoOn = EvolutionManager.isAutoEnabled();
   }
@@ -144,11 +153,15 @@ export struct EvolutionPage {
                     EvolutionManager.applyProposal(String(p.get('id'))).then((msg: string) => {
                       this.reflectMsg = msg;
                       this.refresh();
+                    }).catch((e: Error) => {
+                      this.reflectMsg = `采纳失败: ${e.message}`;
                     });
                   })
                   Button('拒绝').height(28).backgroundColor('#F0E4E8').fontColor('#8A7A80').onClick(() => {
                     EvolutionManager.rejectProposal(String(p.get('id'))).then(() => {
                       this.refresh();
+                    }).catch((e: Error) => {
+                      this.reflectMsg = `拒绝失败: ${e.message}`;
                     });
                   })
                 }
@@ -192,6 +205,8 @@ export struct EvolutionPage {
                   EvolutionManager.rollbackLog(String(log.get('id'))).then((msg: string) => {
                     this.reflectMsg = msg;
                     this.refresh();
+                  }).catch((e: Error) => {
+                    this.reflectMsg = `回滚失败: ${e.message}`;
                   });
                 })
               }

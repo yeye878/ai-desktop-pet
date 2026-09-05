@@ -13,7 +13,6 @@ export class BusEvent {
 }
 
 export type BusListener = (e: BusEvent) => void;
-
 export class EventBus {
   private listeners: Map<string, Set<BusListener>> = new Map<string, Set<BusListener>>();
 

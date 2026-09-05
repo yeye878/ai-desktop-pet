@@ -10,6 +10,15 @@
 - 产物：`entry/build/default/outputs/default/entry-default-unsigned.hap`
 - CLI 一键构建：双击 `build.cmd`（或在其中追加 `clean` 参数做全量构建）
 
+## ✅ 运行验证状态（Pura 90 Pro x86 模拟器实测，2026-09）
+
+- **模拟器安装运行通过**：未签名 HAP 经 `hdc install -r` 直接安装（模拟器免签名），EntryAbility 正常启动
+- **五页渲染验证通过**：首页（桌宠 Canvas/状态机 ❤️⚡数值真实变化）/ 对话页（@提及条显示三个内置智能体）/ 知识库页 / 智能体页（三子智能体卡片）/ 进化页 / 设置浮层（LLM API/热词/城市）
+- **命令链路验证通过**：`/help` → 本地回复落库回显；`/kb` → 知识库状态（含降级提示）
+- **R2 降级链实测通过**：模拟器裁剪 DataAugmentationKit（`data.retrieval module not found`），应用不再启动崩溃（RagBridge 惰性继承修复），问答自动降级 `fallback to search+llm`，FTS4 表正常建表
+- **CoreSpeechKit 实测可用**：ASR 引擎带 9 热词初始化成功（HiAI AsrEntryManager init success）；TTS 首次 createEngine 超时（模拟器服务冷启动慢），lazy preheat 可自恢复
+- **长稳验证**：应用进程持续运行 2 小时+无新崩溃；修复前的 3 次 jscrash 均由模块级 `extends rag.ChatLLM` 引起，已修复
+
 ## 命题要求覆盖
 
 | 命题要求 | 实现情况 |
@@ -39,7 +48,17 @@
 build.cmd
 ```
 
-产物为**未签名** HAP，可直接用于编译验证；安装运行仍需步骤一中的自动签名。
+产物为**未签名** HAP，可直接用于编译验证；安装运行仍需步骤一中的自动签名（模拟器除外，见下）。
+
+### 方式三：模拟器 CLI 安装（本机已验证）
+
+```cmd
+:: DevEco 模拟器 CLI（首次需 GUI 里同意协议并部署镜像）
+"D:\DevEco Studio\tools\emulator\Emulator.exe" -start "Pura 90 Pro"
+:: 模拟器允许安装未签名 HAP（error code 00801002 = C盘磁盘空间不足，预留 >8G）
+hdc install -r entry\build\default\outputs\default\entry-default-unsigned.hap
+hdc shell aa start -a EntryAbility -b com.opencompanion.pet
+```
 
 ### 运行后 3 分钟配置
 
@@ -78,8 +97,10 @@ entry/src/main/ets/
 
 ## 已知限制 / 后续路线
 
-- RAG Kit 向量化通道（`knowledgeProcessor`）仅 PC/2in1 设备支持；手机走倒排索引（BM25）+ 端侧/云端问答，已按 SDK 官方约束设计
+- **手机模拟器无 DataAugmentationKit**（x86 镜像裁剪 `data.retrieval`）：RAG Kit 主路径在真机（PC/2in1/部分手机）可用；无 Kit 设备自动走降级链（本地 FTS4 检索 + LLM 融合），已实测。RAG Kit 向量化通道（`knowledgeProcessor`）仅 PC/2in1 设备支持
 - FTS4 表不可用的极端环境自动切换本地 bigram 检索（降级链 L2）
+- 平板侧栏断点布局（≥720vp）代码已按 px2vp 正确实现；运行验证需 MatePad 模拟器（宿主机内存不足未跑，代码审查通过）
 - PDF/docx 解析：当前以"转文本/OCR"路径入库；如需原生解析可后续以 Rust ohos 目标编译 native 模块（见方案 §9 R6）
 - 天气默认源 wttr.in，网络不可达时 get_weather 工具返回友好错误（可在设置改城市）
 - `decodeWithStream` 有弃用提示（功能正常），后续可换 `decodeToString`
+- 输入法长驻弹起时底部导航被遮挡（真机输入法通常自动收起，影响小）；后续可加 `expandSafeArea` 或输入框失焦处理

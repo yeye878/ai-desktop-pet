@@ -232,6 +232,8 @@ export class LlmClient {
           LlmClient.parseFullCompletion(run, cb);
         }
         run.finished = true;
+        // 正常结束清理句柄（原先只在 cancel 时 delete，长会话慢泄漏）
+        LlmClient.streams.delete(runId);
         const calls = LlmClient.accumulatedCalls(run);
         cb.onDone(run.fullContent, calls);
       },
@@ -240,6 +242,7 @@ export class LlmClient {
           return;
         }
         run.finished = true;
+        LlmClient.streams.delete(runId);
         cb.onError(msg);
       }
     });

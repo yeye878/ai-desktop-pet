@@ -34,7 +34,7 @@ export default class EntryAbility extends UIAbility {
       const draft = params['draft'];
       if (typeof draft === 'string' && (draft as string).length > 0) {
         AppContext.postFrame(() => {
-          bus.emit(Ev.NAVIGATE, { 'page': 'chat' } as Record<string, string>);
+          bus.emit(Ev.NAVIGATE, { 'page': 'chat', 'draft': draft as string } as Record<string, string>);
         }, 500);
       }
     }
@@ -49,11 +49,12 @@ export default class EntryAbility extends UIAbility {
       try {
         const win = windowStage.getMainWindowSync();
         win.on('windowSizeChange', (size: window.Size) => {
-          AppContext.setViewport(size.width, size.height);
+          // size/windowRect 单位为 px，vpWidth/vpWidth 需要 vp（Index 的 720vp 断点依赖它）
+          AppContext.setViewport(px2vp(size.width), px2vp(size.height));
           bus.emit(Ev.VP_WIDTH);
         });
-        win.getWindowProperties();
-        AppContext.setViewport(win.getWindowProperties().windowRect.width, win.getWindowProperties().windowRect.height);
+        const rect = win.getWindowProperties().windowRect;
+        AppContext.setViewport(px2vp(rect.width), px2vp(rect.height));
       } catch (e) {
         hilog.warn(0x0C0C, 'OpenCompanion', 'window size init failed');
       }

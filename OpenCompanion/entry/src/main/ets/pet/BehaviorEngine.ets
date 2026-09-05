@@ -1,4 +1,5 @@
 import { bus, Ev, BusEvent } from '../commons/EventBus';
+import { AppContext, SettingKey } from '../commons/AppContext';
 
 export type PetState = 'idle' | 'waving' | 'happy' | 'sleeping' | 'thinking' | 'speaking' | 'confused' | 'sad';
 
@@ -15,6 +16,12 @@ export class BehaviorEngine {
   private static stateUntil: number = 0;
   private static idleSince: number = Date.now();
   private static started: boolean = false;
+
+  /** 状态变化时同步心情文案到设置存储（服务卡片 30 分钟定时刷新时读取） */
+  private static persistMood(): void {
+    AppContext.setSetting(SettingKey.PET_MOOD, BehaviorEngine.moodText).catch((_e: Error) => {
+    });
+  }
 
   static start(): void {
     if (BehaviorEngine.started) {
@@ -59,6 +66,7 @@ export class BehaviorEngine {
     if (BehaviorEngine.state === 'idle' && now - BehaviorEngine.idleSince > 300000) {
       BehaviorEngine.state = 'sleeping';
       BehaviorEngine.moodText = 'zzZ…';
+      BehaviorEngine.persistMood();
     }
     // 睡觉回能量
     if (BehaviorEngine.state === 'sleeping') {

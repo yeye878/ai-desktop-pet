@@ -1,8 +1,9 @@
-import { bus, Ev, BusEvent } from '../commons/EventBus';
+import { bus, Ev, BusEvent, BusListener } from '../commons/EventBus';
 import { KbService } from '../knowledge/KbService';
 import { DocImporter } from '../knowledge/DocImporter';
 import { KbHit } from '../knowledge/KbService';
 import { AppContext } from '../commons/AppContext';
+import { CancelToken } from '../core/Types';
 
 interface DocRow {
   id: string;
@@ -24,13 +25,18 @@ export struct KnowledgePage {
   @State answering: boolean = false;
   @State statusLine: string = '';
   @State offlineMode: boolean = AppContext.getBool('kb_offline_mode', false);
-  private cancelFlag: boolean = false;
+  private askToken: CancelToken | null = null;
+  private onKbChanged: BusListener = (_e: BusEvent) => {
+    this.refresh();
+  };
 
   aboutToAppear(): void {
     this.refresh();
-    bus.on(Ev.KB_CHANGED, (_e: BusEvent) => {
-      this.refresh();
-    });
+    bus.on(Ev.KB_CHANGED, this.onKbChanged);
+  }
+
+  aboutToDisappear(): void {
+    bus.off(Ev.KB_CHANGED, this.onKbChanged);
   }
 
   refresh(): void {
@@ -59,9 +65,9 @@ export struct KnowledgePage {
       return;
     }
     this.answering = true;
-    this.cancelFlag = false;
     this.answer = '';
     this.sources = [];
+    this.askToken = new CancelToken();
     try {
       await KbService.askStream(q, {
         onDelta: (t: string) => {
@@ -70,10 +76,11 @@ export struct KnowledgePage {
         onSources: (hits: KbHit[]) => {
           this.sources = hits;
         }
-      }, null);
+      }, this.askToken);
     } catch (e) {
       this.answer = `出错了: ${(e as Error).message}`;
     }
+    this.askToken = null;
     this.answering = false;
   }
 
@@ -169,11 +176,11 @@ export struct KnowledgePage {
             .onSubmit(() => {
               this.ask();
             })
-          Button(this.answering ? '…' : '提问')
+          Button(this.answering ? '停止' : '提问')
             .backgroundColor(this.answering ? '#F0E4E8' : '#F76C8A')
             .onClick(() => {
               if (this.answering) {
-                this.cancelFlag = true;
+                this.askToken?.cancel();
               } else {
                 this.ask();
               }
