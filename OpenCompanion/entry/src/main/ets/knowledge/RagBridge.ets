@@ -127,6 +127,25 @@ export class RagBridge {
     // 惰性：首次问答时才创建会话（冷启动优化）
   }
 
+  /**
+   * 会话池预热（对应方案 4.2"会话池预热机制降低冷会话首字时延"）：
+   * 首帧后 idle 调用，提前完成 RAG 会话创建开销；失败静默（降级链兜底）。
+   */
+  static async preheat(): Promise<void> {
+    if (!RagBridge.kitAvailable()) {
+      return;
+    }
+    if (RagBridge.session !== null) {
+      return;
+    }
+    try {
+      await RagBridge.ensureSession();
+      Log.info('rag session preheated');
+    } catch (e) {
+      Log.warn(`rag preheat failed (degrade on demand): ${(e as Error).message}`);
+    }
+  }
+
   static kitAvailable(): boolean {
     try {
       if (!canIUse('SystemCapability.DataAugmentation.RAG')) {

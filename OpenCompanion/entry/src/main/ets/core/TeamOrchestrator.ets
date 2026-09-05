@@ -26,6 +26,10 @@ export class TeamOrchestrator {
   /** @param text 已剥离 @提及 与 /team 前缀的任务描述 */
   static async run(taskText: string, mentioned: AgentProfile[], token: CancelToken,
     trace: (line: string) => void, onThinking: (d: string) => void, onContent: (d: string) => void): Promise<string> {
+    const t0 = Date.now();
+    const clock = (): string => {
+      return `[+${((Date.now() - t0) / 1000).toFixed(1)}s]`;
+    };
     const profile = await LlmProfiles.active();
     if (profile === null) {
       return '未配置 LLM API，无法组队。请到「设置」配置。';
@@ -35,9 +39,9 @@ export class TeamOrchestrator {
       const all = await AgentRepo.list();
       agents = all.filter((a: AgentProfile) => a.isBuiltin);
     }
-    trace(`👥 组队模式：${agents.map((a: AgentProfile) => a.avatar + a.name).join(' + ')}`);
+    trace(`${clock()} 👥 [规划] 组队模式：${agents.map((a: AgentProfile) => a.avatar + a.name).join(' + ')}`);
 
-    // ① 规划：LLM 把任务拆解到各成员
+    // ① 规划：LLM 把任务拆解到各成员（DAG 分解）
     let subtasks: SubTask[] = [];
     try {
       const agentDesc = agents.map((a: AgentProfile) => `${a.name}(${a.description})`).join('；');
@@ -76,11 +80,14 @@ export class TeamOrchestrator {
         return st;
       });
     }
+    trace(`${clock()} 📋 [派发] 任务图分解为 ${subtasks.length} 个子任务：`);
     subtasks.forEach((st: SubTask) => {
-      trace(`📋 ${st.agentName} ← ${st.subtask}`);
+      trace(`${clock()} 　· ${st.agentName} ← ${st.subtask}`);
     });
 
     // ② 并行执行各成员（能力白名单隔离；组队模式下高风险工具自动拒绝，对应 CONFIRM_GATE 单槽约束）
+    //    工程保障：单成员 90s 超时 + 失败重试 1 次；单成员异常不拖垮也不挂死整队（方案 4.4）
+    trace(`${clock()} ▶ [执行] ${subtasks.length} 个子任务并行开始`);
     const reports: string[] = [];
     const jobs: Promise<void>[] = [];
     subtasks.forEach((st: SubTask) => {
@@ -96,35 +103,49 @@ export class TeamOrchestrator {
       }
       const a: AgentProfile = agent;
       jobs.push((async (): Promise<void> => {
-        try {
-          trace(`▶ ${a.name} 开始执行…`);
-          const opts = new LoopOptions();
-          opts.profile = profile;
-          opts.systemPrompt = `${a.systemPrompt}\n当前处于多智能体协作模式：只负责你被分配的子任务，输出你的工作报告（不要寒暄）。`;
-          opts.history = [];
-          opts.userText = st.subtask;
-          opts.tools = ToolRegistry.defsFor(a.allowedTools);
-          opts.allowConfirm = false;
-          opts.maxTurns = 8;
-          opts.token = token;
-          const cbs: LoopCallbacks = {
-            onThinking: (_d: string) => {
-            },
-            onContent: (_d: string) => {
-            },
-            onToolTrace: (line: string) => {
-              trace(`[${a.name}] ${line}`);
-            }
-          };
-          opts.callbacks = cbs;
-          const r: LoopResult = await AgentLoop.run(opts);
-          reports.push(`【${a.name}】\n${r.content.length > 0 ? r.content : '(无输出)'}`);
-          trace(`✔ ${a.name} 完成`);
-        } catch (e) {
-          // 单成员失败不拖垮整个团队：记入报告继续综合
-          reports.push(`【${a.name}】执行异常: ${(e as Error).message}`);
-          trace(`✖ ${a.name} 异常: ${(e as Error).message}`);
+        let lastErr = '';
+        for (let attempt = 1; attempt <= 2; attempt++) {
+          if (token.cancelled) {
+            return;
+          }
+          // 每个成员独立的取消令牌：超时/用户中断只取消自己，不影响其他成员
+          const childToken = new CancelToken();
+          token.onCancel(() => {
+            childToken.cancel();
+          });
+          try {
+            trace(`${clock()} [${a.name}] 第${attempt}次尝试…`);
+            const opts = new LoopOptions();
+            opts.profile = profile;
+            opts.systemPrompt = `${a.systemPrompt}\n当前处于多智能体协作模式：只负责你被分配的子任务，输出你的工作报告（不要寒暄）。`;
+            opts.history = [];
+            opts.userText = st.subtask;
+            opts.tools = ToolRegistry.defsFor(a.allowedTools);
+            opts.allowConfirm = false;
+            opts.maxTurns = 8;
+            opts.token = childToken;
+            const cbs: LoopCallbacks = {
+              onThinking: (_d: string) => {
+              },
+              onContent: (_d: string) => {
+              },
+              onToolTrace: (line: string) => {
+                trace(`${clock()} [${a.name}] ${line}`);
+              }
+            };
+            opts.callbacks = cbs;
+            const r: LoopResult = await TeamOrchestrator.withTimeout(AgentLoop.run(opts), 90000, `${a.name}`);
+            reports.push(`【${a.name}】\n${r.content.length > 0 ? r.content : '(无输出)'}`);
+            trace(`${clock()} ✔ [${a.name}] 完成`);
+            return;
+          } catch (e) {
+            lastErr = (e as Error).message;
+            childToken.cancel(); // 超时/失败后终止该成员的底层请求
+            Log.warn(`agent ${a.name} attempt ${attempt} failed: ${lastErr}`);
+          }
         }
+        reports.push(`【${a.name}】执行异常: ${lastErr}`);
+        trace(`${clock()} ✖ [${a.name}] 异常: ${lastErr}`);
       })());
     });
     await Promise.all(jobs);
@@ -133,7 +154,7 @@ export class TeamOrchestrator {
     }
 
     // ③ 综合汇报（流式输出给用户）
-    trace('🧩 队长综合各成员报告…');
+    trace(`${clock()} 🧩 [汇总] 队长综合 ${reports.length} 份成员报告…`);
     const capped: string[] = [];
     reports.forEach((r: string) => {
       capped.push(r.length > 2500 ? r.substring(0, 2500) : r);
@@ -161,8 +182,25 @@ export class TeamOrchestrator {
         }
       }, runId);
     });
+    trace(`${clock()} ✔ [完成] 总耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s`);
     bus.emit(Ev.AI_FINISHED, { 'agentName': '智能体团队', 'agentAvatar': '👥' } as Record<string, string>);
     return final;
+  }
+
+  /** 单成员执行超时保护：超时抛错触发重试/放弃，但不挂死整队 */
+  private static withTimeout(p: Promise<LoopResult>, ms: number, label: string): Promise<LoopResult> {
+    return new Promise<LoopResult>((resolve: (v: LoopResult) => void, reject: (e: Error) => void) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`${label} 超时（${Math.round(ms / 1000)}s）`));
+      }, ms);
+      p.then((v: LoopResult) => {
+        clearTimeout(timer);
+        resolve(v);
+      }).catch((e: Error) => {
+        clearTimeout(timer);
+        reject(e);
+      });
+    });
   }
 
   private static synthMessages(task: string, reports: string[]): LlmMessage[] {

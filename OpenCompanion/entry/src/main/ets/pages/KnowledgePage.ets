@@ -4,6 +4,7 @@ import { DocImporter } from '../knowledge/DocImporter';
 import { KbHit } from '../knowledge/KbService';
 import { AppContext } from '../commons/AppContext';
 import { CancelToken } from '../core/Types';
+import { IntentEngine } from '../core/IntentEngine';
 
 interface DocRow {
   id: string;
@@ -102,6 +103,8 @@ export struct KnowledgePage {
           .onClick(() => {
             DocImporter.importTextDocs().then((msg: string) => {
               this.answer = msg;
+              // 知识库变更 → 动态热词表失效（ASR 引擎经 KB_CHANGED 事件延迟重建）
+              IntentEngine.invalidateHotwords();
               this.refresh();
             });
           })
@@ -111,6 +114,7 @@ export struct KnowledgePage {
           .onClick(() => {
             DocImporter.importImagesOcr().then((msg: string) => {
               this.answer = msg;
+              IntentEngine.invalidateHotwords();
               this.refresh();
             });
           })
@@ -148,6 +152,7 @@ export struct KnowledgePage {
                 .fontSize(15)
                 .onClick(() => {
                   KbService.deleteDoc(d.id).then(() => {
+                    IntentEngine.invalidateHotwords();
                     this.refresh();
                   });
                 })

@@ -3,11 +3,12 @@ import { ThemeEngine } from '../pet/ThemeEngine';
 import { PetCanvas } from '../pet/PetCanvas';
 import { ChatService } from '../core/ChatService';
 import { bus, Ev, BusEvent } from '../commons/EventBus';
+import { PerfTrace } from '../commons/PerfTrace';
 import { LlmProfiles } from '../core/LlmClient';
 import { KbService } from '../knowledge/KbService';
 
 /**
- * 首页：桌宠伙伴 + 情绪 + 快捷操作 + 状态卡片
+ * 首页：桌宠伙伴 + 情绪 + 快捷操作 + 状态卡片（含命题性能指标自检）
  */
 @Component
 export struct HomePage {
@@ -15,6 +16,7 @@ export struct HomePage {
   @State stateLabel: string = '待机中';
   @State apiReady: boolean = false;
   @State kbReady: boolean = false;
+  @State coldMs: number = -1;
   @State tick: number = 0;
   private timer: number = -1;
 
@@ -41,6 +43,7 @@ export struct HomePage {
     this.stateLabel = stateMap[BehaviorEngine.state] ?? '待机中';
     this.apiReady = LlmProfiles.list().length > 0;
     this.kbReady = KbService.isKitReady();
+    this.coldMs = PerfTrace.lastMs('冷启动·可交互');
   }
 
   build() {
@@ -135,7 +138,13 @@ export struct HomePage {
               .fontColor(this.kbReady ? '#3E8E5A' : '#8A7A80')
           }
           .width('100%')
-          Text('复合指令示例：拍一下这个文档，帮我总结重点（对话页 → 📷 → 发送）')
+          if (this.coldMs >= 0) {
+            Text(`🚀 冷启动·可交互 ${(this.coldMs / 1000).toFixed(2)}s（目标 ≤3s）｜指令直答与语音时延可用 /perf 查看`)
+              .fontSize(12)
+              .fontColor(this.coldMs <= 3000 ? '#3E8E5A' : '#B0670A')
+              .width('100%')
+          }
+          Text('复合指令示例：拍一下这个文档，帮我总结重点（对话页 → 📷 → 发送，或直接语音说）')
             .fontSize(12)
             .fontColor('#8A7A80')
             .width('100%')

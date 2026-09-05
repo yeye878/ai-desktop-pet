@@ -2,6 +2,7 @@ import { AppContext, SettingKey } from '../commons/AppContext';
 import { LlmClient, LlmProfiles } from '../core/LlmClient';
 import { LlmProfile } from '../core/Types';
 import { AgentRepo } from '../core/AgentRepo';
+import { DistributedSync } from '../commons/DistributedSync';
 
 /**
  * 设置面板（API 配置管理 + 语音 + 隐私 + 关于）。
@@ -243,6 +244,24 @@ export struct SettingsPanel {
                 })
             }
             .width('100%')
+          }
+          .width('100%')
+          .padding(12)
+          .backgroundColor('#FFFFFF')
+          .borderRadius(14)
+
+          // 跨设备协同
+          Column({ space: 4 }) {
+            Text('跨设备协同').fontSize(14).fontWeight(FontWeight.Bold).fontColor('#5B4A4F').width('100%')
+            Text(DistributedSync.statusText())
+              .fontSize(12)
+              .fontColor('#8A7A80')
+              .width('100%')
+            Text('任务接续：多设备登录同一华为账号后，任务中心可一键把当前对话流转到手机/平板/2in1 继续，' +
+              '接续自动携带最近对话上下文。')
+              .fontSize(11)
+              .fontColor('#B9A9AF')
+              .width('100%')
           }
           .width('100%')
           .padding(12)

@@ -117,7 +117,7 @@ export class DocImporter {
       const buf = new ArrayBuffer(size);
       fs.readSync(f.fd, buf);
       const decoder = util.TextDecoder.create('utf-8');
-      return decoder.decodeWithStream(new Uint8Array(buf));
+      return decoder.decodeToString(new Uint8Array(buf));
     } finally {
       fs.closeSync(f);
     }

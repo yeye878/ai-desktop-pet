@@ -21,10 +21,34 @@ export class AgentRepo {
       const v = rows[0].get('c');
       count = typeof v === 'number' ? v : Number(v);
     }
+    const builtins: AgentProfile[] = AgentRepo.builtinAgents();
     if (count > 0) {
+      // 版本升级：内置智能体白名单做并集同步（新工具自动加入，保留用户已自定义的部分）
+      const all = await AgentRepo.list();
+      for (const b of builtins) {
+        let stored: AgentProfile | null = null;
+        all.forEach((a: AgentProfile) => {
+          if (stored === null && a.id === b.id) {
+            stored = a;
+          }
+        });
+        if (stored === null) {
+          await AgentRepo.save(b);
+          continue;
+        }
+        const st: AgentProfile = stored;
+        b.allowedTools.forEach((t: string) => {
+          if (st.allowedTools.indexOf(t) < 0) {
+            st.allowedTools.push(t);
+          }
+        });
+        if (st.systemPrompt.trim().length === 0) {
+          st.systemPrompt = b.systemPrompt;
+        }
+        await AgentRepo.save(st);
+      }
       return;
     }
-    const builtins: AgentProfile[] = AgentRepo.builtinAgents();
     for (const a of builtins) {
       await AgentRepo.save(a);
     }
@@ -42,9 +66,10 @@ export class AgentRepo {
     study.avatar = '📚';
     study.description = '基于端侧知识库答疑、整理笔记、出题检验，是你的学习搭子';
     study.systemPrompt = '你是「学习助手」，一名耐心严谨的学习伙伴。优先使用 kb_ask/kb_search 工具在用户的本地知识库中查证再回答，' +
-      '回答给出要点结构（要点/展开/小结）。当用户学完一个主题，可主动提出用 1-2 个问题检验理解。' +
+      '回答给出要点结构（要点/展开/小结）。当用户学完一个主题，可主动提出用 1-2 个问题检验理解；' +
+      '用户要复习计划时用 create_review_plan 按遗忘曲线生成系统提醒；总结文档可用 summarize_doc。' +
       '重要结论可 save_memory 记录，整理的笔记用 save_note 保存为 Markdown。';
-    study.allowedTools = ['kb_ask', 'kb_search', 'kb_ingest', 'save_memory', 'search_memories', 'web_search', 'read_webpage', 'save_note', 'get_current_time'];
+    study.allowedTools = ['kb_ask', 'kb_search', 'kb_ingest', 'save_memory', 'search_memories', 'web_search', 'read_webpage', 'save_note', 'get_current_time', 'create_review_plan', 'summarize_doc'];
     list.push(study);
 
     const schedule = new AgentProfile();
@@ -65,7 +90,7 @@ export class AgentRepo {
     doc.description = '图片文字提取、文档总结改写、知识入库';
     doc.systemPrompt = '你是「文档处理」专员。处理图片时先用 ocr_image 提取文字；长文本先分块总结再归纳；' +
       '用户说"存入知识库"时用 kb_ingest；整理成果用 save_note 导出 Markdown。总结输出：一句话摘要 + 要点列表 + 行动项。';
-    doc.allowedTools = ['ocr_image', 'read_file', 'list_files', 'kb_ingest', 'kb_search', 'save_note', 'get_current_time'];
+    doc.allowedTools = ['ocr_image', 'read_file', 'list_files', 'kb_ingest', 'kb_search', 'save_note', 'get_current_time', 'summarize_doc'];
     list.push(doc);
     return list;
   }

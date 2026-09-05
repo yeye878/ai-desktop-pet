@@ -4,7 +4,9 @@ import { ChatMessage } from '../core/Types';
 import { ChatService } from '../core/ChatService';
 import { AgentRepo } from '../core/AgentRepo';
 import { Gates } from '../core/Gates';
+import { IntentEngine, IntentHit } from '../core/IntentEngine';
 import { AsrController } from '../voice/AsrController';
+import { TtsController } from '../voice/TtsController';
 import { AgentProfile } from '../core/Types';
 
 interface ConfirmPayload {
@@ -32,6 +34,8 @@ export struct ChatPage {
   @State showVoice: boolean = false;
   @State voicePartial: string = '';
   @State voiceState: string = 'idle';
+  @State voiceConfirmHit: IntentHit | null = null;
+  @State voiceConfirmRaw: string = '';
   @State showConfirm: boolean = false;
   @State confirmPayload: ConfirmPayload | null = null;
   @State showAsk: boolean = false;
@@ -64,16 +68,33 @@ export struct ChatPage {
     if (d !== null && d !== undefined) {
       this.voiceState = d['state'] ?? 'idle';
       if (this.voiceState === 'idle' || this.voiceState === 'error') {
-        // 静音自动断句 → 自动发送
+        // 静音自动断句 → 低置信度复述确认或直接发送（命题 R5）
         if (this.showVoice) {
           const finalText = AsrController.stop();
-          if (finalText.trim().length > 0) {
-            this.sendText(finalText.trim());
+          const trimmed = finalText.trim();
+          if (trimmed.length >= 2) {
+            const hit = IntentEngine.route(trimmed);
+            if (hit !== null && hit.corrected) {
+              // 纠偏命中：复述确认，杜绝错误指令静默执行
+              this.voiceConfirmHit = hit;
+              this.voiceConfirmRaw = trimmed;
+            } else {
+              this.sendText(trimmed);
+              this.showVoice = false;
+            }
+          } else if (trimmed.length === 0) {
+            this.showVoice = false;
+          } else {
+            this.sendText(trimmed);
+            this.showVoice = false;
           }
-          this.showVoice = false;
         }
       }
     }
+  };
+  private onRequestImage: BusListener = (_e: BusEvent) => {
+    // 复合指令"拍一下这个文档"缺照片时：自动拉起相册选择
+    this.pickImage();
   };
   private onToolConfirm: BusListener = (e: BusEvent) => {
     const d = e.data as Record<string, string> | null;
@@ -108,12 +129,16 @@ export struct ChatPage {
     }
   };
   private onNavigate: BusListener = (e: BusEvent) => {
-    // 消费 AgentsPage/EntryAbility 携带的 draft（@提及预填/接续草稿）
+    // 消费 AgentsPage/EntryAbility 携带的 draft（@提及预填/接续草稿）与 continuation（跨设备上下文）
     const d = e.data as Record<string, string> | null;
     if (d !== null && d !== undefined) {
       const draft = d['draft'];
       if (typeof draft === 'string' && draft.length > 0) {
         this.input = this.input.length > 0 ? `${this.input} ${draft}` : draft;
+      }
+      const continuation = d['continuation'];
+      if (typeof continuation === 'string' && continuation.length > 0) {
+        ChatService.restoreContinuation(continuation);
       }
     }
   };
@@ -129,6 +154,7 @@ export struct ChatPage {
     bus.on(Ev.CHAT_CHANGED, this.onChatChanged);
     bus.on(Ev.VOICE_PARTIAL, this.onVoicePartial);
     bus.on(Ev.VOICE_STATE, this.onVoiceState);
+    bus.on(Ev.REQUEST_IMAGE, this.onRequestImage);
     bus.on(Ev.TOOL_CONFIRM, this.onToolConfirm);
     bus.on(Ev.ASK_USER, this.onAskUser);
     bus.on(Ev.AI_ERROR, this.onAiError);
@@ -139,6 +165,7 @@ export struct ChatPage {
     bus.off(Ev.CHAT_CHANGED, this.onChatChanged);
     bus.off(Ev.VOICE_PARTIAL, this.onVoicePartial);
     bus.off(Ev.VOICE_STATE, this.onVoiceState);
+    bus.off(Ev.REQUEST_IMAGE, this.onRequestImage);
     bus.off(Ev.TOOL_CONFIRM, this.onToolConfirm);
     bus.off(Ev.ASK_USER, this.onAskUser);
     bus.off(Ev.AI_ERROR, this.onAiError);
@@ -247,7 +274,7 @@ export struct ChatPage {
 
         // 输入区
         Row({ space: 8 }) {
-          Button(this.busy ? '⏹' : '🎤')
+          Button(this.busy ? '⏹' : (TtsController.isSpeaking() ? '🔊' : '🎤'))
             .type(ButtonType.Circle)
             .width(40)
             .height(40)
@@ -258,7 +285,12 @@ export struct ChatPage {
                 ChatService.abort();
                 return;
               }
+              if (TtsController.isSpeaking()) {
+                // 播报中点击 = 打断：立即停止合成并进入聆听（用户可随时插话）
+                TtsController.stop();
+              }
               this.voicePartial = '';
+              this.voiceConfirmHit = null;
               this.showVoice = true;
               AsrController.start();
             })
@@ -327,36 +359,79 @@ export struct ChatPage {
   VoiceOverlay() {
     Column({ space: 16 }) {
       Blank()
-      Text('🎙')
-        .fontSize(64)
-        .opacity(this.voiceState === 'listening' ? 1 : 0.5)
-      Text(this.voiceState === 'listening' ? '正在听…说完停顿一下即可发送' : '语音引擎启动中…')
-        .fontSize(14)
-        .fontColor('#8A7A80')
-      Text(this.voicePartial.length > 0 ? this.voicePartial : '…')
-        .fontSize(20)
-        .fontWeight(FontWeight.Bold)
-        .fontColor('#5B4A4F')
-        .textAlign(TextAlign.Center)
-        .padding({ left: 24, right: 24 })
-        .maxLines(4)
-      Button('完成')
-        .width(160)
-        .backgroundColor('#F76C8A')
-        .onClick(() => {
-          const finalText = AsrController.stop();
-          this.showVoice = false;
-          if (finalText.trim().length > 0) {
-            this.sendText(finalText.trim());
-          }
-        })
-      Text('取消')
-        .fontSize(13)
-        .fontColor('#8A7A80')
-        .onClick(() => {
-          AsrController.cancel();
-          this.showVoice = false;
-        })
+      if (this.voiceConfirmHit !== null) {
+        // 低置信度复述确认：识别疑似专有词误识时，先复述再执行（命题 R5 六层防线的确认兜底）
+        Text('🤔 你是想说——').fontSize(15).fontColor('#8A7A80')
+        Text(`「${this.voiceConfirmHit.phrase}」`)
+          .fontSize(24)
+          .fontWeight(FontWeight.Bold)
+          .fontColor('#C2557E')
+        Text(`（识别原文：${this.voiceConfirmRaw}）`)
+          .fontSize(12)
+          .fontColor('#B9A9AF')
+        Button('对，执行')
+          .width(200)
+          .backgroundColor('#F76C8A')
+          .onClick(() => {
+            const phrase = this.voiceConfirmHit !== null ? this.voiceConfirmHit.phrase : '';
+            this.voiceConfirmHit = null;
+            this.showVoice = false;
+            if (phrase.length > 0) {
+              this.sendText(phrase);
+            }
+          })
+        Button('按原文发送')
+          .width(200)
+          .backgroundColor('#FFE3EA')
+          .fontColor('#C2557E')
+          .onClick(() => {
+            const raw = this.voiceConfirmRaw;
+            this.voiceConfirmHit = null;
+            this.showVoice = false;
+            if (raw.length > 0) {
+              this.sendText(raw);
+            }
+          })
+        Text('重新说')
+          .fontSize(13)
+          .fontColor('#8A7A80')
+          .onClick(() => {
+            this.voiceConfirmHit = null;
+            this.voicePartial = '';
+            AsrController.start();
+          })
+      } else {
+        Text('🎙')
+          .fontSize(64)
+          .opacity(this.voiceState === 'listening' ? 1 : 0.5)
+        Text(this.voiceState === 'listening' ? '正在听…说完停顿一下即可发送' : '语音引擎启动中…')
+          .fontSize(14)
+          .fontColor('#8A7A80')
+        Text(this.voicePartial.length > 0 ? this.voicePartial : '…')
+          .fontSize(20)
+          .fontWeight(FontWeight.Bold)
+          .fontColor('#5B4A4F')
+          .textAlign(TextAlign.Center)
+          .padding({ left: 24, right: 24 })
+          .maxLines(4)
+        Button('完成')
+          .width(160)
+          .backgroundColor('#F76C8A')
+          .onClick(() => {
+            const finalText = AsrController.stop();
+            this.showVoice = false;
+            if (finalText.trim().length > 0) {
+              this.sendText(finalText.trim());
+            }
+          })
+        Text('取消')
+          .fontSize(13)
+          .fontColor('#8A7A80')
+          .onClick(() => {
+            AsrController.cancel();
+            this.showVoice = false;
+          })
+      }
       Blank()
     }
     .width('100%')

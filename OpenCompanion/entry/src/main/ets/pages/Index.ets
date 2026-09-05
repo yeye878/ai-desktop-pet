@@ -1,11 +1,14 @@
 import { AppContext } from '../commons/AppContext';
 import { RdbHelper } from '../commons/RdbHelper';
+import { PerfTrace } from '../commons/PerfTrace';
+import { DistributedSync } from '../commons/DistributedSync';
 import { Log } from '../commons/Log';
 import { bus, Ev, BusEvent } from '../commons/EventBus';
 import { BehaviorEngine } from '../pet/BehaviorEngine';
 import { ChatService } from '../core/ChatService';
 import { AsrController } from '../voice/AsrController';
 import { TtsController } from '../voice/TtsController';
+import { RagBridge } from '../knowledge/RagBridge';
 import { HomePage } from './HomePage';
 import { ChatPage } from './ChatPage';
 import { KnowledgePage } from './KnowledgePage';
@@ -59,6 +62,13 @@ struct Index {
         AsrController.preheat();
         TtsController.preheat();
         this.initDone = true;
+        PerfTrace.mark('interactive');
+        PerfTrace.measure('冷启动·可交互', 'ability_created', 'interactive');
+        // idle 阶段预热：RAG 会话池 + 分布式同步（都有静默降级，不影响主链路）
+        AppContext.postFrame(() => {
+          RagBridge.preheat();
+          DistributedSync.ensure();
+        }, 600);
       }).catch((e: Error) => {
         Log.error(`init chain failed: ${e.message}`);
         this.initDone = true;

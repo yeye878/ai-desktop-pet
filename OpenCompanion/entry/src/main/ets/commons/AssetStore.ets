@@ -16,7 +16,7 @@ export class AssetStore {
 
   private static toStr(b: Uint8Array): string {
     const decoder = util.TextDecoder.create('utf-8');
-    return decoder.decodeWithStream(b);
+    return decoder.decodeToString(b);
   }
 
   /** 写入机密；返回是否使用了系统级安全存储 */

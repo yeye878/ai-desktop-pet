@@ -66,4 +66,5 @@ export class Ev {
   static readonly VOICE_PARTIAL: string = 'voice_partial';
   static readonly VOICE_STATE: string = 'voice_state';
   static readonly VP_WIDTH: string = 'vp_width';
+  static readonly REQUEST_IMAGE: string = 'request_image';
 }

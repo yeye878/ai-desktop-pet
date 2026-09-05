@@ -1,26 +1,30 @@
 import { speechRecognizer } from '@kit.CoreSpeechKit';
 import { abilityAccessCtrl } from '@kit.AbilityKit';
 import { common } from '@kit.AbilityKit';
-import { AppContext, SettingKey } from '../commons/AppContext';
-import { bus, Ev } from '../commons/EventBus';
+import { AppContext } from '../commons/AppContext';
+import { bus, Ev, BusEvent } from '../commons/EventBus';
 import { Log } from '../commons/Log';
+import { IntentEngine } from '../core/IntentEngine';
 
 /**
  * 语音识别控制器（@kit.CoreSpeechKit 端侧离线识别，替换桌面版 WebView SpeechRecognition）。
  * - online:1 离线模式，断网可用，隐私友好
- * - sysGeneralLexicon 热词表（设置中可配）提升指令识别精度（命题 R5）
+ * - sysGeneralLexicon 动态热词表（用户设置 ∪ 智能体名 ∪ 知识库文档标题）提升指令识别精度（命题 R5）
  * - 应用启动即预创建引擎（语音响应 ≤2s 的关键路径）
+ * - 知识库变更后自动重建引擎刷新热词（聆听中不重建）
  */
 export class AsrController {
   private static engine: speechRecognizer.SpeechRecognitionEngine | null = null;
   private static creating: boolean = false;
   private static sessionSeq: number = 0;
+  private static kbHooked: boolean = false;
   static listening: boolean = false;
   static lastPartial: string = '';
   private static finalSentences: string = '';
 
+  /** 兼容保留：设置页展示/编辑的基础热词 */
   static hotWords(): string[] {
-    const raw = AppContext.getSetting(SettingKey.HOT_WORDS, '打开知识库,新对话,今天日程,帮我总结,存入知识库,组队,学习助手,日程管家,文档处理');
+    const raw = AppContext.getSetting('asr_hot_words', '打开知识库,新对话,今天日程,帮我总结,存入知识库,组队,学习助手,日程管家,文档处理');
     const out: string[] = [];
     raw.split(/[,，]/).forEach((w: string) => {
       const t = w.trim();
@@ -31,25 +35,47 @@ export class AsrController {
     return out;
   }
 
-  /** 预创建引擎（冷启动后 idle 阶段调用） */
-  static async preheat(): Promise<boolean> {
-    if (AsrController.engine !== null || AsrController.creating) {
-      return AsrController.engine !== null;
+  /** 预创建引擎（冷启动后 idle 阶段调用）；force=true 时用最新热词重建 */
+  static async preheat(force: boolean = false): Promise<boolean> {
+    if (AsrController.engine !== null && !force) {
+      return true;
+    }
+    if (AsrController.listening) {
+      return AsrController.engine !== null; // 识别进行中不重建，避免截断
+    }
+    if (AsrController.creating) {
+      return false;
     }
     AsrController.creating = true;
     try {
+      if (AsrController.engine !== null) {
+        try {
+          AsrController.engine.shutdown();
+        } catch (e) {
+          // ignore
+        }
+        AsrController.engine = null;
+      }
+      // 动态热词：设置热词 ∪ 指令词表 ∪ 智能体名 ∪ 知识库文档标题
+      let hotWords: string[] = AsrController.hotWords();
+      try {
+        hotWords = await IntentEngine.dynamicHotwords();
+      } catch (e) {
+        // 动态表失败时退回静态设置
+      }
       const params: speechRecognizer.CreateEngineParams = {
         language: 'zh-CN',
         online: 1,
         extraParams: {
           'locate': 'CN',
           'recognizerMode': 'short',
-          'sysGeneralLexicon': AsrController.hotWords()
+          'sysGeneralLexicon': hotWords
         } as Record<string, Object>
       };
       AsrController.engine = await speechRecognizer.createEngine(params);
       AsrController.attachListener();
-      Log.info('asr engine ready (offline + hotwords)');
+      AsrController.hookKbRefresh();
+      Log.info(`asr engine ready (offline + ${hotWords.length} dynamic hotwords)`);
       return true;
     } catch (e) {
       const err = e as BusinessError;
@@ -59,6 +85,21 @@ export class AsrController {
     } finally {
       AsrController.creating = false;
     }
+  }
+
+  /** 知识库变更 → 延迟重建引擎刷新热词（一次即可） */
+  private static hookKbRefresh(): void {
+    if (AsrController.kbHooked) {
+      return;
+    }
+    AsrController.kbHooked = true;
+    bus.on(Ev.KB_CHANGED, (_e: BusEvent) => {
+      setTimeout(() => {
+        AsrController.preheat(true).then((_ok: boolean) => {
+        }).catch((_e: Error) => {
+        });
+      }, 3000);
+    });
   }
 
   private static attachListener(): void {

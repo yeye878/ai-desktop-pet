@@ -236,47 +236,90 @@ export class KbService {
 
   // ---------------- 检索 ----------------
 
+  /**
+   * 多路召回融合检索（对应方案 4.2"向量与倒排并行多路召回并重排"）：
+   * 通道① Kit 倒排索引（BM25）与通道② 本地 bigram 重叠并行召回，
+   * 以 RRF（倒数排名融合）合并重排——任一通道异常/空结果不影响另一通道。
+   */
   static async search(query: string, topK: number = 4): Promise<KbHit[]> {
     if (KbService.chunkCache.length === 0) {
       return [];
     }
-    // ① Kit 倒排索引通道
-    if (KbService.retriever !== null && KbService.ftsOk) {
-      try {
-        const condition: retrieval.RetrievalCondition = {
-          recallConditions: [{
-            ftsTableName: 'kb_fts',
-            fromClause: 'kb_fts',
-            primaryKey: ['rowid'],
-            responseColumns: ['content', 'doc_title'],
-            recallName: 'kb_recall',
-            invertedIndexStrategies: [{ 'bm25Weight': 1.0 } as retrieval.Bm25Strategy]
-          } as retrieval.InvertedIndexRecallCondition],
-          resultCount: topK
-        };
-        const res = await KbService.retriever.retrieveRdb(query, condition);
-        const hits: KbHit[] = [];
-        res.records.forEach((r: retrieval.ItemInfo) => {
-          const hit = new KbHit();
-          const contentV = r.columns['content'];
-          const titleV = r.columns['doc_title'];
-          hit.content = typeof contentV === 'string' ? contentV as string : '';
-          hit.docTitle = typeof titleV === 'string' ? titleV as string : '';
-          hit.score = r.score;
-          if (hit.content.length > 0) {
-            hits.push(hit);
-          }
-        });
-        if (hits.length > 0) {
-          return hits;
-        }
-      } catch (e) {
-        const err = e as BusinessError;
-        Log.warn(`kit retrieve failed(${err.code}), fallback: ${err.message}`);
-      }
+    const kitHits = await KbService.kitSearch(query, topK);
+    const localHits = KbService.localSearch(query, topK);
+    const fused = KbService.fuseRrf([kitHits, localHits], topK);
+    if (fused.length === 0) {
+      Log.info(`kb search empty (kit=${kitHits.length}, local=${localHits.length})`);
     }
-    // ② 本地降级：bigram 重叠打分
-    return KbService.localSearch(query, topK);
+    return fused;
+  }
+
+  /** 通道①：DataAugmentationKit 倒排索引检索 */
+  private static async kitSearch(query: string, topK: number): Promise<KbHit[]> {
+    if (KbService.retriever === null || !KbService.ftsOk) {
+      return [];
+    }
+    try {
+      const condition: retrieval.RetrievalCondition = {
+        recallConditions: [{
+          ftsTableName: 'kb_fts',
+          fromClause: 'kb_fts',
+          primaryKey: ['rowid'],
+          responseColumns: ['content', 'doc_title'],
+          recallName: 'kb_recall',
+          invertedIndexStrategies: [{ 'bm25Weight': 1.0 } as retrieval.Bm25Strategy]
+        } as retrieval.InvertedIndexRecallCondition],
+        resultCount: topK
+      };
+      const res = await KbService.retriever.retrieveRdb(query, condition);
+      const hits: KbHit[] = [];
+      res.records.forEach((r: retrieval.ItemInfo) => {
+        const hit = new KbHit();
+        const contentV = r.columns['content'];
+        const titleV = r.columns['doc_title'];
+        hit.content = typeof contentV === 'string' ? contentV as string : '';
+        hit.docTitle = typeof titleV === 'string' ? titleV as string : '';
+        hit.score = r.score;
+        if (hit.content.length > 0) {
+          hits.push(hit);
+        }
+      });
+      return hits;
+    } catch (e) {
+      const err = e as BusinessError;
+      Log.warn(`kit retrieve failed(${err.code}), use local channel: ${err.message}`);
+      return [];
+    }
+  }
+
+  /** RRF 倒数排名融合：score = Σ 1/(60+rank)，内容前缀去重 */
+  static fuseRrf(channels: KbHit[][], topK: number): KbHit[] {
+    const K = 60;
+    const merged: Map<string, KbHit> = new Map<string, KbHit>();
+    const scores: Map<string, number> = new Map<string, number>();
+    channels.forEach((hits: KbHit[]) => {
+      hits.forEach((h: KbHit, rank: number) => {
+        const key = h.content.length > 48 ? h.content.substring(0, 48) : h.content;
+        const add = 1.0 / (K + rank + 1);
+        if (merged.has(key)) {
+          scores.set(key, (scores.get(key) ?? 0) + add);
+        } else {
+          merged.set(key, h);
+          scores.set(key, add);
+        }
+      });
+    });
+    const keys: string[] = Array.from(merged.keys());
+    const ranked: KbHit[] = [];
+    keys.forEach((k: string) => {
+      const hit = merged.get(k);
+      if (hit !== undefined) {
+        hit.score = scores.get(k) ?? 0;
+        ranked.push(hit);
+      }
+    });
+    ranked.sort((a: KbHit, b: KbHit) => b.score - a.score);
+    return ranked.slice(0, topK);
   }
 
   static localSearch(query: string, topK: number): KbHit[] {
@@ -451,6 +494,84 @@ export class KbService {
         return '缺少 imageUri';
       }
       return await DocImporter.ocrText(uri);
+    });
+
+    // 遗忘曲线复习排期（方案 4.5/场景三：学习助手 × 日程管家协作的确定性工具）
+    ToolRegistry.register(new ToolDef('create_review_plan',
+      '按遗忘曲线（D+1/2/4/7/15 天）为一个主题或知识库最近文档生成 5 个系统级复习提醒（每晚 20:00）', [
+      { name: 'topic', type: 'string', description: '复习主题；不填则自动取知识库最近一篇文档的标题', required: false } as ToolParam
+    ]), async (args: Record<string, Object>) => {
+      let topic = typeof args['topic'] === 'string' ? (args['topic'] as string).trim() : '';
+      if (topic.length === 0) {
+        const docs = await KbService.listDocs();
+        if (docs.length === 0) {
+          return '知识库为空：请先在知识库页导入学习资料，或在 topic 参数中指定复习主题';
+        }
+        topic = String(docs[0].get('title'));
+      }
+      if (topic.length > 30) {
+        topic = topic.substring(0, 30);
+      }
+      const offsets: number[] = [1, 2, 4, 7, 15];
+      const done: string[] = [];
+      for (let i = 0; i < offsets.length; i++) {
+        const off = offsets[i];
+        const d = new Date(Date.now() + off * 86400000);
+        try {
+          await ToolRegistry.execute('create_reminder', JSON.stringify({
+            'title': `📚 复习:${topic}（D+${off}）`,
+            'year': d.getFullYear(),
+            'month': d.getMonth() + 1,
+            'day': d.getDate(),
+            'hour': 20,
+            'minute': 0,
+            'note': `遗忘曲线第${i + 1}次复习：${topic}。建议先自测要点，再回知识库核对原文。`
+          }));
+          done.push(`D+${off}`);
+        } catch (e) {
+          Log.warn(`review reminder D+${off} failed: ${(e as Error).message}`);
+        }
+      }
+      return done.length === 0
+        ? '复习提醒创建失败（系统提醒通道不可用）'
+        : `已为《${topic}》生成 ${done.length} 个遗忘曲线复习提醒（${done.join('、')}，当天 20:00 触发系统通知）`;
+    });
+
+    // 文档要点总结（文档处理智能体"总结重点"的确定性入口）
+    ToolRegistry.register(new ToolDef('summarize_doc',
+      '总结知识库中的一篇文档：检索该文档核心切片并生成结构化要点', [
+      { name: 'title', type: 'string', description: '文档标题关键词（模糊匹配；不填取最近一篇）', required: false } as ToolParam
+    ]), async (args: Record<string, Object>) => {
+      const kw = typeof args['title'] === 'string' ? (args['title'] as string).trim() : '';
+      const docs = await KbService.listDocs();
+      if (docs.length === 0) {
+        return '知识库为空，请先导入文档';
+      }
+      let target: Map<string, Object> | null = null;
+      docs.forEach((d: Map<string, Object>) => {
+        if (target === null && kw.length > 0 && String(d.get('title')).indexOf(kw) >= 0) {
+          target = d;
+        }
+      });
+      if (target === null) {
+        target = docs[0];
+      }
+      const t: Map<string, Object> = target;
+      const title = String(t.get('title'));
+      const hits = await KbService.search(title, 6);
+      const mine = hits.filter((h: KbHit) => h.docTitle === title);
+      const use = mine.length > 0 ? mine : hits;
+      if (use.length === 0) {
+        return `未在知识库中找到《${title}》的内容切片`;
+      }
+      const context = use.map((h: KbHit, i: number) => `片段${i + 1}：${h.content}`).join('\n');
+      const profile = await LlmProfiles.active();
+      if (profile === null) {
+        return `《${title}》核心内容（未配置 LLM，返回原文要点）：\n${context.substring(0, 1500)}`;
+      }
+      return await LlmClient.chatOnce(profile,
+        '你是文档总结助手。输出：一句话摘要 + 要点列表（每点一行）+ 建议行动。只依据给定材料，简洁准确。',
+        `文档：《${title}》\n\n${context.substring(0, 6000)}`, 700);
     });
   }
 }

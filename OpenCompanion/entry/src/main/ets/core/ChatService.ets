@@ -2,6 +2,7 @@ import fs from '@ohos.file.fs';
 import { util } from '@kit.ArkTS';
 import { RdbHelper } from '../commons/RdbHelper';
 import { AppContext, SettingKey } from '../commons/AppContext';
+import { PerfTrace } from '../commons/PerfTrace';
 import { bus, Ev } from '../commons/EventBus';
 import { Log } from '../commons/Log';
 import { LlmClient, LlmProfiles } from './LlmClient';
@@ -11,9 +12,11 @@ import { AgentRepo } from './AgentRepo';
 import { EvolutionManager } from './EvolutionManager';
 import { ToolRegistry } from './ToolRegistry';
 import { Gates } from './Gates';
-import { KbService } from '../knowledge/KbService';
+import { IntentEngine, ChatServiceRef, CompositePlan, SubTask } from './IntentEngine';
+import { KbService, KbHit } from '../knowledge/KbService';
+import { DocImporter } from '../knowledge/DocImporter';
 import { TtsController } from '../voice/TtsController';
-import { AgentProfile, CancelToken, ChatMessage, ContentPart, JsonUtil, LlmMessage, SkillProfile } from './Types';
+import { AgentProfile, CancelToken, ChatMessage, ContentPart, JsonUtil, LlmMessage, SkillProfile, ToolCallReq } from './Types';
 
 interface ChatSnapshot {
   messages: ChatMessage[];
@@ -29,8 +32,12 @@ export class ChatService {
   static busy: boolean = false;
   private static token: CancelToken | null = null;
   private static lastEmitAt: number = 0;
+  private static ttsBuf: string = '';
+  private static firstFeedbackDone: boolean = false;
 
   static async init(): Promise<void> {
+    // IntentEngine 属低层模块，经注入回调使用 ChatService 能力（避免循环依赖）
+    ChatServiceRef.bind(ChatService.pushLocalAssistantMessage, ChatService.newConversation);
     await AgentRepo.ensureBuiltins();
     await ChatService.loadHistory();
     await KbService.init();
@@ -139,9 +146,20 @@ export class ChatService {
     EvolutionManager.onUserMessage(userMsg.content);
     ChatService.emitChatChanged(true);
 
+    // ① 端侧意图路由：高频指令本地直答（毫秒级，语音指令 ≤2s 的关键路径，不进 LLM）
+    if (imageDataUrls.length === 0 && imageUris.length === 0) {
+      const handled = await IntentEngine.tryLocalAnswer(rest);
+      if (handled) {
+        return;
+      }
+    }
+
     // 派发
     ChatService.busy = true;
     ChatService.token = new CancelToken();
+    ChatService.ttsBuf = '';
+    ChatService.firstFeedbackDone = false;
+    PerfTrace.mark('cmd_in');
     ChatService.emitChatChanged(true);
     bus.emit(Ev.AI_STARTED);
     const t0 = Date.now();
@@ -159,6 +177,8 @@ export class ChatService {
       },
       onContent: (d: string) => {
         assistant.content += d;
+        ChatService.noteFirstFeedback('llm首字');
+        ChatService.speakStreamDelta(d);
         ChatService.emitChatChanged();
       },
       onToolTrace: (line: string) => {
@@ -168,7 +188,13 @@ export class ChatService {
     };
 
     try {
-      if (TeamOrchestrator.isTeamCommand(rest) || mentioned.length >= 2) {
+      // ② 复合指令管线：拆解为带依赖的子任务序列顺序执行（命题 F1）
+      const plan = IntentEngine.parseComposite(rest, imageUris.length > 0);
+      if (plan.matched && plan.subtasks.length > 0) {
+        assistant.agentName = '任务规划';
+        assistant.agentAvatar = '🧭';
+        await ChatService.runCompositePlan(plan, rest.trim(), imageUris, imageDataUrls, userMsg, assistant, cbs);
+      } else if (TeamOrchestrator.isTeamCommand(rest) || mentioned.length >= 2) {
         let task = rest.trim();
         if (TeamOrchestrator.isTeamCommand(task)) {
           task = task.substring(task.indexOf(' ') >= 0 ? task.indexOf(' ') : task.length).trim();
@@ -183,6 +209,8 @@ export class ChatService {
           ChatService.emitChatChanged();
         }, (d: string) => {
           assistant.content += d;
+          ChatService.noteFirstFeedback('团队汇报首字');
+          ChatService.speakStreamDelta(d);
           ChatService.emitChatChanged();
         });
         assistant.content = assistant.content.length > 0 ? assistant.content : final;
@@ -206,16 +234,204 @@ export class ChatService {
       ChatService.token = null;
       await ChatService.persist(assistant);
       ChatService.emitChatChanged(true);
+      // 流式播报收尾：剩余不足一句的尾巴立即播（首句已在生成过程中播过，对应"边生成边合成边播放"）
+      ChatService.flushTts(true);
+      ChatService.ttsBuf = '';
       bus.emit(Ev.AI_FINISHED, {
         'agentName': assistant.agentName,
         'agentAvatar': assistant.agentAvatar,
         'elapsedMs': `${Date.now() - t0}`
       } as Record<string, string>);
-      // 自动播报
-      if (AppContext.getBool(SettingKey.VOICE_AUTO_SPEAK, false) && assistant.content.length > 0) {
-        TtsController.speak(assistant.content);
+    }
+  }
+
+  /** 首个语义反馈打点（口径：用户指令提交 → 界面出现首个语义内容） */
+  private static noteFirstFeedback(label: string): void {
+    if (!ChatService.firstFeedbackDone) {
+      ChatService.firstFeedbackDone = true;
+      PerfTrace.measure(`指令→首反馈(${label})`, 'cmd_in');
+    }
+  }
+
+  /** 流式回答按句缓冲即时播报（对应方案 7.2"首字优先"：首个完整句即刻合成，不等全文） */
+  private static speakStreamDelta(delta: string): void {
+    if (!AppContext.getBool(SettingKey.VOICE_AUTO_SPEAK, false)) {
+      return;
+    }
+    ChatService.ttsBuf += delta;
+    ChatService.flushTts(false);
+  }
+
+  private static flushTts(force: boolean): void {
+    const buf = ChatService.ttsBuf;
+    if (buf.length === 0) {
+      return;
+    }
+    let cut = -1;
+    for (let i = buf.length - 1; i >= 0; i--) {
+      const ch = buf.charAt(i);
+      if (ch === '。' || ch === '！' || ch === '？' || ch === '；' || ch === '\n') {
+        cut = i + 1;
+        break;
       }
     }
+    if (cut >= 12) {
+      const part = buf.substring(0, cut);
+      ChatService.ttsBuf = buf.substring(cut);
+      TtsController.speak(part);
+    } else if (force) {
+      TtsController.speak(buf);
+      ChatService.ttsBuf = '';
+    }
+  }
+
+  // ---------------- 复合指令管线 ----------------
+
+  /**
+   * 顺序执行带依赖的子任务序列（当前拆解模式均为线性依赖，逐个执行并把
+   * 上游产物向下游传递；每个子任务的开始/完成写入消息轨迹，执行全程可视）。
+   */
+  private static async runCompositePlan(plan: CompositePlan, rawText: string, imageUris: string[],
+    imageDataUrls: string[], userMsg: ChatMessage, assistant: ChatMessage, cbs: LoopCallbacks): Promise<void> {
+    ChatService.pushTraceLine(assistant, `🧭 已拆解复合指令「${plan.planName}」→ ${plan.subtasks.length} 个子任务`);
+    plan.subtasks.forEach((st: SubTask, i: number) => {
+      const dep = st.dependsOn >= 0 ? `（依赖步骤${st.dependsOn + 1}）` : '';
+      ChatService.pushTraceLine(assistant, `　${i + 1}. ${st.label}${dep}`);
+    });
+
+    let ocrText = '';
+    let summary = '';
+    for (let i = 0; i < plan.subtasks.length; i++) {
+      const st = plan.subtasks[i];
+      if (ChatService.token !== null && ChatService.token.cancelled) {
+        throw new Error('__ABORTED__');
+      }
+      if (st.type === 'request_image') {
+        ChatService.pushTraceLine(assistant, '📷 需要文档照片：已为你打开相册');
+        bus.emit(Ev.REQUEST_IMAGE);
+        assistant.content = '已为你打开相册 📷：选好文档照片后再次发送，我会接着完成识别与总结。';
+        ChatService.pushTraceLine(assistant, '⏸ 后续步骤等照片就位后继续');
+        break;
+      }
+      if (st.type === 'ocr') {
+        ChatService.pushTraceLine(assistant, `🔍 开始${st.label}…`);
+        const parts: string[] = [];
+        for (const uri of imageUris) {
+          try {
+            const t = await DocImporter.ocrText(uri);
+            if (t.trim().length > 0) {
+              parts.push(t.trim());
+            }
+          } catch (e) {
+            ChatService.pushTraceLine(assistant, `⚠️ 一张图片识别失败: ${(e as Error).message}`);
+          }
+        }
+        ocrText = parts.join('\n\n');
+        if (ocrText.trim().length < 10) {
+          // OCR 无文字（如手绘/风景图）→ 降级为视觉 LLM 理解
+          ChatService.pushTraceLine(assistant, 'ℹ️ 未识别到文字，转用视觉模型理解图片');
+          await ChatService.runSingle(null, rawText, imageDataUrls, userMsg, assistant, cbs);
+          return;
+        }
+        ChatService.pushTraceLine(assistant, `✔ ${st.label}完成（${ocrText.length} 字）`);
+        continue;
+      }
+      if (st.type === 'summarize' || st.type === 'summarize_text') {
+        ChatService.pushTraceLine(assistant, `📝 开始${st.label}…`);
+        const material = st.type === 'summarize' ? ocrText : rawText;
+        summary = await ChatService.llmSummarize(material, cbs);
+        if (summary.length === 0) {
+          summary = material.length > 800 ? material.substring(0, 800) : material;
+          ChatService.pushTraceLine(assistant, 'ℹ️ 未配置 LLM，直接以原文前段作为总结');
+        }
+        ChatService.noteFirstFeedback('总结首字');
+        ChatService.pushTraceLine(assistant, `✔ ${st.label}完成（${summary.length} 字）`);
+        continue;
+      }
+      if (st.type === 'kb_save_summary') {
+        const title = `总结_${plan.planName}_${DocImporter.timeTag()}`;
+        const n = await KbService.ingest('default', title, summary, 'composite');
+        IntentEngine.invalidateHotwords();
+        ChatService.pushTraceLine(assistant, `💾 已存入知识库《${title}》（${n} 个切片）`);
+        continue;
+      }
+      if (st.type === 'plan_review') {
+        ChatService.pushTraceLine(assistant, `🗓 开始${st.label}…`);
+        const topic = rawText.replace(/安排复习|帮我复习|复习计划|排复习|复习安排/g, '').trim();
+        const r = await ToolRegistry.execute('create_review_plan',
+          JSON.stringify({ 'topic': topic.length > 0 ? topic : '知识库重点' }));
+        ChatService.pushTraceLine(assistant, `✔ ${r}`);
+        continue;
+      }
+      if (st.type === 'kb_ask') {
+        ChatService.pushTraceLine(assistant, `📚 开始${st.label}…`);
+        const desc = await KbService.askStream(rawText, {
+          onDelta: (d: string) => {
+            assistant.content += d;
+            ChatService.noteFirstFeedback('知识库问答首字');
+            ChatService.speakStreamDelta(d);
+            ChatService.emitChatChanged();
+          },
+          onSources: (hits: KbHit[]) => {
+            if (hits.length > 0) {
+              ChatService.pushTraceLine(assistant, `📌 命中来源：${hits.map((h: KbHit) => `《${h.docTitle}》`).join('、')}`);
+            }
+          }
+        }, ChatService.token);
+        if (assistant.content.length === 0) {
+          assistant.content = desc;
+        }
+        ChatService.pushTraceLine(assistant, `✔ ${st.label}完成`);
+        continue;
+      }
+    }
+    PerfTrace.measure('复合指令全链路', 'cmd_in');
+  }
+
+  /** LLM 结构化总结（流式回显；未配置 API 返回空串） */
+  private static async llmSummarize(material: string, cbs: LoopCallbacks): Promise<string> {
+    const profile = await LlmProfiles.active();
+    if (profile === null) {
+      return '';
+    }
+    const capped = material.length > 6000 ? material.substring(0, 6000) : material;
+    const sys = new LlmMessage();
+    sys.role = 'system';
+    sys.content = '你是文档总结助手。输出结构化重点：核心主题一句话 + 分点要点（每点一行）+ 建议行动。简洁准确，不编造。';
+    const user = new LlmMessage();
+    user.role = 'user';
+    user.content = `请总结以下内容的核心要点：\n\n${capped}`;
+    return await new Promise<string>((resolve: (v: string) => void) => {
+      const runId = `sum_${Date.now()}`;
+      if (ChatService.token !== null) {
+        ChatService.token.onCancel(() => {
+          LlmClient.cancel(runId);
+        });
+      }
+      let full = '';
+      LlmClient.chatStream(profile, [sys, user], null, {
+        onThinking: (_d: string) => {
+        },
+        onContent: (d: string) => {
+          full += d;
+          cbs.onContent(d);
+        },
+        onToolCalls: (_c: ToolCallReq[]) => {
+        },
+        onDone: (_full: string, _c: ToolCallReq[]) => {
+          resolve(full);
+        },
+        onError: (msg: string) => {
+          Log.warn(`summarize failed: ${msg}`);
+          resolve(full);
+        }
+      }, runId);
+    });
+  }
+
+  private static pushTraceLine(assistant: ChatMessage, line: string): void {
+    assistant.toolEvents.push(line);
+    ChatService.emitChatChanged(true);
   }
 
   /** 单智能体/默认助手执行 */
@@ -312,11 +528,21 @@ export class ChatService {
     if (cmd === '/help' || cmd === '/帮助') {
       ChatService.pushLocalAssistantMessage(
         '可用命令：\n/new 新对话 · /clear 清空历史\n@智能体名 定向对话（如 @学习助手）\n' +
-        '/team 任务 → 三智能体组队协作\n/kb 查看知识库状态\n/skills 查看技能\n提示：麦克风按钮可语音输入');
+        '/team 任务 → 三智能体组队协作\n/kb 知识库状态 · /brief 今日简报 · /perf 性能埋点\n/skills 查看技能\n' +
+        '试试直接说：打开知识库 / 今天日程 / 现在几点（本地直答，毫秒级响应）\n' +
+        '复合指令：「拍一下这个文档，帮我总结重点」「总结并入库」「安排复习计划」\n提示：麦克风按钮可语音输入，播报中再点一次即可打断');
       return true;
     }
     if (cmd === '/kb') {
       ChatService.pushLocalAssistantMessage(await KbService.statusText());
+      return true;
+    }
+    if (cmd === '/perf' || cmd === '/性能') {
+      ChatService.pushLocalAssistantMessage(`⏱ 性能埋点（命题指标：冷启动≤3s / 语音响应≤2s）\n${PerfTrace.report()}`);
+      return true;
+    }
+    if (cmd === '/brief' || cmd === '/简报') {
+      ChatService.pushLocalAssistantMessage(await IntentEngine.buildBrief());
       return true;
     }
     if (cmd === '/skills') {
@@ -344,17 +570,40 @@ export class ChatService {
     ChatService.emitChatChanged(true);
   }
 
+  /**
+   * 跨设备接续落地（命题 F3）：把来源设备携带的最近对话写入当前会话，
+   * 用户在本端提问时 LLM 即拥有完整上下文——任务与话题无缝接力。
+   */
+  static restoreContinuation(contextText: string): void {
+    const t = contextText.trim();
+    if (t.length === 0) {
+      return;
+    }
+    // 防重复：同一次接续的上下文只落地一次
+    for (let i = ChatService.messages.length - 1; i >= 0 && i >= ChatService.messages.length - 3; i--) {
+      if (ChatService.messages[i].content.indexOf('已接续来自其他设备的上下文') >= 0 &&
+        ChatService.messages[i].content.indexOf(t.substring(0, 30)) >= 0) {
+        return;
+      }
+    }
+    ChatService.pushLocalAssistantMessage(`🔄 已接续来自其他设备的上下文：\n${t}\n\n请继续你的话题，我会带着上面的对话继续。`);
+  }
+
   static abort(): void {
     if (ChatService.token !== null) {
       ChatService.token.cancel();
     }
     Gates.abortAll();
     LlmClient.cancelAll();
+    ChatService.ttsBuf = '';
+    TtsController.stop();
     bus.emit(Ev.AI_TOOL, { 'text': '⏹ 已请求中断' } as Record<string, string>);
   }
 
   static async newConversation(): Promise<void> {
     ChatService.messages = [];
+    ChatService.ttsBuf = '';
+    TtsController.stop();
     ChatService.emitChatChanged(true);
   }
 
