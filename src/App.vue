@@ -45,7 +45,7 @@ const PANEL_SPECS: Record<PanelLabel, { width: number; height: number; title: st
   chat: { width: 340, height: 400, title: "AI Desktop Pet Chat" },
   "context-menu": { width: 170, height: 320, title: "AI Desktop Pet Menu" },
   settings: { width: 380, height: 460, title: "AI Desktop Pet Settings" },
-  "tool-confirm": { width: 390, height: 350, title: "AI Desktop Pet Tool Confirm" },
+  "tool-confirm": { width: 440, height: 420, title: "AI Desktop Pet Tool Confirm" },
   voice: { width: 430, height: 520, title: "AI Desktop Pet Voice" },
 };
 const VOICE_SETTINGS_KEY = "voice_settings";
@@ -255,10 +255,10 @@ async function openToolConfirmPanel(payload: ToolConfirmPayload) {
     height: spec.height,
     title: spec.title,
     center: true,
-    transparent: false,
+    transparent: true,
     decorations: false,
     alwaysOnTop: focused,
-    resizable: false,
+    resizable: true,
     skipTaskbar: !focused,
     shadow: true,
     focus: focused,
@@ -648,6 +648,6 @@ body,
 
 /* Dashboard 窗口不需要透明背景 */
 .window-main {
-  background: var(--dash-shell-bg, #f8fbff);
+  background: var(--dash-shell-bg, #f6f4ef);
 }
 </style>

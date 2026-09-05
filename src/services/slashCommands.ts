@@ -5,6 +5,9 @@ export type SlashCommandId =
   | "new-chat"
   | "clear-chat"
   | "skills"
+  | "agents"
+  | "evolution"
+  | "team"
   | "chat"
   | "clipboard";
 
@@ -48,6 +51,30 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     title: "技能管理",
     description: "打开 skill 管理页面",
     aliases: ["skill", "技能", "技能管理"],
+    scopes: ["pet", "dashboard"],
+  },
+  {
+    id: "agents",
+    trigger: "/agents",
+    title: "智能体工坊",
+    description: "打开智能体管理与工坊页面",
+    aliases: ["agent", "agents", "智能体", "智能体工坊", "工坊"],
+    scopes: ["pet", "dashboard"],
+  },
+  {
+    id: "evolution",
+    trigger: "/evolution",
+    title: "桌宠进化中心",
+    description: "查看默契度、画像准则、进化提案与成长历史",
+    aliases: ["evolve", "evolution", "进化", "自进化", "复盘", "进化中心", "成长"],
+    scopes: ["pet", "dashboard"],
+  },
+  {
+    id: "team",
+    trigger: "/team",
+    title: "多智能体协作",
+    description: "组队合作：@多个智能体并行分工完成一个任务",
+    aliases: ["team", "组队", "协作", "多智能体", "团队"],
     scopes: ["pet", "dashboard"],
   },
   {

@@ -1,6 +1,8 @@
 mod behavior;
+mod collab;
 mod computer_use;
 mod direct_api;
+mod evolution;
 mod openclaw;
 mod skills;
 mod storage;
@@ -16,10 +18,19 @@ use std::{
     fs::OpenOptions,
     io::Write,
     path::PathBuf,
+    sync::atomic::AtomicBool as StdAtomicBool,
+    sync::atomic::AtomicU64,
     sync::Mutex as StdMutex,
     time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{Emitter, Manager};
+
+/// AI 运行自增 ID：配合 abort_token 槽位实现「只清理自己的令牌」。
+static NEXT_RUN_ID: AtomicU64 = AtomicU64::new(1);
+
+pub fn next_run_id() -> u64 {
+    NEXT_RUN_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+}
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -37,15 +48,16 @@ pub struct ActiveChatState {
 }
 
 #[derive(Clone, Serialize)]
-struct AiFinishedPayload {
-    text: String,
-    thinking: Option<String>,
+#[serde(rename_all = "camelCase")]
+pub struct AiFinishedPayload {
+    pub text: String,
+    pub thinking: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    agent_id: Option<String>,
+    pub agent_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    agent_name: Option<String>,
+    pub agent_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    agent_avatar: Option<String>,
+    pub agent_avatar: Option<String>,
 }
 
 /// 本轮消息被 @ 提及的智能体运行时信息（传给 direct_api 用于保存归属与事件载荷）。
@@ -120,12 +132,17 @@ pub struct AppState {
     pub pending_questions:
         tokio::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<String>>>,
     pub approved_tool_types: tokio::sync::Mutex<std::collections::HashSet<String>>,
-    pub abort_token: tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>,
+    /// 当前运行占用的取消令牌槽：(run_id, token)。
+    /// run_id 用于「只清理自己的槽位」：防止旧运行结束时抹掉新运行的令牌。
+    pub abort_token:
+        tokio::sync::Mutex<Option<(u64, tokio_util::sync::CancellationToken)>>,
     pub chat_start_id: StdMutex<i64>,
     pub http_client: reqwest::Client,
     pub weather_cache: tokio::sync::Mutex<Option<system::WeatherInfo>>,
     pub last_active_skill_id: tokio::sync::Mutex<Option<String>>,
     pub subprocs: subprocess::SubprocessManager,
+    /// 自进化复盘互斥标志：防止手动复盘与后台自动复盘并发执行
+    pub is_reflecting: StdAtomicBool,
 }
 
 fn unix_now() -> i64 {
@@ -1123,13 +1140,44 @@ fn save_chat_summary_if_needed(db: &storage::Database) -> Result<Option<i64>, St
         .map_err(|e| e.to_string())
 }
 
-fn attach_memory_prompt(system_prompt: String) -> String {
+fn attach_memory_prompt(system_prompt: String, active_memories: &[storage::MemoryItem]) -> String {
+    let mut memory_lines = Vec::new();
+    for mem in active_memories {
+        let cat_label = match mem.category.as_str() {
+            "preference" => "偏好习惯",
+            "fact" => "个人事实",
+            "habit" => "作息习惯",
+            "work_domain" => "工作领域",
+            "note" => "随手备忘",
+            "manual" => "设定",
+            "general" => "通用",
+            other => other,
+        };
+        let val_snippet = if mem.value.chars().count() > 150 {
+            let truncated: String = mem.value.chars().take(150).collect();
+            format!("{}...", truncated)
+        } else {
+            mem.value.clone()
+        };
+        memory_lines.push(format!("- [{}] {}: {}", cat_label, mem.key, val_snippet));
+    }
+
+    let memory_context_str = if memory_lines.is_empty() {
+        "（当前暂无已预载的长期记忆）".to_string()
+    } else {
+        memory_lines.join("\n")
+    };
+
     format!(
-        "{}\n\n长期记忆能力：你拥有 search_memory、save_memory 和 delete_memory 工具来管理长期记忆。\
-        当对话中出现需要跨会话记住的信息（用户偏好、习惯、事实等），主动使用 save_memory 保存。\
-        当用户询问你是否记得某些事、或你需要回忆之前保存的信息时，使用 search_memory 搜索。\
-        不要过度记忆，只保存有价值的、长期有用的信息。",
-        system_prompt
+        "{}\n\n【长期记忆库（已自动预载入上下文）】\n\
+        你拥有跨越对话会话的长期记忆能力。以下是你与用户此前沉淀的重要背景信息与偏好：\n\
+        {}\n\n\
+        【长期记忆交互与执行准则】：\n\
+        1. 【结合记忆】：优先结合上述长期记忆回答用户问题，保持个性化与跨会话连贯性；若需检索更早或更具体的历史细节，主动使用 `search_memory` 工具。\n\
+        2. 【主动保存（极其重要）】：当用户在对话中明确表示“记住……”、“请记住我的……”、“以后请……”或透露个人名字、工作技术栈、设备环境、明确偏好等事实时，你必须在回答中主动调用 `save_memory` 工具将其持久化落库，绝不能仅仅在文本中口头答应！\n\
+        3. 【更新与遗忘】：当用户修改之前的偏好或要求遗忘某事时，调用 `save_memory`（同分类与键名会自动覆盖更新）或 `delete_memory`。",
+        system_prompt,
+        memory_context_str
     )
 }
 
@@ -1181,10 +1229,21 @@ fn attach_quote_prompt(system_prompt: String) -> String {
     )
 }
 
-/// 告知 AI 文档生成能力与主动询问原则（direct_api 后端专用）
+/// 告知 AI 文档读取与生成能力、环境适应与主动询问原则（direct_api 后端专用）
 fn attach_word_and_ask_prompt(system_prompt: String) -> String {
     format!(
         "{}
+
+【文档与文件处理原则】
+1. 内置多格式解析（无需外部转换工具）：
+   - read_file 已原生支持读取各类纯文本文件（自动适配 UTF-8 / GBK / ANSI / UTF-16 编码）、Word 文档（.docx 和 .doc 二进制格式）、PDF 文档（.pdf）、PPT 文档（.pptx / .ppsx 等）；
+   - 严禁在未经用户要求的情况下在命令行中盲目调用 LibreOffice、Office 或复杂第三方转换脚本去转换文件格式。
+2. 目录探索与先验检查：
+   - 处理某个目录下的文件前，优先使用 list_directory 或 file_search 摸清目录内真实文件结构与命名；
+   - 检查目录中是否已有现成的提取文本（如 .txt）或 .docx，避免做无谓的重复转换。
+3. Windows 路径与命令规范：
+   - 在 Windows 环境下，包含中文、空格、括号（如 数学建模(2)）的路径，优先直接传给 read_file / write_file / list_directory 等内置工具（内置工具完全免疫 shell 转义与编码问题）；
+   - 使用 run_command 执行命令时，不要在 cmd 单行中硬拼包含 `$_`、`$`、多层嵌套引号的脆弱内联脚本，必要时写成独立脚本文件执行。
 
 【Word 文档生成能力】
 你可以使用 create_docx 工具把内容写到 .docx 文件（Word 文档）。当用户要求生成 Word 文档、\
@@ -1359,12 +1418,12 @@ async fn attach_skill_prompt(
     // 免确认机制对它不起作用。在 openclaw 路径下告诉 AI "可免确认" 等于说谎。
     if is_direct_api {
         let tools = if skill.allowed_tools.is_empty() {
-            "（无）".to_string()
+            "（不限制，全部工具可用）".to_string()
         } else {
             skill.allowed_tools.join(", ")
         };
         format!(
-            "{}\n\n【当前激活技能】{}\n描述：{}\n追加规则：\n{}\n允许免确认使用的工具：{}",
+            "{}\n\n【当前激活技能】{}\n描述：{}\n追加规则：\n{}\n本技能限定可用工具：{}（未列出的工具不可调用；执行敏感工具仍会按执行模式请求用户确认）",
             system_prompt, skill.name, description, skill.system_prompt, tools
         )
     } else {
@@ -1422,6 +1481,9 @@ mod tests {
             created_at,
             quoted_role: None,
             quoted_content: None,
+            agent_id: None,
+            agent_name: None,
+            agent_avatar: None,
         }
     }
 
@@ -1613,7 +1675,7 @@ fn kill_process_tree(pid: u32) {
 async fn stop_active_response(state: &tauri::State<'_, AppState>) {
     {
         let abort = state.abort_token.lock().await;
-        if let Some(ref token) = *abort {
+        if let Some((_, token)) = abort.as_ref() {
             token.cancel();
         }
     }
@@ -1754,7 +1816,58 @@ async fn send_to_ai(
     }
 
     // 解析被 @ 提及的智能体（找不到的忽略，全部找不到则按普通桌宠回复）
-    let mentioned_agents = resolve_mentioned_agents(&state, mention_agents).await?;
+    let mentioned_agents = resolve_mentioned_agents(&state, mention_agents, &message).await?;
+
+    // /team（协作模式）：多个智能体真正并行分工合作完成一个任务。
+    // 触发方式：消息以 /team（或 /组队、/协作）开头，@ 提及 >= 2 个智能体。
+    if let Some(task) = collab::parse_team_command(&message) {
+        if mentioned_agents.len() < 2 {
+            if let Ok(mut active) = state.active_chat.lock() {
+                active.active = None;
+            }
+            let _ = app_handle.emit(
+                "ai-error",
+                serde_json::json!({
+                    "message": "协作模式需要 @ 至少两个智能体，例如：/team 任务描述 @智能体A @智能体B",
+                    "thinking": null,
+                    "aborted": false
+                }),
+            );
+            return Ok(serde_json::json!({ "started": false }));
+        }
+
+        let _ = app_handle.emit("ai-started", &message);
+        let app_handle_clone = app_handle.clone();
+        let att_clone = attachments.unwrap_or_default();
+        tauri::async_runtime::spawn(async move {
+            let result = std::panic::AssertUnwindSafe(collab::run_collab(
+                app_handle_clone.clone(),
+                task,
+                mentioned_agents,
+                att_clone,
+            ))
+            .catch_unwind()
+            .await;
+            if let Err(panic) = result {
+                let state = app_handle_clone.state::<AppState>();
+                if let Ok(mut active) = state.active_chat.lock() {
+                    active.active = None;
+                }
+                let _ = app_handle_clone.emit(
+                    "ai-error",
+                    serde_json::json!({
+                "message": format!("协作任务内部错误: {}", 
+                    panic.downcast_ref::<String>().cloned()
+                        .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
+                        .unwrap_or_else(|| "未知".to_string())),
+                "thinking": null,
+                "aborted": false
+            }),
+                );
+            }
+        });
+        return Ok(serde_json::json!({ "started": true, "mode": "collab" }));
+    }
 
     // 用户交互 + 切换到思考状态
     {
@@ -1811,12 +1924,72 @@ async fn send_to_ai(
 async fn resolve_mentioned_agents(
     state: &tauri::State<'_, AppState>,
     names: Option<Vec<String>>,
+    message: &str,
 ) -> Result<Vec<storage::Agent>, String> {
-    let Some(names) = names else {
-        return Ok(Vec::new());
-    };
     let db = state.db.lock().await;
-    db.get_agents_by_names(&names).map_err(|e| e.to_string())
+    if let Some(names) = names {
+        if !names.is_empty() {
+            return db.get_agents_by_names(&names).map_err(|e| e.to_string());
+        }
+    }
+    // 兜底逻辑：若未显式传 mention_agents（例如通过语音助手或全局快捷键发送），
+    // 自动扫描已注册智能体名字是否出现在消息中的 @名字 结构里。
+    let all_agents = db.list_agents().map_err(|e| e.to_string())?;
+    let mut matched: Vec<storage::Agent> = Vec::new();
+    for agent in all_agents {
+        let pattern = format!("@{}", agent.name);
+        if message.contains(&pattern) {
+            matched.push(agent);
+        }
+    }
+    Ok(matched)
+}
+
+fn maybe_trigger_auto_evolution(app_handle: tauri::AppHandle, user_message: String) {
+    tauri::async_runtime::spawn(async move {
+        let state = app_handle.state::<AppState>();
+        let (auto_enabled, msg_count, last_reflection_time) = {
+            let db = state.db.lock().await;
+            let auto_enabled = db
+                .get_setting("evolution_auto_enabled")
+                .unwrap_or(None)
+                .unwrap_or_else(|| "true".to_string()) == "true";
+            let msg_count = db.get_user_message_count().unwrap_or(0);
+            let last_time = db.get_last_reflection_time().unwrap_or(None);
+            (auto_enabled, msg_count, last_time)
+        };
+
+        if !auto_enabled {
+            return;
+        }
+
+        let now = chrono::Utc::now().timestamp();
+        // 至少间隔 3 分钟，防止高频重复触发
+        if let Some(last_time) = last_reflection_time {
+            if now - last_time < 180 {
+                return;
+            }
+        }
+
+        // 检测纠错模式关键词
+        let correction_keywords = [
+            "不对", "别这样", "禁止", "以后请", "不要用", "改用", "写错了", "必须用", "重新写", "不要输出", "别废话"
+        ];
+        let is_correction = correction_keywords.iter().any(|kw| user_message.contains(kw));
+
+        // 触发条件：有纠错，或者总用户消息数是 15 的倍数
+        let should_trigger = is_correction || (msg_count > 0 && msg_count % 15 == 0);
+
+        if should_trigger {
+            let config = {
+                let db = state.db.lock().await;
+                active_api_profile(&db)
+            };
+            if !config.api_key.trim().is_empty() || !config.base_url.trim().is_empty() {
+                let _ = evolution::run_reflection_analysis(&app_handle, &state, &config).await;
+            }
+        }
+    });
 }
 
 async fn run_ai_message(
@@ -1850,7 +2023,7 @@ async fn run_ai_message(
             return;
         };
 
-        let (system_prompt, all_skills, active_skill) = {
+        let (system_prompt, _all_skills, active_skill) = {
             let personality = state.personality.lock().await.clone();
             let profession = state.profession.lock().await.clone();
             let db = state.db.lock().await;
@@ -1858,6 +2031,8 @@ async fn run_ai_message(
                 .get_setting("custom_system_prompt")
                 .unwrap_or(None)
                 .unwrap_or_default();
+            let active_insights = db.get_active_evolution_insights().unwrap_or_default();
+            let active_memories = db.get_active_memories_for_prompt(20).unwrap_or_default();
             let all_skills = db.list_skills().unwrap_or_default();
             let active_skill = db.get_active_skill().unwrap_or(None);
             drop(db);
@@ -1871,9 +2046,10 @@ async fn run_ai_message(
             let base = attach_computer_use_prompt(base);
             let base = attach_weather_prompt(base);
             let base = attach_search_prompt(base);
-            let base = attach_memory_prompt(base);
+            let base = attach_memory_prompt(base, &active_memories);
             let base = attach_registered_apps_prompt(base, &state).await;
             let base = attach_custom_prompt(base, &custom_prompt);
+            let base = evolution::attach_evolution_prompt(base, &active_insights);
             let base = attach_skill_prompt(base, active_skill.as_ref(), &all_skills, true).await;
             let base = attach_agent_prompt(base, &agents);
             (base, all_skills, active_skill)
@@ -1898,20 +2074,10 @@ async fn run_ai_message(
             history
         };
 
-        // 解析本轮技能（仅手动激活），并把技能白名单合入 config
+        // 解析本轮技能（仅手动激活）
         let effective_skill = resolve_skill_for_message(active_skill.as_ref());
         let mut effective_config = config;
         if let Some(s) = &effective_skill {
-            let mut seen: std::collections::HashSet<String> = effective_config
-                .auto_approved_tools
-                .iter()
-                .cloned()
-                .collect();
-            for t in &s.allowed_tools {
-                if seen.insert(t.clone()) {
-                    effective_config.auto_approved_tools.push(t.clone());
-                }
-            }
             // 仅在激活技能 ID 发生变化时 emit，避免每轮都提示
             let mut last_id = state.last_active_skill_id.lock().await;
             if last_id.as_deref() != Some(s.id.as_str()) {
@@ -1930,21 +2096,26 @@ async fn run_ai_message(
             *last_id = None;
         }
 
-        // 智能体：合并工具白名单 + 单智能体时允许模型覆盖
-        let agent_ctx = AgentContext { agents };
-        {
-            let mut seen: std::collections::HashSet<String> = effective_config
-                .auto_approved_tools
-                .iter()
-                .cloned()
-                .collect();
-            for agent in &agent_ctx.agents {
-                for tool in &agent.allowed_tools {
-                    if seen.insert(tool.clone()) {
-                        effective_config.auto_approved_tools.push(tool.clone());
-                    }
-                }
+        // 工具白名单 = 能力限制（不再合并进 auto_approved_tools 免确认）：
+        // 技能与被 @ 智能体的 allowed_tools 取并集，未列入的工具模型看不到；
+        // 全部为空则不限制。确认弹窗仍完全由 execution_mode 决定。
+        let mut tool_whitelist: Option<Vec<String>> = None;
+        if let Some(s) = &effective_skill {
+            if !s.allowed_tools.is_empty() {
+                tool_whitelist.get_or_insert_with(Vec::new).extend(s.allowed_tools.iter().cloned());
             }
+        }
+        let agent_ctx = AgentContext { agents };
+        for agent in &agent_ctx.agents {
+            if !agent.allowed_tools.is_empty() {
+                tool_whitelist
+                    .get_or_insert_with(Vec::new)
+                    .extend(agent.allowed_tools.iter().cloned());
+            }
+        }
+        if let Some(list) = &mut tool_whitelist {
+            list.sort();
+            list.dedup();
         }
         if let Some(agent) = agent_ctx.single() {
             let model = agent.model.trim();
@@ -1953,13 +2124,16 @@ async fn run_ai_message(
             }
         }
 
-        // 创建新的 CancellationToken
+        // 创建新的 CancellationToken（带 run_id：只允许本次运行清理自己的槽位，
+        // 防止「停止后立即重发」时旧运行抹掉新运行的取消令牌）
+        let run_id = NEXT_RUN_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let token = tokio_util::sync::CancellationToken::new();
         {
             let mut abort = state.abort_token.lock().await;
-            *abort = Some(token);
+            *abort = Some((run_id, token.clone()));
         }
 
+        let msg_for_evo = message.clone();
         direct_api::run_direct_api_agent(
             app_handle.clone(),
             message,
@@ -1969,19 +2143,26 @@ async fn run_ai_message(
             attachments,
             quote,
             Some(agent_ctx),
+            tool_whitelist,
+            token,
         )
         .await;
 
-        // 执行结束，清空 abort_token
+        // 执行结束：仅当槽位仍属于本次运行时才清空
         {
             let mut abort = state.abort_token.lock().await;
-            *abort = None;
+            if abort.as_ref().map(|(id, _)| *id == run_id).unwrap_or(false) {
+                *abort = None;
+            }
         }
+
+        // 尝试触发自进化自动复盘
+        maybe_trigger_auto_evolution(app_handle.clone(), msg_for_evo);
         return;
     }
 
     // 启动 Claude CLI 流式子进程
-    let (system_prompt, all_skills, active_skill) = {
+    let (system_prompt, _all_skills, active_skill) = {
         let state = app_handle.state::<AppState>();
         let personality = state.personality.lock().await.clone();
         let profession = state.profession.lock().await.clone();
@@ -1990,14 +2171,17 @@ async fn run_ai_message(
             .get_setting("custom_system_prompt")
             .unwrap_or(None)
             .unwrap_or_default();
+        let active_insights = db.get_active_evolution_insights().unwrap_or_default();
+        let active_memories = db.get_active_memories_for_prompt(20).unwrap_or_default();
         let all_skills = db.list_skills().unwrap_or_default();
         let active_skill = db.get_active_skill().unwrap_or(None);
         drop(db);
 
         let base = openclaw::build_system_prompt(&personality, &profession);
-        let base = attach_memory_prompt(base);
+        let base = attach_memory_prompt(base, &active_memories);
         let base = attach_registered_apps_prompt(base, &state).await;
         let base = attach_custom_prompt(base, &custom_prompt);
+        let base = evolution::attach_evolution_prompt(base, &active_insights);
         let base = attach_skill_prompt(base, active_skill.as_ref(), &all_skills, false).await;
         let base = attach_agent_prompt(base, &agents);
         (base, all_skills, active_skill)
@@ -3067,6 +3251,7 @@ async fn save_memory(
     category: String,
     key: String,
     value: String,
+    app_handle: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<storage::MemoryItem, String> {
     if category.len() > MAX_MEMORY_CATEGORY_BYTES {
@@ -3089,9 +3274,48 @@ async fn save_memory(
     let id = db
         .save_memory(&category, &key, &value)
         .map_err(|e| e.to_string())?;
-    db.get_memory_by_id(id)
+    let item = db
+        .get_memory_by_id(id)
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "记忆保存后读取失败".to_string())
+        .ok_or_else(|| "记忆保存后读取失败".to_string())?;
+    let _ = app_handle.emit("memories-changed", serde_json::json!({}));
+    Ok(item)
+}
+
+#[tauri::command]
+async fn update_memory(
+    id: i64,
+    category: String,
+    key: String,
+    value: String,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<storage::MemoryItem, String> {
+    if category.len() > MAX_MEMORY_CATEGORY_BYTES {
+        return Err(format!(
+            "分类名称过长（上限 {} 字节）",
+            MAX_MEMORY_CATEGORY_BYTES
+        ));
+    }
+    if key.len() > MAX_MEMORY_KEY_BYTES {
+        return Err(format!("键名过长（上限 {} 字节）", MAX_MEMORY_KEY_BYTES));
+    }
+    if value.len() > MAX_MEMORY_VALUE_BYTES {
+        return Err(format!(
+            "记忆内容过长：{} 字节（上限 {} 字节 / 64KB）",
+            value.len(),
+            MAX_MEMORY_VALUE_BYTES
+        ));
+    }
+    let db = state.db.lock().await;
+    db.update_memory(id, &category, &key, &value)
+        .map_err(|e| e.to_string())?;
+    let item = db
+        .get_memory_by_id(id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "记忆更新后读取失败".to_string())?;
+    let _ = app_handle.emit("memories-changed", serde_json::json!({}));
+    Ok(item)
 }
 
 #[tauri::command]
@@ -3109,9 +3333,28 @@ async fn get_memories(
 }
 
 #[tauri::command]
-async fn delete_memory(id: i64, state: tauri::State<'_, AppState>) -> Result<(), String> {
+async fn search_memories(
+    query: String,
+    category: Option<String>,
+    limit: Option<u32>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<storage::MemoryItem>, String> {
     let db = state.db.lock().await;
-    db.delete_memory(id).map_err(|e| e.to_string())
+    let cat_ref = category.as_deref().filter(|c| !c.trim().is_empty());
+    db.search_memories(&query, cat_ref, limit.unwrap_or(20))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn delete_memory(
+    id: i64,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.delete_memory(id).map_err(|e| e.to_string())?;
+    let _ = app_handle.emit("memories-changed", serde_json::json!({}));
+    Ok(())
 }
 
 #[tauri::command]
@@ -3582,6 +3825,7 @@ const ALLOWED_SETTING_KEYS: &[&str] = &[
     "custom_pixel_pet_asset_id",
     "voice_settings",
     "tts_settings",
+    "evolution_auto_enabled",
 ];
 
 #[tauri::command]
@@ -3809,18 +4053,38 @@ async fn save_agent(
     agent: storage::Agent,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    validate_agent_for_save(&agent)?;
+    let clean_agent = storage::Agent {
+        id: agent.id.trim().to_string(),
+        name: agent.name.trim().to_string(),
+        avatar: if agent.avatar.trim().is_empty() {
+            "🤖".to_string()
+        } else {
+            agent.avatar.trim().to_string()
+        },
+        description: agent.description.trim().to_string(),
+        system_prompt: agent.system_prompt.trim().to_string(),
+        model: agent.model.trim().to_string(),
+        allowed_tools: agent
+            .allowed_tools
+            .into_iter()
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect(),
+        created_at: agent.created_at,
+        updated_at: agent.updated_at,
+    };
+    validate_agent_for_save(&clean_agent)?;
     let db = state.db.lock().await;
     // 名字唯一：@ 提及按名字匹配，重名会导致歧义。
     if let Some(existing) = db
-        .get_agent_by_name(agent.name.trim())
+        .get_agent_by_name(&clean_agent.name)
         .map_err(|e| e.to_string())?
     {
-        if existing.id != agent.id {
-            return Err(format!("已存在名为「{}」的智能体，请换一个名字", agent.name.trim()));
+        if existing.id != clean_agent.id {
+            return Err(format!("已存在名为「{}」的智能体，请换一个名字", clean_agent.name));
         }
     }
-    db.save_agent(&agent).map_err(|e| e.to_string())
+    db.save_agent(&clean_agent).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -4057,6 +4321,108 @@ fn validate_agent_for_save(agent: &storage::Agent) -> Result<(), String> {
     Ok(())
 }
 
+// ===== 自进化系统 (Self-Evolution) Commands =====
+
+#[tauri::command]
+async fn trigger_evolution_reflection(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let config = {
+        let db = state.db.lock().await;
+        active_api_profile(&db)
+    };
+    evolution::run_reflection_analysis(&app_handle, &state, &config).await
+}
+
+#[tauri::command]
+async fn get_evolution_insights(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<storage::EvolutionInsight>, String> {
+    let db = state.db.lock().await;
+    db.list_evolution_insights().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn save_evolution_insight(
+    insight: storage::EvolutionInsight,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.save_evolution_insight(&insight).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn update_evolution_insight_status(
+    id: String,
+    status: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.update_evolution_insight_status(&id, &status).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn delete_evolution_insight(
+    id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    db.delete_evolution_insight(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_evolution_proposals(
+    status: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<storage::EvolutionProposal>, String> {
+    let db = state.db.lock().await;
+    db.list_evolution_proposals(status.as_deref()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn apply_evolution_proposal(
+    id: String,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<storage::EvolutionLog, String> {
+    evolution::apply_evolution_proposal(&app_handle, &state, &id).await
+}
+
+#[tauri::command]
+async fn reject_evolution_proposal(
+    id: String,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    evolution::reject_evolution_proposal(&app_handle, &state, &id).await
+}
+
+#[tauri::command]
+async fn get_evolution_logs(
+    limit: Option<usize>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<storage::EvolutionLog>, String> {
+    let db = state.db.lock().await;
+    db.list_evolution_logs(limit.unwrap_or(50)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn rollback_evolution_log(
+    id: String,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    evolution::rollback_evolution_log(&app_handle, &state, &id).await
+}
+
+#[tauri::command]
+async fn get_evolution_summary(
+    state: tauri::State<'_, AppState>,
+) -> Result<storage::EvolutionSummary, String> {
+    let db = state.db.lock().await;
+    db.get_evolution_summary().map_err(|e| e.to_string())
+}
 
 #[tauri::command]
 async fn spawn_subprocess(
@@ -4167,6 +4533,7 @@ async fn get_shortcut_target_path(lnk_path: &str) -> Result<String, String> {
 #[tauri::command]
 async fn register_shortcut_file(
     path: String,
+    app_handle: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
     let p = std::path::Path::new(&path);
@@ -4194,10 +4561,109 @@ async fn register_shortcut_file(
     db.save_memory("app_path", &app_name, &target_path)
         .map_err(|e| format!("保存到数据库失败: {e}"))?;
 
+    let _ = app_handle.emit("memories-changed", serde_json::json!({}));
+
     Ok(serde_json::json!({
         "name": app_name,
         "path": target_path,
     }))
+}
+
+#[tauri::command]
+async fn scan_and_update_desktop_shortcuts(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let script = r#"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+$sh = New-Object -ComObject WScript.Shell
+$results = @()
+$dirs = @(
+    [System.Environment]::GetFolderPath('Desktop'),
+    [System.Environment]::GetFolderPath('CommonDesktopDirectory')
+) | Where-Object { $_ -and (Test-Path $_) }
+
+foreach ($d in $dirs) {
+    Get-ChildItem -Path $d -Filter *.lnk -File -ErrorAction SilentlyContinue | ForEach-Object {
+        try {
+            $sc = $sh.CreateShortcut($_.FullName)
+            $target = $sc.TargetPath
+            if ($target -and (Test-Path $target)) {
+                $results += [PSCustomObject]@{
+                    name = $_.BaseName
+                    path = $target
+                }
+            }
+        } catch {}
+    }
+}
+$results | ConvertTo-Json -Compress
+"#;
+
+        let output = tokio::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .output()
+            .await
+            .map_err(|e| format!("执行扫描失败: {e}"))?;
+
+        if !output.status.success() {
+            let err_text = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("扫描桌面快捷方式出错: {}", err_text.trim()));
+        }
+
+        let raw_json = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if raw_json.is_empty() {
+            return Ok(serde_json::json!({
+                "count": 0,
+                "apps": []
+            }));
+        }
+
+        let parsed: serde_json::Value = serde_json::from_str(&raw_json)
+            .map_err(|e| format!("解析快捷方式数据失败: {e}"))?;
+
+        let items: Vec<serde_json::Value> = if let Some(arr) = parsed.as_array() {
+            arr.clone()
+        } else if parsed.is_object() {
+            vec![parsed]
+        } else {
+            Vec::new()
+        };
+
+        let mut saved_apps = Vec::new();
+        let db = state.db.lock().await;
+        for item in &items {
+            if let (Some(name), Some(path)) = (item["name"].as_str(), item["path"].as_str()) {
+                let name = name.trim();
+                let path = path.trim();
+                if !name.is_empty() && !path.is_empty() {
+                    let _ = db.save_memory("app_path", name, path);
+                    saved_apps.push(serde_json::json!({
+                        "name": name,
+                        "path": path
+                    }));
+                }
+            }
+        }
+        drop(db);
+
+        let _ = app_handle.emit("memories-changed", serde_json::json!({}));
+
+        Ok(serde_json::json!({
+            "count": saved_apps.len(),
+            "apps": saved_apps
+        }))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app_handle;
+        let _ = state;
+        Err("该功能仅在 Windows 系统中可用".to_string())
+    }
 }
 
 #[tauri::command]
@@ -4322,7 +4788,6 @@ async fn open_claude_config(app_handle: tauri::AppHandle) -> Result<(), String> 
              Write-Host '配置配置结束。按任意键关闭此窗口...' -ForegroundColor Cyan; \
              $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')".to_string()
         };
-
         std::process::Command::new("powershell.exe")
             .args(["-NoExit", "-Command", &script])
             .spawn()
@@ -4613,6 +5078,7 @@ pub fn run() {
                 weather_cache: tokio::sync::Mutex::new(None),
                 last_active_skill_id: tokio::sync::Mutex::new(None),
                 subprocs: subprocess::SubprocessManager::new(),
+                is_reflecting: StdAtomicBool::new(false),
             };
             app.manage(app_state);
             start_scheduled_task_runner(app.handle().clone());
@@ -4644,7 +5110,9 @@ pub fn run() {
             clear_chat_history,
             start_new_conversation,
             save_memory,
+            update_memory,
             get_memories,
+            search_memories,
             delete_memory,
             save_scheduled_task,
             get_scheduled_tasks,
@@ -4680,6 +5148,7 @@ pub fn run() {
             get_file_metadata,
             read_file_as_data_url,
             register_shortcut_file,
+            scan_and_update_desktop_shortcuts,
             exit_app,
             open_claude_config,
             tts_synthesize,
@@ -4718,6 +5187,17 @@ reset_builtin_skills,
             save_agent,
             delete_agent,
             generate_agent_spec,
+            trigger_evolution_reflection,
+            get_evolution_insights,
+            save_evolution_insight,
+            update_evolution_insight_status,
+            delete_evolution_insight,
+            get_evolution_proposals,
+            apply_evolution_proposal,
+            reject_evolution_proposal,
+            get_evolution_logs,
+            rollback_evolution_log,
+            get_evolution_summary,
             spawn_subprocess,
             send_stdin,
             kill_subprocess,

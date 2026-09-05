@@ -210,7 +210,25 @@ impl SearchOptions {
 }
 
 fn canonicalize_requested_path(path: &str) -> Result<PathBuf, String> {
-    let raw = PathBuf::from(path);
+    let trimmed = path.trim().trim_matches('"').trim_matches('\'');
+    let unescaped = if let Some(stripped) = trimmed.strip_prefix("file:///") {
+        stripped
+    } else if let Some(stripped) = trimmed.strip_prefix("file://") {
+        stripped
+    } else {
+        trimmed
+    };
+
+    // 展开 ~ 前缀为用户主目录
+    let raw = if unescaped == "~" {
+        dirs::home_dir().ok_or_else(|| "无法获取用户主目录".to_string())?
+    } else if let Some(sub) = unescaped.strip_prefix("~/").or_else(|| unescaped.strip_prefix("~\\")) {
+        let home = dirs::home_dir().ok_or_else(|| "无法获取用户主目录".to_string())?;
+        home.join(sub)
+    } else {
+        PathBuf::from(unescaped)
+    };
+
     let absolute = if raw.is_absolute() {
         raw
     } else {
@@ -409,11 +427,11 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "读取本地文件的内容，支持文本文件、.docx、.pdf 和 .pptx/.pptm/.ppsx 格式；会拒绝系统目录和常见敏感凭据路径。大文件（超过 512KB）必须用 offset/limit 分页读取，返回带行号的指定行范围；不传 offset/limit 时整读（512KB 上限）。查看代码文件建议用分页模式（行号便于后续引用和修改定位）。",
+                "description": "读取本地文件内容。支持纯文本代码（自动适配 UTF-8/GBK/ANSI/UTF-16 编码）、Word (.docx/.doc)、Excel 表格 (.xlsx)、PDF (.pdf)、PPT (.pptx/.pptm/.ppsx) 和 CSV/TSV 等各类格式；拒绝系统目录和敏感凭据。大文件（>512KB）用 offset/limit 分页读取返回带行号行范围；不传 offset/limit 时整读（512KB 上限）。查看代码建议分页。",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": { "type": "string", "description": "要读取的文件的绝对路径" },
+                        "path": { "type": "string", "description": "要读取的文件的绝对路径或 ~ 路径" },
                         "offset": { "type": "integer", "description": "可选，起始行号（从 1 开始）；与 limit 配合分页读取大文件" },
                         "limit": { "type": "integer", "description": "可选，读取的行数，默认 500，上限 2000" }
                     },
@@ -429,7 +447,7 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": { "type": "string", "description": "要写入的绝对路径" },
+                        "path": { "type": "string", "description": "要写入的绝对路径或 ~ 路径" },
                         "content": { "type": "string", "description": "要写入的文件内容" }
                     },
                     "required": ["path", "content"]
@@ -440,11 +458,11 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
             "type": "function",
             "function": {
                 "name": "list_directory",
-                "description": "列出指定目录下的子文件与目录（最多显示 200 个条目）",
+                "description": "列出指定目录下的子文件与子目录（按目录优先、文件名字母顺序排序，并显示易读文件大小）",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": { "type": "string", "description": "目录的绝对路径" }
+                        "path": { "type": "string", "description": "目录的绝对路径或 ~ 路径" }
                     },
                     "required": ["path"]
                 }
@@ -454,11 +472,12 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
             "type": "function",
             "function": {
                 "name": "run_command",
-                "description": "执行本地 Shell 命令（Windows 下使用 cmd /C 执行），输出上限 64KB，默认超时 30 秒。构建、安装依赖、运行测试等耗时命令务必传 timeout_secs（如 300 或 600，最长 600 秒），否则会超时中断。此工具为敏感工具，执行前会弹窗让用户确认。",
+                "description": "执行本地 Shell 命令（Windows 下使用 cmd /C 执行），自动兼容中文与 UTF-8 编码，输出上限 64KB，默认超时 30 秒。耗时命令务必传 timeout_secs（如 300 或 600），可选 cwd 指定工作目录。此工具为敏感工具，执行前会弹窗确认。",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "command": { "type": "string", "description": "要执行的命令行" },
+                        "cwd": { "type": "string", "description": "可选，执行命令的工作目录绝对路径" },
                         "timeout_secs": { "type": "integer", "description": "可选，超时秒数，默认 30，最长 600。构建/安装/测试命令建议 300-600" }
                     },
                     "required": ["command"]
@@ -491,7 +510,7 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
             "type": "function",
             "function": {
                 "name": "read_webpage",
-                "description": "读取指定网页正文。若正在验证某个问题，请传入 query，工具会只返回最相关正文片段以减少噪音；未传 query 时返回压缩后的正文开头。",
+                "description": "读取指定网页正文，支持 HTML、Markdown、JSON 和 XML。若正在验证某个问题，请传入 query 提取相关片段；未传 query 时返回压缩后的开头正文。",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -856,11 +875,11 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
             "type": "function",
             "function": {
                 "name": "file_search",
-                "description": "在指定目录下递归搜索匹配文件名模式的文件，支持通配符（如 *.pdf、*report*、*.pptx、*.py）。不指定目录时搜索用户常用目录和当前项目；指定目录时会拒绝系统目录和常见敏感凭据路径。",
+                "description": "在指定目录下递归搜索匹配的文件。支持关键词直接搜索、通配符（如 *.pdf、*report*、*.xlsx）以及多模式组合（分号/逗号分隔，如 *.doc;*.docx;*.pdf）。不指定目录时搜索用户常用目录和当前项目；指定目录时会拒绝系统目录和常见敏感凭据路径。",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "pattern": { "type": "string", "description": "文件名匹配模式，支持 * 和 ? 通配符，如 *.pdf、*report*、*.pptx、*.py" },
+                        "pattern": { "type": "string", "description": "文件名匹配模式或关键词，支持 * 和 ? 通配符，或多模式如 *.doc;*.docx;*.pdf" },
                         "directory": { "type": "string", "description": "可选，搜索起始目录；不指定时搜索用户常用目录和当前项目。" },
                         "max_results": { "type": "integer", "description": "可选，最大返回结果数，默认 50，上限 200" }
                     },
@@ -919,6 +938,17 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
         json!({
             "type": "function",
             "function": {
+                "name": "scan_desktop_shortcuts",
+                "description": "一键扫描当前 Windows 桌面上的所有应用程序快捷方式 (.lnk)，自动提取目标可执行文件物理路径并同步更新到桌宠的快捷应用记忆库中，使桌宠能够通过自然语言（如‘打开微信’、‘打开VSCode’）直接启动应用。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {}
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
                 "name": "create_docx",
                 "description": "创建 Word 文档（.docx）。正文用 Markdown 语法书写，会自动转换为排版好的 Word 文档：# ## ### 标题、**粗体**、*斜体*、`行内代码`、- 无序列表、1. 有序列表、> 引用块、| 表格 |、``` 代码块。自动设置中文字体（微软雅黑）。读取已有 Word 文档请改用 read_file（已支持 .docx）。",
                 "parameters": {
@@ -961,10 +991,31 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
     ]
 }
 
+/// 按白名单过滤工具定义：None 或空列表 = 不限制（全部工具可用）。
+/// 这是「能力限制」语义：不在名单内的工具模型根本看不到，也无法调用。
+/// 与确认弹窗（execution_mode）完全解耦。
+pub fn tool_definitions_for(allowed: Option<&[String]>) -> Vec<serde_json::Value> {
+    let all = tool_definitions();
+    match allowed {
+        Some(list) if !list.is_empty() => all
+            .into_iter()
+            .filter(|def| {
+                def.get("function")
+                    .and_then(|f| f.get("name"))
+                    .and_then(|n| n.as_str())
+                    .map(|name| list.iter().any(|allowed| allowed == name))
+                    .unwrap_or(false)
+            })
+            .collect(),
+        _ => all,
+    }
+}
+
 pub async fn execute_tool(
     name: &str,
     args: &serde_json::Value,
     preferred_search_provider: &str,
+    cancel: tokio_util::sync::CancellationToken,
 ) -> String {
     let timeout_duration = std::time::Duration::from_secs(30);
     match name {
@@ -982,7 +1033,9 @@ pub async fn execute_tool(
                 Err(_) => "列出目录超时 (30秒)".to_string(),
             }
         }
-        "run_command" => exec_run_command(args).await.unwrap_or_else(|e| e),
+        "run_command" => exec_run_command(args, cancel)
+            .await
+            .unwrap_or_else(|e| e),
         "web_search" => {
             let options = match SearchOptions::from_tool_args(args) {
                 Ok(options) => options,
@@ -1069,6 +1122,7 @@ pub async fn execute_tool(
         "search_memory" => exec_search_memory(args).await.unwrap_or_else(|e| e),
         "save_memory" => exec_save_memory(args).await.unwrap_or_else(|e| e),
         "delete_memory" => exec_delete_memory(args).await.unwrap_or_else(|e| e),
+        "scan_desktop_shortcuts" => exec_scan_desktop_shortcuts().await.unwrap_or_else(|e| e),
         "create_docx" => {
             match tokio::time::timeout(timeout_duration, exec_create_docx(args)).await {
                 Ok(result) => result.unwrap_or_else(|e| e),
@@ -1077,6 +1131,44 @@ pub async fn execute_tool(
         }
         _ => format!("未知工具: {name}"),
     }
+}
+
+/// 智能解码字节流，自动探测 UTF-8 / UTF-16 / GBK / GB18030 编码，杜绝 Windows 控制台与文件乱码
+pub fn decode_bytes_smart(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return String::new();
+    }
+    // 1. 检查 UTF-16 BOM
+    if bytes.len() >= 2 {
+        if bytes[0] == 0xFF && bytes[1] == 0xFE {
+            let u16s: Vec<u16> = bytes[2..]
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect();
+            if let Ok(s) = String::from_utf16(&u16s) {
+                return s;
+            }
+        } else if bytes[0] == 0xFE && bytes[1] == 0xFF {
+            let u16s: Vec<u16> = bytes[2..]
+                .chunks_exact(2)
+                .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                .collect();
+            if let Ok(s) = String::from_utf16(&u16s) {
+                return s;
+            }
+        }
+    }
+    // 2. 优先尝试标准 UTF-8
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        return s.to_string();
+    }
+    // 3. 尝试中文 Windows 常见的 GB18030 / GBK 编码
+    let (cow, _encoding, had_errors) = encoding_rs::GB18030.decode(bytes);
+    if !had_errors {
+        return cow.into_owned();
+    }
+    // 4. 回退到 UTF-8 容错解码
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 async fn exec_read_file(args: &serde_json::Value) -> Result<String, String> {
@@ -1106,6 +1198,11 @@ async fn exec_read_file(args: &serde_json::Value) -> Result<String, String> {
         .map(|e| e.to_ascii_lowercase());
     match ext.as_deref() {
         Some("docx") => return read_docx_text(&path_buf),
+        Some("doc") => return read_doc_text(&path_buf),
+        Some("xlsx") | Some("xlsm") | Some("xltx") => return read_xlsx_text(&path_buf),
+        Some("xls") => {
+            return Err("旧版 .xls 二进制格式请另存为 .xlsx 或 .csv 后再读取".to_string())
+        }
         Some("pdf") => return read_pdf_text(&path_buf),
         Some("pptx") | Some("pptm") | Some("ppsx") => return read_pptx_text(&path_buf),
         Some("ppt") => {
@@ -1127,9 +1224,10 @@ async fn exec_read_file(args: &serde_json::Value) -> Result<String, String> {
                 size
             ));
         }
-        let content = tokio::fs::read_to_string(&path_buf)
+        let raw_bytes = tokio::fs::read(&path_buf)
             .await
             .map_err(|e| format!("读取文件失败: {e}"))?;
+        let content = decode_bytes_smart(&raw_bytes);
         let lines: Vec<&str> = content.lines().collect();
         let total = lines.len();
         let offset = offset_opt.unwrap_or(1) as usize;
@@ -1159,9 +1257,10 @@ async fn exec_read_file(args: &serde_json::Value) -> Result<String, String> {
         ));
     }
 
-    let content = tokio::fs::read_to_string(&path_buf)
+    let raw_bytes = tokio::fs::read(&path_buf)
         .await
         .map_err(|e| format!("读取文件失败: {e}"))?;
+    let content = decode_bytes_smart(&raw_bytes);
 
     if content.len() > 524288 {
         let safe_end = content.floor_char_boundary(524288);
@@ -1194,6 +1293,334 @@ fn read_docx_text(path: &Path) -> Result<String, String> {
 
     let text = extract_open_xml_text(&xml_content);
     finish_extracted_text("docx", text, "docx 文件中未提取到文本内容")
+}
+
+/// 从 .doc (Word 97-2003 二进制复合文档或重命名 docx/rtf) 中提取纯文本
+fn read_doc_text(path: &Path) -> Result<String, String> {
+    // 1. 尝试作为 docx (ZIP) 解析，处理直接将 .docx 改名为 .doc 的情况
+    if let Ok(text) = read_docx_text(path) {
+        if !text.trim().is_empty() {
+            return Ok(text);
+        }
+    }
+
+    let bytes = std::fs::read(path).map_err(|e| format!("读取 .doc 文件失败: {e}"))?;
+    if bytes.is_empty() {
+        return Ok("（.doc 文件内容为空）".to_string());
+    }
+
+    // 2. 检查是否为 RTF 格式 ({\rtf...)
+    if bytes.starts_with(b"{\\rtf") {
+        let raw = decode_bytes_smart(&bytes);
+        let cleaned = extract_rtf_text(&raw);
+        if !cleaned.trim().is_empty() {
+            return finish_extracted_text("doc (RTF)", cleaned, "doc RTF 中未提取到有效文本");
+        }
+    }
+
+    // 3. 二进制 OLE2 Compound File 或 WordDocument 文本流提取
+    let mut extracted_lines: Vec<String> = Vec::new();
+    let mut current_line = String::new();
+
+    // 扫描 UTF-16LE 文本段
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        let code = u16::from_le_bytes([bytes[i], bytes[i + 1]]);
+        let is_valid_char = match code {
+            0x09 | 0x0A | 0x0D => true,
+            0x20..=0x7E => true,
+            0x00A0..=0x024F => true,
+            0x2000..=0x206F => true,
+            0x3000..=0x303F => true, // CJK 标点
+            0x4E00..=0x9FFF => true, // CJK 统一表意文字
+            0x3400..=0x4DBF => true, // CJK 扩展 A
+            0xF900..=0xFAFF => true, // CJK 兼容表意文字
+            0xFF00..=0xFFEF => true, // 全角字符
+            _ => false,
+        };
+
+        if is_valid_char {
+            if let Some(ch) = char::from_u32(code as u32) {
+                if ch == '\n' || ch == '\r' {
+                    if current_line.chars().count() >= 2 {
+                        let trimmed = current_line.trim();
+                        if !trimmed.is_empty() && !is_binary_garbage(trimmed) {
+                            extracted_lines.push(trimmed.to_string());
+                        }
+                    }
+                    current_line.clear();
+                } else if ch != '\0' {
+                    current_line.push(ch);
+                }
+            }
+            i += 2;
+        } else {
+            if current_line.chars().count() >= 2 {
+                let trimmed = current_line.trim();
+                if !trimmed.is_empty() && !is_binary_garbage(trimmed) {
+                    extracted_lines.push(trimmed.to_string());
+                }
+            }
+            current_line.clear();
+            i += 1;
+        }
+    }
+    if current_line.chars().count() >= 2 {
+        let trimmed = current_line.trim();
+        if !trimmed.is_empty() && !is_binary_garbage(trimmed) {
+            extracted_lines.push(trimmed.to_string());
+        }
+    }
+
+    // 4. 若 UTF-16LE 提取行数不足，尝试 ANSI / GBK 连续文本提取补充
+    if extracted_lines.is_empty() || extracted_lines.iter().map(|l| l.len()).sum::<usize>() < 50 {
+        let decoded = decode_bytes_smart(&bytes);
+        for line in decoded.lines() {
+            let filtered: String = line.chars().filter(|c| !c.is_control() || *c == '\t').collect();
+            let trimmed = filtered.trim();
+            if trimmed.chars().count() >= 4 && !is_binary_garbage(trimmed) {
+                if !extracted_lines.iter().any(|existing| existing == trimmed) {
+                    extracted_lines.push(trimmed.to_string());
+                }
+            }
+        }
+    }
+
+    let result = extracted_lines.join("\n\n");
+    finish_extracted_text("doc", result, "无法从 .doc 文件中提取到可读文本，请尝试将文件保存为 .docx 后再读取")
+}
+
+fn is_binary_garbage(s: &str) -> bool {
+    if s.len() < 2 {
+        return true;
+    }
+    let meta_prefixes = [
+        "Normal.dot", "Microsoft Word", "Title", "Subject", "Author", "Keywords",
+        "Comments", "Template", "LastSavedBy", "Revision", "TotalEditTime",
+        "WordDocument", "SummaryInformation", "DocumentSummaryInformation",
+        "CompObj", "ObjectPool", "Table", "Data", "1Table", "0Table",
+    ];
+    for prefix in &meta_prefixes {
+        if s.starts_with(prefix) {
+            return true;
+        }
+    }
+    let printable_count = s.chars().filter(|c| c.is_alphanumeric() || c.is_whitespace() || is_cjk_char(*c)).count();
+    printable_count == 0 || (printable_count * 10 / s.chars().count() < 6)
+}
+
+fn is_cjk_char(c: char) -> bool {
+    let u = c as u32;
+    (0x4E00..=0x9FFF).contains(&u) || (0x3000..=0x303F).contains(&u) || (0xFF00..=0xFFEF).contains(&u)
+}
+
+fn extract_rtf_text(rtf: &str) -> String {
+    let mut out = String::new();
+    let mut in_control = false;
+    for ch in rtf.chars() {
+        if ch == '\\' {
+            in_control = true;
+            continue;
+        }
+        if in_control {
+            if ch.is_whitespace() || ch == ';' {
+                in_control = false;
+            }
+            continue;
+        }
+        if ch == '{' || ch == '}' {
+            continue;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// 从 .xlsx 文件中提取工作表表格文本（Markdown 表格格式）
+fn read_xlsx_text(path: &Path) -> Result<String, String> {
+    use std::io::Read;
+
+    let file = std::fs::File::open(path).map_err(|e| format!("打开 xlsx 文件失败: {e}"))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("解析 xlsx 压缩包失败: {e}"))?;
+
+    // 1. 读取 sharedStrings.xml (如果有)
+    let mut shared_strings: Vec<String> = Vec::new();
+    if let Ok(mut entry) = archive.by_name("xl/sharedStrings.xml") {
+        let mut sst_xml = String::new();
+        if entry.read_to_string(&mut sst_xml).is_ok() {
+            shared_strings = extract_xlsx_shared_strings(&sst_xml);
+        }
+    }
+
+    // 2. 读取工作表列表
+    let mut sheet_files: Vec<String> = archive
+        .file_names()
+        .filter(|n| n.starts_with("xl/worksheets/sheet") && n.ends_with(".xml"))
+        .map(|n| n.to_string())
+        .collect();
+    sheet_files.sort();
+
+    if sheet_files.is_empty() {
+        return Err("xlsx 文件中未找到有效工作表数据".to_string());
+    }
+
+    let mut out = String::new();
+    for (idx, sname) in sheet_files.iter().enumerate() {
+        let mut sheet_xml = String::new();
+        if let Ok(mut entry) = archive.by_name(sname) {
+            if entry.read_to_string(&mut sheet_xml).is_ok() {
+                let sheet_table = parse_xlsx_sheet_xml(&sheet_xml, &shared_strings);
+                if !sheet_table.trim().is_empty() {
+                    if sheet_files.len() > 1 {
+                        out.push_str(&format!("### 工作表 {}\n\n", idx + 1));
+                    }
+                    out.push_str(&sheet_table);
+                    out.push_str("\n\n");
+                }
+            }
+        }
+    }
+
+    finish_extracted_text("xlsx", out, "xlsx 文件中未提取到有效表格数据")
+}
+
+fn extract_xlsx_shared_strings(xml: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut search_pos = 0;
+    while let Some(si_start_rel) = xml[search_pos..].find("<si>") {
+        let si_start = search_pos + si_start_rel + 4;
+        let Some(si_end_rel) = xml[si_start..].find("</si>") else {
+            break;
+        };
+        let si_end = si_start + si_end_rel;
+        let si_body = &xml[si_start..si_end];
+
+        let mut item_text = String::new();
+        let mut t_pos = 0;
+        while let Some(t_start_rel) = si_body[t_pos..].find("<t") {
+            let t_open_end = match si_body[t_pos + t_start_rel..].find('>') {
+                Some(idx) => t_pos + t_start_rel + idx + 1,
+                None => break,
+            };
+            let Some(t_close_rel) = si_body[t_open_end..].find("</t>") else {
+                break;
+            };
+            let t_close = t_open_end + t_close_rel;
+            let val = &si_body[t_open_end..t_close];
+            item_text.push_str(&decode_xml_entities(val));
+            t_pos = t_close + 4;
+        }
+
+        result.push(item_text);
+        search_pos = si_end + 5;
+    }
+    result
+}
+
+fn parse_xlsx_sheet_xml(xml: &str, shared_strings: &[String]) -> String {
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut search_pos = 0;
+
+    while let Some(row_start_rel) = xml[search_pos..].find("<row") {
+        let row_open_end = match xml[search_pos + row_start_rel..].find('>') {
+            Some(idx) => search_pos + row_start_rel + idx + 1,
+            None => break,
+        };
+        let Some(row_close_rel) = xml[row_open_end..].find("</row>") else {
+            break;
+        };
+        let row_close = row_open_end + row_close_rel;
+        let row_body = &xml[row_open_end..row_close];
+
+        let mut cells: Vec<String> = Vec::new();
+        let mut c_pos = 0;
+        while let Some(c_start_rel) = row_body[c_pos..].find("<c") {
+            let c_start = c_pos + c_start_rel;
+            let c_open_end = match row_body[c_start..].find('>') {
+                Some(idx) => c_start + idx + 1,
+                None => break,
+            };
+            let tag_header = &row_body[c_start..c_open_end];
+            let is_shared_str = tag_header.contains("t=\"s\"");
+            let is_inline_str = tag_header.contains("t=\"inlineStr\"");
+
+            let c_close = if tag_header.ends_with("/>") {
+                c_open_end
+            } else if let Some(end_idx) = row_body[c_open_end..].find("</c>") {
+                c_open_end + end_idx + 4
+            } else {
+                c_open_end
+            };
+
+            let c_body = if c_close > c_open_end {
+                &row_body[c_open_end..c_close.saturating_sub(4)]
+            } else {
+                ""
+            };
+
+            let cell_val = if is_shared_str {
+                if let Some(v_str) = extract_tag_text(c_body, "v") {
+                    if let Ok(idx) = v_str.trim().parse::<usize>() {
+                        shared_strings.get(idx).cloned().unwrap_or_default()
+                    } else {
+                        v_str
+                    }
+                } else {
+                    String::new()
+                }
+            } else if is_inline_str {
+                extract_tag_text(c_body, "t").unwrap_or_default()
+            } else {
+                extract_tag_text(c_body, "v").unwrap_or_default()
+            };
+
+            cells.push(cell_val.replace('|', "\\|").replace('\n', " "));
+            c_pos = c_close;
+        }
+
+        if !cells.is_empty() && cells.iter().any(|c| !c.trim().is_empty()) {
+            rows.push(cells);
+        }
+
+        search_pos = row_close + 6;
+        if rows.len() >= 500 {
+            break;
+        }
+    }
+
+    if rows.is_empty() {
+        return String::new();
+    }
+
+    let max_cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    if max_cols == 0 {
+        return String::new();
+    }
+
+    let mut out = String::new();
+    for (r_idx, row) in rows.iter().enumerate() {
+        out.push_str("| ");
+        for c_idx in 0..max_cols {
+            let val = row.get(c_idx).map(|s| s.trim()).unwrap_or("");
+            out.push_str(val);
+            out.push_str(" | ");
+        }
+        out.push('\n');
+
+        if r_idx == 0 {
+            out.push_str("| ");
+            for _ in 0..max_cols {
+                out.push_str("--- | ");
+            }
+            out.push('\n');
+        }
+    }
+
+    if rows.len() >= 500 {
+        out.push_str("\n... [表格内容较多，已截断显示前 500 行]");
+    }
+
+    out
 }
 
 // ==================== Word 文档生成（Markdown → .docx）====================
@@ -2099,44 +2526,91 @@ async fn exec_edit_file(args: &serde_json::Value) -> Result<String, String> {
         return Err(format!("文件过大：{} 字节（上限 2MB）", size));
     }
 
-    let content = tokio::fs::read_to_string(&path_buf)
+    let raw_bytes = tokio::fs::read(&path_buf)
         .await
-        .map_err(|e| format!("读取文件失败（可能不是 UTF-8 文本文件）: {e}"))?;
+        .map_err(|e| format!("读取文件失败: {e}"))?;
+    let content = decode_bytes_smart(&raw_bytes);
 
-    let count = content.matches(old_text).count();
-    match count {
-        0 => Err(
-            "未在文件中找到 'old_text'（匹配 0 次）。请先用 read_file（大文件用 offset/limit 分页读）查看该位置的实际内容再修改——常见原因：缩进/空格/换行与实际不一致，或文件已被之前的修改改变。"
-                .to_string(),
-        ),
-        n if n > 1 => Err(format!(
-            "'old_text' 在文件中出现 {n} 次，无法确定要修改哪一处。请在 old_text 中包含更多上下文（前后相邻行），使其在文件中唯一；可用 code_search 查看所有出现位置。"
-        )),
-        _ => {
-            let new_content = content.replacen(old_text, new_text, 1);
-            tokio::fs::write(&path_buf, &new_content)
-                .await
-                .map_err(|e| format!("写入文件失败: {e}"))?;
+    let (match_pos, match_len, uses_crlf) = if let Some(pos) = content.find(old_text) {
+        let count = content.matches(old_text).count();
+        if count > 1 {
+            return Err(format!(
+                "'old_text' 在文件中出现 {count} 次，无法确定要修改哪一处。请在 old_text 中包含更多上下文（前后相邻行），使其在文件中唯一；可用 code_search 查看所有出现位置。"
+            ));
+        }
+        (pos, old_text.len(), content.contains("\r\n"))
+    } else {
+        // 尝试换行符归一化匹配 (\r\n <-> \n 容错)
+        let content_norm = content.replace("\r\n", "\n");
+        let old_norm = old_text.replace("\r\n", "\n");
+        let count_norm = content_norm.matches(&old_norm).count();
+        if count_norm == 1 {
+            let norm_pos = content_norm.find(&old_norm).unwrap();
+            let start = map_norm_pos_to_orig(&content, norm_pos);
+            let end = map_norm_pos_to_orig(&content, norm_pos + old_norm.len());
+            (start, end - start, content.contains("\r\n"))
+        } else if count_norm > 1 {
+            return Err(format!(
+                "'old_text' 在文件中出现 {count_norm} 次，无法确定要修改哪一处。请在 old_text 中包含更多上下文（前后相邻行），使其在文件中唯一；可用 code_search 查看所有出现位置。"
+            ));
+        } else {
+            return Err(
+                "未在文件中找到 'old_text'（匹配 0 次）。请先用 read_file（大文件用 offset/limit 分页读）查看该位置的实际内容再修改——常见原因：缩进/空格/换行与实际不一致，或文件已被之前的修改改变。"
+                    .to_string(),
+            );
+        }
+    };
 
-            // 返回替换点行号与上下文预览
-            let pos = content.find(old_text).unwrap_or(0);
-            let line_no = content[..pos].matches('\n').count() + 1;
-            let new_lines: Vec<&str> = new_content.lines().collect();
-            let ctx_start = line_no.saturating_sub(5);
-            let ctx_end = (line_no + 4).min(new_lines.len());
-            let preview: Vec<String> = new_lines[ctx_start..ctx_end]
-                .iter()
-                .enumerate()
-                .map(|(i, line)| format!("{}: {}", ctx_start + i + 1, line))
-                .collect();
+    let final_new_text = if uses_crlf && !new_text.contains("\r\n") {
+        new_text.replace('\n', "\r\n")
+    } else {
+        new_text.to_string()
+    };
 
-            Ok(format!(
-                "已修改 {}（替换点在第 {line_no} 行），修改后上下文：\n{}",
-                path,
-                preview.join("\n")
-            ))
+    let mut new_content = String::with_capacity(content.len() + final_new_text.len());
+    new_content.push_str(&content[..match_pos]);
+    new_content.push_str(&final_new_text);
+    new_content.push_str(&content[match_pos + match_len..]);
+
+    tokio::fs::write(&path_buf, &new_content)
+        .await
+        .map_err(|e| format!("写入文件失败: {e}"))?;
+
+    // 返回替换点行号与上下文预览
+    let line_no = content[..match_pos].matches('\n').count() + 1;
+    let new_lines: Vec<&str> = new_content.lines().collect();
+    let ctx_start = line_no.saturating_sub(5);
+    let ctx_end = (line_no + 4).min(new_lines.len());
+    let preview: Vec<String> = new_lines[ctx_start..ctx_end]
+        .iter()
+        .enumerate()
+        .map(|(i, line)| format!("{}: {}", ctx_start + i + 1, line))
+        .collect();
+
+    Ok(format!(
+        "已修改 {}（替换点在第 {line_no} 行），修改后上下文：\n{}",
+        path,
+        preview.join("\n")
+    ))
+}
+
+fn map_norm_pos_to_orig(orig: &str, norm_pos: usize) -> usize {
+    let mut norm_cnt = 0;
+    let mut orig_cnt = 0;
+    let bytes = orig.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && norm_cnt < norm_pos {
+        if bytes[i] == b'\r' && i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
+            norm_cnt += 1;
+            orig_cnt += 2;
+            i += 2;
+        } else {
+            norm_cnt += 1;
+            orig_cnt += 1;
+            i += 1;
         }
     }
+    orig_cnt
 }
 
 async fn exec_list_directory(args: &serde_json::Value) -> Result<String, String> {
@@ -2150,7 +2624,9 @@ async fn exec_list_directory(args: &serde_json::Value) -> Result<String, String>
         .await
         .map_err(|e| format!("读取目录失败: {e}"))?;
 
-    let mut items = Vec::new();
+    let mut dirs_list: Vec<String> = Vec::new();
+    let mut files_list: Vec<(String, u64)> = Vec::new();
+
     while let Some(entry) = dir
         .next_entry()
         .await
@@ -2161,27 +2637,51 @@ async fn exec_list_directory(args: &serde_json::Value) -> Result<String, String>
         let is_dir = metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
         let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
 
-        let type_str = if is_dir { "目录" } else { "文件" };
         if is_dir {
-            items.push(format!("[{}] {}", type_str, name));
+            dirs_list.push(format!("{name}/"));
         } else {
-            items.push(format!("[{}] {} ({} 字节)", type_str, name, size));
+            files_list.push((name, size));
         }
 
-        if items.len() >= 200 {
-            items.push("... [已截断，仅列出前 200 个条目]".to_string());
+        if dirs_list.len() + files_list.len() >= 300 {
             break;
         }
     }
 
-    if items.is_empty() {
-        Ok("目录为空".to_string())
-    } else {
-        Ok(items.join("\n"))
+    dirs_list.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    files_list.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+
+    if dirs_list.is_empty() && files_list.is_empty() {
+        return Ok("目录为空".to_string());
     }
+
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "目录 '{}' 内容（共 {} 个子目录，{} 个文件）:",
+        path_buf.display(),
+        dirs_list.len(),
+        files_list.len()
+    ));
+
+    for d in &dirs_list {
+        lines.push(format!("  📁 [目录] {d}"));
+    }
+    for (f, size) in &files_list {
+        let size_str = format_file_size(*size);
+        lines.push(format!("  📄 [文件] {f} ({size_str})"));
+    }
+
+    if dirs_list.len() + files_list.len() >= 300 {
+        lines.push("  ... [条目较多，已截断显示前 300 项]".to_string());
+    }
+
+    Ok(lines.join("\n"))
 }
 
-async fn exec_run_command(args: &serde_json::Value) -> Result<String, String> {
+async fn exec_run_command(
+    args: &serde_json::Value,
+    cancel: tokio_util::sync::CancellationToken,
+) -> Result<String, String> {
     let command = args["command"].as_str().ok_or("缺少 'command' 参数")?;
 
     // 检查命令安全性
@@ -2196,6 +2696,15 @@ async fn exec_run_command(args: &serde_json::Value) -> Result<String, String> {
         c.args(["-c", command]);
         c
     };
+
+    // 可选 cwd 工作目录
+    if let Some(cwd_str) = args["cwd"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+        let cwd_buf = is_path_allowed(cwd_str)?;
+        if !cwd_buf.is_dir() {
+            return Err(format!("工作目录不存在或不是有效目录: {cwd_str}"));
+        }
+        cmd.current_dir(cwd_buf);
+    }
 
     #[cfg(target_os = "windows")]
     {
@@ -2233,40 +2742,46 @@ async fn exec_run_command(args: &serde_json::Value) -> Result<String, String> {
         .unwrap_or(30);
     let timeout_duration = std::time::Duration::from_secs(timeout_secs);
 
-    match tokio::time::timeout(timeout_duration, child.wait()).await {
-        Ok(Ok(status)) => {
-            let stdout_bytes = stdout_task.await.unwrap_or_default();
-            let stderr_bytes = stderr_task.await.unwrap_or_default();
+    tokio::select! {
+        res = tokio::time::timeout(timeout_duration, child.wait()) => match res {
+            Ok(Ok(status)) => {
+                let stdout_bytes = stdout_task.await.unwrap_or_default();
+                let stderr_bytes = stderr_task.await.unwrap_or_default();
 
-            let stdout = String::from_utf8_lossy(&stdout_bytes).into_owned();
-            let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
+                let stdout = decode_bytes_smart(&stdout_bytes);
+                let stderr = decode_bytes_smart(&stderr_bytes);
 
-            let status_code = status
-                .code()
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "未知".to_string());
+                let status_code = status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "未知".to_string());
 
-            let mut result = format!("执行状态 (退出码 {}):\n", status_code);
-            if !stdout.is_empty() {
-                result.push_str(&format!("--- 标准输出 ---\n{}\n", stdout));
+                let mut result = format!("执行状态 (退出码 {}):\n", status_code);
+                if !stdout.is_empty() {
+                    result.push_str(&format!("--- 标准输出 ---\n{}\n", stdout));
+                }
+                if !stderr.is_empty() {
+                    result.push_str(&format!("--- 标准错误 ---\n{}\n", stderr));
+                }
+
+                if result.len() > 65536 {
+                    let safe_end = result.floor_char_boundary(65536);
+                    result = format!("{}\n\n... [输出已截断，仅保留前 64KB]", &result[..safe_end]);
+                }
+
+                Ok(result)
             }
-            if !stderr.is_empty() {
-                result.push_str(&format!("--- 标准错误 ---\n{}\n", stderr));
+            Ok(Err(e)) => Err(format!("命令执行失败: {e}")),
+            Err(_) => {
+                let _ = child.kill().await;
+                Err(format!(
+                    "命令执行超时 (限制 {timeout_secs} 秒)。构建/安装/测试等耗时命令请用 timeout_secs 参数设置更长的超时（最长 600 秒）。"
+                ))
             }
-
-            if result.len() > 65536 {
-                let safe_end = result.floor_char_boundary(65536);
-                result = format!("{}\n\n... [输出已截断，仅保留前 64KB]", &result[..safe_end]);
-            }
-
-            Ok(result)
-        }
-        Ok(Err(e)) => Err(format!("命令执行失败: {e}")),
-        Err(_) => {
+        },
+        _ = cancel.cancelled() => {
             let _ = child.kill().await;
-            Err(format!(
-                "命令执行超时 (限制 {timeout_secs} 秒)。构建/安装/测试等耗时命令请用 timeout_secs 参数设置更长的超时（最长 600 秒）。"
-            ))
+            Err("命令已被用户中止".to_string())
         }
     }
 }
@@ -2375,17 +2890,31 @@ async fn read_webpage(url: &str, focus_query: Option<&str>) -> Result<String, St
         .unwrap_or("")
         .to_lowercase();
 
-    // 检查是否为 HTML 内容
-    if !content_type.contains("text/html") && !content_type.contains("text/plain") {
+    let is_text_like = content_type.contains("text/html")
+        || content_type.contains("text/plain")
+        || content_type.contains("application/json")
+        || content_type.contains("text/markdown")
+        || content_type.contains("application/xml")
+        || content_type.contains("text/xml")
+        || content_type.contains("application/xhtml+xml")
+        || content_type.contains("application/rss+xml")
+        || content_type.is_empty();
+
+    if !is_text_like {
         return Err(format!(
-            "不支持的内容类型: {}。此工具仅支持 HTML 和纯文本网页。",
+            "不支持的内容类型: {}。此工具仅支持 HTML、纯文本、Markdown、JSON 和 XML 网页内容。",
             content_type
         ));
     }
 
-    let body = res.text().await.map_err(|e| format!("读取响应失败: {e}"))?;
+    let bytes = res.bytes().await.map_err(|e| format!("读取响应失败: {e}"))?;
+    let body = decode_bytes_smart(&bytes);
 
-    let text = compact_webpage_text(&html_to_text(&body));
+    let text = if content_type.contains("text/html") || content_type.contains("application/xhtml+xml") {
+        compact_webpage_text(&html_to_text(&body))
+    } else {
+        compact_webpage_text(&body)
+    };
     Ok(format_webpage_result(url, &text, focus_query))
 }
 
@@ -3822,14 +4351,30 @@ async fn exec_save_memory(args: &serde_json::Value) -> Result<String, String> {
     let db_path = get_db_path_for_tools()?;
     let conn = open_pet_db(&db_path).map_err(|e| format!("打开数据库失败: {e}"))?;
 
-    conn.execute(
-        "INSERT INTO pet_memory (category, key, value) VALUES (?1, ?2, ?3)",
-        rusqlite::params![category, key, value],
-    )
-    .map_err(|e| format!("保存记忆失败: {e}"))?;
+    let existing_id: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM pet_memory WHERE category = ?1 AND TRIM(LOWER(key)) = TRIM(LOWER(?2))",
+            rusqlite::params![category, key],
+            |row| row.get(0),
+        )
+        .ok();
 
-    let id = conn.last_insert_rowid();
-    Ok(format!("记忆已保存: #{} [{}] {}", id, category, key))
+    if let Some(id) = existing_id {
+        conn.execute(
+            "UPDATE pet_memory SET key = ?1, value = ?2, created_at = (strftime('%s', 'now')) WHERE id = ?3",
+            rusqlite::params![key, value, id],
+        )
+        .map_err(|e| format!("更新记忆失败: {e}"))?;
+        Ok(format!("记忆已更新: #{} [{}] {}", id, category, key))
+    } else {
+        conn.execute(
+            "INSERT INTO pet_memory (category, key, value) VALUES (?1, ?2, ?3)",
+            rusqlite::params![category, key, value],
+        )
+        .map_err(|e| format!("保存记忆失败: {e}"))?;
+        let id = conn.last_insert_rowid();
+        Ok(format!("记忆已保存: #{} [{}] {}", id, category, key))
+    }
 }
 
 async fn exec_delete_memory(args: &serde_json::Value) -> Result<String, String> {
@@ -3846,6 +4391,108 @@ async fn exec_delete_memory(args: &serde_json::Value) -> Result<String, String> 
         Ok(format!("未找到 ID 为 {} 的记忆，可能已被删除。", id))
     } else {
         Ok(format!("记忆 #{} 已删除。", id))
+    }
+}
+
+async fn exec_scan_desktop_shortcuts() -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let script = r#"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+$sh = New-Object -ComObject WScript.Shell
+$results = @()
+$dirs = @(
+    [System.Environment]::GetFolderPath('Desktop'),
+    [System.Environment]::GetFolderPath('CommonDesktopDirectory')
+) | Where-Object { $_ -and (Test-Path $_) }
+
+foreach ($d in $dirs) {
+    Get-ChildItem -Path $d -Filter *.lnk -File -ErrorAction SilentlyContinue | ForEach-Object {
+        try {
+            $sc = $sh.CreateShortcut($_.FullName)
+            $target = $sc.TargetPath
+            if ($target -and (Test-Path $target)) {
+                $results += [PSCustomObject]@{
+                    name = $_.BaseName
+                    path = $target
+                }
+            }
+        } catch {}
+    }
+}
+$results | ConvertTo-Json -Compress
+"#;
+
+        let output = tokio::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .output()
+            .await
+            .map_err(|e| format!("执行扫描失败: {e}"))?;
+
+        if !output.status.success() {
+            let err_text = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("扫描桌面快捷方式出错: {}", err_text.trim()));
+        }
+
+        let raw_json = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if raw_json.is_empty() {
+            return Ok("未在桌面上扫描到有效的快捷方式。".to_string());
+        }
+
+        let parsed: serde_json::Value = serde_json::from_str(&raw_json)
+            .map_err(|e| format!("解析快捷方式数据失败: {e}"))?;
+
+        let items: Vec<serde_json::Value> = if let Some(arr) = parsed.as_array() {
+            arr.clone()
+        } else if parsed.is_object() {
+            vec![parsed]
+        } else {
+            Vec::new()
+        };
+
+        let db_path = get_db_path_for_tools()?;
+        let conn = open_pet_db(&db_path).map_err(|e| format!("打开数据库失败: {e}"))?;
+
+        let mut app_names = Vec::new();
+        for item in &items {
+            if let (Some(name), Some(path)) = (item["name"].as_str(), item["path"].as_str()) {
+                let name = name.trim();
+                let path = path.trim();
+                if !name.is_empty() && !path.is_empty() {
+                    let existing: Option<i64> = conn
+                        .query_row(
+                            "SELECT id FROM pet_memory WHERE category = 'app_path' AND LOWER(key) = LOWER(?1)",
+                            [name],
+                            |r| r.get(0),
+                        )
+                        .ok();
+                    if let Some(id) = existing {
+                        let _ = conn.execute(
+                            "UPDATE pet_memory SET value = ?1, created_at = (strftime('%s', 'now')) WHERE id = ?2",
+                            rusqlite::params![path, id],
+                        );
+                    } else {
+                        let _ = conn.execute(
+                            "INSERT INTO pet_memory (category, key, value, created_at) VALUES ('app_path', ?1, ?2, (strftime('%s', 'now')))",
+                            rusqlite::params![name, path],
+                        );
+                    }
+                    app_names.push(name.to_string());
+                }
+            }
+        }
+
+        Ok(format!(
+            "已成功扫描并更新 {} 个桌面快捷应用：\n- {}",
+            app_names.len(),
+            app_names.join("\n- ")
+        ))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("该功能仅在 Windows 系统中可用".to_string())
     }
 }
 
@@ -3932,7 +4579,21 @@ async fn exec_file_search(args: &serde_json::Value) -> Result<String, String> {
     }
 
     let allowed_roots = canonical_allowed_roots();
-    let glob_pattern = pattern.to_lowercase();
+
+    // 支持多个 pattern（分号或逗号分隔，如 "*.doc;*.docx;*.pdf;*.txt"）
+    // 如果 pattern 无通配符，自动转为子串搜索 (*pattern*)
+    let patterns: Vec<String> = pattern
+        .split([';', ','])
+        .map(|p| p.trim().to_lowercase())
+        .filter(|p| !p.is_empty())
+        .map(|p| {
+            if !p.contains('*') && !p.contains('?') {
+                format!("*{p}*")
+            } else {
+                p
+            }
+        })
+        .collect();
 
     // 确定搜索起始目录
     let search_dirs: Vec<PathBuf> = if let Some(dir) = directory {
@@ -3957,9 +4618,9 @@ async fn exec_file_search(args: &serde_json::Value) -> Result<String, String> {
             .follow_links(false)
             .into_iter()
             .filter_entry(|e| {
-                // 跳过隐藏目录和系统目录
+                // 跳过隐藏目录和常见构建目录
                 let name = e.file_name().to_string_lossy();
-                !name.starts_with('.') && name != "node_modules" && name != "__pycache__"
+                !name.starts_with('.') && name != "node_modules" && name != "__pycache__" && name != "target" && name != "dist"
             });
 
         for entry in walker.flatten() {
@@ -3970,7 +4631,7 @@ async fn exec_file_search(args: &serde_json::Value) -> Result<String, String> {
                 continue;
             }
             let file_name = entry.file_name().to_string_lossy().to_lowercase();
-            if glob_match(&glob_pattern, &file_name) {
+            if patterns.iter().any(|pat| glob_match(pat, &file_name)) {
                 let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
                 results.push((entry.path().to_path_buf(), size));
             }
@@ -3985,8 +4646,7 @@ async fn exec_file_search(args: &serde_json::Value) -> Result<String, String> {
     let mut output = format!("找到 {} 个匹配 '{}' 的文件:\n", results.len(), pattern);
     for (i, (path, size)) in results.iter().enumerate() {
         let size_str = format_file_size(*size);
-        output.push_str(&format!("[{}] {} ({})", i + 1, path.display(), size_str));
-        output.push('\n');
+        output.push_str(&format!("[{}] {} ({})\n", i + 1, path.display(), size_str));
     }
     if results.len() >= max_results {
         output.push_str(&format!("\n... [已达到最大结果数 {}]", max_results));
@@ -4079,13 +4739,13 @@ async fn exec_code_search(args: &serde_json::Value) -> Result<String, String> {
             if metadata.len() > MAX_FILE_BYTES || metadata.len() == 0 {
                 continue;
             }
-            // 非 UTF-8（二进制兜底）或含 NUL 字节的文件直接跳过
-            let Ok(content) = std::fs::read_to_string(entry.path()) else {
+            let Ok(bytes) = std::fs::read(entry.path()) else {
                 continue;
             };
-            if content.contains('\0') {
+            if bytes.contains(&0) {
                 continue;
             }
+            let content = decode_bytes_smart(&bytes);
             files_scanned += 1;
 
             for (i, line) in content.lines().enumerate() {
@@ -4824,5 +5484,116 @@ mod tests {
         assert!(!result.contains("row-2"), "窗口外的行不应出现: {result}");
         assert!(!result.contains("row-7"));
         assert!(result.contains("offset=7"), "应提示下一页 offset: {result}");
+    }
+
+    #[test]
+    fn test_decode_bytes_smart_multi_encoding() {
+        // 1. UTF-8
+        let utf8_text = "数学建模(2) 测试内容";
+        assert_eq!(decode_bytes_smart(utf8_text.as_bytes()), utf8_text);
+
+        // 2. GBK / GB18030
+        let (gbk_bytes, _, _) = encoding_rs::GBK.encode(utf8_text);
+        assert_eq!(decode_bytes_smart(&gbk_bytes), utf8_text);
+
+        // 3. UTF-16LE with BOM
+        let mut u16_le: Vec<u8> = vec![0xFF, 0xFE];
+        for u in utf8_text.encode_utf16() {
+            u16_le.extend_from_slice(&u.to_le_bytes());
+        }
+        assert_eq!(decode_bytes_smart(&u16_le), utf8_text);
+    }
+
+    #[tokio::test]
+    async fn test_read_file_supports_doc_and_gbk() {
+        let temp_dir = std::env::temp_dir();
+
+        // 测试 GBK 文本读取
+        let gbk_path = temp_dir.join(unique_test_name("gbk_test", "txt"));
+        let test_str = "中文数学建模问题描述";
+        let (gbk_bytes, _, _) = encoding_rs::GBK.encode(test_str);
+        std::fs::write(&gbk_path, gbk_bytes).unwrap();
+
+        let args = serde_json::json!({
+            "path": gbk_path.to_str().unwrap()
+        });
+        let res = exec_read_file(&args).await.unwrap();
+        let _ = std::fs::remove_file(&gbk_path);
+        assert_eq!(res, test_str);
+
+        // 测试 RTF 格式伪装成 .doc 的文件读取
+        let doc_rtf_path = temp_dir.join(unique_test_name("rtf_doc", "doc"));
+        let rtf_content = r#"{\rtf1\ansi\deff0 {\fonttbl {\f0 Courier;}} \f0\fs24 Hello Word Document\par Math Model Problem\par}"#;
+        std::fs::write(&doc_rtf_path, rtf_content).unwrap();
+
+        let args2 = serde_json::json!({
+            "path": doc_rtf_path.to_str().unwrap()
+        });
+        let res2 = exec_read_file(&args2).await.unwrap();
+        let _ = std::fs::remove_file(&doc_rtf_path);
+        assert!(res2.contains("Hello Word Document"));
+        assert!(res2.contains("Math Model Problem"));
+    }
+
+    #[tokio::test]
+    async fn test_edit_file_crlf_lf_tolerance() {
+        let path = std::env::temp_dir().join(unique_test_name("edit-crlf", "txt"));
+        // 磁盘上是 CRLF
+        std::fs::write(&path, "first line\r\nfunction target() {\r\n  return 1;\r\n}\r\nlast line\r\n").unwrap();
+
+        // Agent 传入 LF
+        let args = serde_json::json!({
+            "path": path.to_str().unwrap(),
+            "old_text": "function target() {\n  return 1;\n}",
+            "new_text": "function target() {\n  return 2;\n}"
+        });
+        let result = exec_edit_file(&args).await.unwrap();
+        let updated = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert!(result.contains("已修改"));
+        assert!(updated.contains("return 2;"));
+    }
+
+    #[tokio::test]
+    async fn test_file_search_multi_pattern_and_substring() {
+        let temp_dir = std::env::temp_dir();
+        let f1 = temp_dir.join(unique_test_name("math_model_prob", "txt"));
+        let f2 = temp_dir.join(unique_test_name("thesis_doc", "docx"));
+        std::fs::write(&f1, "test1").unwrap();
+        std::fs::write(&f2, "test2").unwrap();
+
+        // 1. 无通配符子串匹配
+        let args1 = serde_json::json!({
+            "directory": temp_dir.to_str().unwrap(),
+            "pattern": "math_model_prob"
+        });
+        let res1 = exec_file_search(&args1).await.unwrap();
+        assert!(res1.contains("math_model_prob"));
+
+        // 2. 多通配符分号组合
+        let args2 = serde_json::json!({
+            "directory": temp_dir.to_str().unwrap(),
+            "pattern": "*.docx;*.txt"
+        });
+        let res2 = exec_file_search(&args2).await.unwrap();
+        assert!(res2.contains("thesis_doc"));
+        assert!(res2.contains("math_model_prob"));
+
+        let _ = std::fs::remove_file(&f1);
+        let _ = std::fs::remove_file(&f2);
+    }
+
+    #[test]
+    fn test_canonicalize_requested_path_cleaning() {
+        // 引号剥离
+        let p1 = canonicalize_requested_path("\"C:\\Windows\"").unwrap();
+        assert_eq!(p1, PathBuf::from("C:\\Windows").canonicalize().unwrap_or(PathBuf::from("C:\\Windows")));
+
+        // 波浪号展开
+        if let Some(home) = dirs::home_dir() {
+            let p2 = canonicalize_requested_path("~/").unwrap();
+            assert_eq!(p2, home.canonicalize().unwrap_or(home));
+        }
     }
 }

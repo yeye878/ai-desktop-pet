@@ -3,6 +3,7 @@ import { useChatStore } from "../stores/chat";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import AppIcon from "./AppIcon.vue";
 
 const emit = defineEmits<{ close: []; openSettings: [tab: string]; openDashboard: [] }>();
 const chat = useChatStore();
@@ -53,37 +54,37 @@ async function action(name: string) {
 <template>
   <div class="context-menu">
     <div class="menu-item" @click="action('wave')">
-      <span class="menu-icon">&#x1F44B;</span>
+      <span class="menu-icon"><AppIcon name="wave" :size="13" /></span>
       <span>打个招呼</span>
     </div>
     <div class="menu-item" @click="action('happy')">
-      <span class="menu-icon">&#x1F60A;</span>
+      <span class="menu-icon"><AppIcon name="smile" :size="13" /></span>
       <span>开心一下</span>
     </div>
     <div class="menu-item" @click="action('sleep')">
-      <span class="menu-icon">&#x1F634;</span>
+      <span class="menu-icon"><AppIcon name="moon" :size="13" /></span>
       <span>去睡觉</span>
     </div>
     <div class="menu-item" @click="action('wake')">
-      <span class="menu-icon">&#x23F0;</span>
+      <span class="menu-icon"><AppIcon name="bell" :size="13" /></span>
       <span>叫醒它</span>
     </div>
     <div class="menu-divider" />
     <div class="menu-item" @click="action('new-chat')">
-      <span class="menu-icon">＋</span>
+      <span class="menu-icon"><AppIcon name="plus" :size="13" /></span>
       <span>新对话</span>
     </div>
     <div class="menu-item" @click="action('clear')">
-      <span class="menu-icon">&#x1F5D1;&#xFE0F;</span>
+      <span class="menu-icon"><AppIcon name="trash" :size="13" /></span>
       <span>清空对话</span>
     </div>
     <div class="menu-divider" />
     <div class="menu-item" @click="action('dashboard')">
-      <span class="menu-icon">🏠</span>
+      <span class="menu-icon"><AppIcon name="home" :size="13" /></span>
       <span>打开控制台</span>
     </div>
     <div class="menu-item exit-item" @click="action('hide')">
-      <span class="menu-icon">👋</span>
+      <span class="menu-icon"><AppIcon name="minus" :size="13" /></span>
       <span>收起桌宠</span>
     </div>
   </div>
@@ -98,28 +99,25 @@ async function action(name: string) {
   width: 100%;
   height: 100%;
   box-sizing: border-box;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(255, 255, 255, 0.72)),
-    var(--pet-bg-glass, rgba(255, 255, 255, 0.95));
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border-radius: 13px;
+  background: var(--dash-panel-solid, #fffefb);
+  border-radius: 14px;
+  border: 1px solid var(--dash-card-border, rgba(63, 54, 44, 0.1));
   box-shadow:
-    0 16px 36px rgba(15, 23, 42, 0.18),
-    0 4px 12px rgba(15, 23, 42, 0.08),
-    inset 0 1px 0 rgba(255, 255, 255, 0.5);
-  border: 1px solid rgba(255, 255, 255, 0.58);
-  padding: 6px;
+    0 2px 6px rgba(48, 42, 34, 0.06),
+    0 18px 44px rgba(48, 42, 34, 0.16);
+  padding: 5px;
   z-index: 201;
   min-width: 150px;
   overflow-y: auto;
-  animation: menuPop 0.2s ease-out;
+  animation: menuPop 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+  font-family: var(--dash-font-sans, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif);
+  color: var(--dash-text-secondary, #6d6558);
 }
 
 @keyframes menuPop {
   from {
     opacity: 0;
-    transform: scale(0.92) translateY(-4px);
+    transform: scale(0.96) translateY(-4px);
   }
   to {
     opacity: 1;
@@ -130,97 +128,56 @@ async function action(name: string) {
 .menu-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  font-size: 13px;
+  gap: 9px;
+  padding: 7px 11px;
+  font-size: 12px;
+  font-weight: 550;
   cursor: pointer;
   border-radius: 9px;
-  transition: all 0.15s;
-  color: var(--pet-font-color, #475569);
+  transition: background 140ms ease-out, color 140ms ease-out;
 }
 
 .menu-item:hover {
-  background: var(--pet-header-gradient, linear-gradient(135deg, #ff6b6b, #ff8e53));
-  background-size: 180% 180%;
-  color: white;
-  transform: translateX(3px);
-  box-shadow: 0 8px 18px rgba(var(--pet-primary-rgb, 255, 107, 107), 0.22);
+  background: var(--dash-accent-soft, rgba(191, 122, 78, 0.1));
+  color: var(--dash-text-primary, #2d2922);
+}
+
+.menu-item:active {
+  transform: scale(0.985);
 }
 
 .exit-item:hover {
-  background: linear-gradient(135deg, #f59e0b, #d97706);
-  box-shadow: 0 8px 18px rgba(217, 119, 6, 0.3);
+  background: var(--dash-danger-soft, rgba(192, 90, 77, 0.1));
+  color: var(--dash-danger, #c05a4d);
 }
 
 .menu-icon {
-  font-size: 15px;
-  width: 20px;
-  text-align: center;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  background: var(--dash-panel-soft, #f3f0e9);
+  color: var(--dash-text-muted, #a29a8a);
+  flex-shrink: 0;
+  transition: background 140ms ease-out, color 140ms ease-out;
+}
+
+.menu-item:hover .menu-icon {
+  background: rgba(var(--pet-primary-rgb, 191, 122, 78), 0.14);
+  color: var(--dash-accent, #bf7a4e);
+}
+
+.exit-item:hover .menu-icon {
+  background: rgba(192, 90, 77, 0.14);
+  color: var(--dash-danger, #c05a4d);
 }
 
 .menu-divider {
   height: 1px;
-  background: rgba(15, 23, 42, 0.07);
+  background: var(--dash-divider, rgba(63, 54, 44, 0.08));
   margin: 4px 8px;
-}
-
-/* Product polish layer */
-.context-menu {
-  border-radius: 14px;
-  border-color: rgba(33, 48, 74, 0.11);
-  background:
-    url("../assets/art/paper-grain.webp"),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(246, 252, 255, 0.92)),
-    var(--pet-bg-glass, rgba(255, 255, 255, 0.95));
-  background-size: 380px 380px, auto, auto;
-  color: #334155;
-  box-shadow:
-    0 18px 38px rgba(33, 48, 74, 0.18),
-    0 1px 0 rgba(255, 255, 255, 0.82) inset;
-}
-
-.menu-item {
-  min-height: 34px;
-  border: 1px solid transparent;
-  border-radius: 10px;
-  color: #475569;
-  font-weight: 650;
-  text-shadow: none;
-}
-
-.menu-item:hover {
-  border-color: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.20);
-  background:
-    linear-gradient(135deg, rgba(var(--pet-primary-rgb, 255, 107, 107), 0.92), rgba(var(--pet-accent-rgb, 255, 142, 83), 0.82));
-  transform: translateY(-1px);
-  box-shadow: 0 10px 20px rgba(var(--pet-primary-rgb, 255, 107, 107), 0.18);
-}
-
-.menu-item:active {
-  transform: translateY(1px);
-}
-
-.exit-item:hover {
-  background: linear-gradient(135deg, #f59e0b, #ef7f47);
-}
-
-.menu-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  height: 20px;
-  border-radius: 7px;
-  background: rgba(255, 255, 255, 0.46);
-  color: #64748b;
-  font-size: 12px;
-}
-
-.menu-item:hover .menu-icon {
-  background: rgba(255, 255, 255, 0.20);
-}
-
-.menu-divider {
-  background: rgba(33, 48, 74, 0.08);
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -28,8 +28,8 @@ let ctBubbles: any[] = [];
 let mnDots: any[] = [];
 let mnRays: any[] = [];
 
-const CUTE_C = ['#ff6b9d','#ff85b1','#ffaed7','#ffd700','#c084fc','#f9a8d4','#fdba74','#fb7185'];
-const SF_COLS = { cyan:'#38bdf8', purple:'#a78bfa', green:'#34d399', blue:'#60a5fa', teal:'#2dd4bf' };
+const CUTE_C = ['#d9b48f','#e0c3a6','#e8d3bd','#d4c2a8','#cbb59b','#ecdcc8','#dfc7ae','#d8bfae'];
+const SF_COLS = { cyan:'#c2a279', purple:'#b3a58e', green:'#a8b09a', blue:'#a9a394', teal:'#b8ab8f' };
 
 function drawHeart(c: CanvasRenderingContext2D, x: number, y: number, s: number) {
   c.beginPath();
@@ -74,15 +74,15 @@ function initCute() {
     vx: rnd(-0.5, 0.5), vy: rnd(0.4, 1.2),
     size: rnd(3, 8), angle: rnd(0, 6.28), spin: rnd(-0.04, 0.04),
     sway: rnd(0.5, 1.5), swayOff: rnd(0, 6.28),
-    color: pick(['#ffc0cb','#ffb7c5','#ff90a0','#ffd9e8','#ffc5d6','#ffe4e1']),
-    alpha: rnd(0.3, 0.65), temp: false, life: 1, decay: 0,
+    color: pick(['#efe0d0','#ead8c6','#e6d0bc','#f2e6d8','#ecdfd2','#f4ece0']),
+    alpha: rnd(0.12, 0.28), temp: false, life: 1, decay: 0,
   });
   // Floating pastel bubbles
   for (let i = 0; i < 18; i++) ctBubbles.push({
     x: rnd(0, W), y: rnd(0, H),
     vx: rnd(-0.2, 0.2), vy: rnd(-0.3, -0.08),
     r: rnd(5, 16), phase: rnd(0, 6.28), speed: rnd(0.8, 1.8),
-    color: pick(CUTE_C), alpha: rnd(0.1, 0.25),
+    color: pick(CUTE_C), alpha: rnd(0.05, 0.12),
   });
 }
 
@@ -118,9 +118,9 @@ function initScifi() {
   }
   // Floating space nebulas
   sfNebulae = [
-    { x: W * 0.25, y: H * 0.25, vx: rnd(0.04, 0.12), vy: rnd(0.03, 0.08), r: Math.max(140, W * 0.35), color1: 'rgba(56, 189, 248, 0.075)', color2: 'rgba(56, 189, 248, 0)' },
-    { x: W * 0.75, y: H * 0.7, vx: rnd(-0.12, -0.04), vy: rnd(-0.08, -0.03), r: Math.max(160, W * 0.42), color1: 'rgba(167, 139, 250, 0.07)', color2: 'rgba(167, 139, 250, 0)' },
-    { x: W * 0.5, y: H * 0.45, vx: rnd(0.02, 0.08), vy: rnd(-0.06, -0.02), r: Math.max(110, W * 0.3), color1: 'rgba(45, 212, 191, 0.06)', color2: 'rgba(45, 212, 191, 0)' }
+    { x: W * 0.25, y: H * 0.25, vx: rnd(0.04, 0.12), vy: rnd(0.03, 0.08), r: Math.max(140, W * 0.35), color1: 'rgba(196, 164, 124, 0.05)', color2: 'rgba(196, 164, 124, 0)' },
+    { x: W * 0.75, y: H * 0.7, vx: rnd(-0.12, -0.04), vy: rnd(-0.08, -0.03), r: Math.max(160, W * 0.42), color1: 'rgba(176, 158, 130, 0.05)', color2: 'rgba(176, 158, 130, 0)' },
+    { x: W * 0.5, y: H * 0.45, vx: rnd(0.02, 0.08), vy: rnd(-0.06, -0.02), r: Math.max(110, W * 0.3), color1: 'rgba(186, 172, 140, 0.045)', color2: 'rgba(186, 172, 140, 0)' }
   ];
 }
 
@@ -140,7 +140,7 @@ function initParticles() {
 }
 
 function addRipple(x: number, y: number, big = false) {
-  const color = props.mode === 'scifi' ? 'rgba(56,189,248,' : props.mode === 'cute' ? 'rgba(255,107,157,' : 'rgba(148,163,184,';
+  const color = props.mode === 'scifi' ? 'rgba(176,152,118,' : props.mode === 'cute' ? 'rgba(196,158,120,' : 'rgba(140,130,114,';
   if (big) {
     for (let i = 0; i < 3; i++)
       ripples.push({ x, y, r: i * 8, maxR: 120 + i * 30, alpha: 0.4 - i * 0.08, lw: 2.5 - i * 0.5, speed: 2.5 - i * 0.3, color });
@@ -239,10 +239,10 @@ function update() {
           y: sy,
           r: 0,
           maxR: Math.max(W, H) * 0.75,
-          alpha: 0.38,
+          alpha: 0.18,
           lw: 1.2,
           speed: 2.2,
-          color: 'rgba(56,189,248,'
+          color: 'rgba(176,152,118,'
         });
       }
     }
@@ -359,16 +359,16 @@ function draw() {
   if (props.mode === 'cute') {
     // Background gradient
     const g = ctx.createLinearGradient(0, 0, W, H);
-    g.addColorStop(0,'rgba(255,220,230,0.18)'); g.addColorStop(0.5,'rgba(255,200,215,0.12)'); g.addColorStop(1,'rgba(250,230,248,0.16)');
+    g.addColorStop(0,'rgba(246,236,222,0.10)'); g.addColorStop(0.5,'rgba(242,230,214,0.07)'); g.addColorStop(1,'rgba(248,240,228,0.09)');
     ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
     // Bubbles
     for (const b of ctBubbles) {
       ctx.save(); ctx.globalAlpha = b.alpha;
       const bg = ctx.createRadialGradient(b.x - b.r*0.3, b.y - b.r*0.3, 0, b.x, b.y, b.r);
-      bg.addColorStop(0,'rgba(255,255,255,0.6)'); bg.addColorStop(1, b.color + '22');
+      bg.addColorStop(0,'rgba(255,252,246,0.4)'); bg.addColorStop(1, b.color + '22');
       ctx.fillStyle = bg;
       ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI*2); ctx.fill();
-      ctx.strokeStyle = b.color + '55'; ctx.lineWidth = 0.8; ctx.stroke();
+      ctx.strokeStyle = b.color + '40'; ctx.lineWidth = 0.8; ctx.stroke();
       ctx.restore();
     }
     // Sakura petals
@@ -385,7 +385,7 @@ function draw() {
     }
     // Trail
     for (const t of trail) {
-      ctx.save(); ctx.globalAlpha = t.t * 0.5; ctx.fillStyle = '#ffd700';
+      ctx.save(); ctx.globalAlpha = t.t * 0.3; ctx.fillStyle = '#d9b384';
       drawSparkle(ctx, t.x, t.y, 2.5 + t.t * 5); ctx.restore();
     }
     // Burst particles
@@ -402,7 +402,7 @@ function draw() {
   } else if (props.mode === 'minimal') {
     // Background
     const g = ctx.createLinearGradient(0, 0, W, H);
-    g.addColorStop(0,'rgba(248,250,252,0.2)'); g.addColorStop(1,'rgba(226,232,240,0.12)');
+    g.addColorStop(0,'rgba(250,247,241,0.10)'); g.addColorStop(1,'rgba(238,232,222,0.07)');
     ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
     // Draw connection lines between nearby glowing dots
     ctx.lineWidth = 0.8;
@@ -412,32 +412,32 @@ function draw() {
         const b = mnDots[j]; if (b.glow < 0.05) continue;
         const dx = a.x - b.x, dy = a.y - b.y, d = Math.sqrt(dx*dx+dy*dy);
         if (d < 50) {
-          ctx.strokeStyle = `rgba(148,163,184,${Math.min(a.glow,b.glow)*0.5})`;
+          ctx.strokeStyle = `rgba(150,140,124,${Math.min(a.glow,b.glow)*0.28})`;
           ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
         }
       }
     }
     // Constellation rays (click)
     for (const ray of mnRays) {
-      ctx.save(); ctx.globalAlpha = ray.alpha;
-      ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 0.8;
+      ctx.save(); ctx.globalAlpha = ray.alpha * 0.6;
+      ctx.strokeStyle = '#a39885'; ctx.lineWidth = 0.8;
       ctx.beginPath(); ctx.moveTo(ray.x, ray.y); ctx.lineTo(ray.tx, ray.ty); ctx.stroke();
       ctx.restore();
     }
     // Dots
     for (const d of mnDots) {
-      const alpha = 0.12 + d.glow * 0.7;
+      const alpha = 0.05 + d.glow * 0.4;
       const size = 1.5 + d.glow * 3;
       ctx.save(); ctx.globalAlpha = alpha;
-      ctx.fillStyle = d.glow > 0.3 ? '#818cf8' : '#94a3b8';
-      if (d.glow > 0.2) { ctx.shadowColor = '#818cf8'; ctx.shadowBlur = 6 * d.glow; }
+      ctx.fillStyle = d.glow > 0.3 ? '#c2a279' : '#b0a795';
+      if (d.glow > 0.2) { ctx.shadowColor = '#c2a279'; ctx.shadowBlur = 6 * d.glow; }
       ctx.beginPath(); ctx.arc(d.x, d.y, size, 0, Math.PI*2); ctx.fill();
       ctx.shadowBlur = 0; ctx.restore();
     }
     // Burst particles (click)
     for (const p of particles) {
       ctx.save(); ctx.globalAlpha = p.alpha * p.life;
-      ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 0.8;
+      ctx.strokeStyle = '#a39885'; ctx.lineWidth = 0.8;
       ctx.beginPath(); ctx.arc(p.x, p.y, 1.5, 0, Math.PI*2); ctx.fill();
       ctx.restore();
     }
@@ -447,7 +447,7 @@ function draw() {
 
     // 1. Deep space backdrop
     const g = ctx.createLinearGradient(0, 0, 0, H);
-    g.addColorStop(0, '#040618'); g.addColorStop(0.5, '#070a24'); g.addColorStop(1, '#030514');
+    g.addColorStop(0, 'rgba(250,246,239,0.05)'); g.addColorStop(0.5, 'rgba(246,240,231,0.04)'); g.addColorStop(1, 'rgba(248,243,236,0.05)');
     ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
     
     // 2. Glowing Dynamic space nebulas
@@ -466,7 +466,7 @@ function draw() {
     ctx.lineWidth = 1;
     for (const h of sfHexes) {
       if (h.glow > 0.01) {
-        ctx.strokeStyle = `rgba(56,189,248,${h.glow * 0.16})`;
+        ctx.strokeStyle = `rgba(150,138,118,${h.glow * 0.10})`;
         ctx.beginPath();
         for (let i = 0; i < 6; i++) {
           const a = i * Math.PI / 3;
@@ -494,9 +494,9 @@ function draw() {
     
     // 4. Scanline
     const sg = ctx.createLinearGradient(0, sfScanY - 50, 0, sfScanY);
-    sg.addColorStop(0, 'rgba(56,189,248,0)'); sg.addColorStop(1, 'rgba(56,189,248,0.065)');
+    sg.addColorStop(0, 'rgba(160,144,120,0)'); sg.addColorStop(1, 'rgba(160,144,120,0.05)');
     ctx.fillStyle = sg; ctx.fillRect(0, sfScanY - 50, W, 50);
-    ctx.fillStyle = 'rgba(56,189,248,0.22)'; ctx.fillRect(0, sfScanY, W, 1);
+    ctx.fillStyle = 'rgba(160,144,120,0.10)'; ctx.fillRect(0, sfScanY, W, 1);
 
     // 5. Neural Connections (glitchy/pulsing when thinking)
     ctx.lineWidth = 1.2;
@@ -505,7 +505,7 @@ function draw() {
         const a = sfNodes[i], b = sfNodes[j], dx = a.x - b.x, dy = a.y - b.y, d = Math.sqrt(dx*dx+dy*dy);
         if (d < 240) {
           const e = Math.max(a.energy, b.energy);
-          let alpha = (1 - d/240) * (0.12 + e * 0.45);
+          let alpha = (1 - d/240) * (0.05 + e * 0.2);
           
           if (petState === 'thinking') {
             // High-frequency transmission pulse
@@ -515,7 +515,7 @@ function draw() {
             alpha *= (0.8 + Math.cos(t * 6.0 - d * 0.02) * 0.2);
           }
           
-          ctx.strokeStyle = `rgba(167,139,250,${alpha})`;
+          ctx.strokeStyle = `rgba(150,136,116,${alpha})`;
           ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
         }
       }
@@ -527,7 +527,7 @@ function draw() {
         const dx = n.x - mx, dy = n.y - my, dist = Math.sqrt(dx*dx+dy*dy);
         if (dist < 110) {
           const strength = (110 - dist) / 110;
-          ctx.strokeStyle = `rgba(56, 189, 248, ${strength * 0.45})`;
+          ctx.strokeStyle = `rgba(160, 142, 116, ${strength * 0.22})`;
           ctx.lineWidth = 0.6 + strength * 0.8;
           ctx.beginPath();
           ctx.moveTo(mx, my);
@@ -536,7 +536,7 @@ function draw() {
 
           // Technical micro-distance tag at midpoint of thread
           if (strength > 0.6) {
-            ctx.fillStyle = `rgba(56, 189, 248, ${strength * 0.6})`;
+            ctx.fillStyle = `rgba(160, 142, 116, ${strength * 0.35})`;
             ctx.font = '6px monospace';
             const midX = mx + dx * 0.5;
             const midY = my + dy * 0.5;
@@ -550,7 +550,7 @@ function draw() {
     for (const n of sfNodes) {
       ctx.fillStyle = n.color;
       ctx.shadowColor = n.color; 
-      ctx.shadowBlur = 8 + n.energy * 18;
+      ctx.shadowBlur = 3 + n.energy * 8;
       ctx.beginPath(); ctx.arc(n.x, n.y, n.r + n.energy * 2.2, 0, Math.PI*2); ctx.fill();
       ctx.shadowBlur = 0;
       
@@ -562,7 +562,7 @@ function draw() {
 
     // 7. Packets
     for (const p of sfPackets) {
-      ctx.fillStyle = p.color; ctx.shadowColor = p.color; ctx.shadowBlur = 8;
+      ctx.fillStyle = p.color; ctx.shadowColor = p.color; ctx.shadowBlur = 4;
       ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI*2); ctx.fill();
       ctx.shadowBlur = 0;
     }
@@ -581,7 +581,7 @@ function draw() {
       
       // Outer rotating tick ring
       ctx.rotate(t * 0.7);
-      ctx.strokeStyle = 'rgba(56,189,248,0.55)'; ctx.lineWidth = 1;
+      ctx.strokeStyle = 'rgba(160,142,116,0.28)'; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.arc(0, 0, 22, 0, Math.PI * 2); ctx.stroke();
       for (let i = 0; i < 12; i++) {
         const a = (i / 12) * Math.PI * 2;
@@ -594,21 +594,21 @@ function draw() {
       
       // Inner rotating dashed ring
       ctx.rotate(-t * 1.5); 
-      ctx.strokeStyle = 'rgba(167,139,250,0.45)'; ctx.lineWidth = 0.8;
+      ctx.strokeStyle = 'rgba(150,136,116,0.24)'; ctx.lineWidth = 0.8;
       ctx.beginPath(); ctx.arc(0, 0, 14, 0.4, Math.PI * 2 - 0.4); ctx.stroke();
       
       ctx.restore();
       
       // Crosshair lines
       ctx.save(); ctx.translate(mx, my);
-      ctx.strokeStyle = 'rgba(56,189,248,0.38)'; ctx.lineWidth = 0.8;
+      ctx.strokeStyle = 'rgba(160,142,116,0.2)'; ctx.lineWidth = 0.8;
       ctx.beginPath(); ctx.moveTo(-28, 0); ctx.lineTo(-6, 0); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(6, 0); ctx.lineTo(28, 0); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(0, -28); ctx.lineTo(0, -6); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(0, 6); ctx.lineTo(0, 28); ctx.stroke();
       
       // Cyberpunk Tech Data Labels
-      ctx.fillStyle = 'rgba(56,189,248,0.6)';
+      ctx.fillStyle = 'rgba(160,142,116,0.35)';
       ctx.font = '8px monospace';
       const stateStr = petState.toUpperCase();
       ctx.fillText(`SYS_STATE: ${stateStr}`, 32, -12);
@@ -634,7 +634,7 @@ function draw() {
     }
   } else if (props.mode === 'minimal') {
     const g = ctx.createLinearGradient(0, 0, W, H);
-    g.addColorStop(0, 'rgba(241,245,249,0.12)'); g.addColorStop(1, 'rgba(226,232,240,0.08)');
+    g.addColorStop(0, 'rgba(250,247,241,0.08)'); g.addColorStop(1, 'rgba(238,232,222,0.05)');
     ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
   } else if (props.mode === 'custom' && customImg) {
     ctx.globalAlpha = 0.18;
@@ -690,12 +690,12 @@ function onClick(x: number, y: number) {
       x, y, vx: rnd(-3, 3), vy: rnd(-4, -0.5),
       size: rnd(4, 10), angle: rnd(0, 6.28), spin: rnd(-0.08, 0.08),
       sway: 1, swayOff: rnd(0, 6.28),
-      color: pick(['#ffc0cb','#ff90a0','#ffb7c5','#ffd9e8']),
-      alpha: rnd(0.5, 0.8), temp: true, life: 1, decay: rnd(0.01, 0.02),
+      color: pick(['#efe0d0','#e6d0bc','#ead8c6','#f2e6d8']),
+      alpha: rnd(0.3, 0.5), temp: true, life: 1, decay: rnd(0.01, 0.02),
     });
     for (let i = 0; i < 12; i++) particles.push({
       x, y, vx: rnd(-3.5, 3.5), vy: rnd(-3.5, -0.5),
-      size: rnd(4, 9), alpha: rnd(0.5, 0.8), color: pick(CUTE_C),
+      size: rnd(4, 9), alpha: rnd(0.3, 0.5), color: pick(CUTE_C),
       shape: pick(shapes), angle: rnd(0, 6.28), spin: rnd(-0.08, 0.08),
       life: 1, decay: rnd(0.012, 0.022),
     });
@@ -721,7 +721,7 @@ function onClick(x: number, y: number) {
         vx: Math.cos(angle) * speed,
         vy: Math.sin(angle) * speed,
         size: rnd(1.5, 3.5),
-        alpha: rnd(0.6, 0.9),
+        alpha: rnd(0.35, 0.55),
         color: pick(Object.values(SF_COLS)),
         shape: 'scifi-spark',
         life: 1.0,
@@ -777,5 +777,6 @@ onBeforeUnmount(() => {
   inset: 0;
   pointer-events: none;
   z-index: 0;
+  opacity: 0.5;
 }
 </style>

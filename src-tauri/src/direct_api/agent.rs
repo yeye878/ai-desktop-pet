@@ -3,7 +3,7 @@ use crate::direct_api::api_client::{
     call_chat_completions_non_stream, call_chat_completions_stream, ChatCompletionChunk,
     DirectApiConfig, SseParser, UserAttachment,
 };
-use crate::direct_api::tools::{execute_tool, tool_definitions};
+use crate::direct_api::tools::execute_tool;
 use crate::storage::ChatMessage;
 use crate::AppState;
 use base64::Engine;
@@ -27,6 +27,10 @@ struct ToolConfirmPayload {
     summary: String,
     command: Option<String>,
     path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_avatar: Option<String>,
 }
 
 /// ask_user 工具弹窗里的单个候选项。
@@ -42,6 +46,10 @@ pub struct AskUserPayload {
     id: String,
     question: String,
     options: Vec<AskUserOption>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_avatar: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -55,6 +63,8 @@ struct ToolEventPayload {
     path: Option<String>,
     output: Option<String>,
     approved: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_name: Option<String>,
 }
 
 struct AccumulatedToolCall {
@@ -77,6 +87,8 @@ pub async fn run_direct_api_agent(
     attachments: Vec<UserAttachment>,
     quote: Option<(String, String)>,
     agent: Option<crate::AgentContext>,
+    tool_whitelist: Option<Vec<String>>,
+    cancel: tokio_util::sync::CancellationToken,
 ) {
     let state = app_handle.state::<AppState>();
 
@@ -118,15 +130,19 @@ pub async fn run_direct_api_agent(
             break;
         }
 
-        if is_cancelled(&state).await {
+        if cancel.is_cancelled() {
             send_aborted(&app_handle, &full_text, &full_thinking).await;
             return;
         }
 
+        // 工具白名单 = 能力限制：不在名单内的工具模型看不到。
+        // 名单为 None 或空 = 不限制（全部工具）。
         let tools = if config.execution_mode == "plan" {
             None
         } else {
-            Some(tool_definitions())
+            Some(crate::direct_api::tools::tool_definitions_for(
+                tool_whitelist.as_deref(),
+            ))
         };
 
         let mut accumulated_tool_calls: HashMap<usize, AccumulatedToolCall> = HashMap::new();
@@ -226,7 +242,7 @@ pub async fn run_direct_api_agent(
                     let mut stream_eof = false;
 
                     loop {
-                        if is_cancelled(&state).await {
+                        if cancel.is_cancelled() {
                             send_aborted(&app_handle, &full_text, &full_thinking).await;
                             return;
                         }
@@ -702,9 +718,17 @@ pub async fn run_direct_api_agent(
             // 🔥 ask_user 特殊分支: 不走确认/执行流程, 直接弹内嵌询问弹窗等用户作答。
             // 用户的回答会作为工具结果回传给模型, 让它据此决定后续方向。
             if tc_name == "ask_user" {
-                let tool_output =
-                    request_user_answer(&state, &app_handle, &mut full_thinking, &tc_id, &tc_args)
-                        .await;
+                let single_label = agent.as_ref().and_then(|ctx| ctx.single()).map(|a| a.name.clone());
+                let tool_output = request_user_answer(
+                    &state,
+                    &app_handle,
+                    &mut full_thinking,
+                    &tc_id,
+                    &tc_args,
+                    single_label.as_deref(),
+                    &cancel,
+                )
+                .await;
 
                 let output_for_log = tool_output_for_log(&tool_output);
                 let output_display = format!("[执行结果]\n{}\n", output_for_log);
@@ -735,6 +759,10 @@ pub async fn run_direct_api_agent(
             };
 
             let approved = if requires_confirm {
+                let single_label = agent
+                    .as_ref()
+                    .and_then(|ctx| ctx.single())
+                    .map(|a| a.name.clone());
                 request_tool_confirmation(
                     &state,
                     &app_handle,
@@ -743,6 +771,8 @@ pub async fn run_direct_api_agent(
                     &tc_name,
                     &tc_args,
                     &pretty_args,
+                    single_label.as_deref(),
+                    &cancel,
                 )
                 .await
             } else {
@@ -762,7 +792,8 @@ pub async fn run_direct_api_agent(
                     None,
                     Some(true),
                 );
-                let output = execute_tool(&tc_name, &tc_args, &config.search_provider).await;
+                let output =
+                    execute_tool(&tc_name, &tc_args, &config.search_provider, cancel.clone()).await;
                 let output_for_event = tool_output_for_log(&output);
                 emit_tool_event(
                     &app_handle,
@@ -776,6 +807,9 @@ pub async fn run_direct_api_agent(
 
                 if tc_name == "create_scheduled_task" || tc_name == "list_scheduled_tasks" {
                     let _ = app_handle.emit("scheduled-tasks-changed", json!({}));
+                }
+                if tc_name == "save_memory" || tc_name == "delete_memory" {
+                    let _ = app_handle.emit("memories-changed", json!({}));
                 }
 
                 output
@@ -796,7 +830,7 @@ pub async fn run_direct_api_agent(
     }
 
     // 保存前再次检查是否已取消
-    if is_cancelled(&state).await {
+    if cancel.is_cancelled() {
         send_aborted(&app_handle, &full_text, &full_thinking).await;
         return;
     }
@@ -1155,7 +1189,7 @@ fn is_recoverable_stream_error(message: &str) -> bool {
         || lower.contains("request was canceled")
 }
 
-fn append_active_thinking(state: &tauri::State<'_, AppState>, text: &str) {
+pub(crate) fn append_active_thinking(state: &tauri::State<'_, AppState>, text: &str) {
     if let Ok(mut active) = state.active_chat.lock() {
         if let Some(active) = active.active.as_mut() {
             active.thinking.push_str(text);
@@ -1163,15 +1197,8 @@ fn append_active_thinking(state: &tauri::State<'_, AppState>, text: &str) {
     }
 }
 
-async fn is_cancelled(state: &tauri::State<'_, AppState>) -> bool {
-    let abort = state.abort_token.lock().await;
-    abort
-        .as_ref()
-        .map(|token| token.is_cancelled())
-        .unwrap_or(false)
-}
-
-async fn request_tool_confirmation(
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn request_tool_confirmation(
     state: &tauri::State<'_, AppState>,
     app_handle: &tauri::AppHandle,
     full_thinking: &mut String,
@@ -1179,15 +1206,21 @@ async fn request_tool_confirmation(
     tool_name: &str,
     args: &serde_json::Value,
     pretty_args: &str,
+    agent_label: Option<&str>,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> bool {
-    let waiting_msg = format!("[等待授权] {}\n", tool_summary(tool_name, args));
+    let prefix = agent_label
+        .map(|name| format!("【{name}】"))
+        .unwrap_or_default();
+    let waiting_msg = format!("{prefix}[等待授权] {}\n", tool_summary(tool_name, args));
     full_thinking.push_str(&waiting_msg);
     append_active_thinking(state, &waiting_msg);
     let _ = app_handle.emit("ai-thinking", &waiting_msg);
     emit_tool_event(app_handle, event_id, tool_name, "waiting", args, None, None);
 
     let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
-    let confirm_id = format!("confirm_{}_{}", tool_name, crate::unix_now());
+    // 用 UUID 防止同秒并发的确认 ID 碰撞（多智能体并行时会出现同时待确认）
+    let confirm_id = format!("confirm_{}", uuid::Uuid::new_v4().simple());
     {
         let mut confirms = state.pending_confirms.lock().await;
         confirms.insert(confirm_id.clone(), tx);
@@ -1199,13 +1232,40 @@ async fn request_tool_confirmation(
             id: confirm_id.clone(),
             tool_name: tool_name.to_string(),
             arguments: pretty_args.to_string(),
-            summary: tool_summary(tool_name, args),
+            summary: format!("{prefix}{}", tool_summary(tool_name, args)),
             command: tool_command(tool_name, args),
             path: tool_path(tool_name, args),
+            agent_name: agent_label.map(str::to_string),
+            agent_avatar: None,
         },
     );
 
-    let approved_result = tokio::time::timeout(std::time::Duration::from_secs(120), rx).await;
+    // 等待用户授权 / 120 秒超时 / 本次运行被中止
+    let approved_result = tokio::select! {
+        result = tokio::time::timeout(std::time::Duration::from_secs(120), rx) => result,
+        _ = cancel.cancelled() => {
+            let _ = app_handle.emit(
+                "ai-tool-confirm-resolved",
+                json!({ "id": confirm_id.clone(), "approved": false }),
+            );
+            let mut confirms = state.pending_confirms.lock().await;
+            confirms.remove(&confirm_id);
+            let aborted_msg = format!("{prefix}[运行已中止，取消此工具授权]\n");
+            full_thinking.push_str(&aborted_msg);
+            append_active_thinking(state, &aborted_msg);
+            let _ = app_handle.emit("ai-thinking", &aborted_msg);
+            emit_tool_event(
+                app_handle,
+                event_id,
+                tool_name,
+                "denied",
+                args,
+                Some("运行已中止。"),
+                Some(false),
+            );
+            return false;
+        }
+    };
 
     {
         let mut confirms = state.pending_confirms.lock().await;
@@ -1222,7 +1282,7 @@ async fn request_tool_confirmation(
     match approved_result {
         Ok(Ok(true)) => {
             emit_resolved(true);
-            let approved_msg = "[用户已授权，开始执行]\n".to_string();
+            let approved_msg = format!("{prefix}[用户已授权，开始执行]\n");
             full_thinking.push_str(&approved_msg);
             append_active_thinking(state, &approved_msg);
             let _ = app_handle.emit("ai-thinking", &approved_msg);
@@ -1245,7 +1305,7 @@ async fn request_tool_confirmation(
         }
         Ok(Ok(false)) => {
             emit_resolved(false);
-            let denied_msg = "[用户拒绝执行此操作]\n".to_string();
+            let denied_msg = format!("{prefix}[用户拒绝执行此操作]\n");
             full_thinking.push_str(&denied_msg);
             append_active_thinking(state, &denied_msg);
             let _ = app_handle.emit("ai-thinking", &denied_msg);
@@ -1297,7 +1357,7 @@ async fn request_tool_confirmation(
     }
 }
 
-fn push_tool_message(
+pub(crate) fn push_tool_message(
     api_messages: &mut Vec<serde_json::Value>,
     tool_call_id: &str,
     tool_name: &str,
@@ -1313,13 +1373,19 @@ fn push_tool_message(
 
 /// ask_user 工具处理: 向前端弹内嵌询问弹窗, 等待用户选择选项或填写自定义答案。
 /// 返回的字符串会作为工具结果回传给模型。
-async fn request_user_answer(
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn request_user_answer(
     state: &tauri::State<'_, AppState>,
     app_handle: &tauri::AppHandle,
     full_thinking: &mut String,
     event_id: &str,
     args: &serde_json::Value,
+    agent_label: Option<&str>,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> String {
+    let prefix = agent_label
+        .map(|name| format!("【{name}】"))
+        .unwrap_or_default();
     let question = args["question"]
         .as_str()
         .map(|value| value.trim().to_string())
@@ -1351,7 +1417,7 @@ async fn request_user_answer(
     emit_tool_event(app_handle, event_id, "ask_user", "waiting", args, None, None);
 
     let (tx, rx) = tokio::sync::oneshot::channel::<String>();
-    let question_id = format!("ask_{}", crate::unix_now());
+    let question_id = format!("ask_{}", uuid::Uuid::new_v4().simple());
     {
         let mut questions = state.pending_questions.lock().await;
         questions.insert(question_id.clone(), tx);
@@ -1361,8 +1427,10 @@ async fn request_user_answer(
         "ai-ask-user",
         AskUserPayload {
             id: question_id.clone(),
-            question: question.clone(),
+            question: format!("{prefix}{question}"),
             options: options.clone(),
+            agent_name: agent_label.map(str::to_string),
+            agent_avatar: None,
         },
     );
 
@@ -1370,28 +1438,25 @@ async fn request_user_answer(
     let answer_result = tokio::select! {
         result = rx => Some(result),
         _ = tokio::time::sleep(std::time::Duration::from_secs(300)) => None,
-        cancelled = is_cancelled(state) => {
-            if cancelled {
-                let _ = app_handle.emit(
-                    "ai-ask-user-resolved",
-                    json!({ "id": question_id, "answered": false }),
-                );
-                {
-                    let mut questions = state.pending_questions.lock().await;
-                    questions.remove(&question_id);
-                }
-                emit_tool_event(
-                    app_handle,
-                    event_id,
-                    "ask_user",
-                    "denied",
-                    args,
-                    Some("操作已被用户中止。"),
-                    Some(false),
-                );
-                return "操作已被用户中止。".to_string();
+        _ = cancel.cancelled() => {
+            let _ = app_handle.emit(
+                "ai-ask-user-resolved",
+                json!({ "id": question_id, "answered": false }),
+            );
+            {
+                let mut questions = state.pending_questions.lock().await;
+                questions.remove(&question_id);
             }
-            None
+            emit_tool_event(
+                app_handle,
+                event_id,
+                "ask_user",
+                "denied",
+                args,
+                Some("操作已被用户中止。"),
+                Some(false),
+            );
+            return "操作已被用户中止。".to_string();
         }
     };
 
@@ -1473,11 +1538,11 @@ async fn request_user_answer(
     }
 }
 
-fn tool_output_for_log(output: &str) -> String {
+pub(crate) fn tool_output_for_log(output: &str) -> String {
     redact_visual_payload(output).unwrap_or_else(|| output.to_string())
 }
 
-fn tool_output_for_message(output: &str) -> String {
+pub(crate) fn tool_output_for_message(output: &str) -> String {
     redact_visual_payload(output).unwrap_or_else(|| output.to_string())
 }
 
@@ -1502,7 +1567,7 @@ fn redact_visual_payload(output: &str) -> Option<String> {
     serde_json::to_string_pretty(&value).ok()
 }
 
-fn append_visual_tool_message(
+pub(crate) fn append_visual_tool_message(
     api_messages: &mut Vec<serde_json::Value>,
     tool_name: &str,
     output: &str,
@@ -1579,7 +1644,7 @@ fn append_visual_tool_message(
     }));
 }
 
-fn mode_requires_confirmation(
+pub(crate) fn mode_requires_confirmation(
     config: &DirectApiConfig,
     tool_name: &str,
     already_approved: bool,
@@ -1623,17 +1688,21 @@ fn mode_requires_confirmation(
     {
         return false;
     }
+    // 免确认工具白名单（包含智能体配置的 allowed_tools）：命中时直接放行
+    if config
+        .auto_approved_tools
+        .iter()
+        .any(|tool| tool == tool_name)
+    {
+        return false;
+    }
     match config.execution_mode.as_str() {
         "plan" | "unreviewed" => false,
-        "custom" => !config
-            .auto_approved_tools
-            .iter()
-            .any(|tool| tool == tool_name),
         _ => true,
     }
 }
 
-fn emit_tool_event(
+pub(crate) fn emit_tool_event(
     app_handle: &tauri::AppHandle,
     id: &str,
     tool_name: &str,
@@ -1642,19 +1711,47 @@ fn emit_tool_event(
     output: Option<&str>,
     approved: Option<bool>,
 ) {
+    emit_tool_event_labeled(
+        app_handle,
+        id,
+        tool_name,
+        status,
+        args,
+        output,
+        approved,
+        None,
+    );
+}
+
+/// 带智能体标签的工具事件：多智能体并行时区分事件归属。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn emit_tool_event_labeled(
+    app_handle: &tauri::AppHandle,
+    id: &str,
+    tool_name: &str,
+    status: &str,
+    args: &serde_json::Value,
+    output: Option<&str>,
+    approved: Option<bool>,
+    agent_name: Option<&str>,
+) {
     let arguments = serde_json::to_string_pretty(args).unwrap_or_else(|_| "{}".to_string());
+    let prefix = agent_name
+        .map(|name| format!("【{name}】"))
+        .unwrap_or_default();
     let _ = app_handle.emit(
         "ai-tool-event",
         ToolEventPayload {
             id: id.to_string(),
             tool_name: tool_name.to_string(),
             status: status.to_string(),
-            summary: tool_summary(tool_name, args),
+            summary: format!("{prefix}{}", tool_summary(tool_name, args)),
             arguments,
             command: tool_command(tool_name, args),
             path: tool_path(tool_name, args),
             output: output.map(|value| compact_for_event(value, 3000)),
             approved,
+            agent_name: agent_name.map(str::to_string),
         },
     );
 }
@@ -1671,11 +1768,11 @@ fn compact_for_event(input: &str, max_chars: usize) -> String {
 /// 工具被批准一次后是否仍要求每次都弹窗确认。
 /// 高风险（命令执行、文件写入、外部程序）默认不缓存：每次都让用户看一遍。
 /// 低风险（鼠标键盘、读取）可缓存：避免连续操作时弹窗淹没自动化。
-fn is_high_risk_tool(tool_name: &str) -> bool {
+pub(crate) fn is_high_risk_tool(tool_name: &str) -> bool {
     matches!(tool_name, "run_command" | "write_file" | "open_app")
 }
 
-fn tool_command(tool_name: &str, args: &serde_json::Value) -> Option<String> {
+pub(crate) fn tool_command(tool_name: &str, args: &serde_json::Value) -> Option<String> {
     match tool_name {
         "run_command" => args["command"].as_str().map(|value| value.to_string()),
         "open_app" => {
@@ -1709,7 +1806,7 @@ fn tool_command(tool_name: &str, args: &serde_json::Value) -> Option<String> {
     }
 }
 
-fn tool_path(tool_name: &str, args: &serde_json::Value) -> Option<String> {
+pub(crate) fn tool_path(tool_name: &str, args: &serde_json::Value) -> Option<String> {
     match tool_name {
         "read_file" | "write_file" | "edit_file" | "list_directory" => {
             args["path"].as_str().map(|value| value.to_string())
@@ -1720,7 +1817,7 @@ fn tool_path(tool_name: &str, args: &serde_json::Value) -> Option<String> {
     }
 }
 
-fn tool_summary(tool_name: &str, args: &serde_json::Value) -> String {
+pub(crate) fn tool_summary(tool_name: &str, args: &serde_json::Value) -> String {
     match tool_name {
         "read_file" => format!("读取文件 {}", args["path"].as_str().unwrap_or("未知路径")),
         "write_file" => format!("写入文件 {}", args["path"].as_str().unwrap_or("未知路径")),

@@ -657,6 +657,18 @@ pub async fn call_chat_completions_non_stream(
     messages: &Vec<serde_json::Value>,
     tools: Option<Vec<serde_json::Value>>,
 ) -> Result<NonStreamResult, String> {
+    call_chat_completions_non_stream_with_timeout(client, config, messages, tools, None).await
+}
+
+/// `headers_timeout`: 等待响应头（即非流式模式下等待完整生成）的时限。
+/// 传 None 时保持历史默认的 60 秒；推理类长任务（如自进化复盘）应传入更长时限。
+pub async fn call_chat_completions_non_stream_with_timeout(
+    client: &reqwest::Client,
+    config: &DirectApiConfig,
+    messages: &Vec<serde_json::Value>,
+    tools: Option<Vec<serde_json::Value>>,
+    headers_timeout: Option<Duration>,
+) -> Result<NonStreamResult, String> {
     let url = build_chat_completions_url(&config.base_url, &config.api_mode);
 
     let body = if config.api_mode == "responses" {
@@ -693,9 +705,15 @@ pub async fn call_chat_completions_non_stream(
         req = req.header("Authorization", format!("Bearer {}", config.api_key.trim()));
     }
 
-    let res = tokio::time::timeout(Duration::from_secs(60), req.send())
+    let headers_timeout = headers_timeout.unwrap_or(Duration::from_secs(60));
+    let res = tokio::time::timeout(headers_timeout, req.send())
         .await
-        .map_err(|_| "API 请求超过 60 秒没有响应，请检查网络、Base URL 或代理配置。".to_string())?
+        .map_err(|_| {
+            format!(
+                "API 请求超过 {} 秒没有响应，请检查网络、Base URL 或代理配置。",
+                headers_timeout.as_secs()
+            )
+        })?
         .map_err(|e| format!("{e}"))?;
 
     if !res.status().is_success() {

@@ -4,12 +4,15 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import AppIcon from "./AppIcon.vue";
 import CustomPixelPetWorkshop from "./CustomPixelPetWorkshop.vue";
+import EvolutionCenter from "./EvolutionCenter.vue";
 import PetCanvas from "./PetCanvas.vue";
 import { usePetStore, THEMES, FONT_COLORS, resolveSkinId } from "../stores/pet";
 import { useSkillsStore, type Skill } from "../stores/skills";
 import { useChatStore, type Message, type MessageAgent, type QuotedMessage } from "../stores/chat";
 import { useAgentsStore, type Agent } from "../stores/agents";
+import { useEvolutionStore } from "../stores/evolution";
 import {
   parseQuoteSegments,
   stripQuoteMarkers,
@@ -25,8 +28,10 @@ import {
   extractMentionNames,
   insertMentionAt,
   mentionQueryFromInput,
+  parseAgentHeaders,
   splitMentionSegments,
 } from "../services/mentions";
+import { AVAILABLE_TOOL_NAMES, toolLabel } from "../services/tools";
 import {
   PET_CHARACTERS,
   PET_CHARACTER_SETTING_KEY,
@@ -69,11 +74,17 @@ const chat = useChatStore();
 const currentWindow = getCurrentWindow();
 
 // === 导航 ===
-type NavPage = "home" | "chat" | "memory" | "agents" | "appearance" | "voice" | "system" | "about";
+type NavPage = "home" | "chat" | "evolution" | "memory" | "agents" | "appearance" | "voice" | "system" | "about";
 const activePage = ref<NavPage>("home");
 const isPetActive = ref(false);
 const skillsStore = useSkillsStore();
 const agentsStore = useAgentsStore();
+const evolutionStore = useEvolutionStore();
+
+function openEvolutionPage() {
+  activePage.value = "evolution";
+  void evolutionStore.loadAll();
+}
 
 // 自定义提示（Dashboard 速览面板）
 const customPromptDraft = ref("");
@@ -328,11 +339,39 @@ const memories = ref<MemoryItem[]>([]);
 const memoryDraft = ref({
   key: "",
   value: "",
-  category: "manual",
+  category: "preference",
 });
 const isSavingMemory = ref(false);
 const memorySaved = ref(false);
 const memoryDeletingId = ref<number | null>(null);
+const memorySearchQuery = ref("");
+const memoryCategoryFilter = ref("all");
+const editMemoryModalOpen = ref(false);
+const editingMemoryDraft = ref<{
+  id: number;
+  key: string;
+  value: string;
+  category: string;
+} | null>(null);
+const isUpdatingMemory = ref(false);
+
+const filteredMemories = computed(() => {
+  let list = memories.value;
+  if (memoryCategoryFilter.value !== "all") {
+    list = list.filter((m) => m.category === memoryCategoryFilter.value);
+  }
+  const q = memorySearchQuery.value.trim().toLowerCase();
+  if (q) {
+    list = list.filter(
+      (m) =>
+        m.key.toLowerCase().includes(q) ||
+        m.value.toLowerCase().includes(q) ||
+        memoryCategoryLabel(m.category).toLowerCase().includes(q)
+    );
+  }
+  return list;
+});
+const isScanningShortcuts = ref(false);
 const scheduledTasks = ref<ScheduledTask[]>([]);
 const taskDraft = ref({
   title: "",
@@ -402,19 +441,10 @@ const searchProviderOptions = [
   { value: "duckduckgo", label: "DuckDuckGo", desc: "海外网络可选" },
 ];
 
-const toolPermissionOptions = [
-  { id: "read_file", label: "读取文件" },
-  { id: "write_file", label: "写入文件" },
-  { id: "list_directory", label: "列出目录" },
-  { id: "run_command", label: "执行命令" },
-  { id: "web_search", label: "网页搜索" },
-  { id: "open_app", label: "打开应用" },
-  { id: "create_scheduled_task", label: "创建定时任务" },
-  { id: "computer_screenshot", label: "查看屏幕" },
-  { id: "computer_wait", label: "等待界面" },
-  { id: "window_list", label: "列出窗口" },
-  { id: "browser_snapshot", label: "查看浏览器" },
-];
+const toolPermissionOptions = AVAILABLE_TOOL_NAMES.map((name) => ({
+  id: name,
+  label: toolLabel(name),
+}));
 
 const currentModelLabel = computed(() => {
   if (backendType.value === "direct_api") {
@@ -474,6 +504,8 @@ const showDashSlashMenu = computed(
 );
 
 // === @ 提及智能体 ===
+const dashMentionDismissed = ref(false);
+
 const dashMentionQuery = computed(() => {
   if (chat.isLoading) return null;
   return mentionQueryFromInput(chatInput.value);
@@ -490,12 +522,14 @@ const dashMentionItems = computed<Agent[]>(() => {
     .slice(0, 8);
 });
 const showDashMentionMenu = computed(
-  () => dashMentionQuery.value !== null && dashMentionItems.value.length > 0,
+  () => !dashMentionDismissed.value && dashMentionQuery.value !== null && dashMentionItems.value.length > 0,
 );
+
+const knownAgentNames = computed(() => agentsStore.agents.map((a) => a.name));
 
 /** 用户消息里被 @ 的智能体名字（用于发送时传给后端） */
 function dashMentionNames(text: string): string[] {
-  return extractMentionNames(text).filter((name) => agentsStore.findByName(name));
+  return extractMentionNames(text, knownAgentNames.value).filter((name) => agentsStore.findByName(name));
 }
 
 // === 智能体管理（智能体工坊） ===
@@ -573,14 +607,14 @@ async function saveAgentDraft() {
     agentSaveError.value = "请填写智能体名字";
     return;
   }
-  if (/s|@/.test(name)) {
+  if (/\s|@/.test(name)) {
     agentSaveError.value = "名字不能包含空格或 @（名字会用于对话中的 @ 提及）";
     return;
   }
   try {
     const now = Math.floor(Date.now() / 1000);
     await agentsStore.upsert({
-      id: agentDraft.value.id,
+      id: agentDraft.value.id.trim(),
       name,
       avatar: agentDraft.value.avatar.trim() || "🤖",
       description: agentDraft.value.description.trim(),
@@ -647,18 +681,18 @@ function searchProviderLabel(value: string) {
 }
 
 const quickActions = [
-  { id: "wave", icon: "↗", label: "打招呼", desc: "挥挥手，进入陪伴状态", tone: "sky" },
-  { id: "happy", icon: "◎", label: "开心一下", desc: "给小家伙加一点元气", tone: "lemon" },
-  { id: "sleep", icon: "Zz", label: "去睡觉", desc: "切到安静休息状态", tone: "lavender" },
-  { id: "wake", icon: "⏱", label: "叫醒它", desc: "回到待命，随时响应", tone: "mint" },
-  { id: "new-chat", icon: "+", label: "新对话", desc: "保存摘要并重开上下文", tone: "mint" },
-  { id: "clear", icon: "⌫", label: "清空对话", desc: "整理上下文和记忆摘要", tone: "coral" },
+  { id: "wave", icon: "wave", label: "打招呼", desc: "挥挥手，进入陪伴状态" },
+  { id: "happy", icon: "smile", label: "开心一下", desc: "给它加一点元气" },
+  { id: "sleep", icon: "moon", label: "去睡觉", desc: "切换到安静休息" },
+  { id: "wake", icon: "bell", label: "叫醒它", desc: "回到待命状态" },
+  { id: "new-chat", icon: "plus", label: "新对话", desc: "保存摘要并重开上下文" },
+  { id: "clear", icon: "trash", label: "清空对话", desc: "整理上下文与摘要" },
 ];
 
 const missionEntries = [
-  { page: "chat" as NavPage, icon: "💬", title: "对话舱", desc: "直接派发任务或闲聊" },
-  { page: "appearance" as NavPage, icon: "◐", title: "换装台", desc: "皮肤、字体和背景" },
-  { page: "voice" as NavPage, icon: "◌", title: "声线站", desc: "快捷键、语音和试听" },
+  { page: "chat" as NavPage, icon: "chat", title: "对话", desc: "派发任务或闲聊" },
+  { page: "appearance" as NavPage, icon: "appearance", title: "外观", desc: "皮肤、字体和背景" },
+  { page: "voice" as NavPage, icon: "voice", title: "语音", desc: "快捷键、人声和试听" },
 ];
 
 const activeActionId = ref("");
@@ -1301,9 +1335,20 @@ function readFile(file: File): Promise<string> {
   });
 }
 
-function selectBg(bg: string) {
+async function broadcastChatBg(bg: string, customImage: string) {
+  await currentWindow.emit("chat-bg-changed", { bg, customImage });
+  const [chatWin, petWin] = await Promise.all([
+    WebviewWindow.getByLabel("chat"),
+    WebviewWindow.getByLabel("pet"),
+  ]);
+  if (chatWin) await chatWin.emit("chat-bg-changed", { bg, customImage });
+  if (petWin) await petWin.emit("appearance-changed");
+}
+
+async function selectBg(bg: string) {
   chatBg.value = bg;
   localStorage.setItem(BG_KEY, bg);
+  await broadcastChatBg(bg, customBgImage.value);
 }
 
 function chooseBgImage() { bgInputRef.value?.click(); }
@@ -1314,20 +1359,21 @@ function onBgImageSelected(event: Event) {
   el.value = "";
   if (!file || !file.type.startsWith("image/")) return;
   const reader = new FileReader();
-  reader.onload = () => {
+  reader.onload = async () => {
     const url = String(reader.result || "");
     customBgImage.value = url;
     localStorage.setItem(CUSTOM_BG_KEY, url);
     chatBg.value = "custom";
     localStorage.setItem(BG_KEY, "custom");
+    await broadcastChatBg("custom", url);
   };
   reader.readAsDataURL(file);
 }
 
-function clearCustomBg() {
+async function clearCustomBg() {
   customBgImage.value = "";
   localStorage.removeItem(CUSTOM_BG_KEY);
-  selectBg("none");
+  await selectBg("none");
 }
 
 async function selectPersonality(personality: string) {
@@ -1389,10 +1435,64 @@ async function deleteMemoryItem(id: number) {
   }
 }
 
+function openEditMemoryModal(item: MemoryItem) {
+  editingMemoryDraft.value = {
+    id: item.id,
+    key: item.key,
+    value: item.value,
+    category: item.category,
+  };
+  editMemoryModalOpen.value = true;
+}
+
+async function saveEditedMemory() {
+  if (!editingMemoryDraft.value || isUpdatingMemory.value) return;
+  const key = editingMemoryDraft.value.key.trim();
+  const value = editingMemoryDraft.value.value.trim();
+  if (!key || !value) return;
+
+  isUpdatingMemory.value = true;
+  try {
+    const updated = await invoke<MemoryItem>("update_memory", {
+      id: editingMemoryDraft.value.id,
+      category: editingMemoryDraft.value.category || "preference",
+      key,
+      value,
+    });
+    memories.value = memories.value.map((m) => (m.id === updated.id ? updated : m));
+    editMemoryModalOpen.value = false;
+    editingMemoryDraft.value = null;
+  } catch (e) {
+    alert("更新记忆失败: " + e);
+  } finally {
+    isUpdatingMemory.value = false;
+  }
+}
+
+async function handleScanShortcuts() {
+  if (isScanningShortcuts.value) return;
+  isScanningShortcuts.value = true;
+  try {
+    const res = await invoke<{ count: number }>("scan_and_update_desktop_shortcuts");
+    await loadMemories();
+    alert(`已成功扫描并同步了 ${res.count} 个桌面快捷应用！现在您可以直接对桌宠说“打开微信”或“打开VSCode”了。`);
+  } catch (e) {
+    alert("扫描快捷方式失败: " + e);
+  } finally {
+    isScanningShortcuts.value = false;
+  }
+}
+
 function memoryCategoryLabel(category: string) {
   const map: Record<string, string> = {
-    manual: "手动",
+    preference: "偏好习惯",
+    fact: "个人事实",
+    habit: "作息习惯",
+    work_domain: "工作领域",
+    note: "随手备忘",
+    manual: "手动设定",
     conversation: "对话摘要",
+    app_path: "注册应用",
     general: "通用",
   };
   return map[category] || category;
@@ -1660,6 +1760,9 @@ async function toggleMaximize() {
 
 // === 对话框与消息同步 ===
 const chatInput = ref("");
+watch(chatInput, () => {
+  dashMentionDismissed.value = false;
+});
 const dashChatInputRef = ref<HTMLInputElement | null>(null);
 const dashSlashSelectedIndex = ref(0);
 const dashMentionSelectedIndex = ref(0);
@@ -1695,6 +1798,7 @@ let unlistenWeatherUpdate: UnlistenFn | null = null;
 let unlistenDragDrop: UnlistenFn | null = null;
 let unlistenVoiceSettingsChanged: UnlistenFn | null = null;
 let unlistenTtsSettingsChanged: UnlistenFn | null = null;
+let unlistenNavigate: UnlistenFn | null = null;
 
 // === 文件拖拽与预加载相关数据 ===
 interface PendingFile {
@@ -2081,6 +2185,16 @@ async function runDashSlashCommand(command: SlashCommand) {
       activePage.value = "system";
       await skillsStore.load();
       break;
+    case "agents":
+      openAgentsPage();
+      break;
+    case "evolution":
+      openEvolutionPage();
+      break;
+    case "team":
+      chatInput.value = "/team ";
+      activePage.value = "chat";
+      break;
     case "chat":
     case "clipboard":
       break;
@@ -2155,11 +2269,7 @@ function onDashboardChatKeyDown(e: KeyboardEvent) {
     }
     if (e.key === "Escape") {
       e.preventDefault();
-      // 只还原正在输入的 @ 片段，保留消息其余部分
-      const query = dashMentionQuery.value;
-      if (query) {
-        chatInput.value = chatInput.value.slice(0, query.start);
-      }
+      dashMentionDismissed.value = true;
       dashMentionSelectedIndex.value = 0;
       return;
     }
@@ -2250,6 +2360,16 @@ function upsertToolEvent(event: ToolEvent) {
   }
 }
 
+function formatArguments(argsStr?: string) {
+  if (!argsStr || !argsStr.trim()) return "";
+  try {
+    const parsed = JSON.parse(argsStr);
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return argsStr;
+  }
+}
+
 async function handleDashboardToolConfirm(approved: boolean) {
   if (!pendingConfirm.value) return;
   try {
@@ -2258,10 +2378,9 @@ async function handleDashboardToolConfirm(approved: boolean) {
       approved,
     });
   } catch (e) {
-    // Silently handle timeout/race condition errors
     const errStr = String(e);
     if (!errStr.includes("无效的确认请求 ID")) {
-      alert("确认工具操作失败: " + e);
+      console.warn("确认工具操作失败:", e);
     }
   } finally {
     pendingConfirm.value = null;
@@ -2389,6 +2508,10 @@ function handlePageEntered() {
 
 // === 生命周期 ===
 let unlistenPetStatus: UnlistenFn | null = null;
+let unlistenEvolutionUpdated: UnlistenFn | null = null;
+let unlistenAgentsChanged: UnlistenFn | null = null;
+let unlistenSkillsChanged: UnlistenFn | null = null;
+let unlistenMemoriesChanged: UnlistenFn | null = null;
 
 // Loading 超时保底机制
 let loadingTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -2464,11 +2587,14 @@ onMounted(async () => {
     const toolSnapshot = toolEvents.value.length > 0
       ? JSON.parse(JSON.stringify(toolEvents.value)) as any[]
       : undefined;
-    const replyAgent: MessageAgent | null = event.payload.agentName
+    const name = event.payload.agentName || event.payload.agent_name;
+    const id = event.payload.agentId || event.payload.agent_id;
+    const avatar = event.payload.agentAvatar || event.payload.agent_avatar;
+    const replyAgent: MessageAgent | null = name
       ? {
-          id: event.payload.agentId || undefined,
-          name: event.payload.agentName,
-          avatar: event.payload.agentAvatar || undefined,
+          id: id || undefined,
+          name,
+          avatar: avatar || undefined,
         }
       : null;
     const last = chat.messages[chat.messages.length - 1];
@@ -2595,6 +2721,28 @@ onMounted(async () => {
   unlistenTtsSettingsChanged = await listen("tts-settings-changed", () => {
     void loadVoiceSettings();
   });
+  void evolutionStore.loadAll();
+  unlistenEvolutionUpdated = await listen("evolution-updated", () => {
+    void evolutionStore.loadAll();
+  });
+  unlistenAgentsChanged = await listen("agents-changed", () => {
+    void agentsStore.load();
+  });
+  unlistenSkillsChanged = await listen("skills-changed", () => {
+    void skillsStore.load();
+  });
+  unlistenMemoriesChanged = await listen("memories-changed", () => {
+    void loadMemories();
+  });
+  unlistenNavigate = await currentWindow.listen<string>("navigate-to-page", (event) => {
+    if (event.payload === "agents") {
+      openAgentsPage();
+    } else if (event.payload === "evolution") {
+      openEvolutionPage();
+    } else if (event.payload) {
+      activePage.value = event.payload as NavPage;
+    }
+  });
 
   // 注册控制台文件拖拽事件
   unlistenDragDrop = await currentWindow.onDragDropEvent((event) => {
@@ -2612,6 +2760,10 @@ onUnmounted(() => {
   if (dashChatScrollFrame !== null) cancelAnimationFrame(dashChatScrollFrame);
   dashChatScrollTimers.forEach(clearTimeout);
   unlistenPetStatus?.();
+  unlistenEvolutionUpdated?.();
+  unlistenAgentsChanged?.();
+  unlistenSkillsChanged?.();
+  unlistenMemoriesChanged?.();
   unlistenThinking?.();
   unlistenAnswerDelta?.();
   unlistenAiFinished?.();
@@ -2629,6 +2781,7 @@ onUnmounted(() => {
   unlistenDragDrop?.();
   unlistenVoiceSettingsChanged?.();
   unlistenTtsSettingsChanged?.();
+  unlistenNavigate?.();
   unlistenSkillActivated?.();
 ttsPlayer.stop();
 });
@@ -2641,12 +2794,6 @@ ttsPlayer.stop();
       <div class="titlebar-title">
         <span class="titlebar-mark">AP</span>
         <span>Desktop Pet</span>
-      </div>
-      <div class="titlebar-charm-strip" aria-hidden="true">
-        <span class="titlebar-charm charm-dot"></span>
-        <span class="titlebar-charm charm-capsule"></span>
-        <span class="titlebar-charm charm-star"></span>
-        <span class="titlebar-charm charm-ring"></span>
       </div>
       <div class="titlebar-controls">
         <button class="titlebar-btn" @click="minimizeWindow" title="最小化">
@@ -2674,10 +2821,10 @@ ttsPlayer.stop();
       <div class="dashboard-sidebar">
         <div class="sidebar-header">
           <div class="sidebar-brand">
-            <span class="brand-logo">AP</span>
+            <span class="brand-logo">ap</span>
             <div class="brand-title-group">
               <span class="brand-name">AI Desktop Pet</span>
-              <span class="brand-tag">Control Suite</span>
+              <span class="brand-tag">Companion</span>
             </div>
           </div>
         </div>
@@ -2687,49 +2834,59 @@ ttsPlayer.stop();
             :class="['sidebar-item', { active: activePage === 'home' }]"
             @click="activePage = 'home'"
           >
-            <span class="sidebar-item-icon">⌂</span>
+            <span class="sidebar-item-icon"><AppIcon name="home" :size="15" /></span>
             <span>首页</span>
           </button>
           <button
             :class="['sidebar-item', { active: activePage === 'chat' }]"
             @click="activePage = 'chat'"
           >
-            <span class="sidebar-item-icon">💬</span>
+            <span class="sidebar-item-icon"><AppIcon name="chat" :size="15" /></span>
             <span>对话互动</span>
           </button>
           <button
             :class="['sidebar-item', { active: activePage === 'memory' }]"
             @click="activePage = 'memory'"
           >
-            <span class="sidebar-item-icon">◫</span>
+            <span class="sidebar-item-icon"><AppIcon name="memory" :size="15" /></span>
             <span>记忆库</span>
           </button>
           <button
             :class="['sidebar-item', { active: activePage === 'appearance' }]"
             @click="activePage = 'appearance'"
           >
-            <span class="sidebar-item-icon">◐</span>
+            <span class="sidebar-item-icon"><AppIcon name="appearance" :size="15" /></span>
             <span>个性外观</span>
           </button>
           <button
             :class="['sidebar-item', { active: activePage === 'agents' }]"
             @click="openAgentsPage()"
           >
-            <span class="sidebar-item-icon">🧩</span>
+            <span class="sidebar-item-icon"><AppIcon name="agents" :size="15" /></span>
             <span>智能体</span>
+          </button>
+          <button
+            :class="['sidebar-item', { active: activePage === 'evolution' }]"
+            @click="openEvolutionPage()"
+          >
+            <span class="sidebar-item-icon"><AppIcon name="evolution" :size="15" /></span>
+            <span>自进化</span>
+            <span v-if="evolutionStore.pendingProposals.length > 0" class="sidebar-item-badge">
+              {{ evolutionStore.pendingProposals.length }}
+            </span>
           </button>
           <button
             :class="['sidebar-item', { active: activePage === 'voice' }]"
             @click="activePage = 'voice'"
           >
-            <span class="sidebar-item-icon">◌</span>
+            <span class="sidebar-item-icon"><AppIcon name="voice" :size="15" /></span>
             <span>语音设置</span>
           </button>
           <button
             :class="['sidebar-item', { active: activePage === 'system' }]"
             @click="activePage = 'system'"
           >
-            <span class="sidebar-item-icon">⌘</span>
+            <span class="sidebar-item-icon"><AppIcon name="system" :size="15" /></span>
             <span>系统设置</span>
           </button>
 
@@ -2739,7 +2896,7 @@ ttsPlayer.stop();
             :class="['sidebar-item', { active: activePage === 'about' }]"
             @click="activePage = 'about'"
           >
-            <span class="sidebar-item-icon">i</span>
+            <span class="sidebar-item-icon"><AppIcon name="info" :size="15" /></span>
             <span>关于</span>
           </button>
         </nav>
@@ -2749,11 +2906,11 @@ ttsPlayer.stop();
             :class="['sidebar-action-btn', 'primary', { active: isPetActive }]"
             @click="isPetActive ? emit('closePet') : emit('openPet'); isPetActive = !isPetActive"
           >
-            <span class="sidebar-action-icon">{{ isPetActive ? '●' : '+' }}</span>
+            <span class="sidebar-action-icon"><AppIcon :name="isPetActive ? 'minus' : 'paw'" :size="14" /></span>
             <span>{{ isPetActive ? '收回桌宠' : '召唤桌宠' }}</span>
           </button>
           <button class="sidebar-action-btn danger" @click="exitApp">
-            <span class="sidebar-action-icon">×</span>
+            <span class="sidebar-action-icon"><AppIcon name="power" :size="14" /></span>
             <span>退出应用</span>
           </button>
         </div>
@@ -2766,9 +2923,9 @@ ttsPlayer.stop();
           <div v-if="activePage === 'home'" key="home" class="home-studio-page">
             <div class="page-header home-header studio-header">
               <div>
-                <div class="page-kicker">Mission Playground</div>
-                <h1 class="page-title">桌宠飞行舱</h1>
-                <p class="page-subtitle">用任务轨道、动作卡片和状态贴纸管理你的小伙伴</p>
+                <div class="page-kicker">Overview</div>
+                <h1 class="page-title">伙伴总览</h1>
+                <p class="page-subtitle">查看伙伴状态，快速开始今天的协作</p>
               </div>
               <div :class="['status-pill', isPetActive ? 'live' : 'idle']">
                 <span class="status-pill-dot" />
@@ -2782,19 +2939,13 @@ ttsPlayer.stop();
                 <div class="pet-preview-visual">
                   <div class="pet-orbit-ring ring-a" />
                   <div class="pet-orbit-ring ring-b" />
-                  <span class="pet-spark spark-a">✦</span>
-                  <span class="pet-spark spark-b">✧</span>
                   <div class="pet-preview-canvas-wrap">
-                    <PetCanvas preview style="width: 140px; height: 140px; pointer-events: none;" />
+                    <PetCanvas preview style="width: 120px; height: 140px; pointer-events: none;" />
                   </div>
                 </div>
                 <div class="pet-info">
-                  <div class="pet-label">Current Companion</div>
-                  <div class="pet-status-name">{{ pet.expression }} 桌宠伙伴</div>
-                  <div class="pet-status-state">
-                    <span class="pet-status-dot" />
-                    <span>{{ petStateLabel }}</span>
-                  </div>
+                  <div class="pet-label">当前伙伴</div>
+                  <div class="pet-status-name">{{ petStateLabel }}</div>
                   <div class="pet-meta-pills">
                     <button class="pet-meta-pill" @click="activePage = 'appearance'">换装</button>
                     <button class="pet-meta-pill" @click="activePage = 'chat'">聊天</button>
@@ -2828,7 +2979,7 @@ ttsPlayer.stop();
                   </div>
                 </div>
                 <div class="pet-action-feedback">
-                  <span class="pet-action-kicker">Action Echo</span>
+                  <span class="pet-action-kicker">状态反馈</span>
                   <strong>{{ activeActionId ? '收到指令' : '待机中' }}</strong>
                   <p>{{ actionFeedback }}</p>
                 </div>
@@ -2838,16 +2989,17 @@ ttsPlayer.stop();
               <!-- 快捷操作 -->
               <div class="dash-card action-lab-card sticker-board-card">
                 <div class="dash-card-title">
-                  <span class="card-icon">⌁</span> 动作实验台
+                  <span class="card-icon"><AppIcon name="zap" :size="13" /></span> 快捷操作
                 </div>
                 <div class="quick-actions">
                   <button
                     v-for="action in quickActions"
                     :key="action.id"
-                    :class="['quick-action-btn', action.tone, { active: activeActionId === action.id }]"
+                    :class="['quick-action-btn', { active: activeActionId === action.id }]"
+                    :title="`${action.label} - ${action.desc}`"
                     @click="petAction(action.id)"
                   >
-                    <span class="quick-action-icon">{{ action.icon }}</span>
+                    <span class="quick-action-icon"><AppIcon :name="action.icon" :size="15" /></span>
                     <span class="quick-action-copy">
                       <span class="quick-action-label">{{ action.label }}</span>
                       <span class="quick-action-desc">{{ action.desc }}</span>
@@ -2856,10 +3008,10 @@ ttsPlayer.stop();
                 </div>
               </div>
 
-              <!-- 任务轨道 -->
+              <!-- 快速入口 -->
               <div class="dash-card mission-rail-card mission-ribbon-card">
                 <div class="dash-card-title">
-                  <span class="card-icon">⌘</span> 任务轨道
+                  <span class="card-icon"><AppIcon name="home" :size="13" /></span> 快速入口
                 </div>
                 <div class="mission-rail">
                   <button
@@ -2868,7 +3020,7 @@ ttsPlayer.stop();
                     class="mission-node"
                     @click="activePage = entry.page"
                   >
-                    <span class="mission-node-icon">{{ entry.icon }}</span>
+                    <span class="mission-node-icon"><AppIcon :name="entry.icon" :size="15" /></span>
                     <span>
                       <strong>{{ entry.title }}</strong>
                       <small>{{ entry.desc }}</small>
@@ -2885,7 +3037,7 @@ ttsPlayer.stop();
               <!-- 系统监控 -->
               <div class="dash-card system-pulse-card resource-strip-card">
                 <div class="dash-card-title">
-                  <span class="card-icon">◷</span> 系统资源
+                  <span class="card-icon"><AppIcon name="cpu" :size="13" /></span> 系统资源
                 </div>
                 <div class="system-monitor">
                   <div class="monitor-item">
@@ -2931,30 +3083,30 @@ ttsPlayer.stop();
                   :disabled="isWeatherLoading"
                   @click="refreshWeather"
                 >
-                  ↻
+                  <AppIcon name="refresh" :size="11" />
                 </button>
               </template>
               <template v-else-if="isWeatherLoading">
-                <span class="weather-icon">🌡</span>
+                <span class="weather-icon"><AppIcon name="weather" :size="13" /></span>
                 <span class="weather-desc">天气刷新中...</span>
               </template>
               <template v-else>
-                <span class="weather-icon">!</span>
+                <span class="weather-icon"><AppIcon name="weather" :size="13" /></span>
                 <span class="weather-desc">天气获取失败：{{ weatherError }}</span>
-                <button type="button" class="weather-refresh-btn" title="重试" @click="refreshWeather">↻</button>
+                <button type="button" class="weather-refresh-btn" title="重试" @click="refreshWeather"><AppIcon name="refresh" :size="11" /></button>
               </template>
             </div>
             <!-- Glassmorphism drop zone overlay -->
             <div v-if="isFileOver" class="dash-drop-overlay">
               <div class="dash-drop-overlay-box">
-                <span class="dash-drop-icon">📂</span>
+                <span class="dash-drop-icon"><AppIcon name="folder" :size="26" /></span>
                 <span class="dash-drop-text">释放文件以添加为附件</span>
               </div>
             </div>
 
             <div class="dash-chat-messages" ref="dashChatMessagesRef" @click="closeDashMessageMenu">
               <div v-if="chat.messages.length === 0" class="dash-chat-empty">
-                🐾 暂无对话历史，跟小家伙说点什么吧！
+                还没有对话。<br />和它打个招呼，或直接描述你想做的事。
               </div>
               
               <div
@@ -3021,9 +3173,17 @@ ttsPlayer.stop();
                         <div class="dash-msg-quote-text">{{ seg.content }}</div>
                       </div>
                       <template v-else>
-                        <template v-for="(mseg, mi) in splitMentionSegments(seg.content)" :key="si + '-' + mi">
-                          <span v-if="mseg.type === 'mention'" class="dash-msg-mention">@{{ mseg.content }}</span>
-                          <template v-else>{{ mseg.content }}</template>
+                        <template v-for="(ablock, bi) in parseAgentHeaders(seg.content, agentsStore.agents)" :key="si + '-' + bi">
+                          <div v-if="ablock.type === 'agent_header'" class="dash-msg-agent-section-header">
+                            <span class="dash-msg-agent-avatar">{{ ablock.avatar }}</span>
+                            <span class="dash-msg-agent-name">{{ ablock.agentName }}</span>
+                          </div>
+                          <template v-else>
+                            <template v-for="(mseg, mi) in splitMentionSegments(ablock.content, knownAgentNames)" :key="si + '-' + bi + '-' + mi">
+                              <span v-if="mseg.type === 'mention'" class="dash-msg-mention">@{{ mseg.content }}</span>
+                              <template v-else>{{ mseg.content }}</template>
+                            </template>
+                          </template>
                         </template>
                       </template>
                     </template>
@@ -3107,7 +3267,15 @@ ttsPlayer.stop();
                       <div v-if="seg.type === 'quote'" class="dash-msg-quote ai-quote" :title="seg.content">
                         <div class="dash-msg-quote-text">{{ seg.content }}</div>
                       </div>
-                      <template v-else>{{ seg.content }}</template>
+                      <template v-else>
+                        <template v-for="(ablock, bi) in parseAgentHeaders(seg.content, agentsStore.agents)" :key="si + '-' + bi">
+                          <div v-if="ablock.type === 'agent_header'" class="dash-msg-agent-section-header">
+                            <span class="dash-msg-agent-avatar">{{ ablock.avatar }}</span>
+                            <span class="dash-msg-agent-name">{{ ablock.agentName }}</span>
+                          </div>
+                          <template v-else>{{ ablock.content }}</template>
+                        </template>
+                      </template>
                     </template>
                   </div>
                   <div class="dash-typing-dots">
@@ -3293,16 +3461,27 @@ ttsPlayer.stop();
 
           <!-- ========== 记忆库 ========== -->
           <div v-else-if="activePage === 'memory'" key="memory">
-            <div class="page-header">
-              <div class="page-kicker">Memory</div>
-              <h1 class="page-title">长期记忆库</h1>
-              <p class="page-subtitle">保存稳定偏好、重要背景，并管理 AI 的定时提醒</p>
+            <div class="page-header" style="display: flex; justify-content: space-between; align-items: flex-start;">
+              <div>
+                <div class="page-kicker">Memory</div>
+                <h1 class="page-title">长期记忆库</h1>
+                <p class="page-subtitle">保存稳定偏好、重要背景，并管理 AI 的定时提醒与桌面应用</p>
+              </div>
+              <button
+                class="dash-btn secondary"
+                :disabled="isScanningShortcuts"
+                @click="handleScanShortcuts"
+                style="display: inline-flex; align-items: center; gap: 6px;"
+              >
+                <AppIcon name="refresh" :size="12" />
+                <span>{{ isScanningShortcuts ? "正在扫描桌面..." : "同步桌面快捷方式" }}</span>
+              </button>
             </div>
 
             <div class="dash-memory-layout">
               <div class="dash-memory-editor-stack">
                 <div class="dash-card palette-panel skin-panel">
-                  <div class="dash-card-title"><span class="card-icon">＋</span> 新建记忆</div>
+                  <div class="dash-card-title"><span class="card-icon"><AppIcon name="plus" :size="13" /></span> 新建记忆</div>
                   <div class="dash-form-group">
                     <label>标题</label>
                     <input type="text" v-model="memoryDraft.key" placeholder="例如：沟通偏好" />
@@ -3319,7 +3498,12 @@ ttsPlayer.stop();
                   <div class="dash-field-row">
                     <span class="dash-field-label">分类</span>
                     <select class="dash-select" v-model="memoryDraft.category">
-                      <option value="manual">手动</option>
+                      <option value="preference">偏好习惯</option>
+                      <option value="fact">个人事实</option>
+                      <option value="habit">作息习惯</option>
+                      <option value="work_domain">工作领域</option>
+                      <option value="note">随手备忘</option>
+                      <option value="manual">手动设定</option>
                       <option value="general">通用</option>
                     </select>
                   </div>
@@ -3333,7 +3517,7 @@ ttsPlayer.stop();
                 </div>
 
                 <div class="dash-card dash-task-composer">
-                  <div class="dash-card-title"><span class="card-icon">时</span> 新建定时任务</div>
+                  <div class="dash-card-title"><span class="card-icon"><AppIcon name="clock" :size="13" /></span> 新建定时任务</div>
                   <div class="dash-form-group">
                     <label>任务</label>
                     <input type="text" v-model="taskDraft.title" placeholder="例如：提醒我喝水" />
@@ -3405,7 +3589,7 @@ ttsPlayer.stop();
                             :disabled="taskTogglingId === task.id"
                             @click="toggleScheduledTask(task)"
                           >
-                            {{ task.enabled ? 'Ⅱ' : '▶' }}
+                            <AppIcon :name="task.enabled ? 'pause' : 'play'" :size="11" />
                           </button>
                           <button
                             class="dash-icon-btn danger"
@@ -3413,7 +3597,7 @@ ttsPlayer.stop();
                             :disabled="taskDeletingId === task.id"
                             @click="deleteScheduledTask(task.id)"
                           >
-                            ×
+                            <AppIcon name="x" :size="12" />
                           </button>
                         </div>
                       </div>
@@ -3429,25 +3613,56 @@ ttsPlayer.stop();
                       <span class="dash-section-kicker">Memory</span>
                       <h2>记忆条目</h2>
                     </div>
-                    <span class="dash-memory-count">{{ memories.length }} 条</span>
+                    <span class="dash-memory-count">{{ filteredMemories.length }} / {{ memories.length }} 条</span>
                   </div>
-                  <div v-if="memories.length === 0" class="dash-memory-empty">
-                    暂无长期记忆。清空一段对话后会自动生成摘要，也可以在左侧手动添加。
+
+                  <div class="dash-memory-filters">
+                    <input
+                      type="text"
+                      class="dash-memory-search-input"
+                      v-model="memorySearchQuery"
+                      placeholder="搜索记忆标题或内容..."
+                    />
+                    <select class="dash-select dash-memory-cat-select" v-model="memoryCategoryFilter">
+                      <option value="all">全部分类</option>
+                      <option value="preference">偏好习惯</option>
+                      <option value="fact">个人事实</option>
+                      <option value="habit">作息习惯</option>
+                      <option value="work_domain">工作领域</option>
+                      <option value="note">随手备忘</option>
+                      <option value="manual">手动设定</option>
+                      <option value="conversation">对话摘要</option>
+                      <option value="app_path">注册应用</option>
+                      <option value="general">通用</option>
+                    </select>
                   </div>
-                  <div v-for="memory in memories" :key="memory.id" class="dash-memory-record">
+
+                  <div v-if="filteredMemories.length === 0" class="dash-memory-empty">
+                    {{ memories.length === 0 ? "暂无长期记忆。在聊天中告诉桌宠“请记住……”，或在左侧手动添加。" : "未找到匹配的记忆条目。" }}
+                  </div>
+                  <div v-for="memory in filteredMemories" :key="memory.id" class="dash-memory-record">
                     <div class="dash-memory-record-head">
                       <div>
                         <span class="dash-memory-category">{{ memoryCategoryLabel(memory.category) }}</span>
                         <h3>{{ memory.key }}</h3>
                       </div>
-                      <button
-                        class="dash-icon-btn danger"
-                        title="删除记忆"
-                        :disabled="memoryDeletingId === memory.id"
-                        @click="deleteMemoryItem(memory.id)"
-                      >
-                        ×
-                      </button>
+                      <div class="dash-memory-actions">
+                        <button
+                          class="dash-icon-btn"
+                          title="编辑此条记忆"
+                          @click="openEditMemoryModal(memory)"
+                        >
+                          <AppIcon name="edit" :size="12" />
+                        </button>
+                        <button
+                          class="dash-icon-btn danger"
+                          title="删除记忆"
+                          :disabled="memoryDeletingId === memory.id"
+                          @click="deleteMemoryItem(memory.id)"
+                        >
+                          <AppIcon name="x" :size="12" />
+                        </button>
+                      </div>
                     </div>
                     <p>{{ memory.value }}</p>
                   </div>
@@ -3467,8 +3682,8 @@ ttsPlayer.stop();
             <div class="dash-agents-layout">
               <div class="dash-card dash-agents-list-panel">
                 <div class="dash-card-title">
-                  <span class="card-icon">🧩</span> 我的智能体
-                  <button class="dash-agents-add-btn" @click="openAgentEditor()">＋ 新建</button>
+                  <span class="card-icon"><AppIcon name="agents" :size="13" /></span> 我的智能体
+                  <button class="dash-agents-add-btn" @click="openAgentEditor()">新建</button>
                 </div>
                 <div v-if="agentSaved" class="dash-agents-saved-tip">✓ 已保存</div>
                 <div v-if="agentsStore.agents.length === 0" class="dash-agents-empty">
@@ -3496,7 +3711,7 @@ ttsPlayer.stop();
                 </div>
 
                 <div class="dash-card-title" style="margin-top: 18px;">
-                  <span class="card-icon">✨</span> 用 AI 创建
+                  <span class="card-icon"><AppIcon name="sparkles" :size="13" /></span> 用 AI 创建
                 </div>
                 <p class="dash-agents-ai-hint">描述你想要的智能体，AI 会生成名字、头像、角色设定和工具权限，你确认后即可保存。</p>
                 <textarea
@@ -3581,6 +3796,16 @@ ttsPlayer.stop();
             </div>
           </div>
 
+          <!-- ========== 自进化中心 ========== -->
+          <div v-else-if="activePage === 'evolution'" key="evolution" class="dash-evolution-page">
+            <div class="page-header">
+              <div class="page-kicker">Self Evolution</div>
+              <h1 class="page-title">自进化中心</h1>
+              <p class="page-subtitle">基于历史对话持续迭代，沉淀默契画像、自动衍生专属智能体与定时工作流</p>
+            </div>
+            <EvolutionCenter />
+          </div>
+
           <!-- ========== 外观 ========== -->
           <div v-else-if="activePage === 'appearance'" key="appearance" class="appearance-atelier-page">
             <div class="page-header atelier-header">
@@ -3592,7 +3817,7 @@ ttsPlayer.stop();
             <!-- 主题皮肤 -->
             <div class="appearance-atelier-layout">
               <div class="dash-card character-panel">
-              <div class="dash-card-title"><span class="card-icon">形</span> 本体形象</div>
+              <div class="dash-card-title"><span class="card-icon"><AppIcon name="paw" :size="13" /></span> 本体形象</div>
               <div class="dash-character-grid">
                 <button
                   v-for="character in petCharacters"
@@ -3616,12 +3841,12 @@ ttsPlayer.stop();
             </div>
 
               <div class="dash-card character-panel">
-              <div class="dash-card-title"><span class="card-icon">PX</span> 自定义像素桌宠</div>
+              <div class="dash-card-title"><span class="card-icon"><AppIcon name="image" :size="13" /></span> 自定义像素桌宠</div>
               <CustomPixelPetWorkshop @selected="onCustomPixelSelected" />
             </div>
 
               <div class="dash-card palette-panel skin-panel">
-              <div class="dash-card-title"><span class="card-icon">◐</span> 主题皮肤</div>
+              <div class="dash-card-title"><span class="card-icon"><AppIcon name="appearance" :size="13" /></span> 主题皮肤</div>
               <div class="dash-skin-grid">
                 <div
                   v-for="t in themes" :key="t.id"
@@ -3639,7 +3864,7 @@ ttsPlayer.stop();
 
             <!-- 字体颜色 -->
               <div class="dash-card sample-sheet font-panel">
-              <div class="dash-card-title"><span class="card-icon">Aa</span> 字体颜色</div>
+              <div class="dash-card-title"><span class="card-icon card-icon-serif">Aa</span> 字体颜色</div>
               <div class="dash-font-color-grid">
                 <div
                   v-for="fc in FONT_COLORS" :key="fc.id"
@@ -3654,33 +3879,33 @@ ttsPlayer.stop();
 
             <!-- 对话背景 -->
               <div class="dash-card film-strip-panel bg-panel">
-              <div class="dash-card-title"><span class="card-icon">▧</span> 对话背景</div>
+              <div class="dash-card-title"><span class="card-icon"><AppIcon name="image" :size="13" /></span> 对话背景</div>
               <div class="dash-bg-grid">
                 <button :class="['dash-bg-opt', { active: chatBg === 'none' }]" @click="selectBg('none')">
-                  <div class="dash-bg-preview">✖</div>
+                  <div class="dash-bg-preview"><AppIcon name="minus" :size="16" /></div>
                   <span class="dash-bg-label">无</span>
                 </button>
                 <button :class="['dash-bg-opt', { active: chatBg === 'cute' }]" @click="selectBg('cute')">
-                  <div class="dash-bg-preview">🐾</div>
+                  <div class="dash-bg-preview"><AppIcon name="paw" :size="16" /></div>
                   <span class="dash-bg-label">可爱</span>
                 </button>
                 <button :class="['dash-bg-opt', { active: chatBg === 'scifi' }]" @click="selectBg('scifi')">
-                  <div class="dash-bg-preview">🚀</div>
+                  <div class="dash-bg-preview"><AppIcon name="zap" :size="16" /></div>
                   <span class="dash-bg-label">科幻</span>
                 </button>
                 <button :class="['dash-bg-opt', { active: chatBg === 'minimal' }]" @click="selectBg('minimal')">
-                  <div class="dash-bg-preview">○</div>
+                  <div class="dash-bg-preview"><AppIcon name="check" :size="16" /></div>
                   <span class="dash-bg-label">简洁</span>
                 </button>
                 <button :class="['dash-bg-opt', { active: chatBg === 'custom' }]" @click="chooseBgImage">
                   <div class="dash-bg-preview">
                     <img v-if="customBgImage" :src="customBgImage" alt="" />
-                    <span v-else>📷</span>
+                    <AppIcon v-else name="image" :size="16" />
                   </div>
                   <span class="dash-bg-label">自定义</span>
                 </button>
                 <button v-if="chatBg === 'custom' && customBgImage" class="dash-bg-opt" @click="clearCustomBg">
-                  <div class="dash-bg-preview">🗑️</div>
+                  <div class="dash-bg-preview"><AppIcon name="trash" :size="16" /></div>
                   <span class="dash-bg-label">清除</span>
                 </button>
               </div>
@@ -3689,11 +3914,11 @@ ttsPlayer.stop();
 
             <!-- 用户头像 -->
             <div class="dash-card portrait-frame-panel avatar-panel">
-              <div class="dash-card-title"><span class="card-icon">◉</span> 用户头像</div>
+              <div class="dash-card-title"><span class="card-icon"><AppIcon name="user" :size="13" /></span> 用户头像</div>
               <div class="dash-avatar-section">
                 <div class="dash-avatar-preview">
                   <img v-if="pet.userAvatar" :src="pet.userAvatar" alt="用户头像" />
-                  <span v-else>👤</span>
+                  <AppIcon v-else name="user" :size="24" />
                 </div>
                 <div class="dash-avatar-actions">
                   <button class="dash-btn primary" @click="chooseAvatar">选择图片</button>
@@ -3714,7 +3939,7 @@ ttsPlayer.stop();
             </div>
 
             <div class="dash-card sound-panel voice-interaction-panel">
-              <div class="dash-card-title"><span class="card-icon">◌</span> 语音交互</div>
+              <div class="dash-card-title"><span class="card-icon"><AppIcon name="voice" :size="13" /></span> 语音交互</div>
 
               <div class="voice-toggle-grid">
               <div class="dash-switch-row sound-toggle-card">
@@ -3779,7 +4004,7 @@ ttsPlayer.stop();
             </div>
 
             <div class="dash-card mixer-panel voice-engine-panel">
-              <div class="dash-card-title"><span class="card-icon">≋</span> 声音引擎</div>
+              <div class="dash-card-title"><span class="card-icon"><AppIcon name="system" :size="13" /></span> 声音引擎</div>
 
               <div class="dash-field-row">
                 <span class="dash-field-label">声音引擎</span>
@@ -3848,7 +4073,8 @@ ttsPlayer.stop();
 
                 <div class="dash-preview-row">
                   <button class="dash-btn primary" :disabled="filteredEdgeVoices.length === 0" @click="previewVoice">
-                    {{ isPreviewing ? '⏹ 停止' : '▶ 试听' }}
+                    <AppIcon :name="isPreviewing ? 'stop' : 'play'" :size="11" />
+                    {{ isPreviewing ? '停止' : '试听' }}
                   </button>
                 </div>
               </template>
@@ -3904,7 +4130,7 @@ ttsPlayer.stop();
 
             <!-- 自定义系统提示 -->
             <div class="dash-card lab-module">
-              <div class="dash-card-title"><span class="card-icon">📝</span> 自定义系统提示</div>
+              <div class="dash-card-title"><span class="card-icon"><AppIcon name="edit" :size="13" /></span> 自定义系统提示</div>
               <p class="dash-card-subtitle">追加到系统提示末尾，对所有对话生效。留空则不追加。</p>
               <textarea
                 class="dash-textarea"
@@ -3914,7 +4140,7 @@ ttsPlayer.stop();
               />
               <div class="dash-card-actions">
                 <button class="dash-mini-btn primary" @click="saveCustomPrompt">
-                  {{ customPromptSaved ? "✅ 已保存" : "💾 保存" }}
+                  {{ customPromptSaved ? "已保存" : "保存" }}
                 </button>
                 <span v-if="skillsStore.activeSkill" class="dash-card-subtitle">
                   当前激活技能：<b>{{ skillsStore.activeSkill.name }}</b>
@@ -3924,7 +4150,7 @@ ttsPlayer.stop();
 
             <!-- 技能（只读摘要） -->
             <div class="dash-card lab-module">
-              <div class="dash-card-title"><span class="card-icon">🧩</span> 技能</div>
+              <div class="dash-card-title"><span class="card-icon"><AppIcon name="cpu" :size="13" /></span> 技能</div>
               <p class="dash-card-subtitle">
                 编辑请到设置页。这里只展示摘要与激活切换。
               </p>
@@ -3961,7 +4187,7 @@ ttsPlayer.stop();
 
             <!-- AI 后端 -->
             <div class="dash-card lab-module agent-backend-panel">
-              <div class="dash-card-title"><span class="card-icon">⌘</span> AI 后端与模型</div>
+              <div class="dash-card-title"><span class="card-icon"><AppIcon name="terminal" :size="13" /></span> AI 后端与模型</div>
 
               <div class="dash-backend-selector">
                 <button :class="['dash-backend-btn', { active: backendType === 'claude_code' }]" @click="selectBackend('claude_code')">
@@ -4001,7 +4227,7 @@ ttsPlayer.stop();
                 <p class="dash-hint">使用本地 Claude Code CLI 子进程，会话自动保持上下文与本地执行能力。</p>
                 
                 <div style="display:flex;gap:12px;margin-top:12px;">
-                  <button class="dash-btn primary" @click="resetModel">{{ modelSaved ? "✅ 已重置" : "🔄 重置会话" }}</button>
+                  <button class="dash-btn primary" @click="resetModel">{{ modelSaved ? "已重置" : "重置会话" }}</button>
                   <button class="dash-btn secondary" @click="startClaudeConfig">
                     登录/配置 Claude Code
                   </button>
@@ -4235,7 +4461,7 @@ ttsPlayer.stop();
                 <p class="dash-hint" style="margin-top:-4px;">普通模式会在每类操作首次执行前请求确认；自定义模式按上方免确认列表执行。</p>
 
                 <div v-if="testResult.message" :class="['dash-test-result', testResult.success ? 'success' : 'error']">
-                  {{ testResult.success ? '✅ 连接成功！' : '❌ ' + testResult.message }}
+                  {{ testResult.success ? '连接成功！' : testResult.message }}
                 </div>
                 <div class="dash-api-actions">
                   <button class="dash-btn" @click="testConnection" :disabled="isTestingConnection || !apiConfig.base_url || !apiConfig.model">
@@ -4247,7 +4473,7 @@ ttsPlayer.stop();
                 </div>
                 <div class="dash-api-actions" style="margin-top: 8px;">
                   <button class="dash-btn deep-test-btn" @click="testCompatibility" :disabled="isTestingCompatibility || !apiConfig.base_url || !apiConfig.model">
-                    {{ isTestingCompatibility ? '检测中...' : '🔬 深度测试兼容性' }}
+                    {{ isTestingCompatibility ? '检测中...' : '深度测试兼容性' }}
                   </button>
                 </div>
 
@@ -4262,25 +4488,25 @@ ttsPlayer.stop();
                     <div class="compat-item">
                       <span class="compat-label">HTTP 状态:</span>
                       <span :class="compatibilityResult.http_ok ? 'pass' : 'fail'">
-                        {{ compatibilityResult.http_ok ? '✅' : '❌' }} {{ compatibilityResult.http_status }}
+                        {{ compatibilityResult.http_ok ? '✓' : '✗' }} {{ compatibilityResult.http_status }}
                       </span>
                     </div>
                     <div class="compat-item">
                       <span class="compat-label">SSE 格式:</span>
                       <span :class="compatibilityResult.is_sse_format ? 'pass' : 'fail'">
-                        {{ compatibilityResult.is_sse_format ? '✅' : '❌' }}
+                        {{ compatibilityResult.is_sse_format ? '✓ 支持' : '✗ 不支持' }}
                       </span>
                     </div>
                     <div class="compat-item">
                       <span class="compat-label">JSON 格式:</span>
                       <span :class="compatibilityResult.is_json_format ? 'pass' : 'fail'">
-                        {{ compatibilityResult.is_json_format ? '✅' : '❌' }}
+                        {{ compatibilityResult.is_json_format ? '✓ 支持' : '✗ 不支持' }}
                       </span>
                     </div>
                     <div class="compat-item">
                       <span class="compat-label">内容提取:</span>
                       <span :class="compatibilityResult.content_extracted ? 'pass' : 'fail'">
-                        {{ compatibilityResult.content_extracted ? '✅ 成功' : '❌ 失败' }}
+                        {{ compatibilityResult.content_extracted ? '✓ 成功' : '✗ 失败' }}
                       </span>
                     </div>
                     <div class="compat-item" v-if="compatibilityResult.content_extracted">
@@ -4308,7 +4534,7 @@ ttsPlayer.stop();
             </div>
 
             <div class="dash-card weather-settings-panel">
-              <div class="dash-card-title"><span class="card-icon">☼</span> 天气 API 与提醒</div>
+              <div class="dash-card-title"><span class="card-icon"><AppIcon name="weather" :size="13" /></span> 天气 API 与提醒</div>
               <div class="dash-toggle-group">
                 <label>启用天气栏与每日天气问候</label>
                 <input
@@ -4375,7 +4601,7 @@ ttsPlayer.stop();
             <!-- 性格 -->
             <div class="system-role-grid">
             <div class="dash-card role-card personality-panel">
-              <div class="dash-card-title"><span class="card-icon">✦</span> 性格</div>
+              <div class="dash-card-title"><span class="card-icon"><AppIcon name="smile" :size="13" /></span> 性格</div>
               <div class="dash-option-grid">
                 <button
                   v-for="item in personalities" :key="item.id"
@@ -4391,7 +4617,7 @@ ttsPlayer.stop();
 
             <!-- 职业 -->
             <div class="dash-card role-card profession-panel">
-              <div class="dash-card-title"><span class="card-icon">◇</span> 职业</div>
+              <div class="dash-card-title"><span class="card-icon"><AppIcon name="file" :size="13" /></span> 职业</div>
               <div class="dash-option-grid">
                 <button
                   v-for="item in professions" :key="item.id"
@@ -4415,33 +4641,70 @@ ttsPlayer.stop();
             </div>
 
             <div class="dash-card about-card">
-              <div class="about-logo">🐾</div>
+              <div class="about-logo"><AppIcon name="paw" :size="24" /></div>
               <div class="about-name">AI Desktop Pet</div>
               <div class="about-version">v0.1.0</div>
               <p class="about-desc">
-                一个可爱的 AI 桌面伙伴，支持智能对话、语音交互、多主题皮肤和丰富的个性化设置。
-                基于 Tauri + Vue 3 构建，轻量高效。
+                一个住在你桌面上的 AI 伙伴：智能对话、语音交互、长期记忆与个性化外观。
+                基于 Tauri + Vue 3 构建，本地存储，轻量高效。
               </p>
             </div>
           </div>
         </Transition>
 
-        <!-- 工具确认悬浮层 (全局，任何页面可见) -->
-        <Transition name="slide-up">
-          <div v-if="pendingConfirm" class="dash-floating-confirm-overlay">
-            <div class="dash-tool-confirm-card">
-              <div>
-                <strong>{{ pendingConfirm.summary || pendingConfirm.tool_name }}</strong>
-                <p v-if="pendingConfirm.command">命令：{{ pendingConfirm.command }}</p>
-                <p v-if="pendingConfirm.path">路径：{{ pendingConfirm.path }}</p>
+        <!-- 工具确认模态层 (全局，任何页面可见) -->
+        <Transition name="fade">
+          <div
+            v-if="pendingConfirm"
+            class="dash-tool-confirm-overlay"
+            @click.self="handleDashboardToolConfirm(false)"
+          >
+            <div class="dash-tool-confirm-card" style="max-width: 500px;">
+              <div class="dash-tool-confirm-head">
+                <div class="dash-tool-confirm-title">
+                  <span class="dash-tool-confirm-badge" style="background: rgba(191, 122, 78, 0.15); color: var(--dash-accent);">
+                    <AppIcon name="zap" :size="14" />
+                  </span>
+                  <span>工具执行授权</span>
+                </div>
+                <button
+                  class="dash-icon-btn"
+                  title="拒绝并关闭 (Esc)"
+                  @click="handleDashboardToolConfirm(false)"
+                >
+                  <AppIcon name="x" :size="12" />
+                </button>
+              </div>
+
+              <div class="dash-tool-confirm-body" style="gap: 10px;">
+                <div class="summary-panel" style="padding: 10px 12px; border-radius: 9px; background: var(--dash-panel-sunken); border: 1px solid var(--dash-card-border);">
+                  <span style="font-size: 10px; font-weight: 700; color: var(--dash-text-muted); text-transform: uppercase;">操作类别</span>
+                  <strong style="font-size: 13px; color: var(--dash-text-primary); display: block; margin-top: 2px;">{{ pendingConfirm.summary || pendingConfirm.tool_name }}</strong>
+                </div>
+
+                <div v-if="pendingConfirm.command" class="detail-row" style="padding: 8px 12px; border-radius: 8px; background: var(--dash-panel-sunken); border: 1px solid var(--dash-card-border);">
+                  <span style="font-size: 10px; font-weight: 700; color: var(--dash-text-muted); text-transform: uppercase;">执行命令</span>
+                  <code style="display: block; font-family: var(--dash-font-mono); font-size: 11px; margin-top: 2px; color: var(--dash-text-primary); word-break: break-all;">{{ pendingConfirm.command }}</code>
+                </div>
+
+                <div v-if="pendingConfirm.path" class="detail-row" style="padding: 8px 12px; border-radius: 8px; background: var(--dash-panel-sunken); border: 1px solid var(--dash-card-border);">
+                  <span style="font-size: 10px; font-weight: 700; color: var(--dash-text-muted); text-transform: uppercase;">目标路径</span>
+                  <code style="display: block; font-family: var(--dash-font-mono); font-size: 11px; margin-top: 2px; color: var(--dash-text-primary); word-break: break-all;">{{ pendingConfirm.path }}</code>
+                </div>
+
                 <div v-if="pendingConfirm.arguments" class="dash-tool-args">
-                  <span class="args-label">参数:</span>
-                  <pre class="args-code"><code>{{ pendingConfirm.arguments }}</code></pre>
+                  <span class="args-label" style="font-size: 10.5px; font-weight: 650; color: var(--dash-text-muted);">调用参数:</span>
+                  <pre class="args-code" style="max-height: 140px; margin-top: 4px;"><code>{{ formatArguments(pendingConfirm.arguments) }}</code></pre>
                 </div>
               </div>
-              <div class="dash-tool-confirm-actions">
-                <button class="dash-btn secondary" @click="handleDashboardToolConfirm(false)">拒绝</button>
-                <button class="dash-btn primary" @click="handleDashboardToolConfirm(true)">允许</button>
+
+              <div class="dash-tool-confirm-actions" style="margin-top: 16px;">
+                <button class="dash-btn secondary" @click="handleDashboardToolConfirm(false)">
+                  <AppIcon name="x" :size="12" /> 拒绝 (Esc)
+                </button>
+                <button class="dash-btn primary" @click="handleDashboardToolConfirm(true)">
+                  <AppIcon name="check" :size="12" /> 允许运行
+                </button>
               </div>
             </div>
           </div>
@@ -4492,6 +4755,84 @@ ttsPlayer.stop();
                   @click="submitAskUserAnswer()"
                 >
                   提交回答
+                </button>
+              </div>
+            </div>
+          </div>
+        </Transition>
+
+        <!-- 编辑记忆模态框 -->
+        <Transition name="fade">
+          <div
+            v-if="editMemoryModalOpen && editingMemoryDraft"
+            class="dash-tool-confirm-overlay"
+            @click.self="editMemoryModalOpen = false"
+          >
+            <div class="dash-tool-confirm-card" style="max-width: 520px;">
+              <div class="dash-tool-confirm-head">
+                <div class="dash-tool-confirm-title">
+                  <span class="dash-tool-confirm-badge"><AppIcon name="edit" :size="13" /></span>
+                  <span>编辑长期记忆</span>
+                </div>
+                <button
+                  class="dash-icon-btn"
+                  title="关闭"
+                  @click="editMemoryModalOpen = false"
+                >
+                  <AppIcon name="x" :size="12" />
+                </button>
+              </div>
+
+              <div class="dash-tool-confirm-body" style="gap: 14px;">
+                <div class="dash-form-group">
+                  <label>分类</label>
+                  <select class="dash-select" v-model="editingMemoryDraft.category">
+                    <option value="preference">偏好习惯</option>
+                    <option value="fact">个人事实</option>
+                    <option value="habit">作息习惯</option>
+                    <option value="work_domain">工作领域</option>
+                    <option value="note">随手备忘</option>
+                    <option value="manual">手动设定</option>
+                    <option value="conversation">对话摘要</option>
+                    <option value="app_path">注册应用</option>
+                    <option value="general">通用</option>
+                  </select>
+                </div>
+
+                <div class="dash-form-group">
+                  <label>标题 / 键名</label>
+                  <input
+                    type="text"
+                    class="dash-input"
+                    v-model="editingMemoryDraft.key"
+                    placeholder="记忆标题..."
+                  />
+                </div>
+
+                <div class="dash-form-group">
+                  <label>记忆内容</label>
+                  <textarea
+                    class="dash-textarea"
+                    v-model="editingMemoryDraft.value"
+                    rows="5"
+                    placeholder="详细记忆内容..."
+                  ></textarea>
+                </div>
+              </div>
+
+              <div class="dash-tool-confirm-actions">
+                <button
+                  class="dash-btn secondary"
+                  @click="editMemoryModalOpen = false"
+                >
+                  取消
+                </button>
+                <button
+                  class="dash-btn primary"
+                  :disabled="isUpdatingMemory || !editingMemoryDraft.key.trim() || !editingMemoryDraft.value.trim()"
+                  @click="saveEditedMemory"
+                >
+                  {{ isUpdatingMemory ? "保存中..." : "保存修改" }}
                 </button>
               </div>
             </div>

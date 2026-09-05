@@ -211,6 +211,51 @@ pub struct CustomPetAsset {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EvolutionInsight {
+    pub id: String,
+    pub category: String,
+    pub content: String,
+    pub confidence: f64,
+    pub hit_count: i64,
+    pub status: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EvolutionProposal {
+    pub id: String,
+    pub proposal_type: String,
+    pub title: String,
+    pub rationale: String,
+    pub payload_json: String,
+    pub status: String,
+    pub created_at: i64,
+    pub applied_at: Option<i64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EvolutionLog {
+    pub id: String,
+    pub proposal_id: Option<String>,
+    pub category: String,
+    pub summary: String,
+    pub before_state_json: String,
+    pub after_state_json: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EvolutionSummary {
+    pub level: i64,
+    pub sync_score: i64,
+    pub active_insights_count: usize,
+    pub pending_proposals_count: usize,
+    pub total_evolutions_count: usize,
+    pub top_domains: Vec<String>,
+}
+
 pub struct Database {
     conn: Connection,
 }
@@ -338,7 +383,39 @@ impl Database {
                 allowed_tools_json TEXT NOT NULL DEFAULT '[]',
                 created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
                 updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
-            );",
+            );
+            CREATE TABLE IF NOT EXISTS evolution_insights (
+                id TEXT PRIMARY KEY,
+                category TEXT NOT NULL,
+                content TEXT NOT NULL,
+                confidence REAL NOT NULL DEFAULT 0.8,
+                hit_count INTEGER NOT NULL DEFAULT 1,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+                updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_evolution_insights_status ON evolution_insights(status);
+            CREATE TABLE IF NOT EXISTS evolution_proposals (
+                id TEXT PRIMARY KEY,
+                proposal_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                rationale TEXT NOT NULL DEFAULT '',
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+                applied_at INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_evolution_proposals_status ON evolution_proposals(status);
+            CREATE TABLE IF NOT EXISTS evolution_logs (
+                id TEXT PRIMARY KEY,
+                proposal_id TEXT,
+                category TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                before_state_json TEXT NOT NULL DEFAULT '{}',
+                after_state_json TEXT NOT NULL DEFAULT '{}',
+                created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_evolution_logs_created ON evolution_logs(created_at DESC);",
         )?;
         self.ensure_chat_thinking_column()?;
         self.ensure_chat_quote_columns()?;
@@ -616,11 +693,36 @@ impl Database {
     // ===== 宠物记忆 =====
 
     pub fn save_memory(&self, category: &str, key: &str, value: &str) -> Result<i64> {
+        let existing_id: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT id FROM pet_memory WHERE category = ?1 AND TRIM(LOWER(key)) = TRIM(LOWER(?2))",
+                rusqlite::params![category, key],
+                |row| row.get(0),
+            )
+            .ok();
+
+        if let Some(id) = existing_id {
+            self.conn.execute(
+                "UPDATE pet_memory SET key = ?1, value = ?2, created_at = (strftime('%s', 'now')) WHERE id = ?3",
+                rusqlite::params![key, value, id],
+            )?;
+            Ok(id)
+        } else {
+            self.conn.execute(
+                "INSERT INTO pet_memory (category, key, value) VALUES (?1, ?2, ?3)",
+                rusqlite::params![category, key, value],
+            )?;
+            Ok(self.conn.last_insert_rowid())
+        }
+    }
+
+    pub fn update_memory(&self, id: i64, category: &str, key: &str, value: &str) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO pet_memory (category, key, value) VALUES (?1, ?2, ?3)",
-            (category, key, value),
+            "UPDATE pet_memory SET category = ?1, key = ?2, value = ?3, created_at = (strftime('%s', 'now')) WHERE id = ?4",
+            rusqlite::params![category, key, value, id],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        Ok(())
     }
 
     pub fn get_memory(&self, category: &str, key: &str) -> Result<Option<String>> {
@@ -674,6 +776,42 @@ impl Database {
         Ok(results)
     }
 
+    /// 获取用于动态预载到系统提示词的长期记忆条目（优先偏好、事实、习惯、工作领域与备忘）
+    pub fn get_active_memories_for_prompt(&self, limit: usize) -> Result<Vec<MemoryItem>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, category, key, value, created_at
+             FROM pet_memory
+             WHERE category != 'app_path'
+             ORDER BY
+               CASE category
+                 WHEN 'preference' THEN 1
+                 WHEN 'fact' THEN 2
+                 WHEN 'work_domain' THEN 3
+                 WHEN 'habit' THEN 4
+                 WHEN 'note' THEN 5
+                 WHEN 'manual' THEN 6
+                 WHEN 'general' THEN 7
+                 ELSE 8
+               END ASC,
+               id DESC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit as i64], |row| {
+            Ok(MemoryItem {
+                id: row.get(0)?,
+                category: row.get(1)?,
+                key: row.get(2)?,
+                value: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
     pub fn get_memories_by_category(&self, category: &str) -> Result<Vec<MemoryItem>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, category, key, value, created_at
@@ -711,35 +849,55 @@ impl Database {
     ) -> Result<Vec<MemoryItem>> {
         let limit = limit.min(30);
         let like_pattern = format!("%{}%", escape_like_pattern(query));
-        let sql = if category.is_some() {
-            "SELECT id, category, key, value, created_at
-             FROM pet_memory
-             WHERE (key LIKE ?1 OR value LIKE ?1)
-               AND category = ?2
-             ORDER BY id DESC
-             LIMIT ?3"
+
+        let rows = if let Some(cat) = category {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, category, key, value, created_at
+                 FROM pet_memory
+                 WHERE (key LIKE ?1 OR value LIKE ?1)
+                   AND category = ?2
+                 ORDER BY id DESC
+                 LIMIT ?3",
+            )?;
+            let mapped = stmt.query_map(rusqlite::params![like_pattern, cat, limit], |row| {
+                Ok(MemoryItem {
+                    id: row.get(0)?,
+                    category: row.get(1)?,
+                    key: row.get(2)?,
+                    value: row.get(3)?,
+                    created_at: row.get(4)?,
+                })
+            })?;
+            let mut results = Vec::new();
+            for r in mapped {
+                results.push(r?);
+            }
+            results
         } else {
-            "SELECT id, category, key, value, created_at
-             FROM pet_memory
-             WHERE (key LIKE ?1 OR value LIKE ?1)
-             ORDER BY id DESC
-             LIMIT ?3"
+            let mut stmt = self.conn.prepare(
+                "SELECT id, category, key, value, created_at
+                 FROM pet_memory
+                 WHERE (key LIKE ?1 OR value LIKE ?1)
+                 ORDER BY id DESC
+                 LIMIT ?2",
+            )?;
+            let mapped = stmt.query_map(rusqlite::params![like_pattern, limit], |row| {
+                Ok(MemoryItem {
+                    id: row.get(0)?,
+                    category: row.get(1)?,
+                    key: row.get(2)?,
+                    value: row.get(3)?,
+                    created_at: row.get(4)?,
+                })
+            })?;
+            let mut results = Vec::new();
+            for r in mapped {
+                results.push(r?);
+            }
+            results
         };
-        let mut stmt = self.conn.prepare(sql)?;
-        let rows = stmt.query_map(rusqlite::params![like_pattern, category, limit], |row| {
-            Ok(MemoryItem {
-                id: row.get(0)?,
-                category: row.get(1)?,
-                key: row.get(2)?,
-                value: row.get(3)?,
-                created_at: row.get(4)?,
-            })
-        })?;
-        let mut results = Vec::new();
-        for row in rows {
-            results.push(row?);
-        }
-        Ok(results)
+
+        Ok(rows)
     }
 
     // ===== 定时任务 =====
@@ -1236,6 +1394,332 @@ impl Database {
             .execute("DELETE FROM agents WHERE id = ?1", [id])?;
         Ok(())
     }
+
+    // ===== 自进化系统 (Self-Evolution) =====
+
+    pub fn get_user_message_count(&self) -> Result<i64> {
+        self.conn.query_row(
+            "SELECT COUNT(*) FROM chat_messages WHERE role = 'user'",
+            [],
+            |r| r.get(0),
+        )
+    }
+
+    pub fn get_last_reflection_time(&self) -> Result<Option<i64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT created_at FROM evolution_logs WHERE category = 'reflection_run' ORDER BY created_at DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map([], |r| r.get(0))?;
+        match rows.next() {
+            Some(Ok(time)) => Ok(Some(time)),
+            Some(Err(e)) => Err(e),
+            None => Ok(None),
+        }
+    }
+
+    pub fn list_evolution_insights(&self) -> Result<Vec<EvolutionInsight>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, category, content, confidence, hit_count, status, created_at, updated_at
+             FROM evolution_insights
+             ORDER BY status ASC, hit_count DESC, updated_at DESC",
+        )?;
+        let rows = stmt.query_map([], evolution_insight_from_row)?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
+    pub fn get_active_evolution_insights(&self) -> Result<Vec<EvolutionInsight>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, category, content, confidence, hit_count, status, created_at, updated_at
+             FROM evolution_insights
+             WHERE status = 'active'
+             ORDER BY confidence DESC, hit_count DESC, updated_at DESC
+             LIMIT 20",
+        )?;
+        let rows = stmt.query_map([], evolution_insight_from_row)?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
+    pub fn get_evolution_insight(&self, id: &str) -> Result<Option<EvolutionInsight>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, category, content, confidence, hit_count, status, created_at, updated_at
+             FROM evolution_insights
+             WHERE id = ?1
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map([id], evolution_insight_from_row)?;
+        match rows.next() {
+            Some(Ok(item)) => Ok(Some(item)),
+            Some(Err(err)) => Err(err),
+            None => Ok(None),
+        }
+    }
+
+    pub fn save_evolution_insight(&self, insight: &EvolutionInsight) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO evolution_insights (
+                id, category, content, confidence, hit_count, status, created_at, updated_at
+             ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, strftime('%s', 'now')
+             )
+             ON CONFLICT(id) DO UPDATE SET
+                category = excluded.category,
+                content = excluded.content,
+                confidence = excluded.confidence,
+                hit_count = excluded.hit_count,
+                status = excluded.status,
+                updated_at = excluded.updated_at",
+            (
+                &insight.id,
+                &insight.category,
+                &insight.content,
+                insight.confidence,
+                insight.hit_count,
+                &insight.status,
+                insight.created_at,
+            ),
+        )?;
+        Ok(())
+    }
+
+    pub fn update_evolution_insight_status(&self, id: &str, status: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE evolution_insights SET status = ?1, updated_at = strftime('%s', 'now') WHERE id = ?2",
+            (status, id),
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_evolution_insight(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM evolution_insights WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn list_evolution_proposals(&self, status: Option<&str>) -> Result<Vec<EvolutionProposal>> {
+        let mut results = Vec::new();
+        if let Some(status) = status {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, proposal_type, title, rationale, payload_json, status, created_at, applied_at
+                 FROM evolution_proposals
+                 WHERE status = ?1
+                 ORDER BY created_at DESC",
+            )?;
+            let rows = stmt.query_map([status], evolution_proposal_from_row)?;
+            for row in rows {
+                results.push(row?);
+            }
+        } else {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, proposal_type, title, rationale, payload_json, status, created_at, applied_at
+                 FROM evolution_proposals
+                 ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, created_at DESC",
+            )?;
+            let rows = stmt.query_map([], evolution_proposal_from_row)?;
+            for row in rows {
+                results.push(row?);
+            }
+        }
+        Ok(results)
+    }
+
+    pub fn get_evolution_proposal(&self, id: &str) -> Result<Option<EvolutionProposal>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, proposal_type, title, rationale, payload_json, status, created_at, applied_at
+             FROM evolution_proposals
+             WHERE id = ?1
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map([id], evolution_proposal_from_row)?;
+        match rows.next() {
+            Some(Ok(item)) => Ok(Some(item)),
+            Some(Err(err)) => Err(err),
+            None => Ok(None),
+        }
+    }
+
+    pub fn save_evolution_proposal(&self, proposal: &EvolutionProposal) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO evolution_proposals (
+                id, proposal_type, title, rationale, payload_json, status, created_at, applied_at
+             ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8
+             )
+             ON CONFLICT(id) DO UPDATE SET
+                proposal_type = excluded.proposal_type,
+                title = excluded.title,
+                rationale = excluded.rationale,
+                payload_json = excluded.payload_json,
+                status = excluded.status,
+                applied_at = excluded.applied_at",
+            (
+                &proposal.id,
+                &proposal.proposal_type,
+                &proposal.title,
+                &proposal.rationale,
+                &proposal.payload_json,
+                &proposal.status,
+                proposal.created_at,
+                proposal.applied_at,
+            ),
+        )?;
+        Ok(())
+    }
+
+    pub fn update_evolution_proposal_status(&self, id: &str, status: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE evolution_proposals
+             SET status = ?1,
+                 applied_at = CASE WHEN ?1 = 'applied' THEN strftime('%s', 'now') ELSE applied_at END
+             WHERE id = ?2",
+            (status, id),
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_evolution_proposal(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM evolution_proposals WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn list_evolution_logs(&self, limit: usize) -> Result<Vec<EvolutionLog>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, proposal_id, category, summary, before_state_json, after_state_json, created_at
+             FROM evolution_logs
+             ORDER BY created_at DESC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit as i64], evolution_log_from_row)?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
+    }
+
+    pub fn get_evolution_log(&self, id: &str) -> Result<Option<EvolutionLog>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, proposal_id, category, summary, before_state_json, after_state_json, created_at
+             FROM evolution_logs
+             WHERE id = ?1
+             LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map([id], evolution_log_from_row)?;
+        match rows.next() {
+            Some(Ok(item)) => Ok(Some(item)),
+            Some(Err(err)) => Err(err),
+            None => Ok(None),
+        }
+    }
+
+    pub fn create_evolution_log(&self, log: &EvolutionLog) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO evolution_logs (
+                id, proposal_id, category, summary, before_state_json, after_state_json, created_at
+             ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7
+             )",
+            (
+                &log.id,
+                &log.proposal_id,
+                &log.category,
+                &log.summary,
+                &log.before_state_json,
+                &log.after_state_json,
+                log.created_at,
+            ),
+        )?;
+        Ok(())
+    }
+
+    pub fn get_evolution_summary(&self) -> Result<EvolutionSummary> {
+        let active_insights_count: usize = self.conn.query_row(
+            "SELECT COUNT(*) FROM evolution_insights WHERE status = 'active'",
+            [],
+            |r| r.get(0),
+        ).unwrap_or(0);
+
+        let pending_proposals_count: usize = self.conn.query_row(
+            "SELECT COUNT(*) FROM evolution_proposals WHERE status = 'pending'",
+            [],
+            |r| r.get(0),
+        ).unwrap_or(0);
+
+        let total_evolutions_count: usize = self.conn.query_row(
+            "SELECT COUNT(*) FROM evolution_logs",
+            [],
+            |r| r.get(0),
+        ).unwrap_or(0);
+
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT category FROM evolution_insights WHERE status = 'active' LIMIT 6",
+        )?;
+        let categories = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut top_domains = Vec::new();
+        for cat in categories {
+            if let Ok(c) = cat {
+                top_domains.push(c);
+            }
+        }
+
+        let level = 1 + (total_evolutions_count / 2).min(98) as i64;
+        let sync_score = (50 + (active_insights_count * 5).min(30) + (total_evolutions_count * 4).min(20)).min(100) as i64;
+
+        Ok(EvolutionSummary {
+            level,
+            sync_score,
+            active_insights_count,
+            pending_proposals_count,
+            total_evolutions_count,
+            top_domains,
+        })
+    }
+}
+
+fn evolution_insight_from_row(row: &rusqlite::Row<'_>) -> Result<EvolutionInsight> {
+    Ok(EvolutionInsight {
+        id: row.get(0)?,
+        category: row.get(1)?,
+        content: row.get(2)?,
+        confidence: row.get(3)?,
+        hit_count: row.get(4)?,
+        status: row.get(5)?,
+        created_at: row.get(6)?,
+        updated_at: row.get(7)?,
+    })
+}
+
+fn evolution_proposal_from_row(row: &rusqlite::Row<'_>) -> Result<EvolutionProposal> {
+    Ok(EvolutionProposal {
+        id: row.get(0)?,
+        proposal_type: row.get(1)?,
+        title: row.get(2)?,
+        rationale: row.get(3)?,
+        payload_json: row.get(4)?,
+        status: row.get(5)?,
+        created_at: row.get(6)?,
+        applied_at: row.get(7)?,
+    })
+}
+
+fn evolution_log_from_row(row: &rusqlite::Row<'_>) -> Result<EvolutionLog> {
+    Ok(EvolutionLog {
+        id: row.get(0)?,
+        proposal_id: row.get(1)?,
+        category: row.get(2)?,
+        summary: row.get(3)?,
+        before_state_json: row.get(4)?,
+        after_state_json: row.get(5)?,
+        created_at: row.get(6)?,
+    })
 }
 
 fn agent_from_row(row: &rusqlite::Row<'_>) -> Result<Agent> {

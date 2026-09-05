@@ -1159,6 +1159,7 @@ onUnmounted(() => {
   <canvas
     ref="canvasRef"
     class="pet-canvas"
+    :class="{ 'is-preview': preview }"
     @mousedown="onMouseDown"
     @contextmenu="onContextMenu"
   />
@@ -1174,7 +1175,17 @@ onUnmounted(() => {
   cursor: grab;
   pointer-events: auto;
 }
-.pet-canvas:active {
+
+.pet-canvas.is-preview {
+  position: relative;
+  top: auto;
+  left: auto;
+  display: block;
+  margin: 0 auto;
+  cursor: default;
+}
+
+.pet-canvas:not(.is-preview):active {
   cursor: grabbing;
 }
 </style>

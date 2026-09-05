@@ -1,0 +1,8 @@
+{
+  "modelVersion": "5.0.0",
+  "description": "OpenCompanion 鸿蒙原生智能多模态个人助理（桌宠 AI 伙伴）",
+  "dependencies": {
+  },
+  "devDependencies": {
+  }
+}
