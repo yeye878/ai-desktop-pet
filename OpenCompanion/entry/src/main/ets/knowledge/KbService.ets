@@ -106,10 +106,8 @@ export class KbService {
     const docs = await KbService.count('kb_docs');
     const chunks = await KbService.count('kb_chunks');
     const offline = AppContext.getBool('kb_offline_mode', false);
-    return `📚 知识库状态\n文档: ${docs} 篇 / 切片: ${chunks} 条\n` +
-      `检索引擎: ${KbService.retriever !== null ? '鸿蒙 DataAugmentationKit(倒排索引)' : '本地降级检索'}\n` +
-      `FTS表: ${KbService.ftsOk ? '可用' : '不可用'}\n` +
-      `问答模式: ${offline ? '端侧模型(离线)' : 'RAG会话 + 云端LLM'}`;
+    const engine = KbService.retriever !== null && KbService.ftsOk ? '全文检索' : '关键词检索';
+    return `已入库 ${docs} 篇文档 · ${chunks} 个知识片段 · ${engine}${offline ? ' · 离线问答' : ''}`;
   }
 
   private static async count(table: string): Promise<number> {

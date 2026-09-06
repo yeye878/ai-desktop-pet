@@ -26,12 +26,12 @@ export class DistributedSync {
 
   static statusText(): string {
     if (DistributedSync.state === 'ready') {
-      return '✅ 分布式数据同步已就绪（可信设备圈自动同步会话摘要）';
+      return '分布式数据同步已就绪，可信设备圈自动同步会话摘要';
     }
     if (DistributedSync.state === 'unavailable') {
-      return 'ℹ️ 分布式同步不可用（单端完整可用；真机登录同一华为账号后自动启用）';
+      return '分布式同步暂不可用，单端完整可用；登录同一华为账号后自动启用';
     }
-    return '… 分布式同步待初始化';
+    return '分布式同步待初始化';
   }
 
   /** 惰性初始化（首帧后 idle 调用；失败置 unavailable 不重试） */

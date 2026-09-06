@@ -41,10 +41,12 @@ export struct PetCanvas {
       if (this.bubbleShow && this.bubble.length > 0) {
         Text(this.bubble)
           .fontSize(14)
-          .fontColor('#5B4A4F')
-          .backgroundColor('#FFFFFF')
-          .borderRadius(12)
-          .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+          .fontColor('#211C18')
+          .backgroundColor('#FCFBF9')
+          .borderRadius(14)
+          .border({ width: 0.5, color: '#1F211C18' })
+          .padding({ left: 11, right: 11, top: 5, bottom: 5 })
+          .shadow({ radius: 12, color: '#26201914', offsetY: 4 })
           .offset({ x: 0, y: -this.sizeVp / 2 - 14 })
       }
     }

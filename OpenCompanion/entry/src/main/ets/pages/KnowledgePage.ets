@@ -5,6 +5,8 @@ import { KbHit } from '../knowledge/KbService';
 import { AppContext } from '../commons/AppContext';
 import { CancelToken } from '../core/Types';
 import { IntentEngine } from '../core/IntentEngine';
+import { Ink, Radius } from '../ui/DesignTokens';
+import { AppIcon, EmptyHint, IconButton, PillButton } from '../ui/Widgets';
 
 interface DocRow {
   id: string;
@@ -15,7 +17,7 @@ interface DocRow {
 
 /**
  * 知识库页（对应命题 F2 端侧 RAG）：
- * 文档导入（文件/图片OCR）→ 检索问答（RAG 会话 / 端侧离线模式）→ 引用来源
+ * 检索问答（RAG 会话 / 端侧离线模式）→ 引用来源；文档导入（文件 / 图片 OCR）。
  */
 @Component
 export struct KnowledgePage {
@@ -26,6 +28,8 @@ export struct KnowledgePage {
   @State answering: boolean = false;
   @State statusLine: string = '';
   @State offlineMode: boolean = AppContext.getBool('kb_offline_mode', false);
+  @StorageProp('uiAccentDeep') accentDeep: string = '#F76C8A';
+  @StorageProp('uiAccentTint') accentTint: string = 'rgba(247,108,138,0.12)';
   private askToken: CancelToken | null = null;
   private onKbChanged: BusListener = (_e: BusEvent) => {
     this.refresh();
@@ -87,20 +91,102 @@ export struct KnowledgePage {
 
   build() {
     Column({ space: 10 }) {
-      // 状态行
       Text(this.statusLine.replace(/\n/g, ' · '))
-        .fontSize(12)
-        .fontColor('#8A7A80')
+        .fontSize(11)
+        .fontColor(Ink.text3)
         .width('100%')
-        .padding({ left: 14, right: 14, top: 8 })
+        .padding({ left: 16, right: 16, top: 8 })
         .maxLines(2)
 
-      // 操作按钮
-      Row({ space: 8 }) {
-        Button('📄 导入文档')
-          .backgroundColor('#FFE3EA')
-          .fontColor('#C2557E')
-          .onClick(() => {
+      // 问答区（主操作）：有答案时答案区占据剩余空间，无答案时整块收紧
+      Column({ space: 8 }) {
+        Row({ space: 8 }) {
+          Row({ space: 8 }) {
+            AppIcon({ icon: $r('sys.symbol.questionmark_circle'), sizeVp: 15, color: Ink.text3, weight: 500 })
+            TextInput({ placeholder: '问知识库，如「这门课的重点是什么？」', text: this.question })
+              .layoutWeight(1)
+              .height(40)
+              .backgroundColor(Color.Transparent)
+              .placeholderColor(Ink.text3)
+              .placeholderFont({ size: 13.5 })
+              .caretColor(this.accentDeep)
+              .padding({ left: 0, right: 0 })
+              .onChange((v: string) => {
+                this.question = v;
+              })
+              .onSubmit(() => {
+                this.ask();
+              })
+          }
+          .layoutWeight(1)
+          .height(44)
+          .padding({ left: 14, right: 14 })
+          .borderRadius(Radius.pill)
+          .backgroundColor(Ink.sunken)
+          PillButton({
+            label: this.answering ? '停止' : '提问',
+            variant: this.answering ? 'quiet' : 'accent',
+            heightVp: 44,
+            onTap: (): void => {
+              if (this.answering) {
+                this.askToken?.cancel();
+              } else {
+                this.ask();
+              }
+            }
+          })
+        }
+        .width('100%')
+        .padding({ left: 12, right: 12, top: 4 })
+
+        if (this.answer.length > 0 || this.sources.length > 0 || this.answering) {
+          Scroll() {
+            Column({ space: 10 }) {
+              if (this.sources.length > 0) {
+                Column({ space: 6 }) {
+                  Row({ space: 5 }) {
+                    AppIcon({ icon: $r('sys.symbol.bookmark_fill'), sizeVp: 12, color: this.accentDeep, weight: 600 })
+                    Text('引用来源')
+                      .fontSize(11.5)
+                      .fontWeight(FontWeight.Medium)
+                      .fontColor(this.accentDeep)
+                  }
+                  ForEach(this.sources, (h: KbHit) => {
+                    Text(`《${h.docTitle}》 ${h.content.substring(0, 60)}…`)
+                      .fontSize(11)
+                      .fontColor(Ink.text3)
+                      .maxLines(1)
+                      .width('100%')
+                  }, (h: KbHit) => `${h.docTitle}_${h.score}`)
+                }
+                .width('100%')
+                .padding(10)
+                .borderRadius(Radius.inner)
+                .backgroundColor(this.accentTint)
+              }
+              if (this.answer.length > 0 || this.answering) {
+                Text(this.answer.length > 0 ? this.answer : '思考中…')
+                  .fontSize(14)
+                  .fontColor(Ink.text)
+                  .lineHeight(23)
+                  .width('100%')
+              }
+            }
+            .width('100%')
+            .padding(12)
+          }
+          .layoutWeight(1)
+          .width('100%')
+          .align(Alignment.Top)
+          .scrollBar(BarState.Auto)
+        }
+      }
+      .width('100%')
+
+      // 导入与文档
+      Column({ space: 8 }) {
+        Row({ space: 8 }) {
+          this.ImportTile($r('sys.symbol.doc_text'), '导入文档', 'txt / md / pdf 等', (): void => {
             DocImporter.importTextDocs().then((msg: string) => {
               this.answer = msg;
               // 知识库变更 → 动态热词表失效（ASR 引擎经 KB_CHANGED 事件延迟重建）
@@ -108,126 +194,137 @@ export struct KnowledgePage {
               this.refresh();
             });
           })
-        Button('📷 拍照识字入库')
-          .backgroundColor('#FFF3D6')
-          .fontColor('#8A6A1F')
-          .onClick(() => {
+          this.ImportTile($r('sys.symbol.camera'), '拍照识字', '截图 / 讲义拍照入库', (): void => {
             DocImporter.importImagesOcr().then((msg: string) => {
               this.answer = msg;
               IntentEngine.invalidateHotwords();
               this.refresh();
             });
           })
-        Toggle({ type: ToggleType.Checkbox, isOn: this.offlineMode })
-          .onChange((on: boolean) => {
-            AppContext.setBool('kb_offline_mode', on).then(() => {
-              this.refresh();
-            });
-          })
-        Text('离线模式(端侧模型)').fontSize(11).fontColor('#8A7A80')
-      }
-      .width('100%')
-      .padding({ left: 12, right: 12 })
-
-      // 文档列表
-      Text(this.docs.length > 0 ? `已入库文档（${this.docs.length}）` : '还没有文档，先导入课程笔记/文献/会议纪要试试')
-        .fontSize(12)
-        .fontColor('#8A7A80')
+        }
         .width('100%')
-        .padding({ left: 14 })
-      List({ space: 6 }) {
-        ForEach(this.docs, (d: DocRow) => {
-          ListItem() {
-            Row({ space: 8 }) {
-              Text(d.source === 'ocr' ? '📷' : '📄').fontSize(18)
-              Column({ space: 2 }) {
-                Text(d.title).fontSize(14).fontColor('#3D2E33').maxLines(1)
-                Text(`${d.chars} 字 · ${d.source}`)
-                  .fontSize(11)
-                  .fontColor('#B9A9AF')
-              }
-              .alignItems(HorizontalAlign.Start)
-              .layoutWeight(1)
-              Text('🗑')
-                .fontSize(15)
-                .onClick(() => {
-                  KbService.deleteDoc(d.id).then(() => {
-                    IntentEngine.invalidateHotwords();
-                    this.refresh();
-                  });
-                })
-            }
-            .width('100%')
-            .padding(10)
-            .backgroundColor('#FFFFFF')
-            .borderRadius(12)
-          }
-        }, (d: DocRow) => d.id)
-      }
-      .height('26%')
-      .width('100%')
-      .padding({ left: 12, right: 12 })
+        .padding({ left: 12, right: 12 })
 
-      // 问答区
-      Column({ space: 8 }) {
         Row({ space: 8 }) {
-          TextInput({ placeholder: '问知识库：如「这门课的重点是什么？」', text: this.question })
+          Text(this.docs.length > 0 ? `已入库 ${this.docs.length} 篇` : '还没有文档')
+            .fontSize(12)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(Ink.text2)
             .layoutWeight(1)
-            .height(40)
-            .backgroundColor('#FFFFFF')
-            .onChange((v: string) => {
-              this.question = v;
-            })
-            .onSubmit(() => {
-              this.ask();
-            })
-          Button(this.answering ? '停止' : '提问')
-            .backgroundColor(this.answering ? '#F0E4E8' : '#F76C8A')
-            .onClick(() => {
-              if (this.answering) {
-                this.askToken?.cancel();
-              } else {
-                this.ask();
-              }
+          Text('离线模式')
+            .fontSize(12)
+            .fontColor(Ink.text3)
+          Toggle({ type: ToggleType.Switch, isOn: this.offlineMode })
+            .selectedColor(this.accentDeep)
+            .scale({ x: 0.85, y: 0.85 })
+            .onChange((on: boolean) => {
+              AppContext.setBool('kb_offline_mode', on).then(() => {
+                this.refresh();
+              });
             })
         }
         .width('100%')
-        Scroll() {
-          Column({ space: 8 }) {
-            if (this.sources.length > 0) {
-              Column({ space: 4 }) {
-                Text('📌 引用来源').fontSize(12).fontColor('#C2557E')
-                ForEach(this.sources, (h: KbHit) => {
-                  Text(`《${h.docTitle}》 ${h.content.substring(0, 60)}…`)
-                    .fontSize(11)
-                    .fontColor('#8A7A80')
-                    .maxLines(1)
-                }, (h: KbHit) => `${h.docTitle}_${h.score}`)
+        .padding({ left: 16, right: 16 })
+
+        if (this.docs.length === 0) {
+          EmptyHint({
+            icon: $r('sys.symbol.folder'),
+            title: '先导入课程笔记 / 文献 / 会议纪要',
+            sub: '导入后即可在对话与提问中引用'
+          })
+            .padding({ bottom: 8 })
+        } else {
+          List({ space: 0 }) {
+            ForEach(this.docs, (d: DocRow, idx: number) => {
+              ListItem() {
+                Row({ space: 10 }) {
+                  Column() {
+                    AppIcon({
+                      icon: d.source === 'ocr' ? $r('sys.symbol.camera') : $r('sys.symbol.doc_text'),
+                      sizeVp: 15,
+                      color: Ink.text2,
+                      weight: 500
+                    })
+                  }
+                  .width(32)
+                  .height(32)
+                  .borderRadius(10)
+                  .backgroundColor(Ink.sunken)
+                  .justifyContent(FlexAlign.Center)
+                  Column({ space: 2 }) {
+                    Text(d.title)
+                      .fontSize(13.5)
+                      .fontColor(Ink.text)
+                      .maxLines(1)
+                    Text(`${d.chars} 字 · ${d.source === 'ocr' ? '拍照识字' : '文档'}`)
+                      .fontSize(11)
+                      .fontColor(Ink.text3)
+                  }
+                  .alignItems(HorizontalAlign.Start)
+                  .layoutWeight(1)
+                  IconButton({
+                    icon: $r('sys.symbol.trash'),
+                    sizeVp: 30,
+                    iconVp: 14,
+                    bg: '#00000000',
+                    color: Ink.text3,
+                    onTap: () => {
+                      KbService.deleteDoc(d.id).then(() => {
+                        IntentEngine.invalidateHotwords();
+                        this.refresh();
+                      });
+                    }
+                  })
+                }
+                .width('100%')
+                .padding({ left: 14, right: 8, top: 9, bottom: 9 })
               }
-              .width('100%')
-              .padding(8)
-              .backgroundColor('#FFF7F4')
-              .borderRadius(10)
-            }
-            Text(this.answer.length > 0 ? this.answer : (this.answering ? '思考中…' : ''))
-              .fontSize(14)
-              .fontColor('#3D2E33')
-              .width('100%')
+            }, (d: DocRow) => d.id)
           }
+          .height('26%')
           .width('100%')
-          .padding(10)
+          .padding({ left: 12, right: 12 })
+          .scrollBar(BarState.Off)
         }
-        .layoutWeight(1)
-        .width('100%')
-        .backgroundColor('#FFFFFF')
-        .borderRadius(12)
-        .scrollBar(BarState.Auto)
       }
-      .layoutWeight(1)
       .width('100%')
-      .padding({ left: 12, right: 12, bottom: 10 })
+      .padding({ bottom: 12 })
     }
     .width('100%')
     .height('100%')
+  }
+
+  @Builder
+  ImportTile(icon: Resource, label: string, sub: string, action: () => void) {
+    Row({ space: 10 }) {
+      Column() {
+        AppIcon({ icon: icon, sizeVp: 17, color: this.accentDeep, weight: 600 })
+      }
+      .width(36)
+      .height(36)
+      .borderRadius(12)
+      .backgroundColor(this.accentTint)
+      .justifyContent(FlexAlign.Center)
+      Column({ space: 2 }) {
+        Text(label)
+          .fontSize(13.5)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(Ink.text)
+        Text(sub)
+          .fontSize(10.5)
+          .fontColor(Ink.text3)
+          .maxLines(1)
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+    }
+    .layoutWeight(1)
+    .padding(10)
+    .borderRadius(Radius.card)
+    .backgroundColor(Ink.card)
+    .border({ width: 0.5, color: Ink.border })
+    .onClick(() => {
+      action();
+    })
   }
 }
