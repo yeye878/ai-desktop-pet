@@ -111,14 +111,26 @@ export class NetClient {
       method: http.RequestMethod.POST,
       header: NetClient.headerObj(headers),
       extraData: body,
+      usingProtocol: http.HttpProtocol.HTTP1_1,
       readTimeout: 300000,
       connectTimeout: 15000
     };
     req.request(url, opt).then((res: http.HttpResponse) => {
-      if (res.responseCode >= 400 && !done && !stream.aborted) {
+      if (done || stream.aborted) {
+        return;
+      }
+      if (res.responseCode >= 400) {
         done = true;
         const raw = typeof res.result === 'string' ? res.result : '';
         handlers.onError(`HTTP ${res.responseCode}: ${NetClient.trimError(raw, buffer)}`);
+        finish();
+        return;
+      }
+      // 部分设备（模拟器）dataReceive 不增量回调，响应在 promise 完成时一次性给出
+      if (buffer.length === 0 && typeof res.result === 'string' && (res.result as string).length > 0) {
+        done = true;
+        handlers.onChunk(res.result as string);
+        handlers.onDone();
         finish();
       }
     }).catch((e: BusinessError) => {

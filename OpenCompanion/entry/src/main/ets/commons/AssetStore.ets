@@ -21,11 +21,15 @@ export class AssetStore {
 
   /** 写入机密；返回是否使用了系统级安全存储 */
   static async setSecret(alias: string, secret: string): Promise<boolean> {
+    const query: asset.AssetMap = new Map<asset.Tag, asset.Value>();
+    query.set(asset.Tag.ALIAS, AssetStore.toBytes(alias));
     try {
-      const query: asset.AssetMap = new Map<asset.Tag, asset.Value>();
-      query.set(asset.Tag.ALIAS, AssetStore.toBytes(alias));
-      // 先移除旧值
+      // 先移除旧值；不存在（24000002）属正常，继续写入
       await asset.remove(query);
+    } catch (e) {
+      // ignore：首次写入时旧值不存在
+    }
+    try {
       const attrs: asset.AssetMap = new Map<asset.Tag, asset.Value>();
       attrs.set(asset.Tag.ALIAS, AssetStore.toBytes(alias));
       attrs.set(asset.Tag.SECRET, AssetStore.toBytes(secret));
