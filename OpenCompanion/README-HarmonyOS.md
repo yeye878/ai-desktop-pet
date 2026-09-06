@@ -52,7 +52,7 @@
 
 ### 方式一：DevEco Studio（推荐，可签名安装到模拟器/真机）
 
-1. 用 DevEco Studio 打开 `D:\ai-desktop-pet\OpenCompanion`
+1. 用 DevEco Studio 打开本目录（`OpenCompanion/`）
 2. `File > Project Structure > Signing Configs` 勾选 **Automatically generate signature**（需登录华为账号）→ 完成（会自动写入 `build-profile.json5` 的 signingConfigs）
 3. 选择模拟器或连接真机（HarmonyOS 6.0+/API 20+ 才有 RAG Kit；低版本设备会自动走降级链）
 4. 点 ▶ Run
