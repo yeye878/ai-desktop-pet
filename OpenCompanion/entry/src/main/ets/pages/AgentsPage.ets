@@ -164,8 +164,25 @@ export struct AgentsPage {
                       bg: '#00000000',
                       color: Ink.text3,
                       onTap: () => {
-                        AgentRepo.delete(a.id).then((msg: string) => {
-                          this.refresh();
+                        // 删除自定义智能体不可逆，先确认
+                        AlertDialog.show({
+                          message: `删除智能体「${a.name}」？`,
+                          autoCancel: true,
+                          alignment: DialogAlignment.Center,
+                          primaryButton: {
+                            value: '取消',
+                            action: () => {
+                            }
+                          },
+                          secondaryButton: {
+                            value: '删除',
+                            fontColor: Ink.danger,
+                            action: () => {
+                              AgentRepo.delete(a.id).then((_msg: string) => {
+                                this.refresh();
+                              });
+                            }
+                          }
                         });
                       }
                     })
@@ -184,6 +201,7 @@ export struct AgentsPage {
         .width('100%')
         .padding({ left: 16, right: 16 })
         .scrollBar(BarState.Off)
+        .edgeEffect(EdgeEffect.Spring)
       }
       .width('100%')
       .height('100%')
@@ -325,11 +343,11 @@ export struct AgentsPage {
             label: '保存',
             variant: 'ink',
             heightVp: 46,
+            fill: true,
             onTap: (): void => {
               this.save();
             }
           })
-            .width('100%')
         }
         .width('100%')
         .padding({ left: 18, right: 18, top: 16, bottom: 24 })
@@ -341,7 +359,7 @@ export struct AgentsPage {
     }
     .width('100%')
     .height('100%')
-    .backgroundColor('#F8F5F1FA')
+    .backgroundColor(Ink.bg)
     .shadow(Shadow.lift)
   }
 }

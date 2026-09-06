@@ -179,6 +179,7 @@ export struct KnowledgePage {
           .width('100%')
           .align(Alignment.Top)
           .scrollBar(BarState.Auto)
+          .edgeEffect(EdgeEffect.Spring)
         }
       }
       .width('100%')
@@ -269,9 +270,26 @@ export struct KnowledgePage {
                     bg: '#00000000',
                     color: Ink.text3,
                     onTap: () => {
-                      KbService.deleteDoc(d.id).then(() => {
-                        IntentEngine.invalidateHotwords();
-                        this.refresh();
+                      // 删除不可逆，先确认
+                      AlertDialog.show({
+                        message: `删除《${d.title}》及其全部知识片段？`,
+                        autoCancel: true,
+                        alignment: DialogAlignment.Center,
+                        primaryButton: {
+                          value: '取消',
+                          action: () => {
+                          }
+                        },
+                        secondaryButton: {
+                          value: '删除',
+                          fontColor: Ink.danger,
+                          action: () => {
+                            KbService.deleteDoc(d.id).then(() => {
+                              IntentEngine.invalidateHotwords();
+                              this.refresh();
+                            });
+                          }
+                        }
                       });
                     }
                   })

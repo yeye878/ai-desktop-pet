@@ -68,6 +68,7 @@ export struct SettingsPanel {
   @State hotWords: string = '';
   @State weatherCity: string = '北京';
   @State themeIdx: number = 0;
+  @State dragY: number = 0;
   @State wide: boolean = AppContext.vpWidth >= 720;
   @StorageProp('uiAccentDeep') accentDeep: string = '#F76C8A';
   @StorageProp('uiAccentTint') accentTint: string = 'rgba(247,108,138,0.12)';
@@ -161,26 +162,53 @@ export struct SettingsPanel {
   build() {
     Stack() {
       Column() {
-        // 标题栏
-        Row() {
-          Text('设置')
-            .fontSize(17)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(Ink.text)
-          Blank()
-          IconButton({
-            icon: $r('sys.symbol.xmark'),
-            sizeVp: 30,
-            iconVp: 14,
-            bg: Ink.sunken,
-            color: Ink.text2,
-            onTap: () => {
-              this.onClose();
-            }
-          })
+        // 拖拽把手 + 标题栏（下拉可关闭抽屉）
+        Column() {
+          if (!this.wide) {
+            Row()
+              .width(36)
+              .height(4)
+              .borderRadius(Radius.pill)
+              .backgroundColor(Ink.border)
+              .margin({ top: 10, bottom: 8 })
+          }
+          Row() {
+            Text('设置')
+              .fontSize(17)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(Ink.text)
+            Blank()
+            IconButton({
+              icon: $r('sys.symbol.xmark'),
+              sizeVp: 30,
+              iconVp: 14,
+              bg: Ink.sunken,
+              color: Ink.text2,
+              onTap: () => {
+                this.onClose();
+              }
+            })
+          }
+          .width('100%')
+          .padding({ left: 16, right: 12, top: this.wide ? 12 : 2, bottom: 8 })
         }
         .width('100%')
-        .padding({ left: 16, right: 12, top: this.wide ? 18 : 12 })
+        .gesture(
+          PanGesture({ fingers: 1, direction: PanDirection.Vertical })
+            .onActionUpdate((e: GestureEvent) => {
+              this.dragY = Math.max(0, e.offsetY);
+            })
+            .onActionEnd((e: GestureEvent) => {
+              if (e.offsetY > 90) {
+                this.dragY = 0;
+                this.onClose();
+              } else {
+                animateTo({ duration: 220, curve: Curve.EaseOut }, () => {
+                  this.dragY = 0;
+                });
+              }
+            })
+        )
 
         Scroll() {
           Column({ space: 12 }) {
@@ -243,8 +271,25 @@ export struct SettingsPanel {
                       bg: '#00000000',
                       color: Ink.text3,
                       onTap: () => {
-                        LlmProfiles.removeProfile(p.id).then(() => {
-                          this.refresh();
+                        // 删除 API 配置不可逆，先确认
+                        AlertDialog.show({
+                          message: `删除配置「${p.name}」？`,
+                          autoCancel: true,
+                          alignment: DialogAlignment.Center,
+                          primaryButton: {
+                            value: '取消',
+                            action: () => {
+                            }
+                          },
+                          secondaryButton: {
+                            value: '删除',
+                            fontColor: Ink.danger,
+                            action: () => {
+                              LlmProfiles.removeProfile(p.id).then(() => {
+                                this.refresh();
+                              });
+                            }
+                          }
                         });
                       }
                     })
@@ -261,11 +306,11 @@ export struct SettingsPanel {
                   variant: 'soft',
                   heightVp: 36,
                   fontSizeVp: 13,
+                  fill: true,
                   onTap: (): void => {
                     this.newProfile();
                   }
                 })
-                  .width('100%')
               }
               .width('100%')
             }
@@ -391,6 +436,7 @@ export struct SettingsPanel {
       .backgroundColor(Ink.card)
       .borderRadius(this.wide ? Radius.sheet : { topLeft: Radius.sheet, topRight: Radius.sheet })
       .shadow(Shadow.lift)
+      .translate({ y: this.dragY })
       // 拦截点击冒泡：点面板本身不关闭（纱罩点击才关闭）
       .onClick(() => {
       })
@@ -516,6 +562,7 @@ export struct SettingsPanel {
                 label: '测试连接',
                 variant: 'soft',
                 heightVp: 44,
+                fill: true,
                 onTap: (): void => {
                   this.testConn();
                 }
@@ -525,6 +572,7 @@ export struct SettingsPanel {
                 label: '保存',
                 variant: 'ink',
                 heightVp: 44,
+                fill: true,
                 onTap: (): void => {
                   this.saveProfile();
                 }

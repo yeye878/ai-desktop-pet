@@ -9,8 +9,9 @@ import { ChatService } from '../core/ChatService';
 import { AsrController } from '../voice/AsrController';
 import { TtsController } from '../voice/TtsController';
 import { RagBridge } from '../knowledge/RagBridge';
+import { curves } from '@kit.ArkUI';
 import { AccentBridge, Ink, Radius, Shadow } from '../ui/DesignTokens';
-import { AppIcon, IconButton, SheetOverlay } from '../ui/Widgets';
+import { AppIcon, IconButton } from '../ui/Widgets';
 import { HomePage } from './HomePage';
 import { ChatPage } from './ChatPage';
 import { KnowledgePage } from './KnowledgePage';
@@ -32,9 +33,11 @@ class NavItem {
   }
 }
 
+const NAV_KEYS: string[] = ['home', 'chat', 'kb', 'agents', 'evo'];
+
 /**
- * 应用外壳：墨色顶栏 + 浮动胶囊导航（手机）/ 侧栏（平板）+ 底部抽屉式设置。
- * 视觉语言见 ui/DesignTokens.ets。
+ * 应用外壳：墨色顶栏 + 浮动胶囊导航（含滑动指示器）/ 侧栏（平板）+ 底部抽屉式设置。
+ * 页面切换带淡入上移过渡；导航指示器以物理弹簧滑动。
  */
 @Entry
 @Component
@@ -43,6 +46,7 @@ struct Index {
   @State wide: boolean = AppContext.vpWidth >= 720;
   @State showSettings: boolean = false;
   @State initDone: boolean = false;
+  @State navIdx: number = 0;
   @State mood: string = BehaviorEngine.moodEmoji();
   @StorageProp('uiAccentDeep') accentDeep: string = '#F76C8A';
   @StorageProp('uiAccentTint') accentTint: string = 'rgba(247,108,138,0.12)';
@@ -56,7 +60,7 @@ struct Index {
       if (d !== null && d !== undefined) {
         const target = d['page'];
         if (target !== undefined) {
-          this.page = target;
+          this.switchPage(target);
         }
       }
     });
@@ -109,18 +113,38 @@ struct Index {
     ];
   }
 
+  /** 浮动导航胶囊内单个 tab 的宽度（胶囊 72% 屏宽，左右内衬各 6） */
+  private navItemW(): number {
+    return Math.max(48, (AppContext.vpWidth * 0.72 - 12) / 5);
+  }
+
+  private switchPage(key: string): void {
+    const idx = NAV_KEYS.indexOf(key);
+    this.page = key;
+    if (idx >= 0) {
+      this.navIdx = idx;
+    }
+  }
+
+  /** 页面切换过渡：淡入 + 轻微上移，弹簧曲线 */
+  private pageFx(): TransitionEffect {
+    return TransitionEffect.OPACITY
+      .combine(TransitionEffect.translate({ y: 14 }))
+      .animation({ duration: 280, curve: curves.springMotion(0.36, 0.92) });
+  }
+
   @Builder
   PageBody() {
     if (this.page === 'chat') {
-      ChatPage()
+      ChatPage().transition(this.pageFx())
     } else if (this.page === 'kb') {
-      KnowledgePage()
+      KnowledgePage().transition(this.pageFx())
     } else if (this.page === 'agents') {
-      AgentsPage()
+      AgentsPage().transition(this.pageFx())
     } else if (this.page === 'evo') {
-      EvolutionPage()
+      EvolutionPage().transition(this.pageFx())
     } else {
-      HomePage()
+      HomePage().transition(this.pageFx())
     }
   }
 
@@ -189,7 +213,7 @@ struct Index {
                 .backgroundColor(this.page === item.key ? Ink.card : Color.Transparent)
                 .animation({ duration: 220, curve: Curve.EaseOut })
                 .onClick(() => {
-                  this.page = item.key;
+                  this.switchPage(item.key);
                 })
               }, (item: NavItem) => item.key)
             }
@@ -197,54 +221,68 @@ struct Index {
             .height('100%')
             .padding({ left: 12, right: 12, top: 6 })
 
-            Column() {
+            // 内容区：Stack 承载，页面切换时新旧页交叠淡入淡出
+            Stack() {
               this.PageBody()
             }
             .layoutWeight(1)
             .height('100%')
+            .alignContent(Alignment.Top)
           }
           .layoutWeight(1)
           .width('100%')
         } else {
-          Column() {
+          Stack() {
             this.PageBody()
           }
           .layoutWeight(1)
           .width('100%')
           .padding({ bottom: 86 })
+          .alignContent(Alignment.Top)
         }
       }
       .width('100%')
       .height('100%')
       .backgroundColor(Ink.bg)
 
-      // 手机底部：浮动胶囊导航
+      // 手机底部：浮动胶囊导航（滑动指示器）
       if (!this.wide) {
-        Row({ space: 2 }) {
-          ForEach(this.navItems(), (item: NavItem) => {
-            Column({ space: 3 }) {
-              AppIcon({
-                icon: this.page === item.key ? item.iconFill : item.icon,
-                sizeVp: 21,
-                color: this.page === item.key ? this.accentDeep : Ink.text3,
-                weight: this.page === item.key ? 700 : 500
+        Stack({ alignContent: Alignment.Start }) {
+          // 滑动指示器：物理弹簧跟随当前页
+          Row()
+            .width(this.navItemW())
+            .height(46)
+            .borderRadius(Radius.pill)
+            .backgroundColor(Ink.sunken)
+            .translate({ x: this.navIdx * this.navItemW() + 6 })
+            .animation({ curve: curves.springMotion(0.42, 0.82) })
+
+          Row({ space: 2 }) {
+            ForEach(this.navItems(), (item: NavItem) => {
+              Column({ space: 3 }) {
+                AppIcon({
+                  icon: this.page === item.key ? item.iconFill : item.icon,
+                  sizeVp: 21,
+                  color: this.page === item.key ? this.accentDeep : Ink.text3,
+                  weight: this.page === item.key ? 700 : 500
+                })
+                Text(item.label)
+                  .fontSize(10)
+                  .fontColor(this.page === item.key ? Ink.text : Ink.text3)
+                  .fontWeight(this.page === item.key ? FontWeight.Medium : FontWeight.Normal)
+              }
+              .width(this.navItemW())
+              .height(54)
+              .justifyContent(FlexAlign.Center)
+              .onClick(() => {
+                this.switchPage(item.key);
               })
-              Text(item.label)
-                .fontSize(10)
-                .fontColor(this.page === item.key ? Ink.text : Ink.text3)
-                .fontWeight(this.page === item.key ? FontWeight.Medium : FontWeight.Normal)
-            }
-            .layoutWeight(1)
-            .height(54)
-            .justifyContent(FlexAlign.Center)
-            .animation({ duration: 220, curve: Curve.EaseOut })
-            .onClick(() => {
-              this.page = item.key;
-            })
-          }, (item: NavItem) => item.key)
+            }, (item: NavItem) => item.key)
+          }
+          .width('100%')
+          .padding({ left: 6, right: 6, top: 4, bottom: 4 })
         }
         .width('72%')
-        .padding({ left: 6, right: 6, top: 4, bottom: 4 })
         .backgroundColor(Ink.card)
         .borderRadius(Radius.pill)
         .border({ width: 0.5, color: Ink.border })

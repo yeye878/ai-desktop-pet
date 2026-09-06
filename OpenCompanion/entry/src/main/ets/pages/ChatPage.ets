@@ -9,7 +9,7 @@ import { AsrController } from '../voice/AsrController';
 import { TtsController } from '../voice/TtsController';
 import { AgentProfile } from '../core/Types';
 import { Ink, Radius, Shadow } from '../ui/DesignTokens';
-import { AppIcon, AvatarTile, IconButton, PillButton, Chip } from '../ui/Widgets';
+import { AppIcon, AvatarTile, IconButton, PillButton, Chip, ThinkingDots } from '../ui/Widgets';
 
 interface ConfirmPayload {
   id: string;
@@ -233,6 +233,7 @@ export struct ChatPage {
         .width('100%')
         .padding({ left: 16, right: 16, top: 8 })
         .scrollBar(BarState.Off)
+        .edgeEffect(EdgeEffect.Spring)
 
         // 图片预览条
         if (this.pickedImages.length > 0) {
@@ -323,7 +324,7 @@ export struct ChatPage {
               text: this.input
             })
               .layoutWeight(1)
-              .height(40)
+              .constraintSize({ minHeight: 40, maxHeight: 96 })
               .backgroundColor(Color.Transparent)
               .placeholderColor(Ink.text3)
               .placeholderFont({ size: 14 })
@@ -608,6 +609,7 @@ export struct ChatPage {
             label: '拒绝',
             variant: 'quiet',
             heightVp: 44,
+            fill: true,
             onTap: (): void => {
               if (this.confirmPayload !== null) {
                 Gates.resolveToolConfirm(this.confirmPayload.id, false);
@@ -621,6 +623,7 @@ export struct ChatPage {
             icon: $r('sys.symbol.checkmark'),
             variant: 'accent',
             heightVp: 44,
+            fill: true,
             onTap: (): void => {
               if (this.confirmPayload !== null) {
                 Gates.resolveToolConfirm(this.confirmPayload.id, true);
@@ -708,6 +711,7 @@ export struct ChatPage {
             label: '回答',
             variant: 'ink',
             heightVp: 44,
+            fill: true,
             onTap: (): void => {
               if (this.askPayload !== null) {
                 Gates.resolveAskUser(this.askPayload.id, this.askReply.length > 0 ? this.askReply : '(空回答)');
@@ -715,7 +719,6 @@ export struct ChatPage {
               this.showAsk = false;
             }
           })
-            .width('100%')
         }
         Text('跳过')
           .fontSize(13)
@@ -843,11 +846,20 @@ export struct ChatPage {
           .backgroundColor(Ink.sunken)
           .borderRadius(Radius.inner)
         }
-        Text(m.content.length > 0 ? m.content : (this.busy ? '…' : '(无内容)'))
-          .fontSize(15)
-          .fontColor(Ink.text)
-          .lineHeight(23)
-          .width('100%')
+        if (m.content.length > 0) {
+          Text(m.content)
+            .fontSize(15)
+            .fontColor(Ink.text)
+            .lineHeight(23)
+            .width('100%')
+        } else if (this.busy) {
+          // 生成中：三点波动，替代静态省略号
+          ThinkingDots({ color: this.accentDeep })
+        } else {
+          Text('(无内容)')
+            .fontSize(13)
+            .fontColor(Ink.text3)
+        }
       }
       .alignItems(HorizontalAlign.Start)
       .layoutWeight(1)

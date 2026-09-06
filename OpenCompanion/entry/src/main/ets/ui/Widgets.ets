@@ -431,6 +431,52 @@ export struct FieldLabel {
   }
 }
 
+// ---------- 呼吸点 ----------
+
+/** 单个脉冲圆点：以不同延时启动的无限往复呼吸 */
+@Component
+export struct PulsingDot {
+  @State on: boolean = false;
+  @Prop delayMs: number = 0;
+  @Prop color: string = Ink.text3;
+
+  aboutToAppear(): void {
+    setTimeout(() => {
+      animateTo({
+        duration: 480,
+        iterations: -1,
+        playMode: PlayMode.Alternate,
+        curve: Curve.EaseInOut
+      }, () => {
+        this.on = true;
+      });
+    }, this.delayMs);
+  }
+
+  build() {
+    Circle({ width: 5, height: 5 })
+      .fill(this.color)
+      .opacity(this.on ? 0.25 : 1)
+  }
+}
+
+/** 「思考中」三点波动指示 */
+@Component
+export struct ThinkingDots {
+  @Prop color: string = Ink.text3;
+
+  build() {
+    Row({ space: 5 }) {
+      PulsingDot({ delayMs: 0, color: this.color })
+      PulsingDot({ delayMs: 180, color: this.color })
+      PulsingDot({ delayMs: 360, color: this.color })
+    }
+    .height(22)
+    .padding({ top: 2, bottom: 2 })
+    .alignItems(VerticalAlign.Center)
+  }
+}
+
 // ---------- 浮层 ----------
 
 /**

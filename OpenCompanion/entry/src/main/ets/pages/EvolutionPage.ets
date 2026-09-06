@@ -293,11 +293,28 @@ export struct EvolutionPage {
                   .fontColor(Ink.warn)
                   .padding({ left: 8, right: 4, top: 4, bottom: 4 })
                   .onClick(() => {
-                    EvolutionManager.rollbackLog(String(log.get('id'))).then((msg: string) => {
-                      this.reflectMsg = msg;
-                      this.refresh();
-                    }).catch((e: Error) => {
-                      this.reflectMsg = `回滚失败: ${e.message}`;
+                    // 回滚会撤销已沉淀的进化操作，先确认
+                    AlertDialog.show({
+                      message: `回滚这条进化记录（${String(log.get('action'))}）？`,
+                      autoCancel: true,
+                      alignment: DialogAlignment.Center,
+                      primaryButton: {
+                        value: '取消',
+                        action: () => {
+                        }
+                      },
+                      secondaryButton: {
+                        value: '回滚',
+                        fontColor: Ink.warn,
+                        action: () => {
+                          EvolutionManager.rollbackLog(String(log.get('id'))).then((msg: string) => {
+                            this.reflectMsg = msg;
+                            this.refresh();
+                          }).catch((e: Error) => {
+                            this.reflectMsg = `回滚失败: ${e.message}`;
+                          });
+                        }
+                      }
                     });
                   })
               }
@@ -316,6 +333,7 @@ export struct EvolutionPage {
       .width('100%')
       .align(Alignment.Top)
       .scrollBar(BarState.Off)
+      .edgeEffect(EdgeEffect.Spring)
     }
     .width('100%')
     .height('100%')

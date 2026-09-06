@@ -22,6 +22,7 @@ export struct HomePage {
   @StorageProp('uiAccentDeep') accentDeep: string = '#F76C8A';
   @StorageProp('uiAccentLight') accentLight: string = '#FFE3EA';
   @StorageProp('uiAccentTint') accentTint: string = 'rgba(247,108,138,0.12)';
+  @StorageProp('uiAccentTintStrong') accentTintStrong: string = 'rgba(247,108,138,0.22)';
   private timer: number = -1;
 
   aboutToAppear(): void {
@@ -145,6 +146,7 @@ export struct HomePage {
               this.go('chat');
             }
           })
+            .shadow({ radius: 18, color: this.accentTintStrong, offsetY: 5 })
           Row({ space: 10 }) {
             PillButton({
               label: '知识库',
@@ -229,6 +231,7 @@ export struct HomePage {
     .width('100%')
     .height('100%')
     .scrollBar(BarState.Off)
+    .edgeEffect(EdgeEffect.Spring)
   }
 
   @Builder
@@ -240,11 +243,14 @@ export struct HomePage {
       .width(52)
       .height(52)
       .borderRadius(26)
-      .backgroundColor(Ink.card)
       .border({ width: 0.5, color: Ink.border })
       .shadow(Shadow.hair)
       .justifyContent(FlexAlign.Center)
       .alignItems(HorizontalAlign.Center)
+      .stateStyles({
+        normal: { .backgroundColor(Ink.card) },
+        pressed: { .backgroundColor(Ink.sunken) }
+      })
       .onClick(() => {
         action();
       })
