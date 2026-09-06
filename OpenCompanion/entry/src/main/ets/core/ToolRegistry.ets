@@ -6,6 +6,8 @@ import { AppContext } from '../commons/AppContext';
 import { RdbHelper } from '../commons/RdbHelper';
 import { NetClient } from '../commons/NetClient';
 import { Log } from '../commons/Log';
+import { bus, Ev } from '../commons/EventBus';
+import { TtsController } from '../voice/TtsController';
 import { ToolDef, ToolParam, JsonUtil } from './Types';
 
 type ToolExecutor = (args: Record<string, Object>) => Promise<string>;
@@ -340,5 +342,34 @@ export class ToolRegistry {
       const text = ToolRegistry.readTextFile(path);
       return text.length === 0 ? '(空文件)' : text;
     });
+
+    // ---------------- 应用控制工具（原本地直答指令的 API 化：由 LLM 经工具调用触发） ----------------
+
+    ToolRegistry.register(new ToolDef('navigate_to_page', '打开应用内页面（用户说"打开知识库/回到首页/看看智能体"等时使用）', [
+      { name: 'page', type: 'string', description: '目标页面: home(首页/桌宠) / chat(对话) / kb(知识库) / agents(智能体) / evolution(进化)', required: true } as ToolParam
+    ]), async (args: Record<string, Object>) => {
+      const page = ToolRegistry.str(args, 'page', '');
+      const valid: string[] = ['home', 'chat', 'kb', 'agents', 'evolution'];
+      if (valid.indexOf(page) < 0) {
+        return `错误: 未知页面 ${page}，可选 ${valid.join('/')}`;
+      }
+      bus.emit(Ev.NAVIGATE, { 'page': page } as Record<string, string>);
+      const names: Record<string, string> = {
+        'home': '伙伴首页', 'chat': '对话页', 'kb': '知识库', 'agents': '智能体列表', 'evolution': '进化页'
+      };
+      return `已打开${names[page]}`;
+    });
+
+    ToolRegistry.register(new ToolDef('start_new_conversation', '开启新对话（清空当前会话视图，用户说"新对话/清空对话"时使用）', []),
+      async (): Promise<string> => {
+        bus.emit(Ev.NEW_CONVERSATION);
+        return '已开启新对话';
+      });
+
+    ToolRegistry.register(new ToolDef('stop_speaking', '停止当前语音播报（用户说"别说了/停止播报/安静"时使用）', []),
+      async (): Promise<string> => {
+        TtsController.stop();
+        return '已停止播报';
+      });
   }
 }

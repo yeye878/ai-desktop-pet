@@ -3,7 +3,7 @@ import { util } from '@kit.ArkTS';
 import { RdbHelper } from '../commons/RdbHelper';
 import { AppContext, SettingKey } from '../commons/AppContext';
 import { PerfTrace } from '../commons/PerfTrace';
-import { bus, Ev } from '../commons/EventBus';
+import { bus, Ev, BusEvent } from '../commons/EventBus';
 import { Log } from '../commons/Log';
 import { LlmClient, LlmProfiles } from './LlmClient';
 import { AgentLoop, LoopOptions, LoopCallbacks } from './AgentLoop';
@@ -38,6 +38,10 @@ export class ChatService {
   static async init(): Promise<void> {
     // IntentEngine 属低层模块，经注入回调使用 ChatService 能力（避免循环依赖）
     ChatServiceRef.bind(ChatService.pushLocalAssistantMessage, ChatService.newConversation);
+    // start_new_conversation 工具（LLM 经 API 工具调用触发）经事件总线转入，避免 ToolRegistry→ChatService 循环依赖
+    bus.on(Ev.NEW_CONVERSATION, (_e: BusEvent) => {
+      ChatService.newConversation();
+    });
     await AgentRepo.ensureBuiltins();
     await ChatService.loadHistory();
     await KbService.init();
@@ -146,11 +150,15 @@ export class ChatService {
     EvolutionManager.onUserMessage(userMsg.content);
     ChatService.emitChatChanged(true);
 
-    // ① 端侧意图路由：高频指令本地直答（毫秒级，语音指令 ≤2s 的关键路径，不进 LLM）
+    // ① 端侧意图路由：仅在未配置 LLM API 时作为离线兜底本地直答；
+    //    已配置 API 时全部交给大模型，由它经工具调用完成页面跳转/新对话/停止播报等操作
     if (imageDataUrls.length === 0 && imageUris.length === 0) {
-      const handled = await IntentEngine.tryLocalAnswer(rest);
-      if (handled) {
-        return;
+      const activeProfile = await LlmProfiles.active();
+      if (activeProfile === null) {
+        const handled = await IntentEngine.tryLocalAnswer(rest);
+        if (handled) {
+          return;
+        }
       }
     }
 
@@ -496,7 +504,8 @@ export class ChatService {
       const persona = personaMap.get(personality) ?? '温柔体贴，善解人意';
       parts.push(`你是「小伴」，用户的鸿蒙桌面智能伙伴（桌宠形象）。性格：${persona}。` +
         '你运行在 OpenHarmony 设备上，具备语音、图像、知识库与工具能力。' +
-        '回答自然口语化、简洁；用户问题复杂时才结构化。中文回答。');
+        '回答自然口语化、简洁；用户问题复杂时才结构化。中文回答。' +
+        '用户要求打开页面（知识库/首页/智能体等）、开启新对话、停止播报时，调用对应工具完成，不要只口头答应。');
     }
     const skill: SkillProfile | null = await AgentRepo.activeSkill();
     if (skill !== null && skill.systemPrompt.length > 0) {
@@ -529,7 +538,7 @@ export class ChatService {
       ChatService.pushLocalAssistantMessage(
         '可用命令：\n/new 新对话 · /clear 清空历史\n@智能体名 定向对话（如 @学习助手）\n' +
         '/team 任务 → 三智能体组队协作\n/kb 知识库状态 · /brief 今日简报 · /perf 性能埋点\n/skills 查看技能\n' +
-        '试试直接说：打开知识库 / 今天日程 / 现在几点（本地直答，毫秒级响应）\n' +
+        '试试直接说：打开知识库 / 今天日程 / 现在几点（由大模型调用工具完成；未配置 API 时本地直答兜底）\n' +
         '复合指令：「拍一下这个文档，帮我总结重点」「总结并入库」「安排复习计划」\n提示：麦克风按钮可语音输入，播报中再点一次即可打断');
       return true;
     }

@@ -60,6 +60,7 @@ export class Ev {
   static readonly TOOL_CONFIRM: string = 'tool_confirm';
   static readonly ASK_USER: string = 'ask_user';
   static readonly NAVIGATE: string = 'navigate';
+  static readonly NEW_CONVERSATION: string = 'new_conversation';
   static readonly EVOLUTION_CHANGED: string = 'evolution_changed';
   static readonly AGENTS_CHANGED: string = 'agents_changed';
   static readonly KB_CHANGED: string = 'kb_changed';
