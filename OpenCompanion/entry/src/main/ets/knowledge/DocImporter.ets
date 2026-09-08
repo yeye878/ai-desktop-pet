@@ -2,6 +2,7 @@ import fs from '@ohos.file.fs';
 import { util } from '@kit.ArkTS';
 import { image } from '@kit.ImageKit';
 import { picker } from '@kit.CoreFileKit';
+import { pasteboard } from '@kit.BasicServicesKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { textRecognition } from '@kit.CoreVisionKit';
 import { Log } from '../commons/Log';
@@ -41,6 +42,31 @@ export class DocImporter {
     }
     bus.emit(Ev.KB_CHANGED);
     return `已导入 ${ok} 个文档${skipped > 0 ? `，跳过 ${skipped} 个（二进制或空文件请先转文本）` : ''}`;
+  }
+
+  /** 剪贴板文本 → 知识库（由用户点按钮触发，满足系统剪贴板读取要求；不经过大模型，零 token） */
+  static async importFromClipboard(): Promise<string> {
+    let text = '';
+    try {
+      const data = await pasteboard.getSystemPasteboard().getData();
+      const primary = data.getPrimaryText();
+      text = primary === undefined || primary === null ? '' : primary;
+    } catch (e) {
+      return '剪贴板为空或不可读，请先复制一段文本';
+    }
+    const trimmed = text.trim();
+    if (trimmed.length < 10) {
+      return '剪贴板里没有足够的文本（至少 10 字），先在别处复制好再来';
+    }
+    let firstLine = trimmed;
+    const nl = trimmed.indexOf('\n');
+    if (nl > 0) {
+      firstLine = trimmed.substring(0, nl).trim();
+    }
+    const title = firstLine.length >= 2 && firstLine.length <= 30 ? firstLine : `粘贴_${DocImporter.timeTag()}`;
+    await KbService.ingest('default', title, trimmed, 'paste');
+    bus.emit(Ev.KB_CHANGED);
+    return `已入库《${title}》（${trimmed.length} 字）`;
   }
 
   /** 打开相册选择图片并 OCR 入库 */

@@ -3,6 +3,7 @@ import { KbService } from '../knowledge/KbService';
 import { DocImporter } from '../knowledge/DocImporter';
 import { KbHit } from '../knowledge/KbService';
 import { AppContext } from '../commons/AppContext';
+import { DeviceInfo } from '../commons/DeviceInfo';
 import { CancelToken } from '../core/Types';
 import { IntentEngine } from '../core/IntentEngine';
 import { Ink, Radius } from '../ui/DesignTokens';
@@ -28,6 +29,8 @@ export struct KnowledgePage {
   @State answering: boolean = false;
   @State statusLine: string = '';
   @State offlineMode: boolean = AppContext.getBool('kb_offline_mode', false);
+  // 手机端：DataAugmentation Kit 问答不可用，降级为仅检索 + 展示片段（方案 3.3）
+  @State generateSupported: boolean = DeviceInfo.ragGenerateSupported();
   @StorageProp('uiAccentDeep') accentDeep: string = '#F76C8A';
   @StorageProp('uiAccentTint') accentTint: string = 'rgba(247,108,138,0.12)';
   private askToken: CancelToken | null = null;
@@ -103,7 +106,12 @@ export struct KnowledgePage {
         Row({ space: 8 }) {
           Row({ space: 8 }) {
             AppIcon({ icon: $r('sys.symbol.questionmark_circle'), sizeVp: 15, color: Ink.text3, weight: 500 })
-            TextInput({ placeholder: '问知识库，如「这门课的重点是什么？」', text: this.question })
+            TextInput({
+              placeholder: this.generateSupported
+                ? '问知识库，如「这门课的重点是什么？」'
+                : '搜索知识库（手机展示相关片段）',
+              text: this.question
+            })
               .layoutWeight(1)
               .height(40)
               .backgroundColor(Color.Transparent)
@@ -165,7 +173,7 @@ export struct KnowledgePage {
                 .backgroundColor(this.accentTint)
               }
               if (this.answer.length > 0 || this.answering) {
-                Text(this.answer.length > 0 ? this.answer : '思考中…')
+                Text(this.answer.length > 0 ? this.answer : (this.generateSupported ? '思考中…' : '检索中…'))
                   .fontSize(14)
                   .fontColor(Ink.text)
                   .lineHeight(23)
@@ -187,10 +195,17 @@ export struct KnowledgePage {
       // 导入与文档
       Column({ space: 8 }) {
         Row({ space: 8 }) {
-          this.ImportTile($r('sys.symbol.doc_text'), '导入文档', 'txt / md / pdf 等', (): void => {
+          this.ImportTile($r('sys.symbol.doc_text'), '导入文档', 'txt / md / 代码', (): void => {
             DocImporter.importTextDocs().then((msg: string) => {
               this.answer = msg;
               // 知识库变更 → 动态热词表失效（ASR 引擎经 KB_CHANGED 事件延迟重建）
+              IntentEngine.invalidateHotwords();
+              this.refresh();
+            });
+          })
+          this.ImportTile($r('sys.symbol.square_and_pencil'), '粘贴入库', '复制文本一键入库', (): void => {
+            DocImporter.importFromClipboard().then((msg: string) => {
+              this.answer = msg;
               IntentEngine.invalidateHotwords();
               this.refresh();
             });
@@ -212,17 +227,24 @@ export struct KnowledgePage {
             .fontWeight(FontWeight.Medium)
             .fontColor(Ink.text2)
             .layoutWeight(1)
-          Text('离线模式')
-            .fontSize(12)
-            .fontColor(Ink.text3)
-          Toggle({ type: ToggleType.Switch, isOn: this.offlineMode })
-            .selectedColor(this.accentDeep)
-            .scale({ x: 0.85, y: 0.85 })
-            .onChange((on: boolean) => {
-              AppContext.setBool('kb_offline_mode', on).then(() => {
-                this.refresh();
-              });
-            })
+          if (this.generateSupported) {
+            Text('离线模式')
+              .fontSize(12)
+              .fontColor(Ink.text3)
+            Toggle({ type: ToggleType.Switch, isOn: this.offlineMode })
+              .selectedColor(this.accentDeep)
+              .scale({ x: 0.85, y: 0.85 })
+              .onChange((on: boolean) => {
+                AppContext.setBool('kb_offline_mode', on).then(() => {
+                  this.refresh();
+                });
+              })
+          } else {
+            // 端侧问答模型不支持手机，离线开关无意义 → 收起并提示降级策略
+            Text('手机端：仅检索展示片段')
+              .fontSize(11)
+              .fontColor(Ink.text3)
+          }
         }
         .width('100%')
         .padding({ left: 16, right: 16 })

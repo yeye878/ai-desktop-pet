@@ -69,7 +69,7 @@ export class AgentRepo {
       '回答给出要点结构（要点/展开/小结）。当用户学完一个主题，可主动提出用 1-2 个问题检验理解；' +
       '用户要复习计划时用 create_review_plan 按遗忘曲线生成系统提醒；总结文档可用 summarize_doc。' +
       '重要结论可 save_memory 记录，整理的笔记用 save_note 保存为 Markdown。';
-    study.allowedTools = ['kb_ask', 'kb_search', 'kb_ingest', 'save_memory', 'search_memories', 'web_search', 'read_webpage', 'save_note', 'get_current_time', 'create_review_plan', 'summarize_doc'];
+    study.allowedTools = ['kb_ask', 'kb_search', 'kb_ingest', 'save_memory', 'search_memories', 'web_search', 'read_webpage', 'save_note', 'append_note', 'export_document', 'get_current_time', 'create_review_plan', 'summarize_doc', 'calculator', 'add_todo', 'list_todos', 'complete_todo', 'copy_to_clipboard'];
     list.push(study);
 
     const schedule = new AgentProfile();
@@ -78,9 +78,10 @@ export class AgentRepo {
     schedule.avatar = '⏰';
     schedule.description = '管理提醒与日程、播报天气与每日简报';
     schedule.systemPrompt = '你是「日程管家」，可靠高效的生活秘书。创建提醒一律使用 create_reminder 工具（会生成系统级通知），' +
-      '创建后向用户确认时间。用户询问安排时用 list_reminders 查询。每日简报 = 时间 + 天气 + 待办。' +
+      '创建后向用户确认时间。用户询问安排时用 list_reminders 查询。日常事项（不需要定点通知的）用 add_todo/list_todos/complete_todo 管理待办；' +
+      '做饭、番茄钟等短时倒数用 set_timer。每日简报 = 时间 + 天气 + 待办（list_todos），需要时可用 speak_text 语音播报。' +
       '用户提到的偏好（如提醒提前量）用 save_memory 记住。';
-    schedule.allowedTools = ['create_reminder', 'list_reminders', 'delete_reminder', 'get_weather', 'save_memory', 'search_memories', 'get_current_time'];
+    schedule.allowedTools = ['create_reminder', 'list_reminders', 'delete_reminder', 'set_timer', 'add_todo', 'list_todos', 'complete_todo', 'get_weather', 'save_memory', 'search_memories', 'get_current_time', 'speak_text', 'get_battery_info'];
     list.push(schedule);
 
     const doc = new AgentProfile();
@@ -89,8 +90,9 @@ export class AgentRepo {
     doc.avatar = '📄';
     doc.description = '图片文字提取、文档总结改写、知识入库';
     doc.systemPrompt = '你是「文档处理」专员。处理图片时先用 ocr_image 提取文字；长文本先分块总结再归纳；' +
-      '用户说"存入知识库"时用 kb_ingest；整理成果用 save_note 导出 Markdown。总结输出：一句话摘要 + 要点列表 + 行动项。';
-    doc.allowedTools = ['ocr_image', 'read_file', 'list_files', 'kb_ingest', 'kb_search', 'save_note', 'get_current_time', 'summarize_doc'];
+      '用户说"存入知识库"时用 kb_ingest；整理成果用 save_note 导出 Markdown，超长文档分节时首段 save_note、后续 append_note 续写，' +
+      '成稿后可 export_document 交给用户，改名整理用 rename_file。总结输出：一句话摘要 + 要点列表 + 行动项。';
+    doc.allowedTools = ['ocr_image', 'read_file', 'list_files', 'kb_ingest', 'kb_search', 'save_note', 'append_note', 'rename_file', 'export_document', 'get_current_time', 'summarize_doc', 'copy_to_clipboard', 'open_link', 'delete_file'];
     list.push(doc);
     return list;
   }

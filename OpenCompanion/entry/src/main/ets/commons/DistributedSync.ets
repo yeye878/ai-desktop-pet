@@ -53,7 +53,7 @@ export class DistributedSync {
         const ctx = AppContext.getContext();
         const config: distributedKVStore.KVManagerConfig = {
           context: ctx,
-          bundleName: 'com.opencompanion.pet'
+          bundleName: ctx.abilityInfo.bundleName
         };
         const manager = await distributedKVStore.createKVManager(config);
         const options: distributedKVStore.Options = {

@@ -1,11 +1,16 @@
 import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
+import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AppContext } from '../commons/AppContext';
 import { DistributedSync } from '../commons/DistributedSync';
 import { PerfTrace } from '../commons/PerfTrace';
+import { RdbHelper } from '../commons/RdbHelper';
+import { Log } from '../commons/Log';
 import { bus, Ev } from '../commons/EventBus';
 import { ChatService } from '../core/ChatService';
+import { ToolRegistry } from '../core/ToolRegistry';
+import { KbService } from '../knowledge/KbService';
 import { ChatMessage } from '../core/Types';
 
 /**
@@ -49,6 +54,73 @@ export default class EntryAbility extends UIAbility {
           bus.emit(Ev.NAVIGATE, { 'page': 'chat', 'continuation': context as string } as Record<string, string>);
         }, 500);
       }
+      // 外部文件导入知识库：aa start --ps ingest_doc <文件名>（文件需已推送到应用文档目录）
+      const ingestDoc = params['ingest_doc'];
+      if (typeof ingestDoc === 'string' && (ingestDoc as string).length > 0) {
+        AppContext.postFrame(() => {
+          EntryAbility.ingestDocFile(ingestDoc as string);
+        }, 1200);
+      }
+      // 外部文本导入知识库：--ps ingest_b64 <base64(UTF-8正文)> [--ps ingest_title_b64 <base64(标题)>]
+      // base64 通道纯 ASCII，跨 Windows/USB/shell 链路无编码风险
+      const ingestB64 = params['ingest_b64'];
+      if (typeof ingestB64 === 'string' && (ingestB64 as string).length > 0) {
+        const titleB64 = params['ingest_title_b64'];
+        AppContext.postFrame(() => {
+          EntryAbility.ingestB64(ingestB64 as string, typeof titleB64 === 'string' ? titleB64 as string : '');
+        }, 1200);
+      }
+    }
+  }
+
+  /** base64 文本 → 知识库（与 DocImporter/知识页导入同一条链路，含 FTS 索引） */
+  private static async ingestB64(b64: string, titleB64: string): Promise<void> {
+    try {
+      await RdbHelper.init();
+      await KbService.init();
+      const helper = new util.Base64Helper();
+      const decoder = util.TextDecoder.create('utf-8');
+      const text = decoder.decodeToString(helper.decodeSync(b64));
+      let title = `导入文档_${new Date().toLocaleDateString()}`;
+      if (titleB64.length > 0) {
+        title = decoder.decodeToString(helper.decodeSync(titleB64));
+      }
+      if (text.trim().length < 10) {
+        Log.warn(`ingest_b64 skipped: ${title} 内容过短`);
+        return;
+      }
+      const chunks = await KbService.ingest('default', title, text, 'file');
+      bus.emit(Ev.KB_CHANGED);
+      Log.info(`ingest_b64 done: ${title} chunks=${chunks}`);
+    } catch (e) {
+      Log.error(`ingest_b64 failed: ${(e as Error).message}`);
+    }
+  }
+
+  /** 把文档目录中的文本文件切块入库（与 DocImporter/知识页导入同一条链路，含 FTS 索引） */
+  private static async ingestDocFile(name: string): Promise<void> {
+    try {
+      await RdbHelper.init();
+      await KbService.init();
+      const path = name.startsWith('/') ? name : `${ToolRegistry.docsDir()}/${name}`;
+      const text = ToolRegistry.readTextFile(path);
+      if (text.trim().length < 10) {
+        Log.warn(`ingest_doc skipped: ${name} 内容过短`);
+        return;
+      }
+      let title = name;
+      const slash = title.lastIndexOf('/');
+      if (slash >= 0) {
+        title = title.substring(slash + 1);
+      }
+      if (title.endsWith('.txt') || title.endsWith('.md')) {
+        title = title.substring(0, title.lastIndexOf('.'));
+      }
+      const chunks = await KbService.ingest('default', title, text, 'file');
+      bus.emit(Ev.KB_CHANGED);
+      Log.info(`ingest_doc done: ${title} chunks=${chunks}`);
+    } catch (e) {
+      Log.error(`ingest_doc failed: ${(e as Error).message}`);
     }
   }
 

@@ -50,7 +50,10 @@ export class RdbHelper {
         status TEXT DEFAULT 'pending', created_at INTEGER)`,
       `CREATE TABLE IF NOT EXISTS evolution_logs (
         id TEXT PRIMARY KEY, action TEXT NOT NULL, before_state TEXT DEFAULT '{}',
-        after_state TEXT DEFAULT '{}', created_at INTEGER)`
+        after_state TEXT DEFAULT '{}', created_at INTEGER)`,
+      `CREATE TABLE IF NOT EXISTS todos (
+        id TEXT PRIMARY KEY, title TEXT NOT NULL, note TEXT DEFAULT '',
+        done INTEGER DEFAULT 0, created_at INTEGER)`
     ];
     for (const ddl of ddls) {
       await store.executeSql(ddl);
