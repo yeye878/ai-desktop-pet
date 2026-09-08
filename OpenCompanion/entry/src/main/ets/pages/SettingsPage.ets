@@ -67,6 +67,8 @@ export struct SettingsPanel {
   @State personality: string = 'gentle';
   @State hotWords: string = '';
   @State weatherCity: string = '北京';
+  @State proxyHost: string = '';
+  @State proxyPort: string = '';
   @State themeIdx: number = 0;
   @State dragY: number = 0;
   @State wide: boolean = AppContext.vpWidth >= 720;
@@ -86,6 +88,8 @@ export struct SettingsPanel {
     this.personality = AppContext.getSetting(SettingKey.PERSONALITY, 'gentle');
     this.hotWords = AppContext.getSetting(SettingKey.HOT_WORDS, '');
     this.weatherCity = AppContext.getSetting(SettingKey.WEATHER_CITY, '北京');
+    this.proxyHost = AppContext.getSetting(SettingKey.PROXY_HOST, '');
+    this.proxyPort = AppContext.getSetting(SettingKey.PROXY_PORT, '');
   }
 
   newProfile(): void {
@@ -113,6 +117,10 @@ export struct SettingsPanel {
   }
 
   async saveProfile(): Promise<void> {
+    // 落盘前归一化 Base URL，避免缺协议/带尾斜杠的地址存入后请求失败
+    this.edit.baseUrl = LlmClient.normalizeBaseUrl(this.edit.baseUrl);
+    this.edit.name = this.edit.name.trim();
+    this.edit.model = this.edit.model.trim();
     const list = LlmProfiles.list();
     let replaced = false;
     const out: LlmProfile[] = [];
@@ -143,7 +151,11 @@ export struct SettingsPanel {
       this.testResult = `连接成功：${reply}`;
       this.testOk = true;
     } catch (e) {
-      this.testResult = `连接失败：${(e as Error).message}`;
+      const msg = (e as Error).message;
+      // 域名解析失败多半是地址不完整或设备 DNS 异常，补一句人话提示（代理可在下方“网络代理”配置）
+      const hint = /resolve|2300006|2300007/i.test(msg) ?
+        '（域名无法解析：请检查 Base URL 是否完整含 https://；若设备 DNS 异常，可在设置页“网络代理”指定代理绕过）' : '';
+      this.testResult = `连接失败：${msg}${hint}`;
       this.testOk = false;
     }
   }
@@ -311,6 +323,37 @@ export struct SettingsPanel {
                     this.newProfile();
                   }
                 })
+              }
+              .width('100%')
+            }
+
+            // ---------- 网络代理 ----------
+            SettingsSection({
+              title: '网络代理（可选）',
+              caption: '设备域名解析异常时（如部分模拟器），指定 HTTP 代理中转，域名解析改在代理端完成'
+            }) {
+              Column({ space: 6 }) {
+                FieldLabel({ text: '代理主机（留空则直连）' })
+                TextInput({ placeholder: '如 10.0.2.2 或 127.0.0.1', text: this.proxyHost })
+                  .height(40)
+                  .backgroundColor(Ink.sunken)
+                  .borderRadius(Radius.inner)
+                  .fontSize(12.5)
+                  .onChange((v: string) => {
+                    this.proxyHost = v;
+                    AppContext.setSetting(SettingKey.PROXY_HOST, v.trim());
+                  })
+                FieldLabel({ text: '代理端口' })
+                TextInput({ placeholder: '如 8888', text: this.proxyPort })
+                  .type(InputType.Number)
+                  .height(40)
+                  .backgroundColor(Ink.sunken)
+                  .borderRadius(Radius.inner)
+                  .fontSize(12.5)
+                  .onChange((v: string) => {
+                    this.proxyPort = v;
+                    AppContext.setSetting(SettingKey.PROXY_PORT, v.trim());
+                  })
               }
               .width('100%')
             }
@@ -498,21 +541,24 @@ export struct SettingsPanel {
               .onChange((v: string) => {
                 this.edit.name = v;
               })
-            TextInput({ placeholder: 'Base URL（如 https://api.openai.com/v1）', text: this.edit.baseUrl })
+            FieldLabel({ text: 'Base URL（需含 https:// 协议头）' })
+            TextInput({ placeholder: 'https://api.openai.com/v1', text: this.edit.baseUrl })
               .height(44)
               .backgroundColor(Ink.sunken)
               .borderRadius(Radius.inner)
               .onChange((v: string) => {
                 this.edit.baseUrl = v;
               })
-            TextInput({ placeholder: '模型名（如 gpt-4o-mini / qwen-plus）', text: this.edit.model })
+            FieldLabel({ text: '模型名' })
+            TextInput({ placeholder: 'gpt-4o-mini / qwen-plus', text: this.edit.model })
               .height(44)
               .backgroundColor(Ink.sunken)
               .borderRadius(Radius.inner)
               .onChange((v: string) => {
                 this.edit.model = v;
               })
-            TextInput({ placeholder: 'API Key（存储在系统安全区，不会明文落盘）', text: this.edit.apiKey })
+            FieldLabel({ text: 'API Key（存储在系统安全区，不会明文落盘）' })
+            TextInput({ placeholder: 'sk-...', text: this.edit.apiKey })
               .type(InputType.Password)
               .height(44)
               .backgroundColor(Ink.sunken)
@@ -520,8 +566,9 @@ export struct SettingsPanel {
               .onChange((v: string) => {
                 this.edit.apiKey = v;
               })
-            Row() {
-              SettingRow({ label: '流式' }) {
+            // 两个开关行各占满宽，横排必溢出裁切，改纵排
+            Column() {
+              SettingRow({ label: '流式响应' }) {
                 Toggle({ type: ToggleType.Switch, isOn: this.edit.useStream })
                   .selectedColor(this.accentDeep)
                   .scale({ x: 0.85, y: 0.85 })
@@ -585,12 +632,12 @@ export struct SettingsPanel {
           .padding(16)
         }
         .width('100%')
-        .height('100%')
         .align(Alignment.Top)
         .scrollBar(BarState.Off)
       }
       .width('94%')
-      .height('88%')
+      // 高度跟随内容，最高不超过 88%，避免短表单留下一大片空白
+      .constraintSize({ maxHeight: '88%' })
       .backgroundColor(Ink.card)
       .borderRadius(Radius.sheet)
       .shadow(Shadow.lift)

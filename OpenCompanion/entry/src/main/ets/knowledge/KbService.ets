@@ -1,6 +1,7 @@
 import { relationalStore } from '@kit.ArkData';
 import { retrieval } from '@kit.DataAugmentationKit';
 import { AppContext } from '../commons/AppContext';
+import { DeviceInfo } from '../commons/DeviceInfo';
 import { RdbHelper } from '../commons/RdbHelper';
 import { Log } from '../commons/Log';
 import { ToolRegistry } from '../core/ToolRegistry';
@@ -107,7 +108,10 @@ export class KbService {
     const chunks = await KbService.count('kb_chunks');
     const offline = AppContext.getBool('kb_offline_mode', false);
     const engine = KbService.retriever !== null && KbService.ftsOk ? '全文检索' : '关键词检索';
-    return `已入库 ${docs} 篇文档 · ${chunks} 个知识片段 · ${engine}${offline ? ' · 离线问答' : ''}`;
+    const mode = DeviceInfo.ragGenerateSupported()
+      ? (offline ? ' · 离线问答' : '')
+      : ` · ${DeviceInfo.label()}端检索模式（仅展示片段）`;
+    return `已入库 ${docs} 篇文档 · ${chunks} 个知识片段 · ${engine}${mode}`;
   }
 
   private static async count(table: string): Promise<number> {
@@ -358,8 +362,12 @@ export class KbService {
 
   // ---------------- 问答 ----------------
 
-  /** RAG 问答（流式）。离线模式走端侧模型；否则走 RAG 会话，失败降级为 检索+LLM。 */
+  /** RAG 问答（流式）。手机端降级为仅检索；离线模式走端侧模型；否则走 RAG 会话，失败降级为 检索+LLM。 */
   static async askStream(question: string, cb: AskCallbacks, token: CancelToken | null): Promise<string> {
+    // 方案 3.3：DataAugmentation Kit 问答不支持手机 → 手机端只做检索 + 展示相关片段，不生成回答
+    if (!DeviceInfo.ragGenerateSupported()) {
+      return await KbService.searchOnlyAnswer(question, cb);
+    }
     const offline = AppContext.getBool('kb_offline_mode', false);
     if (offline) {
       return await KbService.offlineAnswer(question, cb, token);
@@ -372,6 +380,17 @@ export class KbService {
       Log.warn(`rag bridge failed, fallback to search+llm: ${err.message}`);
       return await KbService.searchAndLlmAnswer(question, cb, token);
     }
+  }
+
+  /** 手机端降级链（方案 2.2「手机端要么降级成纯检索」）：多路召回 → 直接展示相关片段，不做生成 */
+  static async searchOnlyAnswer(question: string, cb: AskCallbacks): Promise<string> {
+    const hits = await KbService.search(question, 5);
+    cb.onSources(hits);
+    if (hits.length === 0) {
+      return '知识库中还没有与该问题相关的内容。请先在知识库页导入文档，或换个问法。';
+    }
+    const head = `手机端仅支持知识库检索（完整问答生成请在 PC / 二合一设备体验），为你找到 ${hits.length} 个相关片段：`;
+    return `${head}\n\n${hits.map((h: KbHit, i: number) => `${i + 1}.【${h.docTitle}】${h.content}`).join('\n---\n')}`;
   }
 
   /** 降级链：本地检索 → 云端 LLM 融合回答 */

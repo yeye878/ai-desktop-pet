@@ -88,7 +88,8 @@ export class LlmProfiles {
     if (secret.length > 0) {
       LlmProfiles.cache.set(p.id, secret);
     }
-    return secret;
+    // 粘贴时常带首尾空白/换行，服务端会判为非法 key → 统一裁剪
+    return secret.trim();
   }
 
   static async removeProfile(id: string): Promise<void> {
@@ -127,8 +128,29 @@ export class LlmClient {
   private static streams: Map<string, NetStream> = new Map<string, NetStream>();
   private static seq: number = 1;
 
+  /** 容错归一化 Base URL：去首尾空白、缺协议时补 https://、去尾部斜杠 */
+  static normalizeBaseUrl(baseUrl: string): string {
+    let b = baseUrl.trim();
+    if (b.length === 0) {
+      return b;
+    }
+    if (!/^https?:\/\//i.test(b)) {
+      b = `https://${b}`;
+    }
+    return b.replace(/\/+$/, '');
+  }
+
+  /** 空地址时报人话错误，避免底层抛出难懂的 Invalid URL format */
+  static requireBaseUrl(p: LlmProfile): string {
+    const b = LlmClient.normalizeBaseUrl(p.baseUrl);
+    if (b.length === 0) {
+      throw new Error('未填写 Base URL，请先在设置中补全 API 地址');
+    }
+    return b;
+  }
+
   static joinUrl(baseUrl: string, path: string): string {
-    const b = baseUrl.replace(/\/+$/, '');
+    const b = LlmClient.normalizeBaseUrl(baseUrl);
     if (b.endsWith('/chat/completions')) {
       return b;
     }
@@ -138,8 +160,9 @@ export class LlmClient {
   static authHeaders(p: LlmProfile): Map<string, string> {
     const headers = new Map<string, string>();
     headers.set('Content-Type', 'application/json');
-    if (p.apiKey.length > 0) {
-      headers.set('Authorization', `Bearer ${p.apiKey}`);
+    const key = p.apiKey.trim();
+    if (key.length > 0) {
+      headers.set('Authorization', `Bearer ${key}`);
     }
     return headers;
   }
@@ -204,6 +227,13 @@ export class LlmClient {
   /** 流式对话（SSE）。runId 用于中断。 */
   static chatStream(p: LlmProfile, messages: LlmMessage[], tools: ToolDef[] | null,
     cb: StreamCallbacks, runId: string): void {
+    let base: string;
+    try {
+      base = LlmClient.requireBaseUrl(p);
+    } catch (e) {
+      cb.onError((e as Error).message);
+      return;
+    }
     const body: Record<string, Object> = {
       'model': p.model,
       'messages': LlmClient.messagesToJson(messages),
@@ -214,7 +244,7 @@ export class LlmClient {
       body['tools'] = LlmClient.toolsToJson(tools);
     }
     const run = new StreamRun();
-    const url = LlmClient.joinUrl(p.baseUrl, '/chat/completions');
+    const url = LlmClient.joinUrl(base, '/chat/completions');
     const stream = NetClient.streamPost(url, LlmClient.authHeaders(p), JSON.stringify(body), {
       onChunk: (text: string) => {
         if (run.finished) {
@@ -243,7 +273,7 @@ export class LlmClient {
         }
         run.finished = true;
         LlmClient.streams.delete(runId);
-        cb.onError(msg);
+        cb.onError(LlmClient.friendlyError(msg));
       }
     });
     LlmClient.streams.set(runId, stream);
@@ -251,6 +281,7 @@ export class LlmClient {
 
   /** 非流式单轮对话（规划器/复盘/测试连接用） */
   static async chatOnce(p: LlmProfile, system: string, user: string, maxTokens: number = 1200): Promise<string> {
+    const base = LlmClient.requireBaseUrl(p);
     const msgs: LlmMessage[] = [];
     if (system.length > 0) {
       const sys = new LlmMessage();
@@ -268,7 +299,7 @@ export class LlmClient {
       'temperature': 0.3,
       'max_tokens': maxTokens
     };
-    const url = LlmClient.joinUrl(p.baseUrl, '/chat/completions');
+    const url = LlmClient.joinUrl(base, '/chat/completions');
     const raw = await NetClient.postText(url, LlmClient.authHeaders(p), JSON.stringify(body));
     const obj = JSON.parse(raw) as Record<string, Object>;
     const choices = obj['choices'] as Array<Object>;
@@ -283,7 +314,7 @@ export class LlmClient {
   }
 
   static async listModels(p: LlmProfile): Promise<string[]> {
-    const b = p.baseUrl.replace(/\/+$/, '').replace(/\/chat\/completions$/, '');
+    const b = LlmClient.normalizeBaseUrl(p.baseUrl).replace(/\/chat\/completions$/, '');
     const raw = await NetClient.getText(`${b}/models`, LlmClient.authHeaders(p));
     const obj = JSON.parse(raw) as Record<string, Object>;
     const data = obj['data'] as Array<Object>;
@@ -318,6 +349,20 @@ export class LlmClient {
       s.abort();
     });
     LlmClient.streams.clear();
+  }
+
+  /** 把网关原始错误翻译成可操作的中文提示（401 往往是 Key 错/欠费，而非"接不上"） */
+  static friendlyError(msg: string): string {
+    if (msg.indexOf('HTTP 401') >= 0 || msg.indexOf('invalid_api_key') >= 0) {
+      return 'API Key 无效或未授权（HTTP 401）：网络已连通，请到「设置」核对并重新填写 API Key（百炼控制台 sk- 开头，注意别带空格）。';
+    }
+    if (msg.indexOf('HTTP 403') >= 0) {
+      return '该 API Key 无权访问此模型（HTTP 403），请检查模型名与账号开通状态。';
+    }
+    if (msg.indexOf('HTTP 429') >= 0) {
+      return 'API 限流或余额不足（HTTP 429），请稍后重试或检查账户额度。';
+    }
+    return msg;
   }
 
   // ---------- SSE 解析（对应桌面版 SseParser） ----------

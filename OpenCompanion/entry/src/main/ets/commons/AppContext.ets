@@ -112,4 +112,6 @@ export class SettingKey {
   static readonly PET_MOOD: string = 'pet_mood_text';
   static readonly ACTIVE_SKILL: string = 'active_skill_id';
   static readonly PERSONALITY: string = 'personality';
+  static readonly PROXY_HOST: string = 'proxy_host';
+  static readonly PROXY_PORT: string = 'proxy_port';
 }

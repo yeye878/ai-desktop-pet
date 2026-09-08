@@ -1,6 +1,7 @@
 import { rag, retrieval, localChatModel } from '@kit.DataAugmentationKit';
 import { relationalStore } from '@kit.ArkData';
 import { AppContext } from '../commons/AppContext';
+import { DeviceInfo } from '../commons/DeviceInfo';
 import { NetClient, NetStream } from '../commons/NetClient';
 import { Log } from '../commons/Log';
 import { LlmClient, LlmProfiles } from '../core/LlmClient';
@@ -148,6 +149,10 @@ export class RagBridge {
 
   static kitAvailable(): boolean {
     try {
+      // Kit RAG 问答仅支持 PC / 2in1：手机端不创建会话、不预热，降级为纯检索（方案 2.2/3.3）
+      if (!DeviceInfo.ragGenerateSupported()) {
+        return false;
+      }
       if (!canIUse('SystemCapability.DataAugmentation.RAG')) {
         return false;
       }
@@ -160,6 +165,10 @@ export class RagBridge {
 
   static localAvailable(): boolean {
     try {
+      // 端侧问答模型同样仅限 PC / 2in1，手机端不加载模型（也顺带保住冷启动 ≤3s）
+      if (!DeviceInfo.ragGenerateSupported()) {
+        return false;
+      }
       return typeof localChatModel.init === 'function';
     } catch (e) {
       return false;
