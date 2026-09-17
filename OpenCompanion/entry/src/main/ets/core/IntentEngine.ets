@@ -16,7 +16,7 @@ export class IntentHit {
 }
 
 /** 复合指令子任务（带依赖关系，对应方案 4.1.1 子任务序列） */
-export class SubTask {
+export class CompositeTask {
   type: string = '';
   label: string = '';
   payload: string = '';
@@ -27,7 +27,7 @@ export class SubTask {
 export class CompositePlan {
   matched: boolean = false;
   planName: string = '';
-  subtasks: SubTask[] = [];
+  subtasks: CompositeTask[] = [];
 }
 
 interface PhraseEntry {
@@ -172,28 +172,28 @@ export class IntentEngine {
       plan.matched = true;
       plan.planName = '文档重点总结';
       if (!hasImage) {
-        const s1 = new SubTask();
+        const s1 = new CompositeTask();
         s1.type = 'request_image';
         s1.label = '获取文档照片';
         plan.subtasks.push(s1);
-        const s2 = new SubTask();
+        const s2 = new CompositeTask();
         s2.type = 'ocr';
         s2.label = '识别文档文字';
         s2.dependsOn = 0;
         plan.subtasks.push(s2);
       } else {
-        const s2 = new SubTask();
+        const s2 = new CompositeTask();
         s2.type = 'ocr';
         s2.label = '识别文档文字';
         plan.subtasks.push(s2);
       }
-      const s3 = new SubTask();
+      const s3 = new CompositeTask();
       s3.type = 'summarize';
       s3.label = '生成结构化重点';
       s3.dependsOn = plan.subtasks.length - 1;
       plan.subtasks.push(s3);
       if (wantIngest) {
-        const s4 = new SubTask();
+        const s4 = new CompositeTask();
         s4.type = 'kb_save_summary';
         s4.label = '总结存入知识库';
         s4.dependsOn = plan.subtasks.length - 1;
@@ -205,11 +205,11 @@ export class IntentEngine {
       // 已有文字内容的"总结+入库"
       plan.matched = true;
       plan.planName = '总结并入库';
-      const s1 = new SubTask();
+      const s1 = new CompositeTask();
       s1.type = 'summarize_text';
       s1.label = '总结给定内容';
       plan.subtasks.push(s1);
-      const s2 = new SubTask();
+      const s2 = new CompositeTask();
       s2.type = 'kb_save_summary';
       s2.label = '总结存入知识库';
       s2.dependsOn = 0;
@@ -219,7 +219,7 @@ export class IntentEngine {
     if (wantReview) {
       plan.matched = true;
       plan.planName = '遗忘曲线复习排期';
-      const s1 = new SubTask();
+      const s1 = new CompositeTask();
       s1.type = 'plan_review';
       s1.label = '按遗忘曲线生成复习提醒';
       plan.subtasks.push(s1);
@@ -228,7 +228,7 @@ export class IntentEngine {
     if (wantAskKb) {
       plan.matched = true;
       plan.planName = '知识库溯源问答';
-      const s1 = new SubTask();
+      const s1 = new CompositeTask();
       s1.type = 'kb_ask';
       s1.label = '检索个人知识库并回答';
       plan.subtasks.push(s1);
