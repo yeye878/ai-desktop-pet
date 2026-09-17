@@ -134,7 +134,7 @@ struct Index {
             .textAlign(TextAlign.Center)
             .borderRadius(8)
             .backgroundColor(Ink.text)
-          Text('智能伙伴')
+          Text($r('app.string.app_name'))
             .fontSize(17)
             .fontWeight(FontWeight.Bold)
             .fontColor(Ink.text)

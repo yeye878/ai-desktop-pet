@@ -416,7 +416,7 @@ export struct SettingsPanel {
 
             // ---------- 关于 ----------
             SettingsSection({ title: '关于' }) {
-              Text('OpenCompanion 智能伙伴，OpenHarmony 原生智能多模态个人助理（ArkTS + ArkUI）。端侧 RAG：@kit.DataAugmentationKit；语音：@kit.CoreSpeechKit；OCR：@kit.CoreVisionKit。数据全部存储在设备本地，API 密钥使用系统资产加密存储。')
+              Text($r('app.string.about_desc'))
                 .fontSize(11)
                 .fontColor(Ink.text3)
                 .lineHeight(17)
