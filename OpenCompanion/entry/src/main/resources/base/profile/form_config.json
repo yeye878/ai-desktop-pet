@@ -1,0 +1,21 @@
+{
+  "forms": [
+    {
+      "name": "PetCard",
+      "displayName": "$string:EntryFormAbility_label",
+      "description": "$string:EntryFormAbility_desc",
+      "src": "./ets/widget/pages/PetCard.ets",
+      "uiSyntax": "arkts",
+      "isDefault": true,
+      "updateEnabled": true,
+      "scheduledUpdateTime": "10:00",
+      "updateDuration": 1,
+      "defaultDimension": "1*2",
+      "supportDimensions": [
+        "1*2",
+        "2*2",
+        "2*4"
+      ]
+    }
+  ]
+}
