@@ -12,7 +12,7 @@ import { AgentRepo } from './AgentRepo';
 import { EvolutionManager } from './EvolutionManager';
 import { ToolRegistry } from './ToolRegistry';
 import { Gates } from './Gates';
-import { IntentEngine, ChatServiceRef, CompositePlan, SubTask } from './IntentEngine';
+import { IntentEngine, ChatServiceRef, CompositePlan, CompositeTask } from './IntentEngine';
 import { KbService, KbHit } from '../knowledge/KbService';
 import { DocImporter } from '../knowledge/DocImporter';
 import { TtsController } from '../voice/TtsController';
@@ -302,7 +302,7 @@ export class ChatService {
   private static async runCompositePlan(plan: CompositePlan, rawText: string, imageUris: string[],
     imageDataUrls: string[], userMsg: ChatMessage, assistant: ChatMessage, cbs: LoopCallbacks): Promise<void> {
     ChatService.pushTraceLine(assistant, `🧭 已拆解复合指令「${plan.planName}」→ ${plan.subtasks.length} 个子任务`);
-    plan.subtasks.forEach((st: SubTask, i: number) => {
+    plan.subtasks.forEach((st: CompositeTask, i: number) => {
       const dep = st.dependsOn >= 0 ? `（依赖步骤${st.dependsOn + 1}）` : '';
       ChatService.pushTraceLine(assistant, `　${i + 1}. ${st.label}${dep}`);
     });
