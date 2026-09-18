@@ -1,0 +1,36 @@
+{
+  "string": [
+    {
+      "name": "app_name",
+      "value": "鸿蒙智伴"
+    },
+    {
+      "name": "module_desc",
+      "value": "鸿蒙智伴是基于鸿蒙原生智能的陪伴式多模态个人智能助理应用"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "鸿蒙智伴"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "鸿蒙智伴主入口"
+    },
+    {
+      "name": "EntryFormAbility_label",
+      "value": "鸿蒙智伴"
+    },
+    {
+      "name": "EntryFormAbility_desc",
+      "value": "鸿蒙智伴快捷卡片"
+    },
+    {
+      "name": "mic_reason",
+      "value": "用于语音输入与多模态交互"
+    },
+    {
+      "name": "dist_reason",
+      "value": "用于跨设备任务与上下文流转"
+    }
+  ]
+}
