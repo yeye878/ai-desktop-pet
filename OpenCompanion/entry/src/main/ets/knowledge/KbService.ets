@@ -3,6 +3,7 @@ import { retrieval } from '@kit.DataAugmentationKit';
 import { AppContext } from '../commons/AppContext';
 import { RdbHelper } from '../commons/RdbHelper';
 import { Log } from '../commons/Log';
+import { PerfTrace } from '../commons/PerfTrace';
 import { ToolRegistry } from '../core/ToolRegistry';
 import { LlmClient, LlmProfiles } from '../core/LlmClient';
 import { ToolDef, ToolParam, CancelToken, LlmMessage, LlmProfile, ToolCallReq } from '../core/Types';
@@ -243,9 +244,19 @@ export class KbService {
     if (KbService.chunkCache.length === 0) {
       return [];
     }
+    PerfTrace.mark('kb_retrieval_t0');
+    PerfTrace.mark('kb_kit_t0');
     const kitHits = await KbService.kitSearch(query, topK);
+    PerfTrace.mark('kb_kit_t1');
+    PerfTrace.mark('kb_local_t0');
     const localHits = KbService.localSearch(query, topK);
+    PerfTrace.mark('kb_local_t1');
     const fused = KbService.fuseRrf([kitHits, localHits], topK);
+    PerfTrace.mark('kb_retrieval_t1');
+    // 双路各自的耗时分开记：演示时能直接说明「两路各花了多少」
+    PerfTrace.measure('知识库检索·Kit 倒排通道', 'kb_kit_t0', 'kb_kit_t1');
+    PerfTrace.measure('知识库检索·本地 bigram 通道', 'kb_local_t0', 'kb_local_t1');
+    PerfTrace.measure('知识库检索·双路召回+RRF 总计', 'kb_retrieval_t0', 'kb_retrieval_t1');
     if (fused.length === 0) {
       Log.info(`kb search empty (kit=${kitHits.length}, local=${localHits.length})`);
     }
@@ -360,17 +371,23 @@ export class KbService {
 
   /** RAG 问答（流式）。离线模式走端侧模型；否则走 RAG 会话，失败降级为 检索+LLM。 */
   static async askStream(question: string, cb: AskCallbacks, token: CancelToken | null): Promise<string> {
-    const offline = AppContext.getBool('kb_offline_mode', false);
-    if (offline) {
-      return await KbService.offlineAnswer(question, cb, token);
-    }
+    PerfTrace.mark('kb_ask_t0');
     try {
-      const usedSources = await RagBridge.answer(question, cb, token);
-      return usedSources;
-    } catch (e) {
-      const err = e as Error;
-      Log.warn(`rag bridge failed, fallback to search+llm: ${err.message}`);
-      return await KbService.searchAndLlmAnswer(question, cb, token);
+      const offline = AppContext.getBool('kb_offline_mode', false);
+      if (offline) {
+        return await KbService.offlineAnswer(question, cb, token);
+      }
+      try {
+        return await RagBridge.answer(question, cb, token);
+      } catch (e) {
+        const err = e as Error;
+        Log.warn(`rag bridge failed, fallback to search+llm: ${err.message}`);
+        return await KbService.searchAndLlmAnswer(question, cb, token);
+      }
+    } finally {
+      // 端到端时延（检索 → 回答完成）。用 finally 是为了让降级路径与异常路径也留下数据
+      PerfTrace.mark('kb_ask_t1');
+      PerfTrace.measure('知识库问答·端到端', 'kb_ask_t0', 'kb_ask_t1');
     }
   }
 
