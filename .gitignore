@@ -10,7 +10,6 @@ __pycache__/
 .DS_Store
 *.exe
 nul
-resources/
 .qoder/
 update_shortcut.ps1
 __*.tmp
