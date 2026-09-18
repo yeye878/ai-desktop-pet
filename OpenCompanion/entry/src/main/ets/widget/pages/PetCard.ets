@@ -11,7 +11,7 @@ struct PetCard {
       Row({ space: 8 }) {
         Text(this.emoji).fontSize(30)
         Column({ space: 2 }) {
-          Text('智能伙伴')
+          Text($r('app.string.app_name'))
             .fontSize(13)
             .fontWeight(FontWeight.Bold)
             .fontColor('#5B4A4F')

@@ -1,14 +1,7 @@
 import { AppContext } from '../commons/AppContext';
-import { RdbHelper } from '../commons/RdbHelper';
-import { PerfTrace } from '../commons/PerfTrace';
-import { DistributedSync } from '../commons/DistributedSync';
-import { Log } from '../commons/Log';
+import { AppBootstrap } from '../commons/AppBootstrap';
 import { bus, Ev, BusEvent } from '../commons/EventBus';
 import { BehaviorEngine } from '../pet/BehaviorEngine';
-import { ChatService } from '../core/ChatService';
-import { AsrController } from '../voice/AsrController';
-import { TtsController } from '../voice/TtsController';
-import { RagBridge } from '../knowledge/RagBridge';
 import { curves } from '@kit.ArkUI';
 import { AccentBridge, Ink, Radius, Shadow } from '../ui/DesignTokens';
 import { AppIcon, IconButton } from '../ui/Widgets';
@@ -70,31 +63,10 @@ struct Index {
     this.moodTimer = setInterval(() => {
       this.mood = BehaviorEngine.moodEmoji();
     }, 3000);
-    // 首帧后延迟初始化（冷启动优化：首帧前不做任何重初始化）
-    AppContext.postFrame(() => {
-      // RdbHelper 必须最先初始化：ChatService.init → AgentRepo/loadHistory 直接查主库，
-      // 缺了这一步整个初始化链静默失败（发消息不显示、页面刷新 unhandled rejection）
-      RdbHelper.init().then(() => {
-        return AppContext.initSettings();
-      }).then(() => {
-        return ChatService.init();
-      }).then(() => {
-        BehaviorEngine.start();
-        AsrController.preheat();
-        TtsController.preheat();
-        this.initDone = true;
-        PerfTrace.mark('interactive');
-        PerfTrace.measure('冷启动·可交互', 'ability_created', 'interactive');
-        // idle 阶段预热：RAG 会话池 + 分布式同步（都有静默降级，不影响主链路）
-        AppContext.postFrame(() => {
-          RagBridge.preheat();
-          DistributedSync.ensure();
-        }, 600);
-      }).catch((e: Error) => {
-        Log.error(`init chain failed: ${e.message}`);
-        this.initDone = true;
-      });
-    }, 60);
+    // 冷启动初始化链见 AppBootstrap：失败按降级处理，仍会 resolve
+    AppBootstrap.init().then(() => {
+      this.initDone = true;
+    });
   }
 
   aboutToDisappear(): void {
@@ -162,7 +134,7 @@ struct Index {
             .textAlign(TextAlign.Center)
             .borderRadius(8)
             .backgroundColor(Ink.text)
-          Text('智能伙伴')
+          Text($r('app.string.app_name'))
             .fontSize(17)
             .fontWeight(FontWeight.Bold)
             .fontColor(Ink.text)

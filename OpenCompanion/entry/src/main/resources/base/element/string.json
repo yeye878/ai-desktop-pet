@@ -1,0 +1,40 @@
+{
+  "string": [
+    {
+      "name": "app_name",
+      "value": "鸿蒙智伴"
+    },
+    {
+      "name": "module_desc",
+      "value": "鸿蒙智伴是基于鸿蒙原生智能的陪伴式多模态个人智能助理应用"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "鸿蒙智伴"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "鸿蒙智伴主入口"
+    },
+    {
+      "name": "EntryFormAbility_label",
+      "value": "鸿蒙智伴"
+    },
+    {
+      "name": "EntryFormAbility_desc",
+      "value": "鸿蒙智伴快捷卡片"
+    },
+    {
+      "name": "mic_reason",
+      "value": "用于语音输入与多模态交互"
+    },
+    {
+      "name": "dist_reason",
+      "value": "用于跨设备任务与上下文流转"
+    },
+    {
+      "name": "about_desc",
+      "value": "鸿蒙智伴，OpenHarmony 原生智能多模态个人助理（ArkTS + ArkUI）。端侧 RAG：@kit.DataAugmentationKit；语音：@kit.CoreSpeechKit；OCR：@kit.CoreVisionKit。数据全部存储在设备本地，API 密钥使用系统资产加密存储。"
+    }
+  ]
+}
