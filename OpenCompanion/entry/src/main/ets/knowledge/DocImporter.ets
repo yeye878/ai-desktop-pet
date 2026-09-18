@@ -16,6 +16,13 @@ export class DocImporter {
   static readonly ERR_OCR_UNAVAILABLE: string = 'OCR_UNAVAILABLE';
 
   /**
+   * 单张图片处理上限：超过则直接拒绝。
+   * `recognizeText` 前要把整图解码成 PixelMap，超大图会把内存打爆或长时间卡住，
+   * 与其让它在解码阶段失败，不如给用户一句能照着做的提示。
+   */
+  static readonly MAX_IMAGE_BYTES: number = 12 * 1024 * 1024;
+
+  /**
    * OCR 引擎是否可用：syscap 声明 + 原生模块实际存在，双重验证。
    * 与 RagBridge.kitAvailable 同构 —— syscap 表可能声明支持，但原生模块被裁剪
    * （模拟器常见），只查 canIUse 会漏判。
@@ -123,6 +130,12 @@ export class DocImporter {
     if (!inited) {
       throw new Error(DocImporter.ERR_OCR_UNAVAILABLE);
     }
+    // 解码前先看体积：取不到大小（0）则不阻断，交由解码阶段自行报错
+    const bytes = DocImporter.uriSize(uri);
+    if (bytes > DocImporter.MAX_IMAGE_BYTES) {
+      const mb = Math.round(bytes / 1024 / 1024);
+      throw new Error(`图片过大（${mb}MB，上限 ${DocImporter.MAX_IMAGE_BYTES / 1024 / 1024}MB），请压缩后重试`);
+    }
     let source: image.ImageSource | null = null;
     try {
       const isUri = uri.startsWith('file://') || uri.startsWith('datashare://') || uri.startsWith('media://');
@@ -140,6 +153,20 @@ export class DocImporter {
           // ignore
         }
       }
+    }
+  }
+
+  /** uri 指向文件的字节数；打不开或取不到则返回 0（调用方据此跳过体积极校验） */
+  private static uriSize(uri: string): number {
+    try {
+      const f = fs.openSync(uri, fs.OpenMode.READ_ONLY);
+      try {
+        return fs.statSync(f.fd).size;
+      } finally {
+        fs.closeSync(f);
+      }
+    } catch (e) {
+      return 0;
     }
   }
 
