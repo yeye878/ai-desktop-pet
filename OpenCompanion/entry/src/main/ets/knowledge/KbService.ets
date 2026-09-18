@@ -419,13 +419,32 @@ export class KbService {
     });
   }
 
-  /** 端侧模型离线回答（localChatModel，全程断网可用） */
+  /** 端侧模型离线回答（localChatModel，全程断网可用）；端侧模型不可用时降级为检索原文 */
   static async offlineAnswer(question: string, cb: AskCallbacks, token: CancelToken | null): Promise<string> {
     const hits = await KbService.search(question, 3);
     cb.onSources(hits);
     const context = hits.map((h: KbHit) => `《${h.docTitle}》:${h.content}`).join('\n');
     const prompt = KbService.trimBytes(`请依据资料回答问题，资料没有的信息回答“资料中未提及”。\n资料：${context}\n问题：${question}`, 4200);
-    return await RagBridge.localAnswer(prompt, cb);
+    try {
+      return await RagBridge.localAnswer(prompt, cb);
+    } catch (e) {
+      // 端侧模型不可用（设备裁剪 / 模型资源未下载）时降级为「检索原文」，而不是把异常抛出去：
+      // 上层 kb_ask 工具与复合指令的 kb_ask 子任务都没有 try/catch，
+      // 异常冒泡会中断整条指令，用户只看到"失败"却拿不到任何内容。
+      const reason = (e as Error).message;
+      Log.warn(`offline answer failed, degrade to retrieval excerpt: ${reason}`);
+      let text: string;
+      if (hits.length === 0) {
+        text = '端侧问答模型不可用，且知识库中没有与该问题相关的内容。请先在知识库页导入文档，或换个问法。';
+      } else {
+        const excerpt = hits.map((h: KbHit) => `《${h.docTitle}》:${h.content.substring(0, 400)}`).join('\n');
+        text = `端侧问答模型不可用，无法生成归纳回答。以下是与问题相关的资料原文：\n\n${excerpt}`;
+      }
+      // 同时走流式回显与返回值：知识库页只累加 onDelta 而不取返回值，
+      // 只 return 的话降级文案到不了界面
+      cb.onDelta(text);
+      return text;
+    }
   }
 
   static trimBytes(s: string, maxBytes: number): string {
