@@ -1,99 +1,41 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { X } from "@lucide/vue";
+import { createInteractionSubmission, subscribePendingInteraction, type ToolConfirmPayload } from "../services/pendingInteractions";
 
 const emit = defineEmits<{ close: [] }>();
-const TOOL_CONFIRM_PAYLOAD_KEY = "ai-desktop-pet.tool-confirm-payload";
-
-type ToolConfirmPayload = {
-  id: string;
-  tool_name: string;
-  arguments: string;
-  summary?: string;
-  command?: string | null;
-  path?: string | null;
-};
-
-const currentWindow = getCurrentWindow();
-const pendingConfirm = ref<ToolConfirmPayload | null>(readInitialPayload());
-const isResolving = ref(false);
-let unlistenPayload: UnlistenFn | null = null;
-let unlistenResolved: UnlistenFn | null = null;
-
-function readInitialPayload() {
-  const stored = localStorage.getItem(TOOL_CONFIRM_PAYLOAD_KEY);
-  if (stored) {
-    localStorage.removeItem(TOOL_CONFIRM_PAYLOAD_KEY);
-    try {
-      return JSON.parse(stored) as ToolConfirmPayload;
-    } catch {
-      // Fall through to URL compatibility below.
-    }
-  }
-
-  const raw = new URLSearchParams(window.location.search).get("payload");
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as ToolConfirmPayload;
-  } catch {
-    return null;
-  }
-}
+const pendingConfirm = ref<ToolConfirmPayload | null>(null);
+const { submittingId, error, submit } = createInteractionSubmission(pendingConfirm, (id, value) => invoke("confirm_tool", { id, approved: value }));
+const isResolving = computed(() => !!pendingConfirm.value && submittingId.value === pendingConfirm.value.id);
+let stopPending: (() => void) | undefined;
 
 async function resolveConfirm(approved: boolean) {
   if (!pendingConfirm.value) {
     emit("close");
     return;
   }
-  if (isResolving.value) return;
-  isResolving.value = true;
-  try {
-    await invoke("confirm_tool", {
-      id: pendingConfirm.value.id,
-      approved,
-    });
-  } finally {
-    pendingConfirm.value = null;
-    emit("close");
-  }
+  const id = await submit(approved);
+  if (id && !pendingConfirm.value) emit("close");
 }
 
-onMounted(async () => {
-  unlistenPayload = await listen<ToolConfirmPayload>("tool-confirm-payload", (event) => {
-    pendingConfirm.value = event.payload;
-    isResolving.value = false;
-  });
-
-  unlistenResolved = await listen<{ id: string; approved: boolean }>(
-    "ai-tool-confirm-resolved",
-    (event) => {
-      if (pendingConfirm.value?.id === event.payload.id) {
-        pendingConfirm.value = null;
-        emit("close");
-      }
-    },
-  );
-
-  await currentWindow.setAlwaysOnTop(true).catch(() => {});
-  await currentWindow.setFocus().catch(() => {});
+onMounted(() => {
+  stopPending = subscribePendingInteraction("tool", pendingConfirm, () => emit("close"));
 });
 
 onBeforeUnmount(() => {
-  unlistenPayload?.();
-  unlistenResolved?.();
+  stopPending?.();
 });
 </script>
 
 <template>
-  <section class="tool-confirm-window" data-tauri-drag-region>
+  <section class="tool-confirm-window">
     <div class="tool-confirm-titlebar" data-tauri-drag-region>
       <div>
         <span class="tool-confirm-kicker">Tool Request</span>
         <h1>确认工具调用</h1>
       </div>
-      <button class="icon-btn" title="拒绝并关闭" @click="resolveConfirm(false)">×</button>
+      <button type="button" class="icon-btn" title="拒绝并关闭" aria-label="拒绝并关闭" :disabled="isResolving" @click="resolveConfirm(false)"><X :size="16" /></button>
     </div>
 
     <div v-if="pendingConfirm" class="tool-confirm-body">
@@ -115,6 +57,7 @@ onBeforeUnmount(() => {
         <span>参数</span>
         <pre>{{ pendingConfirm.arguments }}</pre>
       </div>
+      <p v-if="error" class="confirm-error" role="alert">{{ error }}</p>
     </div>
 
     <div v-else class="empty-state">
@@ -199,7 +142,8 @@ h1 {
   min-height: 0;
   overflow: auto;
   padding: 14px 16px;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 10px;
 }
 
@@ -277,6 +221,7 @@ pre {
 }
 
 .tool-confirm-actions {
+  flex-shrink: 0;
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 10px;
@@ -420,4 +365,11 @@ h1 {
     transform: none !important;
   }
 }
+.confirm-error { margin: 0; color: #b54040; overflow-wrap: anywhere; font-size: 12px; }
+.icon-btn { display: grid; place-items: center; }
+.summary-panel strong { overflow-wrap: anywhere; }
+.tool-confirm-body > * { flex-shrink: 0; }
+.tool-confirm-kicker { letter-spacing: 0; }
+.summary-panel, .detail-row, .args-block { border-radius: 6px; box-shadow: none; }
+.icon-btn, .tool-confirm-actions button, .args-block pre { border-radius: 4px; }
 </style>

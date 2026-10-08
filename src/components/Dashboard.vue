@@ -5,10 +5,18 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import CustomPixelPetWorkshop from "./CustomPixelPetWorkshop.vue";
+import CodexConnection from "./CodexConnection.vue";
+import AgentActivity from "./AgentActivity.vue";
+import UserQuestion from "./UserQuestion.vue";
+import { createInteractionSubmission, subscribePendingInteraction, type AskUserPayload } from "../services/pendingInteractions";
+import { isNearBottom, legacyActivity } from "../services/agentActivity";
+import { ArrowDown } from "@lucide/vue";
+import CollaborationBar from "./CollaborationBar.vue";
+import { subscribeCollaboration } from "../services/collaboration";
 import PetCanvas from "./PetCanvas.vue";
 import { usePetStore, THEMES, FONT_COLORS, resolveSkinId } from "../stores/pet";
 import { useSkillsStore, type Skill } from "../stores/skills";
-import { useChatStore, type Message, type MessageAgent, type QuotedMessage } from "../stores/chat";
+import { useChatStore, messageAgentFromPayload, type AiFinishedPayload, type Message, type MessageAgent, type QuotedMessage } from "../stores/chat";
 import { useAgentsStore, type Agent } from "../stores/agents";
 import {
   parseQuoteSegments,
@@ -70,7 +78,7 @@ const currentWindow = getCurrentWindow();
 
 // === 导航 ===
 type NavPage = "home" | "chat" | "memory" | "agents" | "appearance" | "voice" | "system" | "about";
-const activePage = ref<NavPage>("home");
+const activePage = ref<NavPage>(import.meta.env.DEV && new URLSearchParams(window.location.search).get("activity") === "demo" ? "chat" : "home");
 const isPetActive = ref(false);
 const skillsStore = useSkillsStore();
 const agentsStore = useAgentsStore();
@@ -160,17 +168,6 @@ type ToolConfirmPayload = {
   summary?: string;
   command?: string | null;
   path?: string | null;
-};
-
-type AskUserOption = {
-  label: string;
-  description?: string | null;
-};
-
-type AskUserPayload = {
-  id: string;
-  question: string;
-  options: AskUserOption[];
 };
 
 type AnswerDeltaPayload = {
@@ -414,16 +411,19 @@ const toolPermissionOptions = [
   { id: "computer_wait", label: "等待界面" },
   { id: "window_list", label: "列出窗口" },
   { id: "browser_snapshot", label: "查看浏览器" },
+  { id: "create_agent", label: "创建智能体" },
+  { id: "update_agent", label: "修改智能体" },
 ];
 
 const currentModelLabel = computed(() => {
   if (backendType.value === "direct_api") {
     return apiConfig.value.model || "未选择模型";
   }
-  return currentModel.value || "Claude Code";
+  return currentModel.value || (backendType.value === "codex" ? "Codex / 本机配置" : "Claude Code");
 });
 
 const currentExecutionModeLabel = computed(() => {
+  if (backendType.value === "codex") return "Codex";
   if (backendType.value !== "direct_api") return "Claude Code";
   return executionModeOptions.find((item) => item.value === apiConfig.value.execution_mode)?.label || "普通模式";
 });
@@ -512,6 +512,8 @@ const agentDraft = ref({
   description: "",
   system_prompt: "",
   model: "",
+  backend: "direct_api" as Agent["backend"],
+  api_profile_id: "",
   allowed_tools: [] as string[],
 });
 const agentSaveError = ref("");
@@ -526,7 +528,14 @@ function openAgentsPage() {
   void agentsStore.load();
 }
 
+async function configureBuiltinAgent(agent: Agent) {
+  try {
+    await invoke(agent.backend === "codex" ? "open_codex_config" : "open_claude_config");
+  } catch (error) { alert("打开登录配置失败：" + error); }
+}
+
 function openAgentEditor(agent?: Agent) {
+  if (agent?.is_builtin) return;
   if (agent) {
     editingAgentId.value = agent.id;
     agentDraft.value = {
@@ -536,6 +545,8 @@ function openAgentEditor(agent?: Agent) {
       description: agent.description,
       system_prompt: agent.system_prompt,
       model: agent.model,
+      backend: agent.backend || "direct_api",
+      api_profile_id: agent.api_profile_id || "",
       allowed_tools: [...agent.allowed_tools],
     };
   } else {
@@ -547,6 +558,8 @@ function openAgentEditor(agent?: Agent) {
       description: "",
       system_prompt: "",
       model: "",
+      backend: "direct_api",
+      api_profile_id: "",
       allowed_tools: [],
     };
   }
@@ -573,7 +586,7 @@ async function saveAgentDraft() {
     agentSaveError.value = "请填写智能体名字";
     return;
   }
-  if (/s|@/.test(name)) {
+  if (/\s|@/.test(name)) {
     agentSaveError.value = "名字不能包含空格或 @（名字会用于对话中的 @ 提及）";
     return;
   }
@@ -586,6 +599,9 @@ async function saveAgentDraft() {
       description: agentDraft.value.description.trim(),
       system_prompt: agentDraft.value.system_prompt.trim(),
       model: agentDraft.value.model.trim(),
+      backend: agentDraft.value.backend,
+      api_profile_id: agentDraft.value.api_profile_id,
+      is_builtin: false,
       allowed_tools: agentDraft.value.allowed_tools,
       created_at: now,
       updated_at: now,
@@ -599,6 +615,7 @@ async function saveAgentDraft() {
 }
 
 async function deleteAgentDraft(agent: Agent) {
+  if (agent.is_builtin) return;
   if (!window.confirm("确定删除智能体「" + agent.name + "」吗？此操作不可撤销。")) return;
   agentDeletingId.value = agent.id;
   try {
@@ -626,6 +643,8 @@ async function generateAgentFromDesc() {
       description: spec.description || "",
       system_prompt: spec.system_prompt || "",
       model: "",
+      backend: "direct_api",
+      api_profile_id: "",
       allowed_tools: spec.allowed_tools || [],
     };
     agentSaveError.value = "";
@@ -635,6 +654,39 @@ async function generateAgentFromDesc() {
     agentGenError.value = String(e);
   } finally {
     agentGenLoading.value = false;
+  }
+}
+
+/** 编辑器里只写了名字 / 一句话描述时，让 AI 补全角色设定（保留 id、后端和模型配置）。 */
+const agentCompleteLoading = ref(false);
+async function completeAgentDraft() {
+  const draft = agentDraft.value;
+  const brief = [
+    draft.name.trim() && `名字：${draft.name.trim()}`,
+    draft.description.trim() && `定位：${draft.description.trim()}`,
+    draft.system_prompt.trim() && `已有设定（请在此基础上扩写完善）：${draft.system_prompt.trim()}`,
+  ].filter(Boolean).join("\n");
+  if (!brief || agentCompleteLoading.value) {
+    agentSaveError.value = "先写个名字或一句话描述，AI 才知道要补全什么";
+    return;
+  }
+  agentCompleteLoading.value = true;
+  agentSaveError.value = "";
+  try {
+    const spec = await agentsStore.generateSpec(brief);
+    agentDraft.value = {
+      ...draft,
+      // 用户已经起好的名字不改，避免 @ 习惯被打乱
+      name: draft.name.trim() || spec.name || "新智能体",
+      avatar: draft.avatar && draft.avatar !== "🤖" ? draft.avatar : spec.avatar || "🤖",
+      description: draft.description.trim() || spec.description || "",
+      system_prompt: spec.system_prompt || draft.system_prompt,
+      allowed_tools: draft.allowed_tools.length ? draft.allowed_tools : spec.allowed_tools || [],
+    };
+  } catch (e) {
+    agentSaveError.value = String(e);
+  } finally {
+    agentCompleteLoading.value = false;
   }
 }
 
@@ -897,7 +949,7 @@ async function loadBackendSettings() {
     await loadApiProfiles();
     if (backendType.value === "direct_api") {
       currentModel.value = `直连 API: ${apiConfig.value.model}`;
-    } else {
+    } else if (backendType.value === "claude_code") {
       await loadClaudeStatus();
     }
   } catch {}
@@ -938,9 +990,9 @@ async function selectBackend(type: string) {
   try {
     await invoke("set_backend_type", { backend: type });
     backendType.value = type;
-    if (type === "claude_code") {
+    if (type !== "direct_api") {
       await loadCurrentModel();
-      await loadClaudeStatus();
+      if (type === "claude_code") await loadClaudeStatus();
     } else {
       currentModel.value = `直连 API: ${apiConfig.value.model}`;
     }
@@ -1608,6 +1660,7 @@ async function petAction(name: string) {
       await invoke("start_new_conversation");
       // 新对话：保留聊天记录显示，仅重置 AI 状态
       chat.isLoading = false;
+      chat.activity.reset();
       thinkingContent.value = "";
       streamingAnswer.value = "";
       pendingConfirm.value = null;
@@ -1669,11 +1722,18 @@ const toolEvents = ref<ToolEvent[]>([]);
 const pendingConfirm = ref<ToolConfirmPayload | null>(null);
 // === 智能体主动询问弹窗 (ask_user) ===
 const pendingQuestion = ref<AskUserPayload | null>(null);
-const askUserSelected = ref("");
-const askUserAnswer = ref("");
-const askUserSubmitting = ref(false);
+const confirmSubmission = createInteractionSubmission(pendingConfirm, (id, value) => invoke("confirm_tool", { id, approved: value }));
+const confirmSubmitting = computed(() => confirmSubmission.submittingId.value === pendingConfirm.value?.id);
 const dashChatMessagesRef = ref<HTMLDivElement | null>(null);
 const dashChatEndRef = ref<HTMLDivElement | null>(null);
+const followingActivity = ref(true);
+function trackChatScroll() {
+  if (dashChatMessagesRef.value) followingActivity.value = isNearBottom(dashChatMessagesRef.value);
+}
+function jumpToLatest() {
+  followingActivity.value = true;
+  scrollDashChatToBottom();
+}
 let dashChatScrollFrame: number | null = null;
 let dashChatScrollTimers: ReturnType<typeof setTimeout>[] = [];
 
@@ -1685,16 +1745,15 @@ let unlistenChatCleared: UnlistenFn | null = null;
 let unlistenSkillActivated: UnlistenFn | null = null;
 let unlistenSyncMessage: UnlistenFn | null = null;
 let unlistenToolEvent: UnlistenFn | null = null;
-let unlistenToolConfirm: UnlistenFn | null = null;
-let unlistenToolConfirmResolved: UnlistenFn | null = null;
-let unlistenAskUser: UnlistenFn | null = null;
-let unlistenAskUserResolved: UnlistenFn | null = null;
+let stopToolConfirm: (() => void) | undefined;
+let stopQuestion: (() => void) | undefined;
 let unlistenScheduledTasksChanged: UnlistenFn | null = null;
 let unlistenScheduledTaskTriggered: UnlistenFn | null = null;
 let unlistenWeatherUpdate: UnlistenFn | null = null;
 let unlistenDragDrop: UnlistenFn | null = null;
 let unlistenVoiceSettingsChanged: UnlistenFn | null = null;
 let unlistenTtsSettingsChanged: UnlistenFn | null = null;
+let stopCollaboration: (() => void) | null = null;
 
 // === 文件拖拽与预加载相关数据 ===
 interface PendingFile {
@@ -1911,7 +1970,10 @@ function handleDragDropEvent(event: any) {
 
 async function refreshChatState() {
   try {
-    const history = await invoke<any[]>("get_chat_history");
+    const [history, active] = await Promise.all([
+      invoke<any[]>("get_chat_history"),
+      invoke<{ thinking: string } | null>("get_active_chat"),
+    ]);
     chat.setMessages(history.map(item => ({
       role: item.role === "assistant" ? "assistant" as const : "user" as const,
       content: item.content || (item.quoted_content ? "（引用消息）" : item.content),
@@ -1931,6 +1993,12 @@ async function refreshChatState() {
           }
         : undefined,
     })));
+    if (active && !chat.activity.items.length) {
+      chat.isLoading = true;
+      thinkingContent.value = active.thinking || "";
+      chat.activity.items.push(...legacyActivity(active.thinking));
+      resetLoadingTimeout();
+    }
     scrollDashChatToBottom();
   } catch {}
 }
@@ -1946,6 +2014,11 @@ function resetDashChatUi() {
 }
 
 async function abortAi() {
+  clearLoadingTimeout();
+  if (chat.isLoading) {
+    const message = chat.addMessage("assistant", "已中止", thinkingContent.value || undefined);
+    chat.captureActivity(message, "aborted");
+  }
   chat.isLoading = false;
   thinkingContent.value = "";
   streamingAnswer.value = "";
@@ -1992,6 +2065,9 @@ async function sendDashboardMessage() {
   chatInput.value = "";
   pendingQuote.value = null;
   clearPendingFiles();
+  chat.collaboration = null;
+  chat.activity.reset();
+  followingActivity.value = true;
   chat.isLoading = true;
   resetLoadingTimeout(); // 启动超时保底
   thinkingContent.value = "";
@@ -2010,6 +2086,7 @@ async function sendDashboardMessage() {
       quotedRole: quote?.role,
       quotedContent: quote ? truncateQuoteContent(quote.content) : undefined,
       mentionAgents: dashMentionNames(text),
+      collaborationEnabled: chat.collaborationEnabled,
     });
   } catch (err) {
     chat.isLoading = false;
@@ -2094,6 +2171,7 @@ async function startDashboardNewConversation() {
   try {
     await invoke("start_new_conversation");
     chat.isLoading = false;
+    chat.activity.reset();
     thinkingContent.value = "";
     streamingAnswer.value = "";
     pendingConfirm.value = null;
@@ -2131,7 +2209,7 @@ function moveDashMentionSelection(delta: number) {
 function chooseDashMentionItem(agent = dashMentionItems.value[dashMentionSelectedIndex.value]) {
   const query = dashMentionQuery.value;
   if (!agent || !query) return;
-  chatInput.value = insertMentionAt(chatInput.value, query, agent.name);
+  chatInput.value = insertMentionAt(chatInput.value, query, agentsStore.mentionName(agent));
   dashMentionSelectedIndex.value = 0;
   void nextTick(() => dashChatInputRef.value?.focus());
 }
@@ -2242,6 +2320,7 @@ async function resendDashMessage(msg: Message) {
 }
 
 function upsertToolEvent(event: ToolEvent) {
+  chat.activity.upsertTool(event);
   const index = toolEvents.value.findIndex((item) => item.id === event.id);
   if (index >= 0) {
     toolEvents.value[index] = { ...toolEvents.value[index], ...event };
@@ -2251,60 +2330,11 @@ function upsertToolEvent(event: ToolEvent) {
 }
 
 async function handleDashboardToolConfirm(approved: boolean) {
-  if (!pendingConfirm.value) return;
-  try {
-    await invoke("confirm_tool", {
-      id: pendingConfirm.value.id,
-      approved,
-    });
-  } catch (e) {
-    // Silently handle timeout/race condition errors
-    const errStr = String(e);
-    if (!errStr.includes("无效的确认请求 ID")) {
-      alert("确认工具操作失败: " + e);
-    }
-  } finally {
-    pendingConfirm.value = null;
-  }
+  await confirmSubmission.submit(approved);
 }
 
-// === 智能体主动询问 (ask_user) 弹窗逻辑 ===
-function selectAskUserOption(label: string) {
-  askUserSelected.value = label;
-  askUserAnswer.value = "";
-}
-
-async function submitAskUserAnswer(skip = false) {
-  if (!pendingQuestion.value || askUserSubmitting.value) return;
-  const questionId = pendingQuestion.value.id;
-  // 自定义输入优先于选项; 跳过时发送空字符串
-  const answer = skip ? "" : (askUserAnswer.value.trim() || askUserSelected.value);
-  if (!skip && !answer) return;
-  askUserSubmitting.value = true;
-  try {
-    await invoke("answer_question", { id: questionId, answer });
-  } catch (e) {
-    const errStr = String(e);
-    if (!errStr.includes("无效的问题 ID")) {
-      alert("提交回答失败: " + e);
-    }
-  } finally {
-    pendingQuestion.value = null;
-    askUserSubmitting.value = false;
-  }
-}
-
-function toolStatusLabel(status: string) {
-  const map: Record<string, string> = {
-    requested: "已请求",
-    waiting: "待确认",
-    approved: "已授权",
-    denied: "已拒绝",
-    running: "执行中",
-    completed: "已完成",
-    skipped: "已跳过",
-  };
-  return map[status] || status;
+function questionAnswered(id: string) {
+  if (pendingQuestion.value?.id === id) pendingQuestion.value = null;
 }
 
 function toggleAutoApprovedTool(toolId: string, enabled: boolean) {
@@ -2340,7 +2370,7 @@ function scrollDashChatToBottom() {
 
 function runDashChatScroll() {
   const container = dashChatMessagesRef.value;
-  if (!container) return;
+  if (!container || !followingActivity.value) return;
 
   container.scrollTop = container.scrollHeight;
   dashChatEndRef.value?.scrollIntoView({ block: "end" });
@@ -2352,6 +2382,7 @@ watch(() => [
   thinkingContent.value,
   streamingAnswer.value,
   toolEvents.value.length,
+  chat.activity.items.length,
   pendingConfirm.value?.id || "",
 ], () => {
   scrollDashChatToBottom();
@@ -2395,12 +2426,18 @@ let loadingTimeout: ReturnType<typeof setTimeout> | null = null;
 function resetLoadingTimeout() {
   if (loadingTimeout) clearTimeout(loadingTimeout);
   loadingTimeout = setTimeout(() => {
+    if (chat.collaboration?.status === "running") return;
+    if (pendingConfirm.value || pendingQuestion.value || chat.activity.items.some((item) => item.kind === "tool" && ["running", "waiting"].includes(item.tool.status))) {
+      resetLoadingTimeout();
+      return;
+    }
     if (chat.isLoading) {
       chat.isLoading = false;
       const last = chat.messages[chat.messages.length - 1];
       const timeoutMsg = "⚠️ 响应超时，请重试";
       if (!(last?.role === "assistant" && last.content === timeoutMsg)) {
-        chat.addMessage("assistant", timeoutMsg, thinkingContent.value || undefined);
+        const message = chat.addMessage("assistant", timeoutMsg, thinkingContent.value || undefined);
+        chat.captureActivity(message, "failed");
       }
       thinkingContent.value = "";
       streamingAnswer.value = "";
@@ -2416,6 +2453,32 @@ function clearLoadingTimeout() {
 }
 
 onMounted(async () => {
+  stopToolConfirm = subscribePendingInteraction("tool", pendingConfirm);
+  stopQuestion = subscribePendingInteraction("question", pendingQuestion);
+  stopCollaboration = subscribeCollaboration(chat, (reply) => {
+    const last = chat.messages[chat.messages.length - 1];
+    if (last && toolEvents.value.length) last.toolEvents = JSON.parse(JSON.stringify(toolEvents.value));
+    thinkingContent.value = "";
+    streamingAnswer.value = "";
+    toolEvents.value = [];
+    pendingConfirm.value = null;
+    pendingQuestion.value = null;
+    if (!reply.failed) void speakDashboardReply(stripQuoteMarkers(reply.text));
+    void scrollDashChatToBottom();
+  }, (status, newTurn) => {
+    if (newTurn || status.status !== "running") {
+      thinkingContent.value = "";
+      streamingAnswer.value = "";
+      toolEvents.value = [];
+      if (status.status !== "running") {
+        pendingConfirm.value = null;
+        pendingQuestion.value = null;
+      }
+    }
+    if (status.status === "running") resetLoadingTimeout();
+    else clearLoadingTimeout();
+  });
+  void agentsStore.startSync().catch((error) => console.error("加载智能体失败", error));
   unlistenWeatherUpdate = await listen<WeatherUpdateEvent>("weather-update", handleWeatherUpdate);
 
   resetTaskDraftTime();
@@ -2435,7 +2498,6 @@ onMounted(async () => {
   loadClaudeStatus();
   void loadWeatherConfig().then(() => loadWeather());
   void skillsStore.load();
-  void agentsStore.load();
 
   sysInfoTimer = setInterval(loadSystemInfo, 5000);
   weatherTimer = setInterval(loadWeather, 300000); // 每5分钟更新天气
@@ -2450,30 +2512,27 @@ onMounted(async () => {
     chat.isLoading = true;
     resetLoadingTimeout(); // 重置超时
     thinkingContent.value += event.payload;
+    chat.activity.appendThinking(event.payload);
   });
 
   unlistenAnswerDelta = await listen<AnswerDeltaPayload>("ai-answer-delta", (event) => {
     chat.isLoading = true;
     resetLoadingTimeout(); // 重置超时
     streamingAnswer.value += event.payload.text;
+    chat.activity.appendText(event.payload.text);
   });
 
-  unlistenAiFinished = await listen<any>("ai-finished", (event) => {
+  unlistenAiFinished = await listen<AiFinishedPayload>("ai-finished", (event) => {
     clearLoadingTimeout(); // 清除超时
     // 将当前工具事件快照附加到 AI 回复消息上
     const toolSnapshot = toolEvents.value.length > 0
       ? JSON.parse(JSON.stringify(toolEvents.value)) as any[]
       : undefined;
-    const replyAgent: MessageAgent | null = event.payload.agentName
-      ? {
-          id: event.payload.agentId || undefined,
-          name: event.payload.agentName,
-          avatar: event.payload.agentAvatar || undefined,
-        }
-      : null;
+    const replyAgent = messageAgentFromPayload(event.payload);
     const last = chat.messages[chat.messages.length - 1];
     if (!(last?.role === "assistant" && last.content === event.payload.text)) {
-      chat.addMessage("assistant", event.payload.text, event.payload.thinking || undefined, undefined, toolSnapshot, undefined, replyAgent);
+      const message = chat.addMessage("assistant", event.payload.text, event.payload.thinking || undefined, undefined, toolSnapshot, undefined, replyAgent);
+      chat.captureActivity(message);
     }
     chat.isLoading = false;
     thinkingContent.value = "";
@@ -2500,7 +2559,8 @@ onMounted(async () => {
     }
     const last = chat.messages[chat.messages.length - 1];
     if (!(last?.role === "assistant" && last.content === text)) {
-      chat.addMessage("assistant", text, event.payload.thinking || undefined, undefined, toolSnapshot);
+      const message = chat.addMessage("assistant", text, event.payload.thinking || undefined, undefined, toolSnapshot);
+      chat.captureActivity(message, event.payload.aborted ? "aborted" : "failed");
     }
     chat.isLoading = false;
     thinkingContent.value = "";
@@ -2537,6 +2597,8 @@ onMounted(async () => {
     chat.addMessage(payload.role, payload.content, undefined, payload.files ?? payload.fileAttachments, undefined, payload.quote, syncAgent);
     if (payload.role === "user") {
       chat.isLoading = true;
+      chat.activity.reset();
+      followingActivity.value = true;
       thinkingContent.value = "";
       streamingAnswer.value = "";
       toolEvents.value = [];
@@ -2546,32 +2608,9 @@ onMounted(async () => {
   });
 
   unlistenToolEvent = await listen<ToolEvent>("ai-tool-event", (event) => {
+    chat.isLoading = true;
+    resetLoadingTimeout();
     upsertToolEvent(event.payload);
-  });
-
-  unlistenToolConfirm = await listen<ToolConfirmPayload>("ai-tool-confirm", (event) => {
-    pendingConfirm.value = event.payload;
-  });
-
-  unlistenToolConfirmResolved = await listen<{ id: string; approved: boolean }>("ai-tool-confirm-resolved", (event) => {
-    if (pendingConfirm.value?.id === event.payload.id) {
-      pendingConfirm.value = null;
-    }
-  });
-
-  // 智能体主动询问 (ask_user): 收到问题弹出内嵌询问层
-  unlistenAskUser = await listen<AskUserPayload>("ai-ask-user", (event) => {
-    pendingQuestion.value = event.payload;
-    askUserSelected.value = event.payload.options[0]?.label ?? "";
-    askUserAnswer.value = "";
-    askUserSubmitting.value = false;
-  });
-
-  unlistenAskUserResolved = await listen<{ id: string; answered: boolean }>("ai-ask-user-resolved", (event) => {
-    if (pendingQuestion.value?.id === event.payload.id) {
-      pendingQuestion.value = null;
-      askUserSubmitting.value = false;
-    }
   });
 
   unlistenScheduledTasksChanged = await listen("scheduled-tasks-changed", () => {
@@ -2606,6 +2645,9 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  clearLoadingTimeout();
+  stopCollaboration?.();
+  agentsStore.stopSync();
   if (sysInfoTimer) clearInterval(sysInfoTimer);
   if (weatherTimer) clearInterval(weatherTimer);
   if (actionFeedbackTimer) clearTimeout(actionFeedbackTimer);
@@ -2619,10 +2661,8 @@ onUnmounted(() => {
   unlistenChatCleared?.();
   unlistenSyncMessage?.();
   unlistenToolEvent?.();
-  unlistenToolConfirm?.();
-  unlistenToolConfirmResolved?.();
-  unlistenAskUser?.();
-  unlistenAskUserResolved?.();
+  stopToolConfirm?.();
+  stopQuestion?.();
   unlistenScheduledTasksChanged?.();
   unlistenScheduledTaskTriggered?.();
   unlistenWeatherUpdate?.();
@@ -2952,7 +2992,7 @@ ttsPlayer.stop();
               </div>
             </div>
 
-            <div class="dash-chat-messages" ref="dashChatMessagesRef" @click="closeDashMessageMenu">
+            <div class="dash-chat-messages" ref="dashChatMessagesRef" @click="closeDashMessageMenu" @scroll.passive="trackChatScroll">
               <div v-if="chat.messages.length === 0" class="dash-chat-empty">
                 🐾 暂无对话历史，跟小家伙说点什么吧！
               </div>
@@ -2968,46 +3008,11 @@ ttsPlayer.stop();
                   <span class="dash-system-divider-text">{{ msg.content }}</span>
                   <span class="dash-system-divider-line"></span>
                 </div>
-                <!-- 工具执行轨迹（显示在 AI 回复消息的上方） -->
-                <div v-else-if="msg.role === 'assistant' && msg.toolEvents && msg.toolEvents.length > 0" class="dash-tool-trace-panel">
-                  <div class="dash-tool-trace-header">
-                    <span>执行轨迹</span>
-                    <small>{{ msg.toolEvents.length }} 个工具事件</small>
-                  </div>
-                  <div class="dash-tool-trace-list">
-                    <div
-                      v-for="event in msg.toolEvents"
-                      :key="event.id"
-                      :class="['dash-tool-event', event.status]"
-                    >
-                      <div class="dash-tool-event-head">
-                        <span class="dash-tool-status">{{ toolStatusLabel(event.status) }}</span>
-                        <span class="dash-tool-name">{{ event.tool_name }}</span>
-                      </div>
-                      <div class="dash-tool-summary">{{ event.summary }}</div>
-                      <div v-if="event.command" class="dash-tool-meta">命令：{{ event.command }}</div>
-                      <div v-if="event.path" class="dash-tool-meta">路径：{{ event.path }}</div>
-                      <details v-if="event.arguments" class="dash-tool-details">
-                        <summary>参数</summary>
-                        <pre>{{ event.arguments }}</pre>
-                      </details>
-                      <details v-if="event.output" class="dash-tool-details">
-                        <summary>输出</summary>
-                        <pre>{{ event.output }}</pre>
-                      </details>
-                    </div>
-                  </div>
-                </div>
+                <AgentActivity v-if="msg.role === 'assistant'" :items="msg.activity" :tools="msg.toolEvents" :thinking="msg.activity ? undefined : msg.thinking" />
                 <div v-if="msg.role !== 'system'" class="dash-msg-bubble">
                   <div v-if="msg.agent && msg.role === 'assistant'" class="dash-msg-agent-badge">
                     <span class="dash-msg-agent-avatar">{{ msg.agent.avatar || "🤖" }}</span>
                     <span class="dash-msg-agent-name">{{ msg.agent.name }}</span>
-                  </div>
-                  <div v-if="msg.thinking" class="dash-msg-thinking">
-                    <details>
-                      <summary>思考过程</summary>
-                      <p>{{ msg.thinking }}</p>
-                    </details>
                   </div>
                   <!-- 用户引用的前文对话（微信式引用块） -->
                   <div v-if="msg.quote" class="dash-msg-quote" :title="msg.quote.content">
@@ -3016,7 +3021,7 @@ ttsPlayer.stop();
                   </div>
                   <!-- AI 回复中的 [QUOTE] 标记渲染为引用块 -->
                   <div class="dash-msg-text">
-                    <template v-for="(seg, si) in parseQuoteSegments(msg.content)" :key="si">
+                    <template v-for="(seg, si) in parseQuoteSegments(msg.displayContent ?? msg.content)" :key="si">
                       <div v-if="seg.type === 'quote'" class="dash-msg-quote ai-quote" :title="seg.content">
                         <div class="dash-msg-quote-text">{{ seg.content }}</div>
                       </div>
@@ -3049,78 +3054,14 @@ ttsPlayer.stop();
                 </div>
               </div>
 
-              <!-- 工具执行轨迹（仅流式时显示，完成后转移到消息上） -->
-              <div v-if="toolEvents.length > 0 && chat.isLoading" class="dash-msg-wrapper assistant">
-                <div class="dash-tool-trace-panel">
-                  <div class="dash-tool-trace-header">
-                    <span>执行轨迹</span>
-                    <small>{{ toolEvents.length }} 个工具事件</small>
-                  </div>
-                  <div class="dash-tool-trace-list">
-                    <div
-                      v-for="event in toolEvents"
-                      :key="event.id"
-                      :class="['dash-tool-event', event.status]"
-                    >
-                      <div class="dash-tool-event-head">
-                        <span class="dash-tool-status">{{ toolStatusLabel(event.status) }}</span>
-                        <span class="dash-tool-name">{{ event.tool_name }}</span>
-                      </div>
-                      <div class="dash-tool-summary">{{ event.summary }}</div>
-                      <div v-if="event.command" class="dash-tool-meta">命令：{{ event.command }}</div>
-                      <div v-if="event.path" class="dash-tool-meta">路径：{{ event.path }}</div>
-                      <details v-if="event.arguments" class="dash-tool-details">
-                        <summary>参数</summary>
-                        <pre>{{ event.arguments }}</pre>
-                      </details>
-                      <details v-if="event.output" class="dash-tool-details">
-                        <summary>输出</summary>
-                        <pre>{{ event.output }}</pre>
-                      </details>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <!-- AI 实时打字状态 -->
               <div v-if="chat.isLoading" class="dash-msg-wrapper assistant loading">
-                <div class="dash-msg-bubble">
-                  <!-- 正在思考与停止按钮头部 -->
-                  <div class="dash-msg-thinking-header">
-                    <span>{{ thinkingContent ? "小家伙正在思考中..." : "等待思考输出..." }}</span>
-                    <button class="dash-stop-btn" title="停止思考与输出" @click.stop="abortAi">
-                      <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
-                        <rect width="10" height="10" rx="2"/>
-                      </svg>
-                      <span>停止</span>
-                    </button>
-                  </div>
-                  
-                  <div v-if="thinkingContent" class="dash-msg-thinking">
-                    <details open>
-                      <summary>思维过程：</summary>
-                      <p>{{ thinkingContent }}</p>
-                    </details>
-                  </div>
-                  <div v-if="streamingAnswer" class="dash-msg-text">
-                    <template v-for="(seg, si) in parseQuoteSegments(streamingAnswer, true)" :key="si">
-                      <div v-if="seg.type === 'quote'" class="dash-msg-quote ai-quote" :title="seg.content">
-                        <div class="dash-msg-quote-text">{{ seg.content }}</div>
-                      </div>
-                      <template v-else>{{ seg.content }}</template>
-                    </template>
-                  </div>
-                  <div class="dash-typing-dots">
-                    <span class="dot"></span>
-                    <span class="dot"></span>
-                    <span class="dot"></span>
-                  </div>
-                </div>
+                <AgentActivity :items="chat.activity.items" :thinking="thinkingContent" :active="true" :waiting="!!pendingConfirm || !!pendingQuestion" :awaiting-answer="!!pendingQuestion" @stop="abortAi" />
               </div>
               <div ref="dashChatEndRef" class="dash-chat-end" aria-hidden="true"></div>
             </div>
 
             <div class="dash-chat-composer">
+              <button v-if="!followingActivity" type="button" class="activity-jump" title="回到最新消息" aria-label="回到最新消息" @click="jumpToLatest"><ArrowDown :size="16" /></button>
               <!-- 引用回复预览条（微信式） -->
               <Transition name="slide-up">
                 <div v-if="pendingQuote" class="dash-quote-preview">
@@ -3235,6 +3176,7 @@ ttsPlayer.stop();
                 </div>
               </Transition>
 
+              <CollaborationBar />
               <div class="dash-chat-input-area">
                 <input
                   ref="dashChatInputRef"
@@ -3461,7 +3403,7 @@ ttsPlayer.stop();
             <div class="page-header">
               <div class="page-kicker">Agents</div>
               <h1 class="page-title">智能体工坊</h1>
-              <p class="page-subtitle">创建专属智能体，在对话里输入 @ 就能召唤它工作</p>
+              <p class="page-subtitle">每个角色独立执行并读取当前会话全部发言。开启协同后，角色可用独立的 @名字 任务 行交接工作。</p>
             </div>
 
             <div class="dash-agents-layout">
@@ -3480,13 +3422,16 @@ ttsPlayer.stop();
                     <div class="dash-agent-card-name">@{{ agent.name }}</div>
                     <div class="dash-agent-card-desc">{{ agent.description || "（无描述）" }}</div>
                     <div class="dash-agent-card-meta">
-                      {{ agent.allowed_tools.length }} 个免确认工具{{ agent.model ? " · " + agent.model : "" }}
+                      {{ agent.backend === 'codex' ? '本机 Codex' : agent.backend === 'claude_code' ? '本机 Claude Code' : '直连 API' }}{{ agent.is_builtin ? ' · 内置角色' : '' }}{{ agent.model ? ' · ' + agent.model : '' }}{{ !agent.is_builtin && !agent.system_prompt.trim() ? ' · 未写角色设定' : '' }}
                     </div>
                   </div>
                   <div class="dash-agent-card-actions">
-                    <button class="dash-mini-btn" @click="openAgentEditor(agent)">编辑</button>
+                    <button class="dash-mini-btn" @click="activePage = 'chat'; chatInput = chatInput + (chatInput && !/\s$/.test(chatInput) ? ' ' : '') + '@' + agentsStore.mentionName(agent) + ' '">召唤</button>
+                    <button v-if="agent.is_builtin" class="dash-mini-btn" @click="configureBuiltinAgent(agent)">登录配置</button>
+                    <button v-if="!agent.is_builtin" class="dash-mini-btn" @click="openAgentEditor(agent)">编辑</button>
                     <button
                       class="dash-mini-btn danger"
+                      v-if="!agent.is_builtin"
                       :disabled="agentDeletingId === agent.id"
                       @click="deleteAgentDraft(agent)"
                     >
@@ -3498,7 +3443,7 @@ ttsPlayer.stop();
                 <div class="dash-card-title" style="margin-top: 18px;">
                   <span class="card-icon">✨</span> 用 AI 创建
                 </div>
-                <p class="dash-agents-ai-hint">描述你想要的智能体，AI 会生成名字、头像、角色设定和工具权限，你确认后即可保存。</p>
+                <p class="dash-agents-ai-hint">一句话说清你要它做什么，AI 会推断使用场景，写出名字、头像、完整角色设定和工具权限，你确认后即可保存。也可以在对话里直接说「帮我创建一个……的智能体」。此功能使用系统设置中的直连 API 配置。</p>
                 <textarea
                   v-model="agentGenDesc"
                   class="dash-agents-gen-input"
@@ -3552,15 +3497,40 @@ ttsPlayer.stop();
                     v-model="agentDraft.system_prompt"
                     rows="6"
                     maxlength="4000"
-                    placeholder="用第二人称描述它的身份、职责、工作方式和边界，例如：你是用户的周报助手……"
+                    placeholder="可以留空后点下方「AI 补全设定」：AI 会根据名字和一句话描述写出身份、职责、工作方式和边界"
                   ></textarea>
+                  <div class="dash-agents-gen-row">
+                    <button
+                      type="button"
+                      class="dash-mini-btn"
+                      :disabled="agentCompleteLoading"
+                      @click="completeAgentDraft()"
+                    >
+                      {{ agentCompleteLoading ? "补全中…" : agentDraft.system_prompt.trim() ? "✨ AI 完善设定" : "✨ AI 补全设定" }}
+                    </button>
+                  </div>
                 </div>
                 <div class="dash-form-group">
-                  <label>专属模型（留空 = 使用当前模型）</label>
+                  <label>执行后端</label>
+                  <select v-model="agentDraft.backend" class="dash-select">
+                    <option value="direct_api">直连 API</option>
+                    <option value="claude_code">本机 Claude Code</option>
+                    <option value="codex">本机 Codex</option>
+                  </select>
+                </div>
+                <div v-if="agentDraft.backend === 'direct_api'" class="dash-form-group">
+                  <label>API 配置</label>
+                  <select v-model="agentDraft.api_profile_id" class="dash-select">
+                    <option value="">使用当前 API 配置</option>
+                    <option v-for="profile in apiProfiles" :key="profile.id" :value="profile.id">{{ profile.name || profile.model }}</option>
+                  </select>
+                </div>
+                <div v-if="agentDraft.backend === 'direct_api'" class="dash-form-group">
+                  <label>专属模型（留空跟随所选 API 配置）</label>
                   <input v-model="agentDraft.model" type="text" placeholder="例如：gpt-4o-mini / deepseek-chat" />
                 </div>
                 <div class="dash-form-group">
-                  <label>免确认工具（该智能体被 @ 时自动授权）</label>
+                  <label>免确认工具（仅直连 API，本轮被 @ 时生效；计划模式不执行工具）</label>
                   <div class="dash-tool-perm-list">
                     <label v-for="tool in toolPermissionOptions" :key="tool.id" class="dash-tool-perm-item">
                       <input
@@ -3967,6 +3937,9 @@ ttsPlayer.stop();
                 <button :class="['dash-backend-btn', { active: backendType === 'claude_code' }]" @click="selectBackend('claude_code')">
                   <span>CC</span> Claude Code
                 </button>
+                <button :class="['dash-backend-btn', { active: backendType === 'codex' }]" @click="selectBackend('codex')">
+                  <span>CX</span> Codex
+                </button>
                 <button :class="['dash-backend-btn', { active: backendType === 'direct_api' }]" @click="selectBackend('direct_api')">
                   <span>API</span> 直连 API Agent
                 </button>
@@ -4007,6 +3980,8 @@ ttsPlayer.stop();
                   </button>
                 </div>
               </template>
+
+              <CodexConnection v-else-if="backendType === 'codex'" :model-saved="modelSaved" @reset="resetModel" />
 
               <template v-else>
                 <div class="dash-profile-toolbar">
@@ -4386,7 +4361,7 @@ ttsPlayer.stop();
                   <span class="dash-option-desc">{{ item.desc }}</span>
                 </button>
               </div>
-              <p class="dash-hint" style="margin-top:12px;">切换后会重置 Claude 会话，让新设定立即生效</p>
+              <p class="dash-hint" style="margin-top:12px;">切换后会重置本地 AI 会话，让新设定立即生效</p>
             </div>
 
             <!-- 职业 -->
@@ -4440,8 +4415,8 @@ ttsPlayer.stop();
                 </div>
               </div>
               <div class="dash-tool-confirm-actions">
-                <button class="dash-btn secondary" @click="handleDashboardToolConfirm(false)">拒绝</button>
-                <button class="dash-btn primary" @click="handleDashboardToolConfirm(true)">允许</button>
+                <button class="dash-btn secondary" :disabled="confirmSubmitting" @click="handleDashboardToolConfirm(false)">拒绝</button>
+                <button class="dash-btn primary" :disabled="confirmSubmitting" @click="handleDashboardToolConfirm(true)">允许</button>
               </div>
             </div>
           </div>
@@ -4450,51 +4425,7 @@ ttsPlayer.stop();
         <!-- 智能体主动询问弹窗 (ask_user, 全局，任何页面可见) -->
         <Transition name="slide-up">
           <div v-if="pendingQuestion" class="dash-floating-confirm-overlay">
-            <div class="dash-ask-user-card">
-              <div class="dash-ask-user-header">
-                <span class="dash-ask-user-kicker">AI 有个问题</span>
-                <strong class="dash-ask-user-question">{{ pendingQuestion.question }}</strong>
-              </div>
-
-              <div v-if="pendingQuestion.options.length" class="dash-ask-user-options">
-                <button
-                  v-for="option in pendingQuestion.options"
-                  :key="option.label"
-                  type="button"
-                  :class="['dash-ask-option', { selected: askUserSelected === option.label && !askUserAnswer.trim() }]"
-                  @click="selectAskUserOption(option.label)"
-                >
-                  <span class="dash-ask-option-label">{{ option.label }}</span>
-                  <span v-if="option.description" class="dash-ask-option-desc">{{ option.description }}</span>
-                </button>
-              </div>
-
-              <div class="dash-ask-user-input">
-                <input
-                  v-model="askUserAnswer"
-                  type="text"
-                  placeholder="或自己填写答案…"
-                  @keydown.enter.prevent="submitAskUserAnswer()"
-                />
-              </div>
-
-              <div class="dash-tool-confirm-actions">
-                <button
-                  class="dash-btn secondary"
-                  :disabled="askUserSubmitting"
-                  @click="submitAskUserAnswer(true)"
-                >
-                  跳过
-                </button>
-                <button
-                  class="dash-btn primary"
-                  :disabled="askUserSubmitting || (!askUserAnswer.trim() && !askUserSelected)"
-                  @click="submitAskUserAnswer()"
-                >
-                  提交回答
-                </button>
-              </div>
-            </div>
+            <UserQuestion :question="pendingQuestion" @answered="questionAnswered" />
           </div>
         </Transition>
       </div>

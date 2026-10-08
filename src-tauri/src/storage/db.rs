@@ -99,7 +99,7 @@ pub fn is_builtin_skill_id(id: &str) -> bool {
     BUILTIN_SKILLS.iter().any(|s| s.id == id)
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
@@ -126,9 +126,19 @@ pub struct Agent {
     pub description: String,
     pub system_prompt: String,
     pub model: String,
+    #[serde(default = "default_agent_backend")]
+    pub backend: String,
+    #[serde(default)]
+    pub api_profile_id: String,
+    #[serde(default)]
+    pub is_builtin: bool,
     pub allowed_tools: Vec<String>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+fn default_agent_backend() -> String {
+    "direct_api".into()
 }
 
 #[derive(Debug, Serialize)]
@@ -385,6 +395,14 @@ impl Database {
     }
 
     fn ensure_chat_agent_columns(&self) -> Result<()> {
+        let agent_columns = self.conn.prepare("PRAGMA table_info(agents)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>>>()?;
+        for (name, default) in [("backend", "direct_api"), ("api_profile_id", "")] {
+            if !agent_columns.iter().any(|column| column == name) {
+                self.conn.execute(&format!("ALTER TABLE agents ADD COLUMN {name} TEXT NOT NULL DEFAULT '{default}'"), [])?;
+            }
+        }
         let mut stmt = self.conn.prepare("PRAGMA table_info(chat_history)")?;
         let columns = stmt
             .query_map([], |row| row.get::<_, String>(1))?
@@ -602,6 +620,20 @@ impl Database {
         }
         messages.reverse();
         Ok(messages)
+    }
+
+    /// Every visible message in the current conversation, without a last-N cutoff.
+    pub fn get_conversation_messages(&self, after_id: i64) -> Result<Vec<ChatMessage>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT role, content, thinking, created_at, quoted_role, quoted_content,
+                    agent_id, agent_name, agent_avatar FROM chat_history WHERE id > ?1 ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map([after_id], |row| Ok(ChatMessage {
+            role: row.get(0)?, content: row.get(1)?, thinking: row.get(2)?, created_at: row.get(3)?,
+            quoted_role: row.get(4)?, quoted_content: row.get(5)?, agent_id: row.get(6)?,
+            agent_name: row.get(7)?, agent_avatar: row.get(8)?,
+        }))?;
+        rows.collect()
     }
 
     /// 返回 chat_history 表中最大的 id，无消息时返回 0
@@ -1106,7 +1138,7 @@ impl Database {
     pub fn list_agents(&self) -> Result<Vec<Agent>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, avatar, description, system_prompt,
-                    model, allowed_tools_json, created_at, updated_at
+                    model, allowed_tools_json, created_at, updated_at, backend, api_profile_id
              FROM agents
              ORDER BY created_at ASC, id ASC",
         )?;
@@ -1121,7 +1153,7 @@ impl Database {
     pub fn get_agent_by_id(&self, id: &str) -> Result<Option<Agent>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, avatar, description, system_prompt,
-                    model, allowed_tools_json, created_at, updated_at
+                    model, allowed_tools_json, created_at, updated_at, backend, api_profile_id
              FROM agents
              WHERE id = ?1
              LIMIT 1",
@@ -1137,7 +1169,7 @@ impl Database {
     pub fn get_agent_by_name(&self, name: &str) -> Result<Option<Agent>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, avatar, description, system_prompt,
-                    model, allowed_tools_json, created_at, updated_at
+                    model, allowed_tools_json, created_at, updated_at, backend, api_profile_id
              FROM agents
              WHERE name = ?1
              LIMIT 1",
@@ -1176,7 +1208,7 @@ impl Database {
 
         let sql = format!(
             "SELECT id, name, avatar, description, system_prompt,
-                    model, allowed_tools_json, created_at, updated_at
+                    model, allowed_tools_json, created_at, updated_at, backend, api_profile_id
              FROM agents
              WHERE name IN ({placeholders})"
         );
@@ -1205,9 +1237,9 @@ impl Database {
         self.conn.execute(
             "INSERT INTO agents (
                 id, name, avatar, description, system_prompt,
-                model, allowed_tools_json, created_at, updated_at
+                model, allowed_tools_json, created_at, updated_at, backend, api_profile_id
              ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, strftime('%s', 'now')
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, strftime('%s', 'now'), ?9, ?10
              )
              ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
@@ -1215,6 +1247,8 @@ impl Database {
                 description = excluded.description,
                 system_prompt = excluded.system_prompt,
                 model = excluded.model,
+                backend = excluded.backend,
+                api_profile_id = excluded.api_profile_id,
                 allowed_tools_json = excluded.allowed_tools_json,
                 updated_at = excluded.updated_at",
             (
@@ -1226,6 +1260,8 @@ impl Database {
                 &agent.model,
                 &allowed_tools_json,
                 agent.created_at,
+                &agent.backend,
+                &agent.api_profile_id,
             ),
         )?;
         Ok(())
@@ -1247,6 +1283,9 @@ fn agent_from_row(row: &rusqlite::Row<'_>) -> Result<Agent> {
         description: row.get(3)?,
         system_prompt: row.get(4)?,
         model: row.get(5)?,
+        backend: row.get(9)?,
+        api_profile_id: row.get(10)?,
+        is_builtin: false,
         allowed_tools: serde_json::from_str(&allowed_tools_json).unwrap_or_default(),
         created_at: row.get(7)?,
         updated_at: row.get(8)?,
@@ -1317,6 +1356,25 @@ fn skill_from_row(row: &rusqlite::Row<'_>) -> Result<Skill> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_agent_rows_gain_backend_fields_without_losing_existing_roles() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE agents (id TEXT PRIMARY KEY, name TEXT NOT NULL, avatar TEXT NOT NULL, description TEXT NOT NULL, system_prompt TEXT NOT NULL, model TEXT NOT NULL, allowed_tools_json TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+            INSERT INTO agents VALUES ('legacy', '原有角色', 'x', '保留描述', '保留设定', 'old-model', '[]', 1, 1);").unwrap();
+        let db = Database { conn };
+        db.init_tables().unwrap();
+        let mut agent = db.get_agent_by_id("legacy").unwrap().unwrap();
+        assert_eq!(agent.backend, "direct_api");
+        assert_eq!(agent.model, "old-model");
+        assert_eq!(agent.system_prompt, "保留设定");
+        agent.backend = "codex".into();
+        agent.api_profile_id = "profile-a".into();
+        db.save_agent(&agent).unwrap();
+        let reloaded = db.list_agents().unwrap().pop().unwrap();
+        assert_eq!(reloaded.backend, "codex");
+        assert_eq!(reloaded.api_profile_id, "profile-a");
+    }
 
     #[test]
     fn deleted_builtin_skill_does_not_respawn_on_reseed() {

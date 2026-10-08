@@ -1,4 +1,9 @@
+mod agent_turn;
+mod collaboration;
 mod behavior;
+mod codex;
+mod cli_activity;
+mod interactions;
 mod computer_use;
 mod direct_api;
 mod openclaw;
@@ -55,7 +60,7 @@ pub struct AgentContext {
 }
 
 impl AgentContext {
-    /// 单智能体时返回该智能体的归属信息，多智能体（面板模式）返回 None。
+    /// 独立调用的当前角色；普通桌宠回复没有角色归属。
     pub fn single(&self) -> Option<&storage::Agent> {
         if self.agents.len() == 1 {
             self.agents.first()
@@ -101,6 +106,8 @@ struct SaveCustomPetAssetRequest {
 
 pub struct AppState {
     pub ai: tokio::sync::Mutex<openclaw::ClaudeAdapter>,
+    pub codex: codex::CodexAdapter,
+    pub collaboration_state: StdMutex<Option<collaboration::CollaborationState>>,
     pub behavior: tokio::sync::Mutex<behavior::BehaviorEngine>,
     pub db: tokio::sync::Mutex<storage::Database>,
     pub monitor: tokio::sync::Mutex<system::SystemMonitor>,
@@ -116,9 +123,9 @@ pub struct AppState {
     pub backend_type: tokio::sync::Mutex<String>,
     pub direct_api_config: tokio::sync::Mutex<Option<direct_api::DirectApiConfig>>,
     pub pending_confirms:
-        tokio::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>>,
+        tokio::sync::Mutex<std::collections::HashMap<String, interactions::PendingRequest<bool, direct_api::ToolConfirmPayload>>>,
     pub pending_questions:
-        tokio::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<String>>>,
+        tokio::sync::Mutex<std::collections::HashMap<String, interactions::PendingRequest<String, direct_api::AskUserPayload>>>,
     pub approved_tool_types: tokio::sync::Mutex<std::collections::HashSet<String>>,
     pub abort_token: tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>,
     pub chat_start_id: StdMutex<i64>,
@@ -1182,6 +1189,27 @@ fn attach_quote_prompt(system_prompt: String) -> String {
 }
 
 /// 告知 AI 文档生成能力与主动询问原则（direct_api 后端专用）
+/// 让模型知道「智能体工坊」可以在对话里直接操作：用户常常只给一句话，
+/// 模型要负责把它扩写成完整角色，而不是原样保存一句话。
+fn attach_agent_factory_prompt(system_prompt: String) -> String {
+    format!(
+        "{}
+
+【智能体工坊能力】
+本应用支持自定义智能体：保存后用户在对话里 @名字 召唤它，它以该角色身份独立回答、能看到整个会话、可与其他角色互相 @ 交接。\
+你可以用 list_agents / create_agent / update_agent 直接管理它们。当用户想创建、补全或调整智能体时：
+1. 先 list_agents 看现有角色，避免重名或重复。
+2. 用户通常只给一句话。先推断他真正想要的产出物和使用场景；关键信息确实缺失时（工作范围、输出形式、是否需要读写文件 / 联网），\
+用 ask_user 一次问一个关键点，最多问 2-3 个，能推断的直接决定。
+3. 由你写出完整的 system_prompt（400-800 字，第二人称「你」）：身份、职责与范围、工作方式（先做什么再做什么、何时用工具、何时先问）、输出风格、边界。\
+不要把用户原话直接当作角色设定，也不要创建 system_prompt 为空的角色。
+4. allowed_tools 只放它必需的工具，没把握就留空（留空时调用工具会正常询问用户）。
+5. 创建或更新后，用两三句话告诉用户它叫什么、擅长什么、怎么 @ 它。
+已有角色只有一句描述、没有角色设定时，用户要求「完善 / 补全」它，就用 update_agent 补写 system_prompt。",
+        system_prompt
+    )
+}
+
 fn attach_word_and_ask_prompt(system_prompt: String) -> String {
     format!(
         "{}
@@ -1255,10 +1283,29 @@ fn apply_quote_context(message: &str, quote: Option<&(String, String)>) -> Strin
     )
 }
 
-/// 把被 @ 提及的智能体人格注入系统提示。
-/// - 单个智能体：AI 完全以该智能体的身份回复；
-/// - 多个智能体：面板模式，AI 依次以每个智能体身份作答。
-///   每个回复以「【智能体名】」标题行开头。
+/// 专属模型仅用于直连 API 的单智能体对话。
+fn apply_agent_model(config: &mut direct_api::DirectApiConfig, agents: &[storage::Agent]) {
+    if let [agent] = agents {
+        let model = agent.model.trim();
+        if !model.is_empty() {
+            config.model = model.to_string();
+        }
+    }
+}
+
+fn collect_turn_tool_grants(
+    agents: &[storage::Agent],
+    skill: Option<&storage::Skill>,
+) -> std::collections::HashSet<String> {
+    agents
+        .iter()
+        .flat_map(|agent| agent.allowed_tools.iter())
+        .chain(skill.into_iter().flat_map(|skill| skill.allowed_tools.iter()))
+        .cloned()
+        .collect()
+}
+
+/// 单角色身份提示；多个角色的调度由 collaboration 模块分别执行。
 fn attach_agent_prompt(system_prompt: String, agents: &[storage::Agent]) -> String {
     if agents.is_empty() {
         return system_prompt;
@@ -1266,64 +1313,23 @@ fn attach_agent_prompt(system_prompt: String, agents: &[storage::Agent]) -> Stri
 
     if agents.len() == 1 {
         let agent = &agents[0];
-        let description = if agent.description.trim().is_empty() {
-            "（无描述）".to_string()
-        } else {
-            agent.description.trim().to_string()
-        };
-        let persona = if agent.system_prompt.trim().is_empty() {
-            "沿用你的基础人格与能力回答。".to_string()
-        } else {
-            agent.system_prompt.trim().to_string()
-        };
         return format!(
             "{}
 
 【当前被 @ 的智能体】
 名字：{}
 头像符号：{}
-描述：{}
-角色设定：
 {}
 你现在就是这个智能体。请完全以「{}」的身份、语气和能力范围回复用户，不要提及你正在扮演智能体，也不要把整段回复用【】括起来。",
-            system_prompt, agent.name, agent.avatar, description, persona, agent.name
+            system_prompt,
+            agent.name,
+            agent.avatar,
+            collaboration::role_section(agent),
+            agent.name
         );
     }
 
-    let mut catalog = String::new();
-    for agent in agents {
-        let description = if agent.description.trim().is_empty() {
-            "（无描述）".to_string()
-        } else {
-            agent.description.trim().replace('\n', " ")
-        };
-        catalog.push_str(&format!("- {}：{}
-", agent.name, description));
-    }
-    let mut personas = String::new();
-    for agent in agents {
-        let persona = if agent.system_prompt.trim().is_empty() {
-            "以通用助手身份回答。".to_string()
-        } else {
-            agent.system_prompt.trim().to_string()
-        };
-        personas.push_str(&format!("
-### {}
-{}
-", agent.name, persona));
-    }
-
-    format!(
-        "{}
-
-【用户 @ 了多个智能体】
-用户本轮同时提到了以下智能体：
-{catalog}
-请依次扮演每个智能体给出各自的回复。每个回复的第一行必须是「【智能体名字】」，智能体名字要与上面列表完全一致；标题行之后换行输出该智能体的回复正文。各智能体按自己的设定独立作答，允许观点不同，不要相互复读、不要互相替对方说话。
-各智能体角色设定：
-{personas}",
-        system_prompt
-    )
+    system_prompt
 }
 
 async fn attach_skill_prompt(
@@ -1354,7 +1360,7 @@ async fn attach_skill_prompt(
         skill.description.trim().to_string()
     };
 
-    // 工具白名单仅在 direct_api 后端下有效：openclaw 走的是 Claude CLI 子进程，
+    // 工具白名单仅在 direct_api 后端下有效：本地后端走的是 CLI 子进程，
     // 不消费 DirectApiConfig，is_high_risk_tool / mode_requires_confirmation 这类
     // 免确认机制对它不起作用。在 openclaw 路径下告诉 AI "可免确认" 等于说谎。
     if is_direct_api {
@@ -1369,7 +1375,7 @@ async fn attach_skill_prompt(
         )
     } else {
         format!(
-            "{}\n\n【当前激活技能】{}\n描述：{}\n追加规则：\n{}\n注：当前为 Claude CLI 后端，技能工具白名单不生效，所有工具调用仍由 CLI 自身权限控制。",
+            "{}\n\n【当前激活技能】{}\n描述：{}\n追加规则：\n{}\n注：当前为本地 CLI 后端，技能工具白名单不生效，所有工具调用仍由 CLI 自身权限控制。",
             system_prompt, skill.name, description, skill.system_prompt
         )
     }
@@ -1422,6 +1428,9 @@ mod tests {
             created_at,
             quoted_role: None,
             quoted_content: None,
+            agent_id: None,
+            agent_name: None,
+            agent_avatar: None,
         }
     }
 
@@ -1544,6 +1553,118 @@ mod tests {
         }
     }
 
+    fn sample_agent(id: &str, name: &str) -> storage::Agent {
+        storage::Agent {
+            id: id.into(),
+            name: name.into(),
+            avatar: "🤖".into(),
+            description: "测试角色".into(),
+            system_prompt: format!("你是{name}。"),
+            model: "role-model".into(),
+            backend: "direct_api".into(),
+            api_profile_id: String::new(),
+            is_builtin: false,
+            allowed_tools: vec!["write_file".into()],
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    #[test]
+    fn agent_model_and_runtime_identity_use_the_same_configuration() {
+        let role = sample_agent("writer", "周报助手");
+        let mut config = direct_api::DirectApiConfig::default();
+        config.model = "global-model".into();
+        apply_agent_model(&mut config, &[role.clone()]);
+        let prompt = attach_runtime_identity_prompt("base".into(), &config);
+        assert_eq!(config.model, "role-model");
+        assert!(prompt.contains("role-model"));
+        assert!(!prompt.contains("global-model"));
+
+        config.model = "global-model".into();
+        apply_agent_model(
+            &mut config,
+            &[role.clone(), sample_agent("reviewer", "审稿助手")],
+        );
+        assert_eq!(
+            config.model, "global-model",
+            "a panel uses the selected global model"
+        );
+        let mut inherited = role;
+        inherited.model.clear();
+        apply_agent_model(&mut config, &[inherited]);
+        assert_eq!(config.model, "global-model");
+    }
+
+    #[test]
+    fn agent_grants_are_deduplicated_and_only_apply_to_the_current_turn() {
+        let agent = sample_agent("writer", "周报助手");
+        let mut skill = sample_skill("test", "测试技能");
+        skill.allowed_tools = vec!["write_file".into(), "read_file".into()];
+        let grants = collect_turn_tool_grants(&[agent.clone(), agent], Some(&skill));
+        assert_eq!(grants.len(), 2);
+        assert!(grants.contains("write_file") && grants.contains("read_file"));
+        assert!(collect_turn_tool_grants(&[], None).is_empty());
+    }
+
+    #[test]
+    fn agent_lookup_preserves_mention_order_and_persists_reply_identity() {
+        let db = storage::Database::open_in_memory().unwrap();
+        for agent in [
+            sample_agent("writer", "周报助手"),
+            sample_agent("designer", "designer"),
+        ] {
+            assert!(validate_agent_for_save(&agent).is_ok());
+            db.save_agent(&agent).unwrap();
+        }
+        assert!(validate_agent_for_save(&sample_agent("bad", "分析 助手")).is_err());
+        let agents = db
+            .get_agents_by_names(&[
+                "designer".into(),
+                "周报助手".into(),
+                "designer".into(),
+                "不存在".into(),
+            ])
+            .unwrap();
+        assert_eq!(
+            agents
+                .iter()
+                .map(|agent| agent.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["designer", "周报助手"]
+        );
+        let prompt = collaboration::collaboration_prompt(&agents[0], &agents, true);
+        assert!(prompt.contains("你是designer。") && !prompt.contains("你是周报助手。"));
+        assert!(prompt.contains("@周报助手"));
+        db.save_message_with_agent(
+            "assistant",
+            "完成",
+            None,
+            Some("writer"),
+            Some("周报助手"),
+            Some("📝"),
+        )
+        .unwrap();
+        let history = db.get_recent_messages_after(0, 10).unwrap();
+        assert_eq!(history[0].agent_name.as_deref(), Some("周报助手"));
+        assert_eq!(history[0].agent_avatar.as_deref(), Some("📝"));
+    }
+
+    #[test]
+    fn agent_completion_event_matches_frontend_wire_fields() {
+        let payload = AiFinishedPayload {
+            text: "完成".into(),
+            thinking: None,
+            agent_id: Some("writer".into()),
+            agent_name: Some("周报助手".into()),
+            agent_avatar: Some("📝".into()),
+        };
+        let json = serde_json::to_value(payload).unwrap();
+        assert_eq!(json["agent_id"], "writer");
+        assert_eq!(json["agent_name"], "周报助手");
+        assert_eq!(json["agent_avatar"], "📝");
+    }
+
     #[test]
     fn skill_validator_accepts_well_formed_custom() {
         assert!(validate_skill_for_save(&sample_skill("custom-abc", "示例")).is_ok());
@@ -1626,8 +1747,9 @@ async fn stop_active_response(state: &tauri::State<'_, AppState>) {
         kill_process_tree(pid);
     }
 
-    if let Ok(mut active) = state.active_chat.lock() {
-        active.active = None;
+    let team_running = state.collaboration_state.lock().ok().is_some_and(|value| value.as_ref().is_some_and(|value| value.status == "running"));
+    if !team_running {
+        if let Ok(mut active) = state.active_chat.lock() { active.active = None; }
     }
 }
 
@@ -1656,6 +1778,7 @@ async fn reset_conversation(
     if reset_cli_session {
         let ai = state.ai.lock().await;
         ai.reset_session();
+        state.codex.reset_session();
     }
 
     let mut behavior = state.behavior.lock().await;
@@ -1671,12 +1794,17 @@ async fn send_to_ai(
     quoted_role: Option<String>,
     quoted_content: Option<String>,
     mention_agents: Option<Vec<String>>,
+    collaboration_enabled: Option<bool>,
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
     if message.trim().is_empty() && quoted_content.as_deref().unwrap_or("").trim().is_empty() {
         return Err("message is empty".to_string());
     }
+
+    let mut names = mention_agents.unwrap_or_default();
+    names.extend(collaboration::mention_names(&message));
+    let mentioned_agents = resolve_mentioned_agents(&state, Some(names)).await?;
 
     {
         let mut active = state
@@ -1705,7 +1833,7 @@ async fn send_to_ai(
         .map_err(|e| e.to_string())?;
     }
 
-    if let Some(parsed_task) = parse_schedule_request(&message, unix_now()) {
+    if let Some(parsed_task) = if mentioned_agents.is_empty() { parse_schedule_request(&message, unix_now()) } else { None } {
         let saved_task = {
             let db = state.db.lock().await;
             let id = db
@@ -1753,8 +1881,22 @@ async fn send_to_ai(
         return Ok(serde_json::json!({ "started": true, "scheduled_task_id": saved_task.0.id }));
     }
 
-    // 解析被 @ 提及的智能体（找不到的忽略，全部找不到则按普通桌宠回复）
-    let mentioned_agents = resolve_mentioned_agents(&state, mention_agents).await?;
+    let collaboration_run = if !mentioned_agents.is_empty() {
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        *state.abort_token.lock().await = Some(cancel.clone());
+        let initial = collaboration::CollaborationState {
+            run_id: run_id.clone(), status: "running".into(), active_agent: None,
+            queued: mentioned_agents.iter().map(collaboration::Identity::from).collect(),
+            turn: 0, max_turns: collaboration::MAX_TURNS, message: "准备协同任务".into(),
+        };
+        *state.collaboration_state.lock().map_err(|_| "协同状态不可用")? = Some(initial.clone());
+        let _ = app_handle.emit("collaboration-state", initial);
+        Some((run_id, cancel))
+    } else {
+        *state.collaboration_state.lock().map_err(|_| "协同状态不可用")? = None;
+        None
+    };
 
     // 用户交互 + 切换到思考状态
     {
@@ -1772,13 +1914,15 @@ async fn send_to_ai(
         .zip(quoted_content.as_deref())
         .map(|(role, content)| (role.to_string(), content.to_string()));
     tauri::async_runtime::spawn(async move {
-        let result = std::panic::AssertUnwindSafe(run_ai_message(
-            app_handle_clone.clone(),
-            msg_clone,
-            att_clone,
-            quote_clone,
-            mentioned_agents,
-        ))
+        let task = async {
+            if let Some((run_id, cancel)) = collaboration_run {
+                collaboration::run(app_handle_clone.clone(), msg_clone, att_clone, mentioned_agents,
+                    collaboration_enabled.unwrap_or(true), run_id, cancel).await;
+            } else {
+                run_ai_message(app_handle_clone.clone(), msg_clone, att_clone, quote_clone, vec![]).await;
+            }
+        };
+        let result = std::panic::AssertUnwindSafe(task)
         .catch_unwind()
         .await;
         if let Err(panic) = result {
@@ -1789,6 +1933,11 @@ async fn send_to_ai(
             } else {
                 "未知内部错误".to_string()
             };
+            let team = app_handle_clone.state::<AppState>().collaboration_state.lock().ok().and_then(|team| team.clone());
+            if let Some(team) = team.filter(|team| team.status == "running") {
+                collaboration::finish(&app_handle_clone, &team.run_id, "failed", team.turn, format!("协同执行异常：{panic_msg}")).await;
+                return;
+            }
             // panic 后清空 active_chat 状态，防止宠物卡在"思考 状态
             let state = app_handle_clone.state::<AppState>();
             if let Ok(mut active) = state.active_chat.lock() {
@@ -1816,7 +1965,8 @@ async fn resolve_mentioned_agents(
         return Ok(Vec::new());
     };
     let db = state.db.lock().await;
-    db.get_agents_by_names(&names).map_err(|e| e.to_string())
+    let all = collaboration::catalog(db.list_agents().map_err(|e| e.to_string())?);
+    Ok(collaboration::resolve_agents(&all, &names))
 }
 
 async fn run_ai_message(
@@ -1831,7 +1981,7 @@ async fn run_ai_message(
 
     if backend == "direct_api" {
         let config_opt = state.direct_api_config.lock().await.clone();
-        let Some(config) = config_opt else {
+        let Some(mut config) = config_opt else {
             {
                 if let Ok(mut active) = state.active_chat.lock() {
                     active.active = None;
@@ -1850,7 +2000,9 @@ async fn run_ai_message(
             return;
         };
 
-        let (system_prompt, all_skills, active_skill) = {
+        // Resolve the actual model before generating its identity prompt.
+        apply_agent_model(&mut config, &agents);
+        let (system_prompt, active_skill) = {
             let personality = state.personality.lock().await.clone();
             let profession = state.profession.lock().await.clone();
             let db = state.db.lock().await;
@@ -1867,6 +2019,7 @@ async fn run_ai_message(
             let base = attach_execution_mode_prompt(base, &config);
             let base = attach_quote_prompt(base);
             let base = attach_word_and_ask_prompt(base);
+            let base = attach_agent_factory_prompt(base);
             let base = attach_coding_prompt(base);
             let base = attach_computer_use_prompt(base);
             let base = attach_weather_prompt(base);
@@ -1876,7 +2029,7 @@ async fn run_ai_message(
             let base = attach_custom_prompt(base, &custom_prompt);
             let base = attach_skill_prompt(base, active_skill.as_ref(), &all_skills, true).await;
             let base = attach_agent_prompt(base, &agents);
-            (base, all_skills, active_skill)
+            (base, active_skill)
         };
 
         let chat_history = {
@@ -1898,20 +2051,11 @@ async fn run_ai_message(
             history
         };
 
-        // 解析本轮技能（仅手动激活），并把技能白名单合入 config
+        // Explicit role/skill grants belong only to this turn. Keep them apart
+        // from global preferences so live config refresh cannot discard them.
         let effective_skill = resolve_skill_for_message(active_skill.as_ref());
-        let mut effective_config = config;
+        let turn_tool_grants = collect_turn_tool_grants(&agents, effective_skill.as_ref());
         if let Some(s) = &effective_skill {
-            let mut seen: std::collections::HashSet<String> = effective_config
-                .auto_approved_tools
-                .iter()
-                .cloned()
-                .collect();
-            for t in &s.allowed_tools {
-                if seen.insert(t.clone()) {
-                    effective_config.auto_approved_tools.push(t.clone());
-                }
-            }
             // 仅在激活技能 ID 发生变化时 emit，避免每轮都提示
             let mut last_id = state.last_active_skill_id.lock().await;
             if last_id.as_deref() != Some(s.id.as_str()) {
@@ -1930,28 +2074,7 @@ async fn run_ai_message(
             *last_id = None;
         }
 
-        // 智能体：合并工具白名单 + 单智能体时允许模型覆盖
         let agent_ctx = AgentContext { agents };
-        {
-            let mut seen: std::collections::HashSet<String> = effective_config
-                .auto_approved_tools
-                .iter()
-                .cloned()
-                .collect();
-            for agent in &agent_ctx.agents {
-                for tool in &agent.allowed_tools {
-                    if seen.insert(tool.clone()) {
-                        effective_config.auto_approved_tools.push(tool.clone());
-                    }
-                }
-            }
-        }
-        if let Some(agent) = agent_ctx.single() {
-            let model = agent.model.trim();
-            if !model.is_empty() {
-                effective_config.model = model.to_string();
-            }
-        }
 
         // 创建新的 CancellationToken
         let token = tokio_util::sync::CancellationToken::new();
@@ -1963,12 +2086,13 @@ async fn run_ai_message(
         direct_api::run_direct_api_agent(
             app_handle.clone(),
             message,
-            effective_config,
+            config,
             system_prompt,
             chat_history,
             attachments,
             quote,
             Some(agent_ctx),
+            turn_tool_grants,
         )
         .await;
 
@@ -1980,8 +2104,12 @@ async fn run_ai_message(
         return;
     }
 
-    // 启动 Claude CLI 流式子进程
-    let (system_prompt, all_skills, active_skill) = {
+    // 两种本地 CLI 共用桌宠设定、技能、历史保存和取消流程。
+    let is_codex = backend == "codex";
+    let cli_name = if is_codex { "Codex" } else { "Claude Code" };
+    let cancel_token = tokio_util::sync::CancellationToken::new();
+    *state.abort_token.lock().await = Some(cancel_token.clone());
+    let (system_prompt, active_skill) = {
         let state = app_handle.state::<AppState>();
         let personality = state.personality.lock().await.clone();
         let profession = state.profession.lock().await.clone();
@@ -2000,7 +2128,7 @@ async fn run_ai_message(
         let base = attach_custom_prompt(base, &custom_prompt);
         let base = attach_skill_prompt(base, active_skill.as_ref(), &all_skills, false).await;
         let base = attach_agent_prompt(base, &agents);
-        (base, all_skills, active_skill)
+        (base, active_skill)
     };
 
     // openclaw 走的是 CLI 子进程，不消耗 DirectApiConfig，因此只触发事件，不改 auto_approved_tools
@@ -2026,13 +2154,23 @@ async fn run_ai_message(
 
     let child_result = {
         let state = app_handle.state::<AppState>();
-        let ai = state.ai.lock().await;
         let message_for_cli = apply_quote_context(&message, quote.as_ref());
-        ai.spawn_streaming(&app_handle, &message_for_cli, &system_prompt)
+        if is_codex {
+            state
+                .codex
+                .spawn_streaming(&app_handle, &message_for_cli, &system_prompt)
+                .await
+        } else {
+            let ai = state.ai.lock().await;
+            ai.spawn_streaming(&app_handle, &message_for_cli, &system_prompt).await
+        }
     };
     let mut child = match child_result {
         Ok(child) => child,
         Err(err) => {
+            if cancel_token.is_cancelled() {
+                return;
+            }
             {
                 let state = app_handle.state::<AppState>();
                 if let Ok(mut active) = state.active_chat.lock() {
@@ -2044,7 +2182,7 @@ async fn run_ai_message(
             let _ = app_handle.emit(
                 "ai-error",
                 AiErrorPayload {
-                    message: format!("启动 Claude 失败: {err}"),
+                    message: format!("启动 {cli_name} 失败: {err}"),
                     thinking: None,
                     aborted: false,
                 },
@@ -2058,12 +2196,20 @@ async fn run_ai_message(
     if let Some(pid) = child_pid {
         let state = app_handle.state::<AppState>();
         let mut active = state.active_ai_pid.lock().await;
+        if cancel_token.is_cancelled() {
+            kill_process_tree(pid);
+            let _ = child.wait().await;
+            return;
+        }
         *active = Some(pid);
     }
 
     // 从 child 读取流式输出
     let app_for_stream = app_handle.clone();
-    let stream_result = openclaw::read_stream(&mut child, |delta| {
+    let on_thinking = |delta: &str| {
+        if cancel_token.is_cancelled() {
+            return;
+        }
         {
             let state = app_for_stream.state::<AppState>();
             if let Ok(mut active) = state.active_chat.lock() {
@@ -2073,8 +2219,24 @@ async fn run_ai_message(
             };
         }
         let _ = app_for_stream.emit("ai-thinking", delta);
-    })
-    .await;
+    };
+    let stream_result = if is_codex {
+        codex::read_stream_with_activity(&mut child, on_thinking, |text| {
+            if !cancel_token.is_cancelled() {
+                let _ = app_for_stream
+                    .emit("ai-answer-delta", serde_json::json!({ "text": text }));
+            }
+        }, |tool| {
+            if !cancel_token.is_cancelled() { let _ = app_for_stream.emit("ai-tool-event", tool); }
+        })
+        .await
+    } else {
+        openclaw::read_stream_with_activity(&mut child, on_thinking, |text| {
+            if !cancel_token.is_cancelled() { let _ = app_for_stream.emit("ai-answer-delta", serde_json::json!({ "text": text })); }
+        }, |tool| {
+            if !cancel_token.is_cancelled() { let _ = app_for_stream.emit("ai-tool-event", tool); }
+        }).await
+    };
 
     // 等待子进程结束 + 清理
     let _ = child.wait().await;
@@ -2086,13 +2248,23 @@ async fn run_ai_message(
         }
     }
 
+    // A reset/backend switch can start a newer turn while this process exits.
+    // Do not restore its old session or overwrite the newer UI/history.
+    if cancel_token.is_cancelled() {
+        return;
+    }
+
     match stream_result {
         Ok(parsed) => {
             // 更新 session_id
             if let Some(ref sid) = parsed.session_id {
                 let state = app_handle.state::<AppState>();
-                let ai = state.ai.lock().await;
-                ai.update_session(sid);
+                if is_codex {
+                    state.codex.update_session(sid);
+                } else {
+                    let ai = state.ai.lock().await;
+                    ai.update_session(sid);
+                }
             }
 
             if parsed.is_error {
@@ -2108,7 +2280,7 @@ async fn run_ai_message(
                 let _ = app_handle.emit(
                     "ai-error",
                     AiErrorPayload {
-                        message: format!("Claude error: {msg}"),
+                        message: format!("{cli_name} 执行失败: {msg}"),
                         thinking: if parsed.full_thinking.is_empty() {
                             None
                         } else {
@@ -2231,7 +2403,13 @@ async fn set_backend_type(
     backend: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
+    if !matches!(backend.as_str(), "claude_code" | "codex" | "direct_api") {
+        return Err(format!("不支持的 AI 后端：{backend}"));
+    }
     stop_active_response(&state).await;
+
+    state.ai.lock().await.reset_session();
+    state.codex.reset_session();
 
     {
         let mut backend_type = state.backend_type.lock().await;
@@ -2719,8 +2897,8 @@ async fn confirm_tool(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     let mut confirms = state.pending_confirms.lock().await;
-    if let Some(tx) = confirms.remove(&id) {
-        let _ = tx.send(approved);
+    if let Some(request) = confirms.remove(&id) {
+        request.sender.send(approved).map_err(|_| "确认请求已结束".to_string())?;
         let _ = app_handle.emit(
             "ai-tool-confirm-resolved",
             serde_json::json!({ "id": id, "approved": approved }),
@@ -2731,6 +2909,16 @@ async fn confirm_tool(
     }
 }
 
+#[tauri::command]
+async fn get_pending_interactions(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let confirms = state.pending_confirms.lock().await;
+    let questions = state.pending_questions.lock().await;
+    Ok(serde_json::json!({
+        "tool_confirms": confirms.values().filter(|request| !request.sender.is_closed()).map(|request| &request.payload).collect::<Vec<_>>(),
+        "questions": questions.values().filter(|request| !request.sender.is_closed()).map(|request| &request.payload).collect::<Vec<_>>()
+    }))
+}
+
 /// 回答 ask_user 弹窗提出的问题  把用户的回答 (选项或自定义输入) 发回给等待中的智能体。
 #[tauri::command]
 async fn answer_question(
@@ -2739,8 +2927,8 @@ async fn answer_question(
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     let mut questions = state.pending_questions.lock().await;
-    if let Some(tx) = questions.remove(&id) {
-        let _ = tx.send(answer);
+    if let Some(request) = questions.remove(&id) {
+        request.sender.send(answer).map_err(|_| "问题请求已结束".to_string())?;
         Ok(())
     } else {
         Err("无效的问题 ID（可能已超时或被处理）".to_string())
@@ -3050,6 +3238,7 @@ async fn start_new_conversation(
     {
         let ai = state.ai.lock().await;
         ai.reset_session();
+        state.codex.reset_session();
     }
 
     let mut behavior = state.behavior.lock().await;
@@ -3492,6 +3681,7 @@ async fn tick(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, St
 
 #[tauri::command]
 async fn switch_model(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    stop_active_response(&state).await;
     {
         let db = state.db.lock().await;
         let _ = save_chat_summary_if_needed(&db)?;
@@ -3500,6 +3690,7 @@ async fn switch_model(state: tauri::State<'_, AppState>) -> Result<(), String> {
     state.approved_tool_types.lock().await.clear();
     let mut ai = state.ai.lock().await;
     *ai = openclaw::ClaudeAdapter::new();
+    state.codex.reset_session();
     let mut current = state.current_model.lock().await;
     *current = "claude:claude-code".to_string();
     Ok(())
@@ -3507,6 +3698,9 @@ async fn switch_model(state: tauri::State<'_, AppState>) -> Result<(), String> {
 
 #[tauri::command]
 async fn get_current_model(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    if *state.backend_type.lock().await == "codex" {
+        return Ok("Codex / 本机配置".to_string());
+    }
     let current = state.current_model.lock().await;
     Ok(current.clone())
 }
@@ -3621,6 +3815,7 @@ async fn set_personality(
     {
         let ai = state.ai.lock().await;
         ai.reset_session();
+        state.codex.reset_session();
     }
     let db = state.db.lock().await;
     db.save_setting("personality", &normalized)
@@ -3646,6 +3841,7 @@ async fn set_profession(
     {
         let ai = state.ai.lock().await;
         ai.reset_session();
+        state.codex.reset_session();
     }
     let db = state.db.lock().await;
     db.save_setting("profession", &normalized)
@@ -3801,15 +3997,22 @@ async fn set_active_skill(
 #[tauri::command]
 async fn list_agents(state: tauri::State<'_, AppState>) -> Result<Vec<storage::Agent>, String> {
     let db = state.db.lock().await;
-    db.list_agents().map_err(|e| e.to_string())
+    db.list_agents().map(collaboration::catalog).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_collaboration_state(state: tauri::State<'_, AppState>) -> Result<Option<collaboration::CollaborationState>, String> {
+    state.collaboration_state.lock().map(|state| state.clone()).map_err(|_| "协同状态不可用".into())
 }
 
 #[tauri::command]
 async fn save_agent(
-    agent: storage::Agent,
+    mut agent: storage::Agent,
+    app_handle: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     validate_agent_for_save(&agent)?;
+    agent.name = agent.name.trim().to_string();
     let db = state.db.lock().await;
     // 名字唯一：@ 提及按名字匹配，重名会导致歧义。
     if let Some(existing) = db
@@ -3820,13 +4023,26 @@ async fn save_agent(
             return Err(format!("已存在名为「{}」的智能体，请换一个名字", agent.name.trim()));
         }
     }
-    db.save_agent(&agent).map_err(|e| e.to_string())
+    db.save_agent(&agent).map_err(|e| e.to_string())?;
+    drop(db);
+    let _ = app_handle.emit("agents-changed", ());
+    Ok(())
 }
 
 #[tauri::command]
-async fn delete_agent(id: String, state: tauri::State<'_, AppState>) -> Result<(), String> {
+async fn delete_agent(
+    id: String,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    if collaboration::builtin_agents().iter().any(|agent| agent.id == id) {
+        return Err("内置 Claude / Codex 智能体不可删除。".into());
+    }
     let db = state.db.lock().await;
-    db.delete_agent(&id).map_err(|e| e.to_string())
+    db.delete_agent(&id).map_err(|e| e.to_string())?;
+    drop(db);
+    let _ = app_handle.emit("agents-changed", ());
+    Ok(())
 }
 
 /// 让 AI 根据用户的自然语言描述生成智能体定义（name/avatar/description/system_prompt/allowed_tools）。
@@ -3854,19 +4070,66 @@ async fn generate_agent_spec(
         .iter()
         .filter_map(|def| def.get("function")?.get("name")?.as_str().map(str::to_string))
         .collect();
-    let tool_catalog = if tool_names.is_empty() {
+    // 工具白名单要按「对话里实际可用的工具」过滤：智能体工坊自己的增删工具不该出现在这里。
+    let selectable_tools: Vec<&String> = tool_names
+        .iter()
+        .filter(|name| !matches!(name.as_str(), "create_agent" | "update_agent" | "list_agents"))
+        .collect();
+    let tool_catalog = if selectable_tools.is_empty() {
         "（无可用工具）".to_string()
     } else {
-        tool_names.join(", ")
+        selectable_tools
+            .iter()
+            .map(|name| tool_purpose_for_factory(name))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    // 让工厂知道已有角色，避免重名和重复造轮子。
+    let existing = {
+        let db = state.db.lock().await;
+        db.list_agents()
+            .map(|agents| {
+                agents
+                    .into_iter()
+                    .map(|agent| format!("@{}：{}", agent.name, agent.description))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    let existing_note = if existing.is_empty() {
+        "（用户还没有自定义智能体）".to_string()
+    } else {
+        existing.join("\n")
     };
 
     let system_prompt = format!(
-        "你是「智能体工厂」。用户会描述他想要的智能体，你要生成一个可直接保存的智能体定义， 只输出一个 JSON 对象，不要输出任何解释文字，不要用 Markdown 代码块包裹。 JSON 必须包含这些字段： - name: 简短的名字（2-8 个汉字或字母，不要包含空格和 @），用于对话时 @ 提及
-- avatar: 一个最能代表它的 emoji（单个字符）
-- description: 一句话描述（20 字以内），说明它擅长什么 - system_prompt: 详细的中文角色设定（120-500 字），用第二人称「你」书写，包含身份、职责、工作方式、输出风格和边界；要具体可执行，不要照抄用户原话
-- allowed_tools: 字符串数组，从以下工具列表里只选它完成任务必需的工具，没有就不选：{}
-要求：name 不要与用户描述的智能体重名冲突；内容专业、克制，",
-        tool_catalog
+        "你在一个 Windows 桌面宠物应用里担任「智能体工厂」。用户会用一句自然语言描述他想要的角色，\
+你要把它变成一个可以直接保存使用的智能体定义。\n\
+\n\
+这个应用里的智能体是这样工作的：用户保存角色后，在对话里用 @名字 召唤它，它就以该角色的身份独立回答，\
+并能看到当前会话的完整记录；如果多个角色被 @，它们可以互相交接任务。角色由两部分构成：\
+description（一行简介，只用来在选择列表里提示用户）和 system_prompt（真正的角色设定，决定它怎么思考和回答）。\
+system_prompt 为空或过于笼统的角色，在对话里只会表现得像一只普通的桌宠——所以这是最重要的字段。\n\
+\n\
+已有角色（新角色的名字不要和它们冲突，也不要在功能上完全重复）：\n{}\n\
+\n\
+只输出一个 JSON 对象，不要输出任何解释文字，不要用 Markdown 代码块包裹。JSON 字段：\n\
+- name: 名字，2-8 个汉字，不含空格和 @，不能在已有角色里出现\n\
+- avatar: 一个最能代表它的 emoji\n\
+- description: 一行简介，20-40 个字，说明它擅长什么\n\
+- system_prompt: 完整的角色设定，400-800 字，用第二人称「你」书写，必须依次写清：\n\
+  1) 身份：你是谁、替用户承担什么角色；\n\
+  2) 职责与范围：负责哪些事，明确不负责哪些事；\n\
+  3) 工作方式：接到任务后先做什么、再做什么，缺信息时怎么问、什么时候该调用工具；\n\
+  4) 输出风格：篇幅、结构（列表/表格/分步）、语气；\n\
+  5) 边界：不做什么、什么情况下要停下来确认。\n\
+  要具体、可执行，写出这个角色独有的判断方式，不要写成放之四海皆准的空话，也不要照抄用户原话。\n\
+- allowed_tools: 字符串数组，从下面这些工具里只挑它完成任务必需的（宁少勿多，不确定就不选；不选不代表不能用，只是每次调用会先问用户）：\n{}\n\
+\n\
+要求：结合用户描述推断出他真正想要的产出物和使用场景，而不是把他的话换个说法抄回来；\
+如果用户描述的方向和已有角色高度重合，仍然按他的描述生成，但用更贴合的名字和更清晰的职责边界体现差别。",
+        existing_note, tool_catalog
     );
 
     let api_messages = vec![
@@ -3889,7 +4152,40 @@ async fn generate_agent_spec(
     let value: serde_json::Value =
         serde_json::from_str(&json_text).map_err(|e| format!("解析智能体定义失败  {e}"))?;
 
-    Ok(normalize_generated_agent_spec(value, &tool_names))
+    let spec = normalize_generated_agent_spec(value, &tool_names);
+    // 空角色设定 = 空壳智能体：宁可报错让用户重试，也不要把它预填进表单。
+    if spec["system_prompt"].as_str().unwrap_or("").trim().is_empty() {
+        return Err("AI 没有生成角色设定，请换个说法或重试。".to_string());
+    }
+    Ok(spec)
+}
+
+/// 给「智能体工厂」看的工具说明：只有名字它很难判断该不该给免确认权限。
+fn tool_purpose_for_factory(name: &str) -> String {
+    let purpose = match name {
+        "read_file" => "读取本地文件（文本 / Word / PDF / PPT）",
+        "write_file" => "新建或覆盖写入文件",
+        "edit_file" => "局部修改已有文件",
+        "list_directory" => "列出目录内容",
+        "file_search" => "按文件名搜索文件",
+        "code_search" => "在代码 / 文本里搜索内容",
+        "run_command" => "执行终端命令（高风险）",
+        "web_search" => "联网搜索",
+        "read_webpage" => "读取网页正文",
+        "get_weather" => "查询天气",
+        "open_app" => "打开本地应用",
+        "create_docx" => "生成 Word 文档",
+        "ask_user" => "向用户提问确认",
+        "search_memory" => "搜索长期记忆",
+        "save_memory" => "保存长期记忆",
+        "delete_memory" => "删除长期记忆",
+        "create_scheduled_task" => "创建定时提醒",
+        "list_scheduled_tasks" => "查看定时提醒",
+        _ if name.starts_with("browser_") => "控制浏览器",
+        _ if name.starts_with("computer_") || name.starts_with("window_") => "控制桌面鼠标键盘窗口",
+        _ => "其他",
+    };
+    format!("  - {name}：{purpose}")
 }
 
 /// 从模型输出里抠出第一个 JSON 对象（容忍 markdown 代码围栏和前后废话））
@@ -3979,6 +4275,12 @@ fn normalize_generated_agent_spec(
 
 /// 保存智能体前的强校验：名字不能含空白或 @（@ 提及解析依赖这一点））
 fn validate_agent_for_save(agent: &storage::Agent) -> Result<(), String> {
+    if agent.is_builtin || collaboration::reserved_agent(&agent.id, agent.name.trim()) {
+        return Err("claude 和 codex 为内置角色，请为自定义智能体使用其他名字。".into());
+    }
+    if !matches!(agent.backend.as_str(), "direct_api" | "claude_code" | "codex") {
+        return Err("智能体后端必须为 direct_api、claude_code 或 codex。".into());
+    }
     const ID_MAX: usize = 64;
     const NAME_MAX: usize = 40;
     const AVATAR_MAX: usize = 8;
@@ -4337,6 +4639,16 @@ async fn open_claude_config(app_handle: tauri::AppHandle) -> Result<(), String> 
 }
 
 #[tauri::command]
+async fn open_codex_config() -> Result<(), String> {
+    codex::open_login()
+}
+
+#[tauri::command]
+async fn check_codex_status(app_handle: tauri::AppHandle) -> Result<codex::CodexStatus, String> {
+    codex::check_status(&app_handle).await
+}
+
+#[tauri::command]
 fn exit_app() {
     std::process::exit(0);
 }
@@ -4590,6 +4902,8 @@ pub fn run() {
 
             let app_state = AppState {
                 ai: tokio::sync::Mutex::new(openclaw::ClaudeAdapter::new()),
+                codex: codex::CodexAdapter::default(),
+                collaboration_state: StdMutex::new(None),
                 behavior: tokio::sync::Mutex::new(behavior::BehaviorEngine::new()),
                 db: tokio::sync::Mutex::new(db),
                 monitor: tokio::sync::Mutex::new(system::SystemMonitor::new()),
@@ -4699,8 +5013,11 @@ pub fn run() {
             list_api_models,
             confirm_tool,
             answer_question,
+            get_pending_interactions,
             send_tool_confirm_notification,
             check_claude_status,
+            check_codex_status,
+            open_codex_config,
             get_weather_config,
             set_weather_config,
             test_weather_config,
@@ -4715,6 +5032,7 @@ pub fn run() {
             set_active_skill,
 reset_builtin_skills,
             list_agents,
+            get_collaboration_state,
             save_agent,
             delete_agent,
             generate_agent_spec,

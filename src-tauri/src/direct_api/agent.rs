@@ -10,7 +10,7 @@ use base64::Engine;
 use futures_util::StreamExt;
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
 use tauri::{Emitter, Manager};
@@ -20,7 +20,7 @@ const MAX_VISION_IMAGES: usize = 5;
 const MAX_VISION_IMAGE_BYTES: u64 = 50 * 1024 * 1024;
 
 #[derive(Clone, Serialize)]
-struct ToolConfirmPayload {
+pub struct ToolConfirmPayload {
     id: String,
     tool_name: String,
     arguments: String,
@@ -77,7 +77,83 @@ pub async fn run_direct_api_agent(
     attachments: Vec<UserAttachment>,
     quote: Option<(String, String)>,
     agent: Option<crate::AgentContext>,
+    turn_tool_grants: HashSet<String>,
 ) {
+    let state = app_handle.state::<AppState>();
+    let cancel = state.abort_token.lock().await.clone().unwrap_or_default();
+    let result = tokio::select! {
+        _ = cancel.cancelled() => Err(crate::agent_turn::TurnError::aborted("", "")),
+        result = execute_direct_api_turn(app_handle.clone(), message, config, system_prompt, chat_history, attachments, quote, agent.clone(), turn_tool_grants, cancel.clone(), true) => result,
+    };
+    let output = match result {
+        Ok(output) => output,
+        Err(error) => {
+            if error.aborted {
+                send_aborted(&app_handle, &error.partial_text, &error.thinking).await;
+            } else {
+                send_error(&app_handle, error.message, &error.thinking).await;
+            }
+            return;
+        }
+    };
+    let full_text = output.text;
+    let full_thinking = output.thinking;
+    let single_agent = agent.as_ref().and_then(|ctx| ctx.single());
+    {
+        let db = state.db.lock().await;
+        let _ = db.save_message_with_agent(
+            "assistant",
+            &full_text,
+            if full_thinking.is_empty() {
+                None
+            } else {
+                Some(&full_thinking)
+            },
+            single_agent.map(|a| a.id.as_str()),
+            single_agent.map(|a| a.name.as_str()),
+            single_agent.map(|a| a.avatar.as_str()),
+        );
+    }
+
+    {
+        let mut behavior = state.behavior.lock().await;
+        behavior.set_state(crate::behavior::PetState::Speaking);
+        behavior.mood.update(Some(0.05), None);
+    }
+
+    if let Ok(mut active) = state.active_chat.lock() {
+        active.active = None;
+    }
+
+    let _ = app_handle.emit(
+        "ai-finished",
+        crate::AiFinishedPayload {
+            text: full_text,
+            thinking: if full_thinking.is_empty() {
+                None
+            } else {
+                Some(full_thinking)
+            },
+            agent_id: single_agent.map(|a| a.id.clone()),
+            agent_name: single_agent.map(|a| a.name.clone()),
+            agent_avatar: single_agent.map(|a| a.avatar.clone()),
+        },
+    );
+}
+
+pub async fn execute_direct_api_turn(
+    app_handle: tauri::AppHandle,
+    message: String,
+    config: DirectApiConfig,
+    system_prompt: String,
+    chat_history: Vec<ChatMessage>,
+    attachments: Vec<UserAttachment>,
+    quote: Option<(String, String)>,
+    agent: Option<crate::AgentContext>,
+    turn_tool_grants: HashSet<String>,
+    cancel: tokio_util::sync::CancellationToken,
+    follow_global_config: bool,
+) -> Result<crate::agent_turn::TurnOutput, crate::agent_turn::TurnError> {
     let state = app_handle.state::<AppState>();
 
     let mut api_messages = Vec::new();
@@ -118,9 +194,11 @@ pub async fn run_direct_api_agent(
             break;
         }
 
-        if is_cancelled(&state).await {
-            send_aborted(&app_handle, &full_text, &full_thinking).await;
-            return;
+        if cancel.is_cancelled() {
+            return Err(crate::agent_turn::TurnError::aborted(
+                &full_text,
+                &full_thinking,
+            ));
         }
 
         let tools = if config.execution_mode == "plan" {
@@ -173,8 +251,10 @@ pub async fn run_direct_api_agent(
                         }
                     }
                     Err(e) => {
-                        send_error(&app_handle, format!("API 请求失败: {e}"), &full_thinking).await;
-                        return;
+                        return Err(crate::agent_turn::TurnError::failed(
+                            format!("API 请求失败: {e}"),
+                            &full_thinking,
+                        ));
                     }
                 }
             }
@@ -213,9 +293,10 @@ pub async fn run_direct_api_agent(
                             if attempt < MAX_STREAM_RETRIES - 1 {
                                 continue;
                             }
-                            send_error(&app_handle, format!("API 请求失败: {e}"), &full_thinking)
-                                .await;
-                            return;
+                            return Err(crate::agent_turn::TurnError::failed(
+                                format!("API 请求失败: {e}"),
+                                &full_thinking,
+                            ));
                         }
                     };
 
@@ -226,9 +307,11 @@ pub async fn run_direct_api_agent(
                     let mut stream_eof = false;
 
                     loop {
-                        if is_cancelled(&state).await {
-                            send_aborted(&app_handle, &full_text, &full_thinking).await;
-                            return;
+                        if cancel.is_cancelled() {
+                            return Err(crate::agent_turn::TurnError::aborted(
+                                &full_text,
+                                &full_thinking,
+                            ));
                         }
 
                         let chunk_res = match tokio::time::timeout(
@@ -245,13 +328,10 @@ pub async fn run_direct_api_agent(
                                 {
                                     break;
                                 }
-                                send_error(
-                                    &app_handle,
+                                return Err(crate::agent_turn::TurnError::failed(
                                     "API 超过 25 秒没有返回新内容，已停止等待。".to_string(),
                                     &full_thinking,
-                                )
-                                .await;
-                                return;
+                                ));
                             }
                         };
 
@@ -286,13 +366,10 @@ pub async fn run_direct_api_agent(
                                 {
                                     break;
                                 }
-                                send_error(
-                                    &app_handle,
+                                return Err(crate::agent_turn::TurnError::failed(
                                     format!("流式读取失败: {message}"),
                                     &full_thinking,
-                                )
-                                .await;
-                                return;
+                                ));
                             }
                         };
 
@@ -308,8 +385,10 @@ pub async fn run_direct_api_agent(
 
                             if let Ok(value) = serde_json::from_str::<serde_json::Value>(&data) {
                                 if let Some(message) = api_error_message_from_value(&value) {
-                                    send_error(&app_handle, message, &full_thinking).await;
-                                    return;
+                                    return Err(crate::agent_turn::TurnError::failed(
+                                        message,
+                                        &full_thinking,
+                                    ));
                                 }
                             }
 
@@ -499,13 +578,10 @@ pub async fn run_direct_api_agent(
                 }
 
                 if !stream_success && turn_text.is_empty() && accumulated_tool_calls.is_empty() {
-                    send_error(
-                        &app_handle,
+                    return Err(crate::agent_turn::TurnError::failed(
                         "流式连接多次中断，无法获取响应".to_string(),
                         &full_thinking,
-                    )
-                    .await;
-                    return;
+                    ));
                 }
 
                 // auto fallback: 如果 SSE 解析无内容，尝试将原始响应当作 JSON 解析
@@ -514,8 +590,10 @@ pub async fn run_direct_api_agent(
                     && !raw_buffer.is_empty()
                 {
                     if let Some(message) = api_error_message_from_sse_text(&raw_buffer) {
-                        send_error(&app_handle, message, &full_thinking).await;
-                        return;
+                        return Err(crate::agent_turn::TurnError::failed(
+                            message,
+                            &full_thinking,
+                        ));
                     }
                     // HTML 响应检测
                     let buf_trimmed = raw_buffer.trim();
@@ -524,12 +602,7 @@ pub async fn run_direct_api_agent(
                         || buf_trimmed.starts_with("<html")
                         || buf_trimmed.starts_with("<HTML")
                     {
-                        send_error(
-                        &app_handle,
-                        "API 返回了 HTML 页面而非 JSON 响应。请检查 Base URL 是否指向了正确的 API 端点（而非网关首页），以及 API Key 是否有效。".to_string(),
-                        &full_thinking,
-                    ).await;
-                        return;
+                        return Err(crate::agent_turn::TurnError::failed("API 返回了 HTML 页面而非 JSON 响应。请检查 Base URL 是否指向了正确的 API 端点（而非网关首页），以及 API Key 是否有效。".to_string(), &full_thinking));
                     }
 
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw_buffer) {
@@ -681,7 +754,20 @@ pub async fn run_direct_api_agent(
             append_active_thinking(&state, &starting_msg);
             let _ = app_handle.emit("ai-thinking", &starting_msg);
 
-            if config.execution_mode == "plan" {
+            let already_approved = state.approved_tool_types.lock().await.contains(&tc_name);
+            let latest_config = if follow_global_config {
+                state.direct_api_config.lock().await.clone()
+            } else {
+                None
+            };
+            let permission = tool_permission(
+                &config,
+                latest_config.as_ref(),
+                &turn_tool_grants,
+                &tc_name,
+                already_approved,
+            );
+            if permission == ToolPermission::Skip {
                 let tool_output =
                     format!("计划模式已阻止执行工具 {tc_name}。请切换执行模式后再操作。");
                 emit_tool_event(
@@ -703,7 +789,7 @@ pub async fn run_direct_api_agent(
             // 用户的回答会作为工具结果回传给模型, 让它据此决定后续方向。
             if tc_name == "ask_user" {
                 let tool_output =
-                    request_user_answer(&state, &app_handle, &mut full_thinking, &tc_id, &tc_args)
+                    request_user_answer(&state, &app_handle, &mut full_thinking, &tc_id, &tc_args, &cancel)
                         .await;
 
                 let output_for_log = tool_output_for_log(&tool_output);
@@ -716,16 +802,7 @@ pub async fn run_direct_api_agent(
                 continue;
             }
 
-            let already_approved = {
-                let approved_tool_types = state.approved_tool_types.lock().await;
-                approved_tool_types.contains(&tc_name)
-            };
-            // 🔥 关键修复: 每次 tool call 前从 state 读最新 config,
-            // 而不是用 turn 开头传入的快照 (用户在思考途中切无审查模式会立即生效)
-            let latest_config = state.direct_api_config.lock().await.clone();
-            let effective_config = latest_config.as_ref().unwrap_or(&config);
-            let requires_confirm =
-                mode_requires_confirmation(effective_config, &tc_name, already_approved);
+            let requires_confirm = permission == ToolPermission::Confirm;
             let focus_snapshot = if requires_confirm
                 && crate::computer_use::should_restore_focus_after_confirmation(&tc_name)
             {
@@ -743,12 +820,16 @@ pub async fn run_direct_api_agent(
                     &tc_name,
                     &tc_args,
                     &pretty_args,
+                    &cancel,
                 )
                 .await
             } else {
                 true
             };
 
+            if cancel.is_cancelled() {
+                return Err(crate::agent_turn::TurnError::aborted(&full_text, &full_thinking));
+            }
             let tool_output = if approved {
                 if focus_snapshot.is_some() {
                     crate::computer_use::restore_foreground_window(focus_snapshot.as_ref()).await;
@@ -778,6 +859,11 @@ pub async fn run_direct_api_agent(
                     let _ = app_handle.emit("scheduled-tasks-changed", json!({}));
                 }
 
+                // 智能体工坊工具改动了 agents 表：广播后各窗口会重载 @ 提及列表和工坊。
+                if tc_name == "create_agent" || tc_name == "update_agent" {
+                    let _ = app_handle.emit("agents-changed", json!({}));
+                }
+
                 output
             } else {
                 "用户拒绝了此工具的操作权限。请说明为什么需要此权限，并让用户重新发起或授权。"
@@ -796,9 +882,11 @@ pub async fn run_direct_api_agent(
     }
 
     // 保存前再次检查是否已取消
-    if is_cancelled(&state).await {
-        send_aborted(&app_handle, &full_text, &full_thinking).await;
-        return;
+    if cancel.is_cancelled() {
+        return Err(crate::agent_turn::TurnError::aborted(
+            &full_text,
+            &full_thinking,
+        ));
     }
 
     if full_text.trim().is_empty() {
@@ -811,51 +899,16 @@ pub async fn run_direct_api_agent(
             "接口返回了HTTP 200，但响应不是OpenAI SSE格式。如果使用的是Auto Code等非标准接口，请在设置中将流式模式改为non_stream。".to_string()
         };
 
-        send_error(&app_handle, error_msg, &full_thinking).await;
-        return;
+        return Err(crate::agent_turn::TurnError::failed(
+            error_msg,
+            &full_thinking,
+        ));
     }
 
-    let single_agent = agent.as_ref().and_then(|ctx| ctx.single());
-    {
-        let db = state.db.lock().await;
-        let _ = db.save_message_with_agent(
-            "assistant",
-            &full_text,
-            if full_thinking.is_empty() {
-                None
-            } else {
-                Some(&full_thinking)
-            },
-            single_agent.map(|a| a.id.as_str()),
-            single_agent.map(|a| a.name.as_str()),
-            single_agent.map(|a| a.avatar.as_str()),
-        );
-    }
-
-    {
-        let mut behavior = state.behavior.lock().await;
-        behavior.set_state(crate::behavior::PetState::Speaking);
-        behavior.mood.update(Some(0.05), None);
-    }
-
-    if let Ok(mut active) = state.active_chat.lock() {
-        active.active = None;
-    }
-
-    let _ = app_handle.emit(
-        "ai-finished",
-        crate::AiFinishedPayload {
-            text: full_text,
-            thinking: if full_thinking.is_empty() {
-                None
-            } else {
-                Some(full_thinking)
-            },
-            agent_id: single_agent.map(|a| a.id.clone()),
-            agent_name: single_agent.map(|a| a.name.clone()),
-            agent_avatar: single_agent.map(|a| a.avatar.clone()),
-        },
-    );
+    Ok(crate::agent_turn::TurnOutput {
+        text: full_text,
+        thinking: full_thinking,
+    })
 }
 
 async fn build_user_content(message: &str, attachments: &[UserAttachment]) -> Value {
@@ -1163,14 +1216,6 @@ fn append_active_thinking(state: &tauri::State<'_, AppState>, text: &str) {
     }
 }
 
-async fn is_cancelled(state: &tauri::State<'_, AppState>) -> bool {
-    let abort = state.abort_token.lock().await;
-    abort
-        .as_ref()
-        .map(|token| token.is_cancelled())
-        .unwrap_or(false)
-}
-
 async fn request_tool_confirmation(
     state: &tauri::State<'_, AppState>,
     app_handle: &tauri::AppHandle,
@@ -1179,6 +1224,7 @@ async fn request_tool_confirmation(
     tool_name: &str,
     args: &serde_json::Value,
     pretty_args: &str,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> bool {
     let waiting_msg = format!("[等待授权] {}\n", tool_summary(tool_name, args));
     full_thinking.push_str(&waiting_msg);
@@ -1187,30 +1233,29 @@ async fn request_tool_confirmation(
     emit_tool_event(app_handle, event_id, tool_name, "waiting", args, None, None);
 
     let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
-    let confirm_id = format!("confirm_{}_{}", tool_name, crate::unix_now());
+    let confirm_id = format!("confirm_{}", uuid::Uuid::new_v4());
+    let payload = ToolConfirmPayload {
+        id: confirm_id.clone(), tool_name: tool_name.to_string(), arguments: pretty_args.to_string(),
+        summary: tool_summary(tool_name, args), command: tool_command(tool_name, args), path: tool_path(tool_name, args),
+    };
     {
         let mut confirms = state.pending_confirms.lock().await;
-        confirms.insert(confirm_id.clone(), tx);
+        confirms.insert(confirm_id.clone(), crate::interactions::PendingRequest { sender: tx, payload: payload.clone() });
     }
+    let mut guard = crate::interactions::RequestGuard::new(app_handle, &confirm_id, crate::interactions::RequestKind::Tool);
 
     let _ = app_handle.emit(
         "ai-tool-confirm",
-        ToolConfirmPayload {
-            id: confirm_id.clone(),
-            tool_name: tool_name.to_string(),
-            arguments: pretty_args.to_string(),
-            summary: tool_summary(tool_name, args),
-            command: tool_command(tool_name, args),
-            path: tool_path(tool_name, args),
-        },
+        payload,
     );
 
-    let approved_result = tokio::time::timeout(std::time::Duration::from_secs(120), rx).await;
+    let approved_result = crate::interactions::wait_for_response(rx, cancel, Duration::from_secs(120)).await;
 
     {
         let mut confirms = state.pending_confirms.lock().await;
         confirms.remove(&confirm_id);
     }
+    guard.settle();
 
     let emit_resolved = |approved: bool| {
         let _ = app_handle.emit(
@@ -1220,7 +1265,7 @@ async fn request_tool_confirmation(
     };
 
     match approved_result {
-        Ok(Ok(true)) => {
+        crate::interactions::WaitResult::Answered(true) => {
             emit_resolved(true);
             let approved_msg = "[用户已授权，开始执行]\n".to_string();
             full_thinking.push_str(&approved_msg);
@@ -1243,7 +1288,7 @@ async fn request_tool_confirmation(
             );
             true
         }
-        Ok(Ok(false)) => {
+        crate::interactions::WaitResult::Answered(false) => {
             emit_resolved(false);
             let denied_msg = "[用户拒绝执行此操作]\n".to_string();
             full_thinking.push_str(&denied_msg);
@@ -1260,7 +1305,7 @@ async fn request_tool_confirmation(
             );
             false
         }
-        Ok(Err(_)) => {
+        crate::interactions::WaitResult::Closed => {
             emit_resolved(false);
             let err_msg = "[授权通道失效]\n".to_string();
             full_thinking.push_str(&err_msg);
@@ -1277,7 +1322,12 @@ async fn request_tool_confirmation(
             );
             false
         }
-        Err(_) => {
+        crate::interactions::WaitResult::Cancelled => {
+            emit_resolved(false);
+            emit_tool_event(app_handle, event_id, tool_name, "interrupted", args, Some("操作已被用户中止。"), Some(false));
+            false
+        }
+        crate::interactions::WaitResult::TimedOut => {
             emit_resolved(false);
             let timeout_msg = "[确认超时 (120秒)，自动拒绝]\n".to_string();
             full_thinking.push_str(&timeout_msg);
@@ -1319,6 +1369,7 @@ async fn request_user_answer(
     full_thinking: &mut String,
     event_id: &str,
     args: &serde_json::Value,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> String {
     let question = args["question"]
         .as_str()
@@ -1348,60 +1399,34 @@ async fn request_user_answer(
     full_thinking.push_str(&waiting_msg);
     append_active_thinking(state, &waiting_msg);
     let _ = app_handle.emit("ai-thinking", &waiting_msg);
-    emit_tool_event(app_handle, event_id, "ask_user", "waiting", args, None, None);
+    emit_tool_event(
+        app_handle, event_id, "ask_user", "waiting", args, None, None,
+    );
 
     let (tx, rx) = tokio::sync::oneshot::channel::<String>();
-    let question_id = format!("ask_{}", crate::unix_now());
+    let question_id = format!("ask_{}", uuid::Uuid::new_v4());
+    let payload = AskUserPayload { id: question_id.clone(), question: question.clone(), options: options.clone() };
     {
         let mut questions = state.pending_questions.lock().await;
-        questions.insert(question_id.clone(), tx);
+        questions.insert(question_id.clone(), crate::interactions::PendingRequest { sender: tx, payload: payload.clone() });
     }
+    let mut guard = crate::interactions::RequestGuard::new(app_handle, &question_id, crate::interactions::RequestKind::Question);
 
     let _ = app_handle.emit(
         "ai-ask-user",
-        AskUserPayload {
-            id: question_id.clone(),
-            question: question.clone(),
-            options: options.clone(),
-        },
+        payload,
     );
 
-    // 同时监听: 用户回答 / 5 分钟超时 / 用户中止整个对话
-    let answer_result = tokio::select! {
-        result = rx => Some(result),
-        _ = tokio::time::sleep(std::time::Duration::from_secs(300)) => None,
-        cancelled = is_cancelled(state) => {
-            if cancelled {
-                let _ = app_handle.emit(
-                    "ai-ask-user-resolved",
-                    json!({ "id": question_id, "answered": false }),
-                );
-                {
-                    let mut questions = state.pending_questions.lock().await;
-                    questions.remove(&question_id);
-                }
-                emit_tool_event(
-                    app_handle,
-                    event_id,
-                    "ask_user",
-                    "denied",
-                    args,
-                    Some("操作已被用户中止。"),
-                    Some(false),
-                );
-                return "操作已被用户中止。".to_string();
-            }
-            None
-        }
-    };
+    let answer_result = crate::interactions::wait_for_response(rx, cancel, Duration::from_secs(300)).await;
 
     {
         let mut questions = state.pending_questions.lock().await;
         questions.remove(&question_id);
     }
+    guard.settle();
 
     match answer_result {
-        Some(Ok(answer)) => {
+        crate::interactions::WaitResult::Answered(answer) => {
             let _ = app_handle.emit(
                 "ai-ask-user-resolved",
                 json!({ "id": question_id, "answered": true }),
@@ -1431,7 +1456,7 @@ async fn request_user_answer(
                 format!("用户的回答：{}", answer.trim())
             }
         }
-        Some(Err(_)) => {
+        crate::interactions::WaitResult::Closed => {
             // oneshot 发送端被丢弃 (通道失效)
             let _ = app_handle.emit(
                 "ai-ask-user-resolved",
@@ -1448,7 +1473,12 @@ async fn request_user_answer(
             );
             "询问通道失效，未能取得用户回答。请根据已有信息按你的最佳判断继续。".to_string()
         }
-        None => {
+        crate::interactions::WaitResult::Cancelled => {
+            let _ = app_handle.emit("ai-ask-user-resolved", json!({ "id": question_id, "answered": false }));
+            emit_tool_event(app_handle, event_id, "ask_user", "interrupted", args, Some("操作已被用户中止。"), Some(false));
+            "操作已被用户中止。".to_string()
+        }
+        crate::interactions::WaitResult::TimedOut => {
             // 5 分钟超时: 用户不在, 让智能体自主决策而不是无限等待
             let _ = app_handle.emit(
                 "ai-ask-user-resolved",
@@ -1577,6 +1607,36 @@ fn append_visual_tool_message(
             }
         ]
     }));
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ToolPermission {
+    Skip,
+    Confirm,
+    Allow,
+}
+
+fn tool_permission(
+    initial: &DirectApiConfig,
+    latest: Option<&DirectApiConfig>,
+    turn_grants: &HashSet<String>,
+    tool_name: &str,
+    already_approved: bool,
+) -> ToolPermission {
+    let config = latest.unwrap_or(initial);
+    // Plan mode must suppress execution even if a role or earlier turn granted it.
+    if config.execution_mode == "plan" {
+        return ToolPermission::Skip;
+    }
+    if mode_requires_confirmation(
+        config,
+        tool_name,
+        already_approved || turn_grants.contains(tool_name),
+    ) {
+        ToolPermission::Confirm
+    } else {
+        ToolPermission::Allow
+    }
 }
 
 fn mode_requires_confirmation(
@@ -1804,10 +1864,7 @@ fn tool_summary(tool_name: &str, args: &serde_json::Value) -> String {
                 .map(|d| format!(" 在 {}", d))
                 .unwrap_or_default()
         ),
-        "edit_file" => format!(
-            "修改文件 {}",
-            args["path"].as_str().unwrap_or("未知路径")
-        ),
+        "edit_file" => format!("修改文件 {}", args["path"].as_str().unwrap_or("未知路径")),
         "create_docx" => format!(
             "生成 Word 文档 {}",
             args["path"].as_str().unwrap_or("未指定路径")
@@ -1815,6 +1872,15 @@ fn tool_summary(tool_name: &str, args: &serde_json::Value) -> String {
         "ask_user" => format!(
             "向用户提问: {}",
             args["question"].as_str().unwrap_or("未指定问题")
+        ),
+        "list_agents" => "查看现有智能体".to_string(),
+        "create_agent" => format!(
+            "创建智能体 {}",
+            args["name"].as_str().unwrap_or("未命名智能体")
+        ),
+        "update_agent" => format!(
+            "更新智能体 {}",
+            args["agent"].as_str().unwrap_or("未知智能体")
         ),
         "file_search" => format!(
             "搜索文件 '{}'{}",
@@ -2056,6 +2122,76 @@ mod tests {
         config.execution_mode = "normal".to_string();
 
         assert!(!mode_requires_confirmation(&config, "get_weather", false));
+    }
+
+    #[test]
+    fn role_grants_survive_live_config_refresh_in_normal_and_custom_modes() {
+        let initial = DirectApiConfig::default();
+        let grants = HashSet::from(["write_file".into(), "browser_click".into()]);
+        for mode in ["normal", "custom"] {
+            let mut latest = DirectApiConfig::default();
+            latest.execution_mode = mode.into();
+            for tool in ["write_file", "browser_click"] {
+                assert_eq!(
+                    tool_permission(&initial, Some(&latest), &grants, tool, false),
+                    ToolPermission::Allow
+                );
+                assert_eq!(
+                    tool_permission(&initial, Some(&latest), &HashSet::new(), tool, false),
+                    ToolPermission::Confirm
+                );
+            }
+            assert!(
+                latest.auto_approved_tools.is_empty(),
+                "turn grants must not mutate saved preferences"
+            );
+        }
+    }
+
+    #[test]
+    fn live_plan_mode_blocks_even_scoped_or_previously_approved_tools() {
+        let initial = DirectApiConfig::default();
+        let mut latest = initial.clone();
+        latest.execution_mode = "plan".into();
+        let grants = HashSet::from(["write_file".into()]);
+        assert_eq!(
+            tool_permission(&initial, Some(&latest), &grants, "write_file", true),
+            ToolPermission::Skip
+        );
+    }
+
+    #[test]
+    fn live_preferences_can_revoke_old_global_grants_without_affecting_scoped_grants() {
+        let mut initial = DirectApiConfig::default();
+        initial.execution_mode = "custom".into();
+        initial.auto_approved_tools = vec!["write_file".into()];
+        let latest = DirectApiConfig::default();
+        assert_eq!(
+            tool_permission(
+                &initial,
+                Some(&latest),
+                &HashSet::new(),
+                "write_file",
+                false
+            ),
+            ToolPermission::Confirm
+        );
+        assert_eq!(
+            tool_permission(&initial, None, &HashSet::new(), "write_file", false),
+            ToolPermission::Allow
+        );
+        let mut unreviewed = latest.clone();
+        unreviewed.execution_mode = "unreviewed".into();
+        assert_eq!(
+            tool_permission(
+                &latest,
+                Some(&unreviewed),
+                &HashSet::new(),
+                "write_file",
+                false
+            ),
+            ToolPermission::Allow
+        );
     }
 
     #[test]

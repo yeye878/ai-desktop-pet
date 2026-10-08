@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { useChatStore, type FileAttachment, type Message, type MessageAgent } from "../stores/chat";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useChatStore, messageAgentFromPayload, type AiFinishedPayload, type FileAttachment, type Message, type MessageAgent } from "../stores/chat";
 import { usePetStore } from "../stores/pet";
 import { useSkillsStore, type Skill } from "../stores/skills";
 import { useAgentsStore, type Agent } from "../stores/agents";
@@ -11,6 +11,13 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import BgCanvas from "./BgCanvas.vue";
+import AgentActivity from "./AgentActivity.vue";
+import UserQuestion from "./UserQuestion.vue";
+import { createInteractionSubmission, subscribePendingInteraction, type AskUserPayload } from "../services/pendingInteractions";
+import { isNearBottom, legacyActivity, type AgentActivityTool } from "../services/agentActivity";
+import { ArrowDown } from "@lucide/vue";
+import CollaborationBar from "./CollaborationBar.vue";
+import { subscribeCollaboration } from "../services/collaboration";
 import {
   SLASH_COMMANDS,
   slashCommandMatches,
@@ -60,13 +67,6 @@ type ActiveChat = {
   thinking: string;
   started_at: string | number;
 };
-type AiFinishedPayload = {
-  text: string;
-  thinking: string | null;
-  agentId?: string | null;
-  agentName?: string | null;
-  agentAvatar?: string | null;
-};
 type AiErrorPayload = {
   message: string;
   thinking: string | null;
@@ -115,6 +115,14 @@ const clipboardSearch = ref("");
 const chatBubbleRef = ref<HTMLDivElement | null>(null);
 const messagesRef = ref<HTMLDivElement | null>(null);
 const chatEndRef = ref<HTMLDivElement | null>(null);
+const followingActivity = ref(true);
+function trackChatScroll() {
+  if (messagesRef.value) followingActivity.value = isNearBottom(messagesRef.value);
+}
+function jumpToLatest() {
+  followingActivity.value = true;
+  void scrollToBottomAfterRender();
+}
 const activeMessageMenuId = ref<number | null>(null);
 const slashSelectedIndex = ref(0);
 const mentionSelectedIndex = ref(0);
@@ -134,6 +142,7 @@ let scrollTimers: ReturnType<typeof setTimeout>[] = [];
 let unlistenDragDrop: UnlistenFn | null = null;
 let unlistenThinking: UnlistenFn | null = null;
 let unlistenAnswerDelta: UnlistenFn | null = null;
+let unlistenToolEvent: UnlistenFn | null = null;
 let unlistenAiFinished: UnlistenFn | null = null;
 let unlistenAiError: UnlistenFn | null = null;
 let unlistenChatCleared: UnlistenFn | null = null;
@@ -141,6 +150,7 @@ let unlistenVoiceChanged: UnlistenFn | null = null;
 let unlistenSyncMessage: UnlistenFn | null = null;
 let unlistenApiConfigChanged: UnlistenFn | null = null;
 let unlistenScheduledTaskTriggered: UnlistenFn | null = null;
+let stopCollaboration: (() => void) | null = null;
 
 interface ToolConfirmPayload {
   id: string;
@@ -151,9 +161,14 @@ interface ToolConfirmPayload {
   path?: string | null;
 }
 const pendingConfirm = ref<ToolConfirmPayload | null>(null);
-let unlistenToolConfirm: UnlistenFn | null = null;
-let unlistenToolConfirmResolved: UnlistenFn | null = null;
-let unlistenAskUser: UnlistenFn | null = null;
+const pendingQuestion = ref<AskUserPayload | null>(null);
+const confirmSubmission = createInteractionSubmission(pendingConfirm, (id, value) => invoke("confirm_tool", { id, approved: value }));
+const confirmSubmitting = computed(() => confirmSubmission.submittingId.value === pendingConfirm.value?.id);
+let stopToolConfirm: (() => void) | undefined;
+let stopQuestion: (() => void) | undefined;
+function questionAnswered(id: string) {
+  if (pendingQuestion.value?.id === id) pendingQuestion.value = null;
+}
 
 interface PendingFile {
   id: string;
@@ -184,7 +199,6 @@ let fileErrorTimer: ReturnType<typeof setTimeout> | null = null;
 const thinkingContent = ref("");
 const streamingAnswer = ref("");
 const isThinkingCollapsed = ref(true);
-const expandedThinking = reactive(new Set<number>());
 const backendType = ref("claude_code");
 const currentApiProfile = ref<ApiProfile | null>(null);
 const apiProfiles = ref<ApiProfile[]>([]);
@@ -275,9 +289,14 @@ let loadingTimeout: ReturnType<typeof setTimeout> | null = null;
 function resetLoadingTimeout() {
   if (loadingTimeout) clearTimeout(loadingTimeout);
   loadingTimeout = setTimeout(() => {
+    if (chat.collaboration?.status === "running") return;
+    if (pendingConfirm.value || pendingQuestion.value || chat.activity.items.some((item) => item.kind === "tool" && ["running", "waiting"].includes(item.tool.status))) {
+      resetLoadingTimeout();
+      return;
+    }
     if (chat.isLoading) {
       chat.isLoading = false;
-      appendAssistantOnce("⚠️ 响应超时，请重试", thinkingContent.value || undefined);
+      appendAssistantOnce("⚠️ 响应超时，请重试", thinkingContent.value || undefined, undefined, "failed");
       thinkingContent.value = "";
       streamingAnswer.value = "";
       isThinkingCollapsed.value = true;
@@ -294,6 +313,26 @@ function clearLoadingTimeout() {
 }
 
 onMounted(async () => {
+  stopToolConfirm = subscribePendingInteraction("tool", pendingConfirm);
+  stopQuestion = subscribePendingInteraction("question", pendingQuestion);
+  stopCollaboration = subscribeCollaboration(chat, () => {
+    thinkingContent.value = "";
+    streamingAnswer.value = "";
+    pendingConfirm.value = null;
+    void scrollToBottomAfterRender();
+  }, (status, newTurn) => {
+    if (newTurn || status.status !== "running") {
+      thinkingContent.value = "";
+      streamingAnswer.value = "";
+      if (status.status !== "running") {
+        pendingConfirm.value = null;
+        pendingQuestion.value = null;
+      }
+    }
+    if (status.status === "running") resetLoadingTimeout();
+    else { clearLoadingTimeout(); pet.setState("idle"); }
+  });
+  void agentsStore.startSync().catch((error) => console.error("加载智能体失败", error));
   unlistenDragDrop = await currentWindow.onDragDropEvent((event) => {
     handleDragDropEvent(event.payload);
   });
@@ -302,6 +341,7 @@ onMounted(async () => {
     chat.isLoading = true;
     resetLoadingTimeout(); // 重置超时
     thinkingContent.value += event.payload;
+    chat.activity.appendThinking(event.payload);
     scrollToBottomAfterRender();
   });
 
@@ -309,18 +349,13 @@ onMounted(async () => {
     chat.isLoading = true;
     resetLoadingTimeout(); // 重置超时
     streamingAnswer.value += event.payload.text;
+    chat.activity.appendText(event.payload.text);
     scrollToBottomAfterRender();
   });
 
   unlistenAiFinished = await listen<AiFinishedPayload>("ai-finished", (event) => {
     clearLoadingTimeout(); // 清除超时
-    const replyAgent: MessageAgent | null = event.payload.agentName
-      ? {
-          id: event.payload.agentId || undefined,
-          name: event.payload.agentName,
-          avatar: event.payload.agentAvatar || undefined,
-        }
-      : null;
+    const replyAgent = messageAgentFromPayload(event.payload);
     appendAssistantOnce(event.payload.text, event.payload.thinking ?? undefined, replyAgent);
     chat.isLoading = false;
     thinkingContent.value = "";
@@ -348,7 +383,7 @@ onMounted(async () => {
     } else {
       text = `出错了: ${event.payload.message}`;
     }
-    appendAssistantOnce(text, event.payload.thinking ?? (thinkingContent.value || undefined));
+    appendAssistantOnce(text, event.payload.thinking ?? (thinkingContent.value || undefined), undefined, event.payload.aborted ? "aborted" : "failed");
     chat.isLoading = false;
     thinkingContent.value = "";
     streamingAnswer.value = "";
@@ -371,6 +406,8 @@ onMounted(async () => {
     chat.addMessage(payload.role, payload.content, undefined, payload.files ?? payload.fileAttachments);
     if (payload.role === "user") {
       chat.isLoading = true;
+      chat.activity.reset();
+      followingActivity.value = true;
       pendingConfirm.value = null;  // Clear any pending tool confirmation
       thinkingContent.value = "";
       streamingAnswer.value = "";
@@ -379,25 +416,11 @@ onMounted(async () => {
     }
   });
 
-  unlistenToolConfirm = await listen<ToolConfirmPayload>("ai-tool-confirm", (event) => {
-    pendingConfirm.value = event.payload;
-    isThinkingCollapsed.value = false;
-    scrollToBottomAfterRender();
-  });
-
-  unlistenToolConfirmResolved = await listen<{ id: string; approved: boolean }>("ai-tool-confirm-resolved", (event) => {
-    if (pendingConfirm.value?.id === event.payload.id) {
-      pendingConfirm.value = null;
-    }
-  });
-
-  // ask_user 兜底: 小窗不做完整弹窗, 提示用户到控制台作答
-  unlistenAskUser = await listen<{ id: string; question: string }>("ai-ask-user", (event) => {
-    chat.addMessage(
-      "assistant",
-      `❓ ${event.payload.question}\n（智能体在等你的回答，请打开控制台对话页作答；不作答 5 分钟后它会自行继续。）`,
-    );
-    scrollToBottomAfterRender();
+  unlistenToolEvent = await listen<AgentActivityTool>("ai-tool-event", (event) => {
+    chat.isLoading = true;
+    resetLoadingTimeout();
+    chat.activity.upsertTool(event.payload);
+    void scrollToBottomAfterRender();
   });
 
   unlistenScheduledTaskTriggered = await listen<{ message: string }>("scheduled-task-triggered", () => {
@@ -410,7 +433,6 @@ onMounted(async () => {
 
   try {
     void skillsStore.load().catch(() => {});
-    void agentsStore.load().catch(() => {});
     await loadVoiceSettings();
     await loadApiState();
     await refreshChatState();
@@ -434,6 +456,10 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  clearLoadingTimeout();
+  unlistenToolEvent?.();
+  stopCollaboration?.();
+  agentsStore.stopSync();
   pendingConfirm.value = null;
   if (scrollFrame !== null) {
     cancelAnimationFrame(scrollFrame);
@@ -461,18 +487,8 @@ onBeforeUnmount(() => {
     unlistenAiError();
     unlistenAiError = null;
   }
-  if (unlistenToolConfirm) {
-    unlistenToolConfirm();
-    unlistenToolConfirm = null;
-  }
-  if (unlistenToolConfirmResolved) {
-    unlistenToolConfirmResolved();
-    unlistenToolConfirmResolved = null;
-  }
-  if (unlistenAskUser) {
-    unlistenAskUser();
-    unlistenAskUser = null;
-  }
+  stopToolConfirm?.();
+  stopQuestion?.();
   if (unlistenChatCleared) {
     unlistenChatCleared();
     unlistenChatCleared = null;
@@ -588,6 +604,9 @@ async function sendMessage() {
 
   input.value = "";
   clearPendingFiles();
+  chat.collaboration = null;
+  chat.activity.reset();
+  followingActivity.value = true;
   chat.isLoading = true;
   resetLoadingTimeout(); // 启动超时保底
   pendingConfirm.value = null;  // Clear any pending tool confirmation
@@ -603,6 +622,7 @@ async function sendMessage() {
       message: fullMessage,
       attachments: aiAttachments,
       mentionAgents: petMentionNames(text),
+      collaborationEnabled: chat.collaborationEnabled,
     });
   } catch (err) {
     chat.isLoading = false;
@@ -760,10 +780,13 @@ async function toggleVoiceInput() {
 }
 
 async function abortAi() {
+  clearLoadingTimeout();
+  if (chat.isLoading) appendAssistantOnce("已中止", thinkingContent.value || undefined, undefined, "aborted");
   chat.isLoading = false;
   thinkingContent.value = "";
   streamingAnswer.value = "";
   pendingConfirm.value = null;  // Clear pending tool confirmation on abort
+  pendingQuestion.value = null;
   try {
     await invoke("abort_ai");
   } catch {
@@ -772,17 +795,7 @@ async function abortAi() {
 }
 
 async function handleToolConfirm(approved: boolean) {
-  if (!pendingConfirm.value) return;
-  try {
-    await invoke("confirm_tool", {
-      id: pendingConfirm.value.id,
-      approved,
-    });
-  } catch (e) {
-    console.error("确认工具失败:", e);
-  } finally {
-    pendingConfirm.value = null;
-  }
+  await confirmSubmission.submit(approved);
 }
 
 async function loadVoiceSettings() {
@@ -808,14 +821,6 @@ async function loadApiState() {
   }
 }
 
-function toggleThinking(msgId: number) {
-  if (expandedThinking.has(msgId)) {
-    expandedThinking.delete(msgId);
-  } else {
-    expandedThinking.add(msgId);
-  }
-}
-
 async function refreshClipboardItems() {
   clipboardItems.value = normalizeClipboardItems(
     await invoke<Array<ClipboardItem | string>>("get_clipboard_items"),
@@ -836,11 +841,14 @@ async function refreshChatState() {
     }
     chat.isLoading = true;
     thinkingContent.value = active.thinking || "";
+    chat.activity.reset();
+    chat.activity.items.push(...legacyActivity(active.thinking));
     isThinkingCollapsed.value = false;
     pet.setState("thinking");
   } else {
     chat.isLoading = false;
     thinkingContent.value = "";
+    chat.activity.reset();
     isThinkingCollapsed.value = true;
   }
 
@@ -869,10 +877,11 @@ function normalizeChatHistoryItem(item: ChatHistoryItem) {
   };
 }
 
-function appendAssistantOnce(content: string, thinking?: string, agent?: MessageAgent | null) {
+function appendAssistantOnce(content: string, thinking?: string, agent?: MessageAgent | null, reason: "completed" | "failed" | "aborted" = "completed") {
   const last = chat.messages[chat.messages.length - 1];
   if (last?.role === "assistant" && last.content === content) return;
-  chat.addMessage("assistant", content, thinking, undefined, undefined, undefined, agent);
+  const message = chat.addMessage("assistant", content, thinking, undefined, undefined, undefined, agent);
+  chat.captureActivity(message, reason);
   scrollToBottomAfterRender();
 }
 
@@ -945,6 +954,7 @@ function resetChatUi() {
   streamingAnswer.value = "";
   isThinkingCollapsed.value = true;
   pendingConfirm.value = null;
+  pendingQuestion.value = null;
 }
 
 async function startNewConversation() {
@@ -952,10 +962,12 @@ async function startNewConversation() {
     await invoke("start_new_conversation");
     // 新对话：保留聊天记录显示，仅重置 AI 状态
     chat.isLoading = false;
+    chat.activity.reset();
     thinkingContent.value = "";
     streamingAnswer.value = "";
     isThinkingCollapsed.value = true;
     pendingConfirm.value = null;
+    pendingQuestion.value = null;
     // 插入分割线，标记新对话开始
     if (chat.messages.length > 0) {
       chat.addSystemMessage("新对话");
@@ -984,6 +996,7 @@ function scrollToBottom() {
   if (!container) return;
 
   if (activeTab.value === "chat") {
+    if (!followingActivity.value) return;
     container.scrollTop = container.scrollHeight;
     chatEndRef.value?.scrollIntoView({ block: "end" });
   } else {
@@ -1224,7 +1237,7 @@ function moveMentionSelection(delta: number) {
 function chooseMentionItem(agent = mentionItems.value[mentionSelectedIndex.value]) {
   const query = mentionQuery.value;
   if (!agent || !query) return;
-  input.value = insertMentionAt(input.value, query, agent.name);
+  input.value = insertMentionAt(input.value, query, agentsStore.mentionName(agent));
   mentionSelectedIndex.value = 0;
   void nextTick(() => inputRef.value?.focus());
 }
@@ -1410,7 +1423,7 @@ function formatClipboardTime(value: string | number): string {
         :mode="chatBg"
         :custom-image="customBgImage"
       />
-      <div ref="messagesRef" class="chat-messages" @click="onBgClick">
+      <div ref="messagesRef" class="chat-messages" @click="onBgClick" @scroll.passive="trackChatScroll">
       <template v-if="activeTab === 'chat'">
         <div v-if="chat.messages.length === 0 && !chat.isLoading" class="empty-hint">
           <div class="empty-icon">&#x1F43E;</div>
@@ -1440,20 +1453,10 @@ function formatClipboardTime(value: string | number): string {
               <span class="msg-agent-avatar">{{ msg.agent.avatar || "🤖" }}</span>
               <span class="msg-agent-name">{{ msg.agent.name }}</span>
             </div>
-            <div v-if="msg.thinking" class="thinking-section">
-              <div class="thinking-header" @click="toggleThinking(msg.id)">
-                <span class="thinking-toggle">{{ expandedThinking.has(msg.id) ? '&#x25BE;' : '&#x25B8;' }}</span>
-                <span class="thinking-label">思考过程</span>
-              </div>
-              <Transition name="thinking-expand">
-                <div v-if="expandedThinking.has(msg.id)" class="thinking-content">
-                  {{ msg.thinking }}
-                </div>
-              </Transition>
-            </div>
+            <AgentActivity v-if="msg.role === 'assistant'" :items="msg.activity" :tools="msg.toolEvents" :thinking="msg.activity ? undefined : msg.thinking" compact />
 
             <div class="bubble">
-              <template v-for="(mseg, mi) in splitMentionSegments(msg.content)" :key="mi">
+              <template v-for="(mseg, mi) in splitMentionSegments(msg.displayContent ?? msg.content)" :key="mi">
                 <span v-if="mseg.type === 'mention'" class="bubble-mention">@{{ mseg.content }}</span>
                 <template v-else>{{ mseg.content }}</template>
               </template>
@@ -1488,30 +1491,7 @@ function formatClipboardTime(value: string | number): string {
             <span class="avatar-thinking">&#x1F43E;</span>
           </div>
           <div class="msg-body">
-            <div class="bubble thinking-bubble">
-              <div class="thinking-header" @click="isThinkingCollapsed = !isThinkingCollapsed">
-                <span class="thinking-toggle">{{ isThinkingCollapsed ? '&#x25B8;' : '&#x25BE;' }}</span>
-                <span class="thinking-label thinking-loading">思考中</span>
-                <span class="thinking-dots"><span>.</span><span>.</span><span>.</span></span>
-                <button class="stop-btn" title="停止思考" @click.stop="abortAi">
-                  <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
-                    <rect width="10" height="10" rx="2"/>
-                  </svg>
-                  <span>停止</span>
-                </button>
-              </div>
-              <Transition name="thinking-expand">
-                <div v-if="!isThinkingCollapsed && thinkingContent" class="thinking-content thinking-streaming">
-                  {{ thinkingContent }}
-                </div>
-              </Transition>
-              <div v-if="!isThinkingCollapsed && !thinkingContent" class="thinking-content thinking-waiting">
-                等待思考输出...
-              </div>
-            </div>
-            <div v-if="streamingAnswer" class="bubble bot-bubble streaming-answer">
-              {{ streamingAnswer }}
-            </div>
+            <AgentActivity :items="chat.activity.items" :thinking="thinkingContent" :active="true" :waiting="!!pendingConfirm || !!pendingQuestion" :awaiting-answer="!!pendingQuestion" compact @stop="abortAi" />
 
 
           </div>
@@ -1585,6 +1565,7 @@ function formatClipboardTime(value: string | number): string {
         </div>
       </template>
       </div>
+      <button v-if="activeTab === 'chat' && !followingActivity" type="button" class="activity-jump" title="回到最新消息" aria-label="回到最新消息" @click="jumpToLatest"><ArrowDown :size="16" /></button>
     </div>
 
     <Transition name="fade">
@@ -1621,14 +1602,20 @@ function formatClipboardTime(value: string | number): string {
           </div>
 
           <div class="confirm-card-actions">
-            <button class="confirm-btn deny" @click="handleToolConfirm(false)">
+            <button class="confirm-btn deny" :disabled="confirmSubmitting" @click="handleToolConfirm(false)">
               ❌ 拒绝
             </button>
-            <button class="confirm-btn approve" @click="handleToolConfirm(true)">
+            <button class="confirm-btn approve" :disabled="confirmSubmitting" @click="handleToolConfirm(true)">
               ✅ 允许
             </button>
           </div>
         </div>
+      </div>
+    </Transition>
+
+    <Transition name="fade">
+      <div v-if="pendingQuestion" class="question-overlay">
+        <UserQuestion :question="pendingQuestion" compact @answered="questionAnswered" />
       </div>
     </Transition>
 
@@ -1714,6 +1701,7 @@ function formatClipboardTime(value: string | number): string {
       </div>
     </Transition>
 
+    <CollaborationBar v-if="activeTab === 'chat'" />
     <div class="chat-input">
       <button
         v-if="activeTab === 'chat'"
@@ -1767,6 +1755,8 @@ function formatClipboardTime(value: string | number): string {
 </template>
 
 <style scoped>
+.question-overlay { position: absolute; inset: 4px; z-index: 100; display: grid; place-items: center; padding: 6px; box-sizing: border-box; background: #f4f7fad9; border-radius: 6px; min-height: 0; overflow: hidden; }
+.activity-jump { position: absolute; right: 14px; bottom: 10px; z-index: 5; width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid #d5d8de; border-radius: 4px; background: #fff; color: #414852; cursor: pointer; }
 .chat-bubble {
   position: absolute;
   left: var(--chat-bubble-left, 0);

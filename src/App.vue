@@ -6,7 +6,7 @@ import ContextMenu from "./components/ContextMenu.vue";
 import Settings from "./components/Settings.vue";
 import ToolConfirmPanel from "./components/ToolConfirmPanel.vue";
 import VoicePanel from "./components/VoicePanel.vue";
-import { onMounted, onUnmounted, ref } from "vue";
+import { onMounted, onUnmounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
 import { listen } from "@tauri-apps/api/event";
@@ -26,6 +26,7 @@ import {
 } from "./services/customPixelPetAssets";
 import { isPetCanvasPoint } from "./services/petHitTest";
 import { PET_CHARACTER_SETTING_KEY, resolvePetCharacterId } from "./services/petCharacters";
+import { subscribePendingInteraction, type AskUserPayload } from "./services/pendingInteractions";
 
 type AppWindowLabel = "main" | "pet" | "chat" | "context-menu" | "settings" | "voice" | "tool-confirm";
 type PanelLabel = Exclude<AppWindowLabel, "main" | "pet">;
@@ -49,7 +50,6 @@ const PANEL_SPECS: Record<PanelLabel, { width: number; height: number; title: st
   voice: { width: 430, height: 520, title: "AI Desktop Pet Voice" },
 };
 const VOICE_SETTINGS_KEY = "voice_settings";
-const TOOL_CONFIRM_PAYLOAD_KEY = "ai-desktop-pet.tool-confirm-payload";
 const APP_WINDOW_LABELS = new Set<AppWindowLabel>([
   "main",
   "pet",
@@ -73,7 +73,23 @@ let unlistenFocusChanged: UnlistenFn | null = null;
 let unlistenMoved: UnlistenFn | null = null;
 let unlistenOpenVoice: UnlistenFn | null = null;
 let unlistenVoiceSettingsChanged: UnlistenFn | null = null;
-let unlistenToolConfirm: UnlistenFn | null = null;
+const ownerConfirm = ref<ToolConfirmPayload | null>(null);
+const ownerQuestion = ref<AskUserPayload | null>(null);
+let stopOwnerConfirm: (() => void) | undefined;
+let stopOwnerQuestion: (() => void) | undefined;
+let confirmationWindowQueue = Promise.resolve();
+watch(ownerConfirm, (payload) => {
+  if (currentLabel !== "main") return;
+  confirmationWindowQueue = confirmationWindowQueue.catch(() => {}).then(async () => {
+    if (ownerConfirm.value?.id !== payload?.id) return;
+    if (payload) await openToolConfirmPanel(payload);
+    else await (await WebviewWindow.getByLabel("tool-confirm"))?.hide();
+  }).catch((error) => console.error("打开工具确认窗口失败", error));
+});
+watch(ownerQuestion, (payload) => {
+  if (currentLabel !== "main" || !payload) return;
+  void revealQuestionWindow(payload.id).catch((error) => console.error("显示用户问题失败", error));
+});
 let registeredVoiceShortcut = "";
 let voiceShortcutRegistration = Promise.resolve();
 
@@ -224,28 +240,23 @@ async function openVoicePanel() {
 async function openToolConfirmPanel(payload: ToolConfirmPayload) {
   const spec = PANEL_SPECS["tool-confirm"];
   const baseUrl = window.location.href.split("#")[0].split("?")[0];
-  const url = `${baseUrl}?window=tool-confirm`;
+  const url = `${baseUrl}?window=tool-confirm&request=${encodeURIComponent(payload.id)}`;
   const size = new LogicalSize(spec.width, spec.height);
-  localStorage.setItem(TOOL_CONFIRM_PAYLOAD_KEY, JSON.stringify(payload));
-  // 🔥 智能弹窗: 仅在 chat/main 窗口获焦时才置顶+抢焦, 否则仅显示+通知
   const focused = await isChatWindowFocused();
   const existing = await WebviewWindow.getByLabel("tool-confirm");
+  if (ownerConfirm.value?.id !== payload.id) return;
+  // Focused chat surfaces already have an inline confirmation. Reuse a
+  // separate window only when the user is working outside those surfaces.
+  if (focused) { await existing?.hide(); return; }
   if (existing) {
     await existing.setSize(size);
-    await existing.center();
-    if (focused) {
-      await existing.setAlwaysOnTop(true);
-      await existing.setFocus();
-    } else {
-      await existing.setAlwaysOnTop(false);
-    }
-    await existing.show();
-    if (!focused) {
-      // 后台: 任务栏闪烁 + 系统通知
-      await requestUserAttentionSafely(existing);
-      await sendToolConfirmNotification(payload);
-    }
+    await existing.setIgnoreCursorEvents(false);
+    await existing.setAlwaysOnTop(false);
+    if (ownerConfirm.value?.id !== payload.id) return;
     await existing.emit("tool-confirm-payload", payload);
+    await existing.show();
+    await requestUserAttentionSafely(existing);
+    await sendToolConfirmNotification(payload);
     return;
   }
 
@@ -257,34 +268,33 @@ async function openToolConfirmPanel(payload: ToolConfirmPayload) {
     center: true,
     transparent: false,
     decorations: false,
-    alwaysOnTop: focused,
+    alwaysOnTop: false,
     resizable: false,
-    skipTaskbar: !focused,
+    skipTaskbar: false,
     shadow: true,
-    focus: focused,
+    focus: false,
   });
-  // 通知必须等窗口建好后调用, 否则 IPC 会因目标窗口不存在而失败
-  if (!focused) {
-    setTimeout(async () => {
-      const win = await WebviewWindow.getByLabel("tool-confirm");
-      if (win) {
-        await requestUserAttentionSafely(win);
-        await sendToolConfirmNotification(payload);
-      }
-    }, 200);
-  }
+  await sendToolConfirmNotification(payload);
 }
 
 /// 当前窗口是否是 chat 或 main (用户在使用 AI 对话)
 async function isChatWindowFocused(): Promise<boolean> {
-  try {
-    const win = getCurrentWindow();
-    const focused = await win.isFocused();
-    if (!focused) return false;
-    return win.label === "chat" || win.label === "main";
-  } catch {
-    return false;
+  for (const label of ["main", "chat"]) {
+    try {
+      const win = await WebviewWindow.getByLabel(label);
+      if (await win?.isFocused()) return true;
+    } catch { /* A chat window can close during focus detection. */ }
   }
+  return false;
+}
+
+async function revealQuestionWindow(id: string) {
+  if (await isChatWindowFocused() || ownerQuestion.value?.id !== id) return;
+  const main = await WebviewWindow.getByLabel("main");
+  if (!main || ownerQuestion.value?.id !== id) return;
+  await main.unminimize();
+  await main.show();
+  await requestUserAttentionSafely(main);
 }
 
 async function requestUserAttentionSafely(win: WebviewWindow) {
@@ -310,7 +320,7 @@ async function closeCurrentWindow() {
   if (currentLabel === "voice") {
     await currentWindow.setIgnoreCursorEvents(true).catch(() => {});
   }
-  if (currentLabel === "context-menu") {
+  if (currentLabel === "context-menu" || currentLabel === "tool-confirm") {
     await currentWindow.hide();
   } else {
     await currentWindow.close();
@@ -550,9 +560,8 @@ onMounted(async () => {
     unlistenVoiceSettingsChanged = await listen("voice-settings-changed", () => {
       queueVoiceShortcutRegistration();
     });
-    unlistenToolConfirm = await listen<ToolConfirmPayload>("ai-tool-confirm", (event) => {
-      void openToolConfirmPanel(event.payload);
-    });
+    stopOwnerConfirm = subscribePendingInteraction("tool", ownerConfirm);
+    stopOwnerQuestion = subscribePendingInteraction("question", ownerQuestion);
     window.addEventListener("voice-settings-changed", queueVoiceShortcutRegistration);
     queueVoiceShortcutRegistration();
 
@@ -570,7 +579,8 @@ onUnmounted(() => {
   unlistenMoved?.();
   unlistenOpenVoice?.();
   unlistenVoiceSettingsChanged?.();
-  unlistenToolConfirm?.();
+  stopOwnerConfirm?.();
+  stopOwnerQuestion?.();
   if (currentLabel === "main") {
     window.removeEventListener("voice-settings-changed", queueVoiceShortcutRegistration);
     void unregisterVoiceShortcut();

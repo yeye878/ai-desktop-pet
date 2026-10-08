@@ -20,19 +20,19 @@ export interface MentionQuery {
  * 仅当最后一个 @ 之后全是非空白且 @ 不在其它词中间时才生效。
  */
 export function mentionQueryFromInput(value: string): MentionQuery | null {
-  const match = /@([^s@]*)$/.exec(value);
+  const match = /(^|\s)@([^\s@]*)$/.exec(value);
   if (!match) return null;
-  return { query: match[1], start: match.index };
+  return { query: match[2], start: match.index + match[1].length };
 }
 
 /** 提取消息中所有 @名字 提及（去重、保持出现顺序）。 */
 export function extractMentionNames(value: string): string[] {
   const names: string[] = [];
   const seen = new Set<string>();
-  const re = /@([^s@]+)/g;
+  const re = /(^|\s)@([^\s@]+)/g;
   let match: RegExpExecArray | null;
   while ((match = re.exec(value)) !== null) {
-    const name = match[1];
+    const name = match[2];
     if (!seen.has(name)) {
       seen.add(name);
       names.push(name);
@@ -56,14 +56,15 @@ export function insertMentionAt(
 /** 把消息内容按 @提及 切成渲染片段（用于在气泡中高亮 @名字）。 */
 export function splitMentionSegments(content: string): MentionSegment[] {
   const segments: MentionSegment[] = [];
-  const re = /@([^s@]+)/g;
+  const re = /(^|\s)@([^\s@]+)/g;
   let last = 0;
   let match: RegExpExecArray | null;
   while ((match = re.exec(content)) !== null) {
-    if (match.index > last) {
-      segments.push({ type: "text", content: content.slice(last, match.index) });
+    const start = match.index + match[1].length;
+    if (start > last) {
+      segments.push({ type: "text", content: content.slice(last, start) });
     }
-    segments.push({ type: "mention", content: match[1] });
+    segments.push({ type: "mention", content: match[2] });
     last = match.index + match[0].length;
   }
   if (last < content.length) {

@@ -1,5 +1,8 @@
 import { defineStore } from "pinia";
-import { ref } from "vue";
+import { reactive, ref } from "vue";
+import { createAgentActivity, type AgentActivityItem } from "../services/agentActivity";
+import { clearActivityPresentations, restoreActivityPresentation, saveActivityPresentation } from "../services/agentActivityCache";
+import type { CollaborationReply, CollaborationState } from "../services/collaboration";
 
 export interface FileAttachment {
   name: string;
@@ -12,11 +15,11 @@ export interface ToolEventItem {
   tool_name: string;
   status: string;
   summary: string;
-  arguments?: string;
-  command?: string;
-  path?: string;
-  output?: string;
-  approved?: boolean;
+  arguments?: string | null;
+  command?: string | null;
+  path?: string | null;
+  output?: string | null;
+  approved?: boolean | null;
 }
 
 export interface QuotedMessage {
@@ -32,6 +35,21 @@ export interface MessageAgent {
   avatar?: string;
 }
 
+/** Matches the Rust AiFinishedPayload event, including its snake_case fields. */
+export interface AiFinishedPayload {
+  text: string;
+  thinking?: string | null;
+  agent_id?: string | null;
+  agent_name?: string | null;
+  agent_avatar?: string | null;
+}
+
+export function messageAgentFromPayload(payload: AiFinishedPayload): MessageAgent | null {
+  return payload.agent_name
+    ? { id: payload.agent_id || undefined, name: payload.agent_name, avatar: payload.agent_avatar || undefined }
+    : null;
+}
+
 export interface Message {
   id: number;
   role: "user" | "assistant" | "system";
@@ -40,6 +58,8 @@ export interface Message {
   timestamp: number;
   files?: FileAttachment[];
   toolEvents?: ToolEventItem[];
+  activity?: AgentActivityItem[];
+  displayContent?: string;
   /** 用户引用的前文对话（微信式引用） */
   quote?: QuotedMessage;
   /** 回复来自哪个智能体（@ 提及后由该智能体作答） */
@@ -49,8 +69,14 @@ export interface Message {
 export type MessageDraft = Omit<Message, "id">;
 
 export const useChatStore = defineStore("chat", () => {
+  let presentationStorage: Storage | undefined;
+  try { presentationStorage = globalThis.localStorage; } catch { /* Storage can be disabled by the WebView. */ }
   const messages = ref<Message[]>([]);
   const isLoading = ref(false);
+  const activity = createAgentActivity(reactive<AgentActivityItem[]>([]));
+  const collaborationEnabled = ref(true);
+  const collaboration = ref<CollaborationState | null>(null);
+  const completedTurns = new Set<string>();
   let nextId = 1;
 
   function addMessage(
@@ -62,7 +88,7 @@ export const useChatStore = defineStore("chat", () => {
     quote?: QuotedMessage,
     agent?: MessageAgent | null,
   ) {
-    const message = {
+    const message: Message = {
       id: nextId++,
       role,
       content,
@@ -74,7 +100,7 @@ export const useChatStore = defineStore("chat", () => {
       timestamp: Date.now(),
     };
     messages.value.push(message);
-    return message;
+    return messages.value[messages.value.length - 1];
   }
 
   function addSystemMessage(content: string) {
@@ -83,16 +109,48 @@ export const useChatStore = defineStore("chat", () => {
 
   function setMessages(items: MessageDraft[]) {
     nextId = 1;
-    messages.value = items.map((item) => ({
-      id: nextId++,
-      ...item,
-    }));
+    messages.value = items.map((item) => {
+      const timestamp = item.timestamp < 1e12 ? item.timestamp * 1000 : item.timestamp;
+      const message = { id: nextId++, ...item, timestamp };
+      return item.role === "assistant" ? { ...message, ...restoreActivityPresentation(presentationStorage, message) } : message;
+    });
   }
 
   function clearMessages() {
     messages.value = [];
     nextId = 1;
+    collaboration.value = null;
+    completedTurns.clear();
+    activity.reset();
+    clearActivityPresentations(presentationStorage);
   }
 
-  return { messages, isLoading, addMessage, addSystemMessage, setMessages, clearMessages };
+  function receiveCollaborationState(state: CollaborationState): boolean {
+    const current = collaboration.value;
+    if (current?.status === "running" && current.run_id !== state.run_id && state.status !== "running") return false;
+    if (current?.run_id !== state.run_id) completedTurns.clear();
+    if (current?.run_id !== state.run_id || current?.turn !== state.turn) activity.reset();
+    collaboration.value = state;
+    isLoading.value = state.status === "running";
+    return true;
+  }
+
+  function receiveCollaborationReply(reply: CollaborationReply): boolean {
+    if (collaboration.value?.run_id !== reply.run_id || collaboration.value.status !== "running" || completedTurns.has(reply.turn_id)) return false;
+    completedTurns.add(reply.turn_id);
+    const message = addMessage("assistant", reply.text, reply.thinking || undefined, undefined, undefined, undefined, messageAgentFromPayload(reply));
+    captureActivity(message, reply.failed ? "failed" : "completed");
+    return true;
+  }
+
+  function captureActivity(message: Message, reason: "completed" | "failed" | "aborted" = "completed") {
+    if (activity.items.length) {
+      const presentation = activity.finish(message.content, reason);
+      Object.assign(message, presentation);
+      saveActivityPresentation(presentationStorage, { ...message, ...presentation });
+    }
+    activity.reset();
+  }
+
+  return { messages, isLoading, activity, captureActivity, collaborationEnabled, collaboration, receiveCollaborationState, receiveCollaborationReply, addMessage, addSystemMessage, setMessages, clearMessages };
 });

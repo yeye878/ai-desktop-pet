@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import CustomPixelPetWorkshop from "./CustomPixelPetWorkshop.vue";
+import CodexConnection from "./CodexConnection.vue";
 import PetCanvas from "./PetCanvas.vue";
 import { usePetStore, THEMES, FONT_COLORS, resolveSkinId } from "../stores/pet";
 import {
@@ -335,7 +336,7 @@ async function selectBackend(type: string) {
   try {
     await invoke("set_backend_type", { backend: type });
     backendType.value = type;
-    if (type === "claude_code") {
+    if (type !== "direct_api") {
       await loadCurrentModel();
     } else {
       currentModel.value = `直连 API: ${apiConfig.value.model}`;
@@ -1177,7 +1178,7 @@ onUnmounted(() => {
               <span class="option-desc">{{ item.desc }}</span>
             </button>
           </div>
-          <p class="hint">切换后会重置 Claude 会话，让新设定立即生效</p>
+          <p class="hint">切换后会重置本地 AI 会话，让新设定立即生效</p>
         </div>
 
         <!-- 职业 -->
@@ -1601,6 +1602,13 @@ onUnmounted(() => {
             >
               <span>🐚</span> Claude Code
             </button>
+            <button
+              class="backend-btn"
+              :class="{ active: backendType === 'codex' }"
+              @click="selectBackend('codex')"
+            >
+              <span>⌘</span> Codex
+            </button>
             <button 
               class="backend-btn" 
               :class="{ active: backendType === 'direct_api' }"
@@ -1623,6 +1631,8 @@ onUnmounted(() => {
               </button>
             </div>
           </template>
+
+          <CodexConnection v-else-if="backendType === 'codex'" :model-saved="modelSaved" @reset="resetModel" />
 
           <!-- 直连 API Agent 模式 -->
           <template v-else>

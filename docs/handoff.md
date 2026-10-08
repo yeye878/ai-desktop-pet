@@ -442,3 +442,10 @@ npm run tauri dev
 5. **版本安全验证与构建**：
    - 本轮开发在重构前提交了 Git 安全存档（`cf4d9ef`），以防任何不可逆回归风险。
    - 前端与 Rust 打包编译均一次性 100% 成功，生成的 Tauri Release 包已在后台流畅重启并运行。
+
+## 今日变更 (2026-10-09) — 智能体定位修复与「一句话创建智能体」
+
+1. **角色定位修复**：`collaboration::role_section()` 统一生成智能体身份段，单角色（`attach_agent_prompt`）与协同（`collaboration_prompt`）共用。只写了一句描述、没写 system_prompt 的智能体，现在会把描述作为「定位」并要求模型据此推断职责；此前空设定会被替换成「沿用基础人格」，导致角色退化成普通桌宠。
+2. **对话内创建智能体**：新增工具 `list_agents` / `create_agent` / `update_agent`（`src-tauri/src/direct_api/agent_store_tools.rs`），仅直连 API 后端可用。`create_agent` 拒绝空/过短（<40 字）角色设定、重名和 claude/codex 保留名；写入后由工具循环广播 `agents-changed`。新增 `attach_agent_factory_prompt`，教模型先 list → 必要时 ask_user 追问 → 自己写完整 system_prompt。普通/自定义模式下 create/update 会走一次确认弹窗。
+3. **智能体工坊**：`generate_agent_spec` 提示词重写（说明应用中智能体的工作方式、注入已有角色列表防重名、工具附用途说明），空设定直接报错不预填。编辑器新增「✨ AI 补全设定」按钮，基于名字 + 一句话描述扩写，保留原 id/名字/后端；列表卡片对未写设定的角色标注「未写角色设定」。
+4. **验证**：`cargo check --lib`、`cargo test --lib`（108 passed，含 3 个新测试）、`npm run build` 通过。未在真实 API 下端到端跑过创建流程。

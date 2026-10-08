@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export interface Agent {
   id: string;
@@ -9,6 +10,9 @@ export interface Agent {
   description: string;
   system_prompt: string;
   model: string;
+  backend: "direct_api" | "claude_code" | "codex";
+  api_profile_id: string;
+  is_builtin: boolean;
   allowed_tools: string[];
   created_at: number;
   updated_at: number;
@@ -26,14 +30,41 @@ export interface AgentSpec {
 export const useAgentsStore = defineStore("agents", () => {
   const agents = ref<Agent[]>([]);
   const loading = ref(false);
+  let loadVersion = 0;
+  let syncVersion = 0;
+  let unlisten: UnlistenFn | null = null;
 
   async function load() {
+    const version = ++loadVersion;
     loading.value = true;
     try {
-      agents.value = await invoke<Agent[]>("list_agents");
+      const result = await invoke<Agent[]>("list_agents");
+      if (version === loadVersion) agents.value = result;
     } finally {
-      loading.value = false;
+      if (version === loadVersion) loading.value = false;
     }
+  }
+
+  function stopSync() {
+    ++syncVersion;
+    unlisten?.();
+    unlisten = null;
+  }
+
+  async function startSync() {
+    stopSync();
+    const version = syncVersion;
+    const stop = await listen("agents-changed", () => {
+      void load().catch((error) => console.error("同步智能体列表失败", error));
+    });
+    // A window may close while Tauri is registering the listener.
+    if (version !== syncVersion) {
+      stop();
+      return;
+    }
+    unlisten = stop;
+    // Subscribe before loading, so changes during initial loading are not lost.
+    await load();
   }
 
   async function upsert(agent: Agent) {
@@ -52,8 +83,13 @@ export const useAgentsStore = defineStore("agents", () => {
   }
 
   function findByName(name: string): Agent | undefined {
-    return agents.value.find((agent) => agent.name === name);
+    return agents.value.find((agent) => agent.id === name || (agent.is_builtin
+      ? agent.name.toLowerCase() === name.toLowerCase() : agent.name === name));
   }
 
-  return { agents, loading, load, upsert, remove, generateSpec, findByName };
+  function mentionName(agent: Agent): string {
+    return !agent.is_builtin && ["claude", "codex"].includes(agent.name.toLowerCase()) ? agent.id : agent.name;
+  }
+
+  return { agents, loading, load, startSync, stopSync, upsert, remove, generateSpec, findByName, mentionName };
 });

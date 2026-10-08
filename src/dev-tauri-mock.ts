@@ -1,4 +1,5 @@
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
+import { emit } from "@tauri-apps/api/event";
 import { DEFAULT_VOICE_SETTINGS } from "./services/voice";
 import { DEFAULT_TTS_SETTINGS } from "./services/tts";
 
@@ -58,6 +59,9 @@ type MockAgent = {
   description: string;
   system_prompt: string;
   model: string;
+  backend: string;
+  api_profile_id: string;
+  is_builtin: boolean;
   allowed_tools: string[];
   created_at: number;
   updated_at: number;
@@ -79,8 +83,14 @@ let nextScheduledTaskId = 2;
 let nextCustomPetId = 1;
 let customPetAssets: MockCustomPetAsset[] = [];
 let mockAgents: MockAgent[] = [
+  ...["claude", "codex"].map((name) => ({
+    id: `builtin-${name}`, name, avatar: "⌘", description: `本机 ${name} 独立智能体`,
+    system_prompt: "独立执行，读取共享会话。", model: "", backend: name === "claude" ? "claude_code" : "codex",
+    api_profile_id: "", is_builtin: true, allowed_tools: [], created_at: 0, updated_at: 0,
+  })),
   {
     id: "mock-agent-code",
+    backend: "direct_api", api_profile_id: "", is_builtin: false,
     name: "代码侠",
     avatar: "🧑‍💻",
     description: "分析报错、写代码、给修改方案",
@@ -92,6 +102,7 @@ let mockAgents: MockAgent[] = [
   },
   {
     id: "mock-agent-writer",
+    backend: "direct_api", api_profile_id: "", is_builtin: false,
     name: "文案师",
     avatar: "✍️",
     description: "润色文案、写周报、做摘要",
@@ -317,6 +328,10 @@ function handleMockCommand(cmd: string, args: MockPayload) {
   }
 
   switch (cmd) {
+    case "get_chat_history":
+      return [];
+    case "get_active_chat":
+      return null;
     case "get_system_info":
       return { cpu: 18.6, memory: 42.3 };
     case "get_weather_config":
@@ -342,7 +357,7 @@ function handleMockCommand(cmd: string, args: MockPayload) {
     case "check_and_send_weather":
       return weatherConfig.enabled;
     case "get_current_model":
-      return "Claude Code / preview";
+      return backendType === "codex" ? "Codex / 本机配置" : "Claude Code / preview";
     case "get_backend_type":
       return backendType;
     case "set_backend_type":
@@ -375,6 +390,17 @@ function handleMockCommand(cmd: string, args: MockPayload) {
         model: "Claude 3.5 Sonnet",
         base_url: "local preview",
       };
+    case "check_codex_status":
+      return {
+        installed: true,
+        logged_in: true,
+        version: "codex-cli / preview",
+        executable: "C:\\Users\\preview\\AppData\\Roaming\\npm\\codex.cmd",
+        workspace: "C:\\Users\\preview\\AppData\\Roaming\\com.ai-desktop-pet.app\\codex-workspace",
+        message: "预览模式：已连接本机 Codex。",
+      };
+    case "open_codex_config":
+      return null;
     case "get_skin":
       return "default";
     case "get_font_color":
@@ -549,6 +575,8 @@ function handleMockCommand(cmd: string, args: MockPayload) {
       ];
     case "list_agents":
       return mockAgents;
+    case "get_collaboration_state":
+      return null;
     case "save_agent": {
       const draft = (args?.agent || {}) as Record<string, unknown>;
       const now = Math.floor(Date.now() / 1000);
@@ -559,6 +587,9 @@ function handleMockCommand(cmd: string, args: MockPayload) {
         description: String(draft.description || ""),
         system_prompt: String(draft.system_prompt || ""),
         model: String(draft.model || ""),
+        backend: String(draft.backend || "direct_api"),
+        api_profile_id: String(draft.api_profile_id || ""),
+        is_builtin: false,
         allowed_tools: Array.isArray(draft.allowed_tools) ? (draft.allowed_tools as string[]) : [],
         created_at: now,
         updated_at: now,
@@ -566,11 +597,13 @@ function handleMockCommand(cmd: string, args: MockPayload) {
       const existing = mockAgents.findIndex((item) => item.id === next.id);
       if (existing >= 0) mockAgents[existing] = next;
       else mockAgents = [next, ...mockAgents];
+      void emit("agents-changed");
       return null;
     }
     case "delete_agent": {
       const id = readArg(args, "id", "id");
       mockAgents = mockAgents.filter((item) => item.id !== id);
+      void emit("agents-changed");
       return null;
     }
     case "generate_agent_spec": {
@@ -600,4 +633,18 @@ export function installDevTauriMock() {
   mockIPC((cmd, args) => handleMockCommand(cmd, args as MockPayload), {
     shouldMockEvents: true,
   });
+  if (new URLSearchParams(window.location.search).get("activity") === "demo") {
+    const tool = { id: "preview-read", tool_name: "read_file", summary: "读取项目入口", path: "src/main.ts", arguments: '{"path":"src/main.ts"}' };
+    const frames: [string, unknown][] = [
+      ["sync-chat-message", { role: "user", content: "检查项目入口并运行测试" }],
+      ["ai-answer-delta", { text: "先检查入口与事件链路。" }],
+      ["ai-tool-event", { ...tool, status: "running" }],
+      ["ai-tool-event", { ...tool, status: "completed", output: "预览数据：入口使用 Vue 3 + Pinia。" }],
+      ["ai-answer-delta", { text: "接下来验证工具状态和历史消息。" }],
+      ["ai-tool-event", { id: "preview-test", tool_name: "run_command", status: "completed", summary: "运行回归用例", command: "npm run verify:agent-activity", output: "预览数据：活动流回归用例通过。" }],
+      ["ai-answer-delta", { text: "检查完成，活动流和历史消息均正常。" }],
+      ["ai-finished", { text: "先检查入口与事件链路。接下来验证工具状态和历史消息。检查完成，活动流和历史消息均正常。", thinking: null }],
+    ];
+    frames.forEach(([event, payload], index) => setTimeout(() => { void emit(event, payload); }, 1000 + index * 450));
+  }
 }

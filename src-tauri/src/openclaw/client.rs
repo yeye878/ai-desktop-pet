@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Mutex;
 use tauri::Manager;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 
 #[cfg(target_os = "windows")]
@@ -103,7 +103,7 @@ impl ClaudeAdapter {
     }
 
     /// 启动 Claude CLI 子进程（stream-json 模式），返回 Child 供调用方逐行读取
-    pub fn spawn_streaming(
+    pub async fn spawn_streaming(
         &self,
         app_handle: &tauri::AppHandle,
         message: &str,
@@ -150,7 +150,6 @@ impl ClaudeAdapter {
 
         let system_prompt_arg = system_prompt.replace(['\r', '\n'], " ");
         cmd.arg("-p")
-            .arg(message)
             .arg("--output-format")
             .arg("stream-json")
             .arg("--verbose")
@@ -169,8 +168,24 @@ impl ClaudeAdapter {
 
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
+        cmd.stdin(Stdio::piped());
+        cmd.kill_on_drop(true);
 
-        let child = cmd.spawn()?;
+        let mut child = cmd.spawn()?;
+        let mut stdin = child.stdin.take().ok_or("无法打开 Claude 标准输入")?;
+        let written = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            stdin.write_all(message.as_bytes()).await?;
+            stdin.shutdown().await
+        })
+        .await;
+        if !matches!(written, Ok(Ok(()))) {
+            if let Some(pid) = child.id() {
+                crate::kill_process_tree(pid);
+            }
+            let _ = child.wait().await;
+            written??;
+        }
+        drop(stdin);
         Ok(child)
     }
 
@@ -309,12 +324,16 @@ impl StreamParseState {
 }
 
 /// 从 Child 的 stdout 逐行读取 stream-json，通过回调推送思考 delta
-pub async fn read_stream<F>(
+pub async fn read_stream_with_activity<F, T, E>(
     child: &mut Child,
     mut on_thinking_delta: F,
+    mut on_text: T,
+    mut on_tool: E,
 ) -> Result<StreamParseState, Box<dyn std::error::Error + Send + Sync>>
 where
     F: FnMut(&str),
+    T: FnMut(&str),
+    E: FnMut(&crate::cli_activity::ToolEvent),
 {
     let stdout = child
         .stdout
@@ -332,6 +351,7 @@ where
     let reader = BufReader::new(stdout);
     let mut lines = reader.lines();
     let mut state = StreamParseState::new();
+    let mut activity = crate::cli_activity::CliActivityParser::default();
 
     while let Ok(Some(line)) = lines.next_line().await {
         if line.trim().is_empty() {
@@ -339,6 +359,12 @@ where
         }
         if let Some(delta) = state.parse_line(&line) {
             on_thinking_delta(&delta);
+        }
+        for event in activity.claude(&line) {
+            match event {
+                crate::cli_activity::Activity::Text(text) => on_text(&text),
+                crate::cli_activity::Activity::Tool(tool) => on_tool(&tool),
+            }
         }
     }
 

@@ -1,3 +1,6 @@
+#[path = "agent_store_tools.rs"]
+mod agent_store_tools;
+
 use crate::{computer_use, system};
 use chrono::{Duration as ChronoDuration, Local, NaiveDate};
 use serde_json::json;
@@ -958,6 +961,65 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
                 }
             }
         }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "list_agents",
+                "description": "列出本应用里现有的智能体角色：内置的 claude / codex，以及用户自定义的智能体（名字、头像、一句话描述、执行后端、免确认工具、角色设定字数）。用户提到某个智能体、或想在已有角色上改动时，先调用它看现状，避免重名或重复创建。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "create_agent",
+                "description": "在智能体工坊里创建（保存）一个新的自定义智能体，创建后用户可以立刻在对话里用 @名字 召唤它。用户的需求只有一句话、信息不足时，先用 ask_user 问清 2-3 个关键点（工作范围、输出风格、是否需要读写文件或联网），再调用本工具。不要为了显得快而创建空壳角色。新建前建议先用 list_agents 确认没有重名。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string", "description": "智能体名字，2-8 个汉字，不能含空格或 @，也不能叫 claude / codex，会用于对话中的 @ 提及" },
+                        "avatar": { "type": "string", "description": "一个 emoji 头像，如 📐 ✍️ 🗂️ 🧮" },
+                        "description": { "type": "string", "description": "一句话说明它擅长什么（20-40 字），会显示在 @ 提及列表里" },
+                        "system_prompt": { "type": "string", "description": "完整的角色设定（120-800 字），用第二人称「你」书写，包含：身份、职责与工作范围、工作方式（先做什么再做什么）、输出风格、边界（不做什么）。要具体可执行，不要照抄用户原话。" },
+                        "allowed_tools": {
+                            "type": "array",
+                            "description": "可选，勾选为「免确认工具」的名单：只放它完成任务必须用的工具，例如 read_file、write_file、list_directory、run_command、web_search、read_webpage、create_docx、ask_user、save_memory。没把握就留空（留空表示每次调用仍会正常询问用户）。",
+                            "items": { "type": "string" }
+                        },
+                        "model": { "type": "string", "description": "可选，专属模型名。留空则跟随用户当前选择的 API 配置。" }
+                    },
+                    "required": ["name", "system_prompt"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "update_agent",
+                "description": "修改一个已存在的自定义智能体（按名字或 id 定位）。只更新传入的字段，其余保持原样。典型用途：把只有一句话描述、角色设定为空的智能体补全成完整角色；换头像；调整免确认工具；改名。内置的 claude / codex 不可修改。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "agent": { "type": "string", "description": "要修改的智能体名字或 id，先用 list_agents 确认" },
+                        "name": { "type": "string", "description": "可选，新的名字" },
+                        "avatar": { "type": "string", "description": "可选，新的 emoji 头像" },
+                        "description": { "type": "string", "description": "可选，新的一句话描述" },
+                        "system_prompt": { "type": "string", "description": "可选，新的完整角色设定（120-800 字，第二人称）" },
+                        "allowed_tools": {
+                            "type": "array",
+                            "description": "可选，替换整个免确认工具名单；不传则保持原样，传空数组表示清空。",
+                            "items": { "type": "string" }
+                        },
+                        "model": { "type": "string", "description": "可选，专属模型名" }
+                    },
+                    "required": ["agent"]
+                }
+            }
+        }),
     ]
 }
 
@@ -1067,6 +1129,9 @@ pub async fn execute_tool(
             Err(_) => "修改文件超时 (30秒)".to_string(),
         },
         "search_memory" => exec_search_memory(args).await.unwrap_or_else(|e| e),
+        "list_agents" => agent_store_tools::exec_list_agents(),
+        "create_agent" => agent_store_tools::exec_create_agent(args),
+        "update_agent" => agent_store_tools::exec_update_agent(args),
         "save_memory" => exec_save_memory(args).await.unwrap_or_else(|e| e),
         "delete_memory" => exec_delete_memory(args).await.unwrap_or_else(|e| e),
         "create_docx" => {
