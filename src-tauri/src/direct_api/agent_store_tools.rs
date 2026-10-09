@@ -41,7 +41,9 @@ fn open_db() -> Result<Connection, String> {
 }
 
 fn is_reserved_name(name: &str) -> bool {
-    name.eq_ignore_ascii_case("claude") || name.eq_ignore_ascii_case("codex")
+    ["claude", "codex", "dsh"]
+        .iter()
+        .any(|reserved| name.eq_ignore_ascii_case(reserved))
 }
 
 fn normalize_name(raw: &str) -> Result<String, String> {
@@ -62,7 +64,7 @@ fn normalize_name(raw: &str) -> Result<String, String> {
         return Err(format!("智能体名字不能超过 {NAME_MAX} 个字"));
     }
     if is_reserved_name(&name) {
-        return Err("claude 和 codex 是内置角色，请换一个名字".to_string());
+        return Err("claude、codex 和 dsh 是内置角色，请换一个名字".to_string());
     }
     Ok(name)
 }
@@ -169,7 +171,8 @@ pub fn exec_list_agents() -> String {
         Ok(serde_json::to_string_pretty(&json!({
             "内置角色（不可修改）": [
                 { "name": "claude", "description": "本机 Claude Code 独立智能体" },
-                { "name": "codex", "description": "本机 Codex 独立智能体" }
+                { "name": "codex", "description": "本机 Codex 独立智能体" },
+                { "name": "dsh", "description": "本机 DeepSeek Harness 独立智能体" }
             ],
             "自定义智能体": agents,
         }))

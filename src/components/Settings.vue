@@ -6,6 +6,7 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import CustomPixelPetWorkshop from "./CustomPixelPetWorkshop.vue";
 import CodexConnection from "./CodexConnection.vue";
+import DshConnection from "./DshConnection.vue";
 import PetCanvas from "./PetCanvas.vue";
 import { usePetStore, THEMES, FONT_COLORS, resolveSkinId } from "../stores/pet";
 import {
@@ -1041,7 +1042,8 @@ onUnmounted(() => {
                   v-if="character.id === 'classic' || character.id === 'custom-pixel'"
                   preview
                   :character="character.id"
-                  style="width: 72px; height: 82px; pointer-events: none;"
+                  :scale="0.585"
+                  style="pointer-events: none;"
                 />
                 <img v-else src="../assets/pets/daimao-batiao/stills/still-03.png" alt="" />
               </div>
@@ -1609,6 +1611,13 @@ onUnmounted(() => {
             >
               <span>⌘</span> Codex
             </button>
+            <button
+              class="backend-btn"
+              :class="{ active: backendType === 'dsh' }"
+              @click="selectBackend('dsh')"
+            >
+              <span>◈</span> DeepSeek Harness
+            </button>
             <button 
               class="backend-btn" 
               :class="{ active: backendType === 'direct_api' }"
@@ -1633,6 +1642,9 @@ onUnmounted(() => {
           </template>
 
           <CodexConnection v-else-if="backendType === 'codex'" :model-saved="modelSaved" @reset="resetModel" />
+
+          <!-- DeepSeek Harness 模式 -->
+          <DshConnection v-else-if="backendType === 'dsh'" :model-saved="modelSaved" @reset="resetModel" />
 
           <!-- 直连 API Agent 模式 -->
           <template v-else>

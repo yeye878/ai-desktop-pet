@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from "vue";
+import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { usePetStore, resolveSkinId, type Theme } from "../stores/pet";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, currentMonitor } from "@tauri-apps/api/window";
@@ -19,15 +19,31 @@ const emit = defineEmits<{
   click: [];
   contextmenu: [event: MouseEvent];
   dragging: [dragging: boolean];
+  /** 桌宠被点击/抚摸（预览舞台用来做本地反馈）。与 click 分开：click 在桌宠窗口里绑的是切换聊天面板。 */
+  petted: [];
 }>();
 const pet = usePetStore();
-const props = defineProps<{ character?: PetCharacterId; preview?: boolean }>();
+const props = defineProps<{
+  character?: PetCharacterId;
+  /** 预览实例：禁止一切窗口级副作用（拖拽窗口、双击归位、拖放进食、改写用户设置） */
+  preview?: boolean;
+  /** 画布缩放倍数。内部画布固定 120x140，仅做视觉缩放，坐标按此反算 */
+  scale?: number;
+  /** 预览实例也参与状态同步与指针反馈（悬停视线、点击起跳）。窗口副作用仍由 preview 挡住 */
+  live?: boolean;
+}>();
 const canvasRef = ref<HTMLCanvasElement | null>(null);
+// 画布后备存储尺寸。桌宠窗口（App.vue）、命中检测（petHitTest.ts）与全部绘制坐标都以此为准
+const CANVAS_W = 120;
+const CANVAS_H = 140;
+const displayScale = computed(() => Math.max(0.1, props.scale ?? 1));
+const isLive = computed(() => !props.preview || props.live);
 let frameCount = 0;
 let mouseDownScreen = { x: 0, y: 0 };
 let winPosAtDown = { x: 0, y: 0 };
 let dragStarted = false;
 let dragFromCanvas = false;
+let previewPressed = false; // 预览实例：按下发生在桌宠身上，松开时才算一次"摸摸"
 let tickTimer: ReturnType<typeof setInterval> | null = null;
 // Interactivity state
 let petMx = -999, petMy = -999; // mouse relative to canvas
@@ -262,9 +278,11 @@ function checkStateParticles() {
 }
 
 // 定时从后端同步状态
+// tick 会推进后端行为状态机（如 waving 数秒后自动回 idle），只能由桌宠窗口这一个时钟驱动；
+// 预览实例改用只读的 get_pet_state，否则状态机会被多个窗口加速推进。
 async function syncState() {
   try {
-    const state = await invoke<Record<string, unknown>>("tick");
+    const state = await invoke<Record<string, unknown>>(props.preview ? "get_pet_state" : "tick");
     if (state.state && typeof state.state === "string") {
       pet.setState(state.state as any);
     }
@@ -1005,19 +1023,33 @@ function animate() {
   requestAnimationFrame(animate);
 }
 
-function isPetHit(e: MouseEvent) {
+// 把指针位置换算回画布单位。getBoundingClientRect 在 CSS transform 缩放下返回的是视觉尺寸，
+// 所以命中检测与视线跟随都必须先除以 scale，否则舞台里的桌宠会"摸不到"。
+function pointerToCanvas(e: MouseEvent) {
   const canvas = canvasRef.value;
-  if (!canvas) return false;
-
+  if (!canvas) return null;
   const rect = canvas.getBoundingClientRect();
-  const px = e.clientX - rect.left;
-  const py = e.clientY - rect.top;
-  return isPetCanvasPoint(px, py, activeCharacter(), pet.state, pet.position);
+  const s = displayScale.value;
+  return { x: (e.clientX - rect.left) / s, y: (e.clientY - rect.top) / s };
+}
+
+function isPetHit(e: MouseEvent) {
+  const point = pointerToCanvas(e);
+  if (!point) return false;
+  return isPetCanvasPoint(point.x, point.y, activeCharacter(), pet.state, pet.position);
 }
 
 async function onMouseDown(e: MouseEvent) {
   if (e.button !== 0) return;
   if (!isPetHit(e)) return;
+  // 预览实例不能拖窗口：getCurrentWindow() 在这里会解析成宿主窗口（仪表盘），
+  // 放开就会把控制台自己拖走。只保留按下反馈。
+  if (props.preview) {
+    dragFromCanvas = false;
+    previewPressed = true;
+    longPressTimer = setTimeout(() => { squashAmt = 0.75; }, 500);
+    return;
+  }
   dragFromCanvas = true;
   emit("dragging", true);
   mouseDownScreen = { x: e.screenX, y: e.screenY };
@@ -1034,11 +1066,10 @@ async function onMouseDown(e: MouseEvent) {
 
 function onMouseMove(e: MouseEvent) {
   // Update pet-relative mouse position
-  const canvas = canvasRef.value;
-  if (canvas) {
-    const rect = canvas.getBoundingClientRect();
-    petMx = e.clientX - rect.left;
-    petMy = e.clientY - rect.top;
+  const point = pointerToCanvas(e);
+  if (point) {
+    petMx = point.x;
+    petMy = point.y;
     const wasHovering = isHovering;
     isHovering = isPetHit(e);
     if (!wasHovering && isHovering) spawnParticles('spark', 2, pet.position.x, pet.position.y - 30);
@@ -1058,6 +1089,19 @@ function onMouseMove(e: MouseEvent) {
 }
 
 function onMouseUp(e: MouseEvent) {
+  // 预览实例：只做本地反馈（起跳 + 爱心），不触发桌宠窗口的 click 语义
+  if (props.preview) {
+    const wasPressed = previewPressed;
+    previewPressed = false;
+    if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+    squashAmt = 1;
+    if (!wasPressed || e.button !== 0 || !isPetHit(e)) return;
+    bounceVy = -8.0;
+    bounceOffset = 0;
+    spawnParticles('heart', 4, pet.position.x, pet.position.y - 30);
+    emit("petted");
+    return;
+  }
   if (!dragFromCanvas || e.button !== 0) return;
   dragFromCanvas = false;
   emit("dragging", false);
@@ -1075,6 +1119,8 @@ function onMouseUp(e: MouseEvent) {
 function onContextMenu(e: MouseEvent) {
   e.preventDefault();
   if (!isPetHit(e)) return;
+  // 预览实例不弹右键菜单窗口（那会在光标处开一个真实的 context-menu 窗口）
+  if (props.preview) return;
   emit("contextmenu", e);
 }
 
@@ -1104,17 +1150,42 @@ async function eatFiles(paths: string[]) {
   }
 }
 
+function onPreviewMove(e: MouseEvent) {
+  const point = pointerToCanvas(e);
+  if (!point) return;
+  petMx = point.x;
+  petMy = point.y;
+  const wasHovering = isHovering;
+  isHovering = isPetHit(e);
+  if (!wasHovering && isHovering) spawnParticles('spark', 2, pet.position.x, pet.position.y - 30);
+}
+
+function onCanvasLeave() {
+  petMx = -999;
+  petMy = -999;
+  isHovering = false;
+  if (props.preview) {
+    previewPressed = false;
+    if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+  }
+}
+
 onMounted(async () => {
   const canvas = canvasRef.value;
   if (canvas) {
-    canvas.width = 120;
-    canvas.height = 140;
+    canvas.width = CANVAS_W;
+    canvas.height = CANVAS_H;
     animate();
-    if (!props.preview) {
-      window.addEventListener("mousemove", onMouseMove);
-      window.addEventListener("mouseup", onMouseUp);
-      canvas.addEventListener("dblclick", resetPosition);
-      canvas.addEventListener("mouseleave", () => { petMx = -999; petMy = -999; isHovering = false; });
+    if (isLive.value) {
+      // 预览实例不接管 window 级别的 mousemove/mouseup：那会和宿主页面抢事件。
+      // 预览改用 canvas 自身的 @mousemove / @mouseup（见模板）。
+      if (!props.preview) {
+        window.addEventListener("mousemove", onMouseMove);
+        window.addEventListener("mouseup", onMouseUp);
+      }
+      // 双击归位会调用 setPosition，把宿主窗口传到显示器中心，严禁在预览里绑定
+      if (!props.preview) canvas.addEventListener("dblclick", resetPosition);
+      canvas.addEventListener("mouseleave", onCanvasLeave);
       tickTimer = setInterval(syncState, 1000);
       loadSkin();
       loadFontColor();
@@ -1156,25 +1227,54 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <canvas
-    ref="canvasRef"
-    class="pet-canvas"
-    @mousedown="onMouseDown"
-    @contextmenu="onContextMenu"
-  />
+  <div
+    class="pet-canvas-stage"
+    :style="{
+      width: CANVAS_W * displayScale + 'px',
+      height: CANVAS_H * displayScale + 'px',
+    }"
+  >
+    <canvas
+      ref="canvasRef"
+      :class="['pet-canvas', { 'is-preview': props.preview, 'is-inert': props.preview && !props.live }]"
+      :style="{
+        width: CANVAS_W + 'px',
+        height: CANVAS_H + 'px',
+        transform: displayScale === 1 ? undefined : `scale(${displayScale})`,
+      }"
+      @mousedown="onMouseDown"
+      @mouseup="props.preview ? onMouseUp($event) : undefined"
+      @mousemove="props.preview ? onPreviewMove($event) : undefined"
+      @contextmenu="onContextMenu"
+    />
+  </div>
 </template>
 
 <style scoped>
+/* 外层负责占位（画布是绝对定位的，不参与文档流），内层保持 120x140 并被缩放 */
+.pet-canvas-stage {
+  position: relative;
+  flex-shrink: 0;
+}
+
 .pet-canvas {
   position: absolute;
   top: 0;
   left: 0;
-  width: 120px;
-  height: 140px;
+  transform-origin: top left;
   cursor: grab;
   pointer-events: auto;
 }
 .pet-canvas:active {
   cursor: grabbing;
+}
+/* 预览实例不能拖动窗口，用手型提示"可以摸" */
+.pet-canvas.is-preview,
+.pet-canvas.is-preview:active {
+  cursor: pointer;
+}
+/* 非 live 的预览（换装选择器里的小缩略图）完全不接收指针，交互安全不依赖调用方 */
+.pet-canvas.is-inert {
+  pointer-events: none;
 }
 </style>

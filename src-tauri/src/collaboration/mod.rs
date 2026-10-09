@@ -13,6 +13,7 @@ pub fn builtin_agents() -> Vec<Agent> {
     [
         ("builtin-claude", "claude", "Claude Code", "claude_code"),
         ("builtin-codex", "codex", "Codex", "codex"),
+        ("builtin-dsh", "dsh", "DeepSeek Harness", "dsh"),
     ]
     .into_iter()
     .map(|(id, name, label, backend)| Agent {
@@ -303,14 +304,17 @@ mod tests {
     #[test]
     fn builtin_clis_resolve_without_changing_global_backend() {
         let all = catalog(vec![]);
-        let agents = resolve_agents(&all, &mention_names("@Claude 审查 @codex 实现"));
+        let agents = resolve_agents(&all, &mention_names("@Claude 审查 @codex 实现 @dsh 复核"));
         assert_eq!(
             agents
                 .iter()
                 .map(|agent| agent.backend.as_str())
                 .collect::<Vec<_>>(),
-            ["claude_code", "codex"]
+            ["claude_code", "codex", "dsh"]
         );
+        assert_eq!(agents[2].name, "dsh");
+        assert!(agents[2].is_builtin);
+        assert_eq!(mention_name(&agents[2]), "dsh");
     }
     #[test]
     fn queue_runs_real_handoffs_in_order_and_bounds_cycles() {

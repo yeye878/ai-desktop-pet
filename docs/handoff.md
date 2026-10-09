@@ -449,3 +449,14 @@ npm run tauri dev
 2. **对话内创建智能体**：新增工具 `list_agents` / `create_agent` / `update_agent`（`src-tauri/src/direct_api/agent_store_tools.rs`），仅直连 API 后端可用。`create_agent` 拒绝空/过短（<40 字）角色设定、重名和 claude/codex 保留名；写入后由工具循环广播 `agents-changed`。新增 `attach_agent_factory_prompt`，教模型先 list → 必要时 ask_user 追问 → 自己写完整 system_prompt。普通/自定义模式下 create/update 会走一次确认弹窗。
 3. **智能体工坊**：`generate_agent_spec` 提示词重写（说明应用中智能体的工作方式、注入已有角色列表防重名、工具附用途说明），空设定直接报错不预填。编辑器新增「✨ AI 补全设定」按钮，基于名字 + 一句话描述扩写，保留原 id/名字/后端；列表卡片对未写设定的角色标注「未写角色设定」。
 4. **验证**：`cargo check --lib`、`cargo test --lib`（108 passed，含 3 个新测试）、`npm run build` 通过。未在真实 API 下端到端跑过创建流程。
+
+## 今日变更 (2026-10-09) — 控制台首页重构：桌宠本体成为主视觉
+
+1. **首页桌宠"活"了**：此前首页预览是 `preview` 模式，状态同步/指针跟踪全关，点陪伴动作只打印文字、宠物不动。`PetCanvas.vue` 新增两个正交 prop：`scale`（内部画布固定 120×140，仅 CSS `transform` 缩放，命中检测与视线跟随统一经 `pointerToCanvas()` 除以 scale 反算）与 `live`（预览也轮询状态、响应悬停与点击，点击触发新 emit `petted`）。窗口级副作用（拖窗口、双击归位、拖放进食、custom-pixel 失败改写用户设置、右键菜单窗口）仍由 `preview` 硬挡；非 live 预览加 `is-inert` 自身禁用指针，不再依赖调用方的 `pointer-events: none`。
+2. **预览轮询必须用 `get_pet_state`**：`tick` 会推进后端行为状态机（waving 等自动回落），只能由桌宠窗口这一个时钟驱动；预览实例走只读的 `get_pet_state`（此前前端从未调用过）。`set_pet_state` 不发事件，回显只能靠轮询。
+3. **新组件 `PetStage.vue`**：2 倍舞台 + 状态气泡 + 心情/能量环（真实值，替掉原来恒为 75%/80 的假条）+ 状态灯带。
+4. **首页布局与交互分层**：「陪伴动作」4 个胶囊按钮（`companionAction`）与「对话操作」（`conversationAction`，降级为 mini 按钮）分开。对话操作改调已有的 `startDashboardNewConversation()` / `clearDashboardChatWithConfirm()`，删掉 `petAction()` 中两段重复实现——**修复首页「清空对话」无二次确认直接删除的缺陷**。新增最近对话、今日概览（天气/下个提醒/记忆数/模式）、快捷入口（智能体走 `openAgentsPage()`）、资源细带。
+5. **样式**：`dashboard.css` 两个 `:root` 合并为一个（保留原 polish 层实际生效的值，其它页面渲染不变），删除约 800 行失效的旧首页样式（`.pet-preview-*`、`.quick-action*`、`.mission-*`、`.studio-panel` 等）及对应响应式覆盖；首页关闭角落插画。外观页/设置页角色缩略图改用 `:scale`（0.73 / 0.585），修正此前 88×102、72×82 的不等比变形。
+6. **dev mock**：`dev-tauri-mock.ts` 增加 `get_pet_state` / `tick` / `set_pet_state` 的内存实现，浏览器预览可演示状态变化。
+7. **验证**：`npm run build` 通过；`verify:multi-agent`（13）、`verify:agent-activity`（14）、`verify:pending-interactions`（6）全过；Playwright 实测动作回显、悬停命中、摸摸反馈、清空确认弹窗、宽/窄窗口无横向溢出、缩略图比例 0.8571。**未在真实 Tauri 窗口里跑过**，需手测：召唤桌宠后两边状态一致、桌宠 waving 不因首页轮询加速回落、首页宠物拖不动控制台窗口。
+8. **注意**：`dashboard.css`、`Dashboard.vue` 在仓库中是 CRLF，其余前端文件是 LF；编辑工具可能把它们改成 LF，提交前检查 `git diff --stat` 是否出现整文件重写。

@@ -307,6 +307,12 @@ async fn execute_cli(
                 .spawn_streaming(app, message, system)
                 .await
         }
+        "dsh" => {
+            // 角色调用不复用桌宠的 dsh 会话：上下文由完整共享记录重建。
+            crate::dsh::DshAdapter::default()
+                .spawn_streaming(app, message, &[], system)
+                .await
+        }
         _ => {
             return Err(TurnError::failed(
                 format!("不支持的角色后端：{backend}"),
@@ -340,7 +346,27 @@ async fn execute_cli(
         let _ = app.emit("ai-thinking", delta);
     };
     let read = async {
-        if backend == "codex" {
+        if backend == "dsh" {
+            let approvals: Option<Box<dyn crate::dsh::ApprovalAnswerer>> = Some(Box::new(
+                crate::dsh::UiApproval::new(app.clone(), cancel.clone()),
+            ));
+            crate::dsh::read_stream_with_activity(
+                &mut child,
+                on_thinking,
+                |text| {
+                    if !cancel.is_cancelled() {
+                        let _ = app.emit("ai-answer-delta", serde_json::json!({ "text": text }));
+                    }
+                },
+                |tool| {
+                    if !cancel.is_cancelled() {
+                        let _ = app.emit("ai-tool-event", tool);
+                    }
+                },
+                approvals,
+            )
+            .await
+        } else if backend == "codex" {
             crate::codex::read_stream_with_activity(
                 &mut child,
                 on_thinking,

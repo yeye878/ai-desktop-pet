@@ -13,7 +13,8 @@
     "verify:agent-activity": "node --test scripts/verify-agent-activity.cjs",
     "verify:agent-activity-browser": "node scripts/verify-agent-activity-browser.cjs",
     "verify:pending-interactions": "node --test scripts/verify-pending-interactions.cjs",
-    "verify:interaction-browser": "node scripts/verify-interaction-browser.cjs"
+    "verify:interaction-browser": "node scripts/verify-interaction-browser.cjs",
+    "verify:dsh-backend": "cargo test --manifest-path src-tauri/Cargo.toml --lib dsh::tests::mock_provider -- --ignored --nocapture"
   },
   "dependencies": {
     "@lucide/vue": "^1.53.0",

@@ -229,7 +229,7 @@ test("an old team's completion and reply cannot interrupt the next collaboration
 
 test("built-in CLI agents resolve both lowercase and display-case mentions", async () => {
   const { useAgentsStore } = loadModule("src/stores/agents.ts", {
-    "@tauri-apps/api/core": { invoke: async () => [{ id: "builtin-claude", name: "claude", is_builtin: true }, { id: "builtin-codex", name: "codex", is_builtin: true }] },
+    "@tauri-apps/api/core": { invoke: async () => [{ id: "builtin-claude", name: "claude", is_builtin: true }, { id: "builtin-codex", name: "codex", is_builtin: true }, { id: "builtin-dsh", name: "dsh", is_builtin: true }] },
     "@tauri-apps/api/event": { listen: async () => () => {} },
   });
   const store = useAgentsStore(createPinia());
@@ -237,4 +237,8 @@ test("built-in CLI agents resolve both lowercase and display-case mentions", asy
   assert.equal(store.findByName("Claude").id, "builtin-claude");
   assert.equal(store.findByName("Codex").id, "builtin-codex");
   assert.equal(store.findByName("codex").id, "builtin-codex");
+  // DeepSeek Harness 的内置角色：@dsh 必须解析到内置卡，并且不被当成旧式同名自定义角色。
+  assert.equal(store.findByName("DSH").id, "builtin-dsh");
+  assert.equal(store.findByName("dsh").id, "builtin-dsh");
+  assert.equal(store.mentionName(store.findByName("dsh")), "dsh");
 });

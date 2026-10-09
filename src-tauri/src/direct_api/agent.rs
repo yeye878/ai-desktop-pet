@@ -19,14 +19,16 @@ const MAX_AGENT_TURNS: u32 = 160;
 const MAX_VISION_IMAGES: usize = 5;
 const MAX_VISION_IMAGE_BYTES: u64 = 50 * 1024 * 1024;
 
+/// 工具授权弹窗的载荷。桌宠的直连 API 与本地 CLI（dsh）后端共用同一份结构与
+/// 同一套事件（ai-tool-confirm / ai-tool-confirm-resolved），所以字段是公开的。
 #[derive(Clone, Serialize)]
 pub struct ToolConfirmPayload {
-    id: String,
-    tool_name: String,
-    arguments: String,
-    summary: String,
-    command: Option<String>,
-    path: Option<String>,
+    pub id: String,
+    pub tool_name: String,
+    pub arguments: String,
+    pub summary: String,
+    pub command: Option<String>,
+    pub path: Option<String>,
 }
 
 /// ask_user 工具弹窗里的单个候选项。

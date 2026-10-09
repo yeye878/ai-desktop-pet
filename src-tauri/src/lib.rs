@@ -3,6 +3,7 @@ mod collaboration;
 mod behavior;
 mod codex;
 mod cli_activity;
+mod dsh;
 mod interactions;
 mod computer_use;
 mod direct_api;
@@ -107,6 +108,7 @@ struct SaveCustomPetAssetRequest {
 pub struct AppState {
     pub ai: tokio::sync::Mutex<openclaw::ClaudeAdapter>,
     pub codex: codex::CodexAdapter,
+    pub dsh: dsh::DshAdapter,
     pub collaboration_state: StdMutex<Option<collaboration::CollaborationState>>,
     pub behavior: tokio::sync::Mutex<behavior::BehaviorEngine>,
     pub db: tokio::sync::Mutex<storage::Database>,
@@ -1779,6 +1781,7 @@ async fn reset_conversation(
         let ai = state.ai.lock().await;
         ai.reset_session();
         state.codex.reset_session();
+        state.dsh.reset_session();
     }
 
     let mut behavior = state.behavior.lock().await;
@@ -2104,9 +2107,16 @@ async fn run_ai_message(
         return;
     }
 
-    // 两种本地 CLI 共用桌宠设定、技能、历史保存和取消流程。
+    // 本地 CLI 共用桌宠设定、技能、历史保存和取消流程。
     let is_codex = backend == "codex";
-    let cli_name = if is_codex { "Codex" } else { "Claude Code" };
+    let is_dsh = backend == "dsh";
+    let cli_name = if is_codex {
+        "Codex"
+    } else if is_dsh {
+        "DeepSeek Harness"
+    } else {
+        "Claude Code"
+    };
     let cancel_token = tokio_util::sync::CancellationToken::new();
     *state.abort_token.lock().await = Some(cancel_token.clone());
     let (system_prompt, active_skill) = {
@@ -2159,6 +2169,33 @@ async fn run_ai_message(
             state
                 .codex
                 .spawn_streaming(&app_handle, &message_for_cli, &system_prompt)
+                .await
+        } else if is_dsh {
+            // 已经有可续接的 dsh 会话时只发本轮消息；首轮才需要带上最近记录。
+            let history = if state.dsh.has_session() {
+                Vec::new()
+            } else {
+                let start_id = *state
+                    .chat_start_id
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                let db = state.db.lock().await;
+                let mut history = db
+                    .get_recent_messages_after(start_id, 50)
+                    .unwrap_or_default();
+                // 用户消息本身已在写库时保存，这里只取它之前的历史。
+                if history
+                    .last()
+                    .map(|msg| msg.role == "user" && msg.content == message)
+                    .unwrap_or(false)
+                {
+                    history.pop();
+                }
+                history
+            };
+            state
+                .dsh
+                .spawn_streaming(&app_handle, &message_for_cli, &history, &system_prompt)
                 .await
         } else {
             let ai = state.ai.lock().await;
@@ -2220,7 +2257,21 @@ async fn run_ai_message(
         }
         let _ = app_for_stream.emit("ai-thinking", delta);
     };
-    let stream_result = if is_codex {
+    let stream_result = if is_dsh {
+        // 需要授权的操作走直连 API 同一套确认弹窗，而不是直接失败。
+        let approvals: Option<Box<dyn dsh::ApprovalAnswerer>> = Some(Box::new(
+            dsh::UiApproval::new(app_for_stream.clone(), cancel_token.clone()),
+        ));
+        dsh::read_stream_with_activity(&mut child, on_thinking, |text| {
+            if !cancel_token.is_cancelled() {
+                let _ = app_for_stream
+                    .emit("ai-answer-delta", serde_json::json!({ "text": text }));
+            }
+        }, |tool| {
+            if !cancel_token.is_cancelled() { let _ = app_for_stream.emit("ai-tool-event", tool); }
+        }, approvals)
+        .await
+    } else if is_codex {
         codex::read_stream_with_activity(&mut child, on_thinking, |text| {
             if !cancel_token.is_cancelled() {
                 let _ = app_for_stream
@@ -2261,6 +2312,8 @@ async fn run_ai_message(
                 let state = app_handle.state::<AppState>();
                 if is_codex {
                     state.codex.update_session(sid);
+                } else if is_dsh {
+                    state.dsh.update_session(sid);
                 } else {
                     let ai = state.ai.lock().await;
                     ai.update_session(sid);
@@ -2403,13 +2456,14 @@ async fn set_backend_type(
     backend: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    if !matches!(backend.as_str(), "claude_code" | "codex" | "direct_api") {
+    if !matches!(backend.as_str(), "claude_code" | "codex" | "dsh" | "direct_api") {
         return Err(format!("不支持的 AI 后端：{backend}"));
     }
     stop_active_response(&state).await;
 
     state.ai.lock().await.reset_session();
     state.codex.reset_session();
+    state.dsh.reset_session();
 
     {
         let mut backend_type = state.backend_type.lock().await;
@@ -3239,6 +3293,7 @@ async fn start_new_conversation(
         let ai = state.ai.lock().await;
         ai.reset_session();
         state.codex.reset_session();
+        state.dsh.reset_session();
     }
 
     let mut behavior = state.behavior.lock().await;
@@ -3691,6 +3746,7 @@ async fn switch_model(state: tauri::State<'_, AppState>) -> Result<(), String> {
     let mut ai = state.ai.lock().await;
     *ai = openclaw::ClaudeAdapter::new();
     state.codex.reset_session();
+    state.dsh.reset_session();
     let mut current = state.current_model.lock().await;
     *current = "claude:claude-code".to_string();
     Ok(())
@@ -3698,8 +3754,12 @@ async fn switch_model(state: tauri::State<'_, AppState>) -> Result<(), String> {
 
 #[tauri::command]
 async fn get_current_model(state: tauri::State<'_, AppState>) -> Result<String, String> {
-    if *state.backend_type.lock().await == "codex" {
+    let backend = state.backend_type.lock().await.clone();
+    if backend == "codex" {
         return Ok("Codex / 本机配置".to_string());
+    }
+    if backend == "dsh" {
+        return Ok("DeepSeek Harness / 本机配置".to_string());
     }
     let current = state.current_model.lock().await;
     Ok(current.clone())
@@ -3816,6 +3876,7 @@ async fn set_personality(
         let ai = state.ai.lock().await;
         ai.reset_session();
         state.codex.reset_session();
+        state.dsh.reset_session();
     }
     let db = state.db.lock().await;
     db.save_setting("personality", &normalized)
@@ -3842,6 +3903,7 @@ async fn set_profession(
         let ai = state.ai.lock().await;
         ai.reset_session();
         state.codex.reset_session();
+        state.dsh.reset_session();
     }
     let db = state.db.lock().await;
     db.save_setting("profession", &normalized)
@@ -4276,10 +4338,13 @@ fn normalize_generated_agent_spec(
 /// 保存智能体前的强校验：名字不能含空白或 @（@ 提及解析依赖这一点））
 fn validate_agent_for_save(agent: &storage::Agent) -> Result<(), String> {
     if agent.is_builtin || collaboration::reserved_agent(&agent.id, agent.name.trim()) {
-        return Err("claude 和 codex 为内置角色，请为自定义智能体使用其他名字。".into());
+        return Err("claude、codex 和 dsh 为内置角色，请为自定义智能体使用其他名字。".into());
     }
-    if !matches!(agent.backend.as_str(), "direct_api" | "claude_code" | "codex") {
-        return Err("智能体后端必须为 direct_api、claude_code 或 codex。".into());
+    if !matches!(
+        agent.backend.as_str(),
+        "direct_api" | "claude_code" | "codex" | "dsh"
+    ) {
+        return Err("智能体后端必须为 direct_api、claude_code、codex 或 dsh。".into());
     }
     const ID_MAX: usize = 64;
     const NAME_MAX: usize = 40;
@@ -4644,6 +4709,16 @@ async fn open_codex_config() -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn open_dsh_config() -> Result<(), String> {
+    dsh::open_config()
+}
+
+#[tauri::command]
+async fn check_dsh_status(app_handle: tauri::AppHandle) -> Result<dsh::DshStatus, String> {
+    dsh::check_status(&app_handle).await
+}
+
+#[tauri::command]
 async fn check_codex_status(app_handle: tauri::AppHandle) -> Result<codex::CodexStatus, String> {
     codex::check_status(&app_handle).await
 }
@@ -4903,6 +4978,7 @@ pub fn run() {
             let app_state = AppState {
                 ai: tokio::sync::Mutex::new(openclaw::ClaudeAdapter::new()),
                 codex: codex::CodexAdapter::default(),
+                dsh: dsh::DshAdapter::default(),
                 collaboration_state: StdMutex::new(None),
                 behavior: tokio::sync::Mutex::new(behavior::BehaviorEngine::new()),
                 db: tokio::sync::Mutex::new(db),
@@ -5018,6 +5094,8 @@ pub fn run() {
             check_claude_status,
             check_codex_status,
             open_codex_config,
+            check_dsh_status,
+            open_dsh_config,
             get_weather_config,
             set_weather_config,
             test_weather_config,

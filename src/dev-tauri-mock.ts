@@ -83,9 +83,13 @@ let nextScheduledTaskId = 2;
 let nextCustomPetId = 1;
 let customPetAssets: MockCustomPetAsset[] = [];
 let mockAgents: MockAgent[] = [
-  ...["claude", "codex"].map((name) => ({
-    id: `builtin-${name}`, name, avatar: "⌘", description: `本机 ${name} 独立智能体`,
-    system_prompt: "独立执行，读取共享会话。", model: "", backend: name === "claude" ? "claude_code" : "codex",
+  ...[
+    { name: "claude", label: "Claude Code", backend: "claude_code" },
+    { name: "codex", label: "Codex", backend: "codex" },
+    { name: "dsh", label: "DeepSeek Harness", backend: "dsh" },
+  ].map(({ name, label, backend }) => ({
+    id: `builtin-${name}`, name, avatar: "⌘", description: `本机 ${label} 独立智能体`,
+    system_prompt: "独立执行，读取共享会话。", model: "", backend,
     api_profile_id: "", is_builtin: true, allowed_tools: [], created_at: 0, updated_at: 0,
   })),
   {
@@ -316,6 +320,8 @@ function mockWeatherInfo(location = weatherConfig.location) {
   };
 }
 
+const mockPetState = { state: "idle", happiness: 0.2, energy: 64 };
+
 function handleMockCommand(cmd: string, args: MockPayload) {
   if (cmd.startsWith("plugin:")) {
     if (cmd === "plugin:window|get_all_windows") return ["main"];
@@ -328,6 +334,14 @@ function handleMockCommand(cmd: string, args: MockPayload) {
   }
 
   switch (cmd) {
+    case "get_pet_state":
+    case "tick":
+      return { ...mockPetState };
+    case "set_pet_state":
+      mockPetState.state = String(args?.newState || "idle");
+      if (mockPetState.state === "happy") mockPetState.happiness = Math.min(1, mockPetState.happiness + 0.2);
+      if (mockPetState.state === "sleeping") mockPetState.energy = Math.min(100, mockPetState.energy + 15);
+      return null;
     case "get_chat_history":
       return [];
     case "get_active_chat":
@@ -357,7 +371,9 @@ function handleMockCommand(cmd: string, args: MockPayload) {
     case "check_and_send_weather":
       return weatherConfig.enabled;
     case "get_current_model":
-      return backendType === "codex" ? "Codex / 本机配置" : "Claude Code / preview";
+      if (backendType === "codex") return "Codex / 本机配置";
+      if (backendType === "dsh") return "DeepSeek Harness / 本机配置";
+      return "Claude Code / preview";
     case "get_backend_type":
       return backendType;
     case "set_backend_type":
@@ -400,6 +416,20 @@ function handleMockCommand(cmd: string, args: MockPayload) {
         message: "预览模式：已连接本机 Codex。",
       };
     case "open_codex_config":
+      return null;
+    case "check_dsh_status":
+      return {
+        installed: true,
+        logged_in: true,
+        version: "dsh / preview",
+        executable: "C:\\Users\\preview\\AppData\\Roaming\\npm\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js",
+        model: "deepseek-flash",
+        provider: "deepseek-official",
+        profile: "C:\\Users\\preview\\.dsh\\profiles\\dsh-pet",
+        workspace: "C:\\Users\\preview\\AppData\\Roaming\\com.ai-desktop-pet.app\\dsh-workspace",
+        message: "预览模式：已连接本机 DeepSeek Harness。",
+      };
+    case "open_dsh_config":
       return null;
     case "get_skin":
       return "default";

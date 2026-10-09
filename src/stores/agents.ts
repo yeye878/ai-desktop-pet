@@ -10,7 +10,7 @@ export interface Agent {
   description: string;
   system_prompt: string;
   model: string;
-  backend: "direct_api" | "claude_code" | "codex";
+  backend: "direct_api" | "claude_code" | "codex" | "dsh";
   api_profile_id: string;
   is_builtin: boolean;
   allowed_tools: string[];
@@ -88,7 +88,7 @@ export const useAgentsStore = defineStore("agents", () => {
   }
 
   function mentionName(agent: Agent): string {
-    return !agent.is_builtin && ["claude", "codex"].includes(agent.name.toLowerCase()) ? agent.id : agent.name;
+    return !agent.is_builtin && ["claude", "codex", "dsh"].includes(agent.name.toLowerCase()) ? agent.id : agent.name;
   }
 
   return { agents, loading, load, startSync, stopSync, upsert, remove, generateSpec, findByName, mentionName };

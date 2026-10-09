@@ -9,7 +9,7 @@ const chat = useChatStore();
       <input v-model="chat.collaborationEnabled" type="checkbox" :disabled="chat.isLoading" />
       智能体协同
     </label>
-    <span v-if="!chat.collaboration">@claude / @codex 可随时召唤；开启后允许角色互相 @ 交接。</span>
+    <span v-if="!chat.collaboration">@claude / @codex / @dsh 可随时召唤；开启后允许角色互相 @ 交接。</span>
     <template v-else>
       <strong v-if="chat.collaboration.status === 'running'">{{ chat.collaboration.active_agent?.name || '准备中' }} · {{ chat.collaboration.turn }}/{{ chat.collaboration.max_turns }}</strong>
       <span>{{ chat.collaboration.message }}</span>

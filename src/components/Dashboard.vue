@@ -6,6 +6,7 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import CustomPixelPetWorkshop from "./CustomPixelPetWorkshop.vue";
 import CodexConnection from "./CodexConnection.vue";
+import DshConnection from "./DshConnection.vue";
 import AgentActivity from "./AgentActivity.vue";
 import UserQuestion from "./UserQuestion.vue";
 import { createInteractionSubmission, subscribePendingInteraction, type AskUserPayload } from "../services/pendingInteractions";
@@ -14,6 +15,7 @@ import { ArrowDown } from "@lucide/vue";
 import CollaborationBar from "./CollaborationBar.vue";
 import { subscribeCollaboration } from "../services/collaboration";
 import PetCanvas from "./PetCanvas.vue";
+import PetStage from "./PetStage.vue";
 import { usePetStore, THEMES, FONT_COLORS, resolveSkinId } from "../stores/pet";
 import { useSkillsStore, type Skill } from "../stores/skills";
 import { useChatStore, messageAgentFromPayload, type AiFinishedPayload, type Message, type MessageAgent, type QuotedMessage } from "../stores/chat";
@@ -379,6 +381,43 @@ const petStateLabel = computed(() => {
 });
 
 const happinessPercent = computed(() => Math.round((pet.happiness + 1) / 2 * 100));
+const energyPercent = computed(() => Math.round(Math.max(0, Math.min(100, pet.energy))));
+
+// 首页"最近一次对话"卡片：取最后一条用户或助手消息，跳过系统分割线
+const lastConversationMessage = computed(() => {
+  for (let i = chat.messages.length - 1; i >= 0; i--) {
+    const msg = chat.messages[i];
+    if (msg.role !== "system" && (msg.displayContent ?? msg.content).trim()) return msg;
+  }
+  return null;
+});
+const lastConversationPreview = computed(() => {
+  const msg = lastConversationMessage.value;
+  if (!msg) return "";
+  const text = stripQuoteMarkers(msg.displayContent ?? msg.content).replace(/\s+/g, " ").trim();
+  return text.length > 90 ? text.slice(0, 90) + "…" : text;
+});
+const lastConversationSpeaker = computed(() => {
+  const msg = lastConversationMessage.value;
+  if (!msg) return "";
+  if (msg.role === "user") return "你";
+  return msg.agent?.name || "桌宠";
+});
+const conversationTurnCount = computed(() => chat.messages.filter((msg) => msg.role === "user").length);
+const nextScheduledTask = computed(() => scheduledTasks.value
+  .filter((task) => task.enabled)
+  .reduce<ScheduledTask | null>((soonest, task) => (!soonest || task.due_at < soonest.due_at ? task : soonest), null));
+
+function formatRelativeTime(timestamp: number) {
+  if (!timestamp) return "";
+  // 后端时间戳可能是秒，也可能是毫秒
+  const ms = timestamp < 1e12 ? timestamp * 1000 : timestamp;
+  const diff = Date.now() - ms;
+  if (diff < 60_000) return "刚刚";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
+  return `${Math.floor(diff / 86_400_000)} 天前`;
+}
 
 const thinkingDepthOptions = [
   { value: "auto", label: "自动" },
@@ -419,11 +458,13 @@ const currentModelLabel = computed(() => {
   if (backendType.value === "direct_api") {
     return apiConfig.value.model || "未选择模型";
   }
+  if (backendType.value === "dsh") return currentModel.value || "DeepSeek Harness / 本机配置";
   return currentModel.value || (backendType.value === "codex" ? "Codex / 本机配置" : "Claude Code");
 });
 
 const currentExecutionModeLabel = computed(() => {
   if (backendType.value === "codex") return "Codex";
+  if (backendType.value === "dsh") return "DeepSeek Harness";
   if (backendType.value !== "direct_api") return "Claude Code";
   return executionModeOptions.find((item) => item.value === apiConfig.value.execution_mode)?.label || "普通模式";
 });
@@ -529,8 +570,11 @@ function openAgentsPage() {
 }
 
 async function configureBuiltinAgent(agent: Agent) {
+  const command = agent.backend === "codex"
+    ? "open_codex_config"
+    : agent.backend === "dsh" ? "open_dsh_config" : "open_claude_config";
   try {
-    await invoke(agent.backend === "codex" ? "open_codex_config" : "open_claude_config");
+    await invoke(command);
   } catch (error) { alert("打开登录配置失败：" + error); }
 }
 
@@ -698,13 +742,18 @@ function searchProviderLabel(value: string) {
   return searchProviderOptions.find((item) => item.value === value)?.label || "Bing";
 }
 
-const quickActions = [
-  { id: "wave", icon: "↗", label: "打招呼", desc: "挥挥手，进入陪伴状态", tone: "sky" },
-  { id: "happy", icon: "◎", label: "开心一下", desc: "给小家伙加一点元气", tone: "lemon" },
-  { id: "sleep", icon: "Zz", label: "去睡觉", desc: "切到安静休息状态", tone: "lavender" },
-  { id: "wake", icon: "⏱", label: "叫醒它", desc: "回到待命，随时响应", tone: "mint" },
-  { id: "new-chat", icon: "+", label: "新对话", desc: "保存摘要并重开上下文", tone: "mint" },
-  { id: "clear", icon: "⌫", label: "清空对话", desc: "整理上下文和记忆摘要", tone: "coral" },
+// 陪伴动作：只改桌宠状态，点在舞台上当场演出来
+const companionActions = [
+  { id: "wave", icon: "↗", label: "打招呼", desc: "挥挥手" },
+  { id: "happy", icon: "◎", label: "开心一下", desc: "加一点元气" },
+  { id: "sleep", icon: "Zz", label: "去睡觉", desc: "安静休息" },
+  { id: "wake", icon: "⏱", label: "叫醒它", desc: "回到待命" },
+];
+
+// 对话操作：动的是上下文，与陪伴动作分层；清空是破坏性操作，必须走确认
+const conversationActions = [
+  { id: "new-chat", icon: "+", label: "新对话", desc: "保存摘要并重开上下文" },
+  { id: "clear", icon: "⌫", label: "清空对话", desc: "删除全部聊天记录", danger: true },
 ];
 
 const missionEntries = [
@@ -714,7 +763,6 @@ const missionEntries = [
 ];
 
 const activeActionId = ref("");
-const actionFeedback = ref("点一下动作卡片，小家伙会在这里回应你。");
 let actionFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
 
 // === 预设 ===
@@ -1631,53 +1679,40 @@ async function updateVoiceSettings(patch: Partial<VoiceSettings>) {
   } catch (e) { alert("语音设置保存失败: " + e); }
 }
 
-// === 快捷操作 ===
-function showActionFeedback(actionId: string) {
-  const action = quickActions.find((item) => item.id === actionId);
+// === 陪伴动作 / 对话操作 ===
+function flashActiveAction(actionId: string) {
   activeActionId.value = actionId;
-  actionFeedback.value = action
-    ? `已触发「${action.label}」，桌宠正在同步状态。`
-    : "桌宠正在同步状态。";
-
   if (actionFeedbackTimer) clearTimeout(actionFeedbackTimer);
-  actionFeedbackTimer = setTimeout(() => {
-    activeActionId.value = "";
-    actionFeedback.value = "点一下动作卡片，小家伙会在这里回应你。";
-  }, 2600);
+  actionFeedbackTimer = setTimeout(() => { activeActionId.value = ""; }, 1600);
 }
 
-async function petAction(name: string) {
-  showActionFeedback(name);
-  const stateMap: Record<string, string> = {
-    wave: "waving", happy: "happy", sleep: "sleeping", wake: "idle",
-  };
-  const state = stateMap[name];
-  if (state) {
-    try { await invoke("set_pet_state", { newState: state }); } catch {}
+/**
+ * 陪伴动作：只改桌宠状态。演出交给首页舞台上的 PetCanvas（live 模式会轮询回显），
+ * 所以这里不再打印"已触发…"这类文字反馈，不要让文案去描述用户看不到的动作。
+ */
+const PET_ACTION_STATES: Record<string, string> = {
+  wave: "waving", happy: "happy", sleep: "sleeping", wake: "idle",
+};
+
+async function companionAction(name: string) {
+  const state = PET_ACTION_STATES[name];
+  if (!state) return;
+  flashActiveAction(name);
+  try {
+    await invoke("set_pet_state", { newState: state });
+  } catch (err) {
+    console.error("设置桌宠状态失败", err);
   }
+}
+
+/** 对话操作：复用已有的带确认/带错误上报实现，避免与此前重复的那份逻辑分叉 */
+async function conversationAction(name: string) {
   if (name === "new-chat") {
-    try {
-      await invoke("start_new_conversation");
-      // 新对话：保留聊天记录显示，仅重置 AI 状态
-      chat.isLoading = false;
-      chat.activity.reset();
-      thinkingContent.value = "";
-      streamingAnswer.value = "";
-      pendingConfirm.value = null;
-      // 插入分割线，标记新对话开始
-      if (chat.messages.length > 0) {
-        chat.addSystemMessage("新对话");
-      }
-      await loadMemories();
-    } catch {}
+    await startDashboardNewConversation();
+    return;
   }
   if (name === "clear") {
-    try {
-      await invoke("clear_chat_history");
-      resetDashChatUi();
-      await loadMemories();
-      await currentWindow.emit("chat-history-cleared");
-    } catch {}
+    await clearDashboardChatWithConfirm();
   }
 }
 
@@ -2803,12 +2838,12 @@ ttsPlayer.stop();
       <div :class="['dashboard-content', `page-${activePage}`, { 'chat-page-active': activePage === 'chat' }]">
         <Transition name="page-fade" mode="out-in" @after-enter="handlePageEntered">
           <!-- ========== 首页 ========== -->
-          <div v-if="activePage === 'home'" key="home" class="home-studio-page">
-            <div class="page-header home-header studio-header">
+          <div v-if="activePage === 'home'" key="home" class="home-page">
+            <div class="page-header home-header">
               <div>
-                <div class="page-kicker">Mission Playground</div>
-                <h1 class="page-title">桌宠飞行舱</h1>
-                <p class="page-subtitle">用任务轨道、动作卡片和状态贴纸管理你的小伙伴</p>
+                <div class="page-kicker">Companion</div>
+                <h1 class="page-title">你的桌宠</h1>
+                <p class="page-subtitle">摸摸它、逗逗它，或者直接派个活</p>
               </div>
               <div :class="['status-pill', isPetActive ? 'live' : 'idle']">
                 <span class="status-pill-dot" />
@@ -2816,138 +2851,147 @@ ttsPlayer.stop();
               </div>
             </div>
 
-            <div class="home-grid">
-              <!-- 宠物状态预览 -->
-              <div class="dash-card pet-preview-card studio-panel">
-                <div class="pet-preview-visual">
-                  <div class="pet-orbit-ring ring-a" />
-                  <div class="pet-orbit-ring ring-b" />
-                  <span class="pet-spark spark-a">✦</span>
-                  <span class="pet-spark spark-b">✧</span>
-                  <div class="pet-preview-canvas-wrap">
-                    <PetCanvas preview style="width: 140px; height: 140px; pointer-events: none;" />
-                  </div>
-                </div>
-                <div class="pet-info">
-                  <div class="pet-label">Current Companion</div>
-                  <div class="pet-status-name">{{ pet.expression }} 桌宠伙伴</div>
-                  <div class="pet-status-state">
-                    <span class="pet-status-dot" />
-                    <span>{{ petStateLabel }}</span>
-                  </div>
-                  <div class="pet-meta-pills">
-                    <button class="pet-meta-pill" @click="activePage = 'appearance'">换装</button>
-                    <button class="pet-meta-pill" @click="activePage = 'chat'">聊天</button>
-                    <button class="pet-meta-pill" @click="activePage = 'voice'">声音</button>
-                  </div>
-                  <div class="pet-stats">
-                    <div class="pet-stat">
-                      <span class="pet-stat-label">心情</span>
-                      <div class="pet-stat-bar-wrap">
-                        <div
-                          class="pet-stat-bar"
-                          :style="{
-                            width: happinessPercent + '%',
-                            background: 'var(--pet-primary, #ff6b6b)'
-                          }"
-                        />
-                      </div>
-                    </div>
-                    <div class="pet-stat">
-                      <span class="pet-stat-label">能量</span>
-                      <div class="pet-stat-bar-wrap">
-                        <div
-                          class="pet-stat-bar"
-                          :style="{
-                            width: pet.energy + '%',
-                            background: 'var(--pet-accent, #ffa07a)'
-                          }"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                <div class="pet-action-feedback">
-                  <span class="pet-action-kicker">Action Echo</span>
-                  <strong>{{ activeActionId ? '收到指令' : '待机中' }}</strong>
-                  <p>{{ actionFeedback }}</p>
-                </div>
-              </div>
+            <div class="home-layout">
+              <!-- 舞台：活的桌宠本体 -->
+              <section class="home-stage-col">
+                <PetStage
+                  :state-label="petStateLabel"
+                  :happiness-percent="happinessPercent"
+                  :energy="energyPercent"
+                  :model-label="currentModelLabel"
+                  @petted="flashActiveAction('petted')"
+                />
 
-
-              <!-- 快捷操作 -->
-              <div class="dash-card action-lab-card sticker-board-card">
-                <div class="dash-card-title">
-                  <span class="card-icon">⌁</span> 动作实验台
-                </div>
-                <div class="quick-actions">
+                <!-- 陪伴动作：点一下，舞台上的它当场演 -->
+                <div class="companion-bar" role="group" aria-label="陪伴动作">
                   <button
-                    v-for="action in quickActions"
+                    v-for="action in companionActions"
                     :key="action.id"
-                    :class="['quick-action-btn', action.tone, { active: activeActionId === action.id }]"
-                    @click="petAction(action.id)"
+                    type="button"
+                    :class="['companion-chip', { active: activeActionId === action.id }]"
+                    :title="action.desc"
+                    @click="companionAction(action.id)"
                   >
-                    <span class="quick-action-icon">{{ action.icon }}</span>
-                    <span class="quick-action-copy">
-                      <span class="quick-action-label">{{ action.label }}</span>
-                      <span class="quick-action-desc">{{ action.desc }}</span>
-                    </span>
+                    <span class="companion-chip-icon" aria-hidden="true">{{ action.icon }}</span>
+                    <span>{{ action.label }}</span>
                   </button>
                 </div>
-              </div>
+                <p class="companion-hint">
+                  {{ activeActionId === 'petted' ? '它很喜欢被摸摸 ♥' : '点按钮或直接点它试试' }}
+                </p>
+              </section>
 
-              <!-- 任务轨道 -->
-              <div class="dash-card mission-rail-card mission-ribbon-card">
-                <div class="dash-card-title">
-                  <span class="card-icon">⌘</span> 任务轨道
+              <!-- 信息列 -->
+              <section class="home-info-col">
+                <!-- 最近对话 + 对话操作 -->
+                <div class="dash-card home-card home-convo-card">
+                  <div class="home-card-head">
+                    <span class="home-card-title">最近对话</span>
+                    <span v-if="conversationTurnCount" class="home-card-meta">{{ conversationTurnCount }} 轮</span>
+                  </div>
+                  <button
+                    v-if="lastConversationMessage"
+                    type="button"
+                    class="home-convo-preview"
+                    @click="activePage = 'chat'"
+                  >
+                    <span class="home-convo-speaker">{{ lastConversationSpeaker }}</span>
+                    <span class="home-convo-text">{{ lastConversationPreview }}</span>
+                    <span class="home-convo-time">{{ formatRelativeTime(lastConversationMessage.timestamp) }}</span>
+                  </button>
+                  <button v-else type="button" class="home-convo-preview empty" @click="activePage = 'chat'">
+                    <span class="home-convo-text">还没有聊过天，去和它说句话吧 →</span>
+                  </button>
+                  <div class="home-convo-actions">
+                    <button type="button" class="dash-mini-btn primary" @click="activePage = 'chat'">继续聊天</button>
+                    <button
+                      v-for="action in conversationActions"
+                      :key="action.id"
+                      type="button"
+                      :class="['dash-mini-btn', { 'home-danger-btn': action.danger }]"
+                      :title="action.desc"
+                      @click="conversationAction(action.id)"
+                    >
+                      {{ action.label }}
+                    </button>
+                  </div>
                 </div>
-                <div class="mission-rail">
+
+                <!-- 今日概览 -->
+                <div class="dash-card home-card home-glance-card">
+                  <div class="home-card-head">
+                    <span class="home-card-title">今日概览</span>
+                  </div>
+                  <div class="home-glance-grid">
+                    <div class="home-glance-item">
+                      <span class="home-glance-label">天气</span>
+                      <span v-if="weatherInfo" class="home-glance-value">
+                        {{ weatherInfo.icon }} {{ formatTemperature(weatherInfo.temperature) }}°C
+                      </span>
+                      <span v-else class="home-glance-value muted">{{ isWeatherLoading ? '加载中' : '未开启' }}</span>
+                      <span v-if="weatherInfo" class="home-glance-sub">{{ weatherInfo.city }} · {{ weatherInfo.description }}</span>
+                    </div>
+                    <button type="button" class="home-glance-item clickable" @click="activePage = 'memory'">
+                      <span class="home-glance-label">下个提醒</span>
+                      <span v-if="nextScheduledTask" class="home-glance-value">{{ taskStatusLabel(nextScheduledTask) }}</span>
+                      <span v-else class="home-glance-value muted">暂无</span>
+                      <span v-if="nextScheduledTask" class="home-glance-sub">{{ nextScheduledTask.title }}</span>
+                    </button>
+                    <button type="button" class="home-glance-item clickable" @click="activePage = 'memory'">
+                      <span class="home-glance-label">记忆</span>
+                      <span class="home-glance-value">{{ memories.length }} 条</span>
+                      <span class="home-glance-sub">它记住的关于你的事</span>
+                    </button>
+                    <div class="home-glance-item">
+                      <span class="home-glance-label">模式</span>
+                      <span class="home-glance-value">{{ currentExecutionModeLabel }}</span>
+                      <span class="home-glance-sub" :title="contextUsageLabel">{{ contextUsageLabel }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 快速入口 -->
+                <div class="home-shortcuts">
                   <button
                     v-for="entry in missionEntries"
                     :key="entry.page"
-                    class="mission-node"
+                    type="button"
+                    class="home-shortcut"
                     @click="activePage = entry.page"
                   >
-                    <span class="mission-node-icon">{{ entry.icon }}</span>
-                    <span>
+                    <span class="home-shortcut-icon" aria-hidden="true">{{ entry.icon }}</span>
+                    <span class="home-shortcut-copy">
                       <strong>{{ entry.title }}</strong>
                       <small>{{ entry.desc }}</small>
                     </span>
                   </button>
+                  <button type="button" class="home-shortcut" @click="openAgentsPage()">
+                    <span class="home-shortcut-icon" aria-hidden="true">🧩</span>
+                    <span class="home-shortcut-copy">
+                      <strong>智能体</strong>
+                      <small>召集角色一起干活</small>
+                    </span>
+                  </button>
                 </div>
-                <div class="mission-metrics">
-                  <span>模型 {{ currentModelLabel }}</span>
-                  <span>模式 {{ currentExecutionModeLabel }}</span>
-                  <span>{{ contextUsageLabel }}</span>
-                </div>
-              </div>
 
-              <!-- 系统监控 -->
-              <div class="dash-card system-pulse-card resource-strip-card">
-                <div class="dash-card-title">
-                  <span class="card-icon">◷</span> 系统资源
-                </div>
-                <div class="system-monitor">
-                  <div class="monitor-item">
-                    <div class="monitor-header">
-                      <span class="monitor-label">CPU</span>
-                      <span class="monitor-value">{{ systemInfo.cpu.toFixed(1) }}%</span>
-                    </div>
+                <!-- 系统资源：降级为一条细带 -->
+                <div class="home-resources">
+                  <div class="home-resource">
+                    <span class="home-resource-label">CPU</span>
                     <div class="monitor-bar-wrap">
                       <div class="monitor-bar" :style="{ width: systemInfo.cpu + '%', background: cpuBarColor(systemInfo.cpu) }" />
                     </div>
+                    <span class="home-resource-value">{{ systemInfo.cpu.toFixed(0) }}%</span>
                   </div>
-                  <div class="monitor-item">
-                    <div class="monitor-header">
-                      <span class="monitor-label">内存</span>
-                      <span class="monitor-value">{{ systemInfo.memory.toFixed(1) }}%</span>
-                    </div>
+                  <div class="home-resource">
+                    <span class="home-resource-label">内存</span>
                     <div class="monitor-bar-wrap">
                       <div class="monitor-bar" :style="{ width: systemInfo.memory + '%', background: memBarColor(systemInfo.memory) }" />
                     </div>
+                    <span class="home-resource-value">{{ systemInfo.memory.toFixed(0) }}%</span>
                   </div>
                 </div>
-              </div>
+              </section>
             </div>
           </div>
 
@@ -3422,7 +3466,7 @@ ttsPlayer.stop();
                     <div class="dash-agent-card-name">@{{ agent.name }}</div>
                     <div class="dash-agent-card-desc">{{ agent.description || "（无描述）" }}</div>
                     <div class="dash-agent-card-meta">
-                      {{ agent.backend === 'codex' ? '本机 Codex' : agent.backend === 'claude_code' ? '本机 Claude Code' : '直连 API' }}{{ agent.is_builtin ? ' · 内置角色' : '' }}{{ agent.model ? ' · ' + agent.model : '' }}{{ !agent.is_builtin && !agent.system_prompt.trim() ? ' · 未写角色设定' : '' }}
+                      {{ agent.backend === 'codex' ? '本机 Codex' : agent.backend === 'dsh' ? '本机 DeepSeek Harness' : agent.backend === 'claude_code' ? '本机 Claude Code' : '直连 API' }}{{ agent.is_builtin ? ' · 内置角色' : '' }}{{ agent.model ? ' · ' + agent.model : '' }}{{ !agent.is_builtin && !agent.system_prompt.trim() ? ' · 未写角色设定' : '' }}
                     </div>
                   </div>
                   <div class="dash-agent-card-actions">
@@ -3516,6 +3560,7 @@ ttsPlayer.stop();
                     <option value="direct_api">直连 API</option>
                     <option value="claude_code">本机 Claude Code</option>
                     <option value="codex">本机 Codex</option>
+                    <option value="dsh">本机 DeepSeek Harness</option>
                   </select>
                 </div>
                 <div v-if="agentDraft.backend === 'direct_api'" class="dash-form-group">
@@ -3575,7 +3620,8 @@ ttsPlayer.stop();
                       v-if="character.id === 'classic' || character.id === 'custom-pixel'"
                       preview
                       :character="character.id"
-                      style="width: 88px; height: 102px; pointer-events: none;"
+                      :scale="0.73"
+                      style="pointer-events: none;"
                     />
                     <img v-else src="../assets/pets/daimao-batiao/stills/still-03.png" alt="" />
                   </div>
@@ -3940,6 +3986,9 @@ ttsPlayer.stop();
                 <button :class="['dash-backend-btn', { active: backendType === 'codex' }]" @click="selectBackend('codex')">
                   <span>CX</span> Codex
                 </button>
+                <button :class="['dash-backend-btn', { active: backendType === 'dsh' }]" @click="selectBackend('dsh')">
+                  <span>DS</span> DeepSeek Harness
+                </button>
                 <button :class="['dash-backend-btn', { active: backendType === 'direct_api' }]" @click="selectBackend('direct_api')">
                   <span>API</span> 直连 API Agent
                 </button>
@@ -3982,6 +4031,8 @@ ttsPlayer.stop();
               </template>
 
               <CodexConnection v-else-if="backendType === 'codex'" :model-saved="modelSaved" @reset="resetModel" />
+
+              <DshConnection v-else-if="backendType === 'dsh'" :model-saved="modelSaved" @reset="resetModel" />
 
               <template v-else>
                 <div class="dash-profile-toolbar">

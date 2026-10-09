@@ -12,6 +12,7 @@ __pycache__/
 nul
 resources/
 .qoder/
+.dsh-selftest/
 update_shortcut.ps1
 __*.tmp
 __diff_*.txt
