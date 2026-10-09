@@ -231,6 +231,16 @@ it("多个公式混排：正文与公式顺序不乱", () => {
   assert.ok(html.includes("katex"), "行内公式也要渲染");
 });
 
+it("定界符错配时按块边界切分，不会把两段公式并成一块", () => {
+  // 模型偶尔会连开两块、或漏掉一个 \] ，这里必须按"下一个 \[ 就是边界"处理
+  const two = renderMarkdown([B + "[", "u_x+v_y=0", B + "]", "", "中间还有一段话", "", B + "[", "p_y=0", B + "]"].join("\n"));
+  assert.equal((two.match(/katex-display/g) || []).length, 2, two.slice(0, 400));
+  assert.ok(two.includes("中间还有一段话"), "中间正文不能被吞进公式：" + two.slice(0, 400));
+  const messy = renderMarkdown([B + "[", B + "begin{cases}", "u_x=0", B + "end{cases}", B + "]", "", "代入 " + B + "(v=0" + B + ") 得：", "", B + "[", "p_x=0", B + "]"].join("\n"));
+  assert.equal((messy.match(/katex-display/g) || []).length, 2, messy.slice(0, 400));
+  assert.ok(!messy.includes("MDMATH"), "不该泄漏占位符");
+});
+
 it("代码块里的 $ 和反斜杠不会被当成公式", () => {
   const source = TICK + TICK + TICK + "sh\nawk '{print $1}' file\n" + TICK + TICK + TICK;
   const html = renderMarkdown(source);
