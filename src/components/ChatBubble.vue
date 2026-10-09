@@ -28,8 +28,8 @@ import {
   extractMentionNames,
   insertMentionAt,
   mentionQueryFromInput,
-  splitMentionSegments,
 } from "../services/mentions";
+import { renderMessageSegments, type MessageRenderSegment } from "../services/markdown";
 import {
   DEFAULT_VOICE_SETTINGS,
   isSpeechRecognitionSupported,
@@ -164,6 +164,31 @@ const pendingConfirm = ref<ToolConfirmPayload | null>(null);
 const pendingQuestion = ref<AskUserPayload | null>(null);
 const confirmSubmission = createInteractionSubmission(pendingConfirm, (id, value) => invoke("confirm_tool", { id, approved: value }));
 const confirmSubmitting = computed(() => confirmSubmission.submittingId.value === pendingConfirm.value?.id);
+
+/**
+ * 消息正文按 Markdown 渲染（**粗体**、# 标题、- 列表、[链接](url)……）。
+ * 渲染器按消息 id + 文本做缓存，流式刷新时不会重复解析同一段内容；
+ * @提及 由渲染器输出 .bubble-mention 高亮，[QUOTE] 仍走微信式引用块。
+ */
+const renderedMessages = computed(() => {
+  const map = new Map<number, MessageRenderSegment[]>();
+  for (const message of chat.messages) {
+    if (message.role !== "assistant" && message.role !== "user") continue;
+    const raw = message.displayContent ?? message.content;
+    map.set(
+      message.id,
+      renderMessageSegments(raw, {
+        names: extractMentionNames(raw),
+        mention: { htmlTag: '<span class="bubble-mention">' },
+        cacheKey: "bubble:" + message.id,
+      }),
+    );
+  }
+  return map;
+});
+function renderedMessageSegments(message: Message): MessageRenderSegment[] {
+  return renderedMessages.value.get(message.id) ?? [];
+}
 let stopToolConfirm: (() => void) | undefined;
 let stopQuestion: (() => void) | undefined;
 function questionAnswered(id: string) {
@@ -1455,10 +1480,10 @@ function formatClipboardTime(value: string | number): string {
             </div>
             <AgentActivity v-if="msg.role === 'assistant'" :items="msg.activity" :tools="msg.toolEvents" :thinking="msg.activity ? undefined : msg.thinking" compact />
 
-            <div class="bubble">
-              <template v-for="(mseg, mi) in splitMentionSegments(msg.displayContent ?? msg.content)" :key="mi">
-                <span v-if="mseg.type === 'mention'" class="bubble-mention">@{{ mseg.content }}</span>
-                <template v-else>{{ mseg.content }}</template>
+            <div class="bubble md-body">
+              <template v-for="(seg, si) in renderedMessageSegments(msg)" :key="si">
+                <div v-if="seg.type === 'quote'" class="bubble-quote" v-html="seg.html"></div>
+                <div v-else class="bubble-text" v-html="seg.html"></div>
               </template>
             </div>
             <div v-if="msg.files && msg.files.length > 0" class="msg-files">
@@ -2180,6 +2205,29 @@ function formatClipboardTime(value: string | number): string {
 .streaming-answer {
   margin-top: 4px;
   white-space: pre-wrap;
+}
+
+/* Markdown 正文容器：外层 .md-body 已经在 global.css 里定义排版 */
+.bubble-text {
+  display: block;
+}
+
+/* AI 回复里的 [QUOTE] 引用块（微信式） */
+.bubble-quote {
+  margin: 0 0 7px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border-left: 3px solid rgba(var(--pet-primary-rgb, 204, 112, 82), 0.5);
+  background: rgba(24, 42, 72, 0.05);
+  opacity: 0.92;
+}
+.bubble-quote:last-child {
+  margin-bottom: 0;
+}
+
+.message.user .bubble .bubble-quote {
+  border-left-color: rgba(255, 255, 255, 0.55);
+  background: rgba(0, 0, 0, 0.14);
 }
 
 .msg-time {

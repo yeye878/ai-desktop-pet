@@ -105,7 +105,7 @@ for (const component of ["Dashboard", "ChatBubble"]) {
       messageAgentFromPayload: chatModule.messageAgentFromPayload,
       toolEvents: { value: [] }, thinkingContent: { value: "" }, streamingAnswer: { value: "" },
       pendingConfirm: { value: null }, isThinkingCollapsed: { value: false },
-      pet: { setState() {}, updateMood() {} }, speakDashboardReply() {}, stripQuoteMarkers: (text) => text,
+      pet: { setState() {}, updateMood() {} }, speakDashboardReply() {}, stripQuoteMarkers: (text) => text, speakableText: (text) => text,
       appendAssistantOnce(text, thinking, agent) { chat.addMessage("assistant", text, thinking, undefined, undefined, undefined, agent); },
     };
     const handler = evaluate(`exports.run = (${callback});`, state).run;

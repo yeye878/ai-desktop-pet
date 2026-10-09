@@ -30,7 +30,7 @@ function isInRoundedRect(
 
 function isClassicHit(px: number, py: number, state: PetState, position: Point) {
   const { x, y } = position;
-  const padding = 5;
+  const padding = 6;
   const size = 80;
   const body = isInRoundedRect(
     px,
@@ -39,17 +39,19 @@ function isClassicHit(px: number, py: number, state: PetState, position: Point) 
     y - size / 2 - padding,
     size + padding * 2,
     size + padding * 2,
-    24 + padding,
+    26 + padding,
   );
-  const leftEar = isInEllipse(px, py, x - size / 2 + 14, y - size / 2 + 8, 16, 19);
-  const rightEar = isInEllipse(px, py, x + size / 2 - 14, y - size / 2 + 8, 16, 19);
-  const leftFoot = isInEllipse(px, py, x - 15, y + size / 2 + 4, 13, 9);
-  const rightFoot = isInEllipse(px, py, x + 15, y + size / 2 + 4, 13, 9);
+  const leftEar = isInEllipse(px, py, x - 20, y - 34, 18, 24);
+  const rightEar = isInEllipse(px, py, x + 20, y - 34, 18, 24);
+  const leftFoot = isInEllipse(px, py, x - 16, y + size / 2 + 4, 14, 10);
+  const rightFoot = isInEllipse(px, py, x + 16, y + size / 2 + 4, 14, 10);
+  const tail = isInEllipse(px, py, x - 30, y + 18, 14, 14);
+  const desk = isInRoundedRect(px, py, x - 52, y + 18, 104, 34, 8);
   const wavingHand =
     state === "waving" &&
-    isInRoundedRect(px, py, x + size / 2 - 8, y - 36, 28, 54, 13);
+    isInRoundedRect(px, py, x + size / 2 - 10, y - 36, 32, 54, 14);
 
-  return body || leftEar || rightEar || leftFoot || rightFoot || wavingHand;
+  return body || leftEar || rightEar || leftFoot || rightFoot || tail || desk || wavingHand;
 }
 
 export function isPetCanvasPoint(

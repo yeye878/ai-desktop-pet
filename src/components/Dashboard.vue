@@ -10,8 +10,8 @@ import DshConnection from "./DshConnection.vue";
 import AgentActivity from "./AgentActivity.vue";
 import UserQuestion from "./UserQuestion.vue";
 import { createInteractionSubmission, subscribePendingInteraction, type AskUserPayload } from "../services/pendingInteractions";
-import { isNearBottom, legacyActivity } from "../services/agentActivity";
-import { ArrowDown } from "@lucide/vue";
+import { isNearBottom, legacyActivity, toolStatusLabel } from "../services/agentActivity";
+import { ArrowDown, House, MessageCircle, Brain, Palette, Bot, Mic, Settings as SettingsIcon, Info, PawPrint, Send, Plus, Power } from "@lucide/vue";
 import CollaborationBar from "./CollaborationBar.vue";
 import { subscribeCollaboration } from "../services/collaboration";
 import PetCanvas from "./PetCanvas.vue";
@@ -21,7 +21,6 @@ import { useSkillsStore, type Skill } from "../stores/skills";
 import { useChatStore, messageAgentFromPayload, type AiFinishedPayload, type Message, type MessageAgent, type QuotedMessage } from "../stores/chat";
 import { useAgentsStore, type Agent } from "../stores/agents";
 import {
-  parseQuoteSegments,
   stripQuoteMarkers,
   truncateQuoteContent,
 } from "../services/quoteParser";
@@ -35,8 +34,8 @@ import {
   extractMentionNames,
   insertMentionAt,
   mentionQueryFromInput,
-  splitMentionSegments,
 } from "../services/mentions";
+import { markdownToPlainText, renderMessageSegments, type MessageRenderSegment } from "../services/markdown";
 import {
   PET_CHARACTERS,
   PET_CHARACTER_SETTING_KEY,
@@ -394,7 +393,7 @@ const lastConversationMessage = computed(() => {
 const lastConversationPreview = computed(() => {
   const msg = lastConversationMessage.value;
   if (!msg) return "";
-  const text = stripQuoteMarkers(msg.displayContent ?? msg.content).replace(/\s+/g, " ").trim();
+  const text = speakableText(msg.displayContent ?? msg.content).replace(/\s+/g, " ").trim();
   return text.length > 90 ? text.slice(0, 90) + "…" : text;
 });
 const lastConversationSpeaker = computed(() => {
@@ -404,6 +403,35 @@ const lastConversationSpeaker = computed(() => {
   return msg.agent?.name || "桌宠";
 });
 const conversationTurnCount = computed(() => chat.messages.filter((msg) => msg.role === "user").length);
+
+/**
+ * 消息正文按 Markdown 渲染（**粗体**、# 标题、- 列表、[链接](url)……）。
+ * 渲染器按消息 id + 文本缓存，流式刷新不会重复解析；@提及 输出 .dash-msg-mention 高亮。
+ */
+const renderedMessages = computed(() => {
+  const map = new Map<number, MessageRenderSegment[]>();
+  for (const message of chat.messages) {
+    if (message.role !== "assistant" && message.role !== "user") continue;
+    const raw = message.displayContent ?? message.content;
+    map.set(
+      message.id,
+      renderMessageSegments(raw, {
+        names: extractMentionNames(raw),
+        mention: { htmlTag: '<span class="dash-msg-mention">' },
+        cacheKey: "dash:" + message.id,
+      }),
+    );
+  }
+  return map;
+});
+function renderedMessageSegments(message: Message): MessageRenderSegment[] {
+  return renderedMessages.value.get(message.id) ?? [];
+}
+
+/** 朗读前先转纯文本：星号、井号、链接地址都不念出来 */
+function speakableText(raw: string): string {
+  return markdownToPlainText(stripQuoteMarkers(raw));
+}
 const nextScheduledTask = computed(() => scheduledTasks.value
   .filter((task) => task.enabled)
   .reduce<ScheduledTask | null>((soonest, task) => (!soonest || task.due_at < soonest.due_at ? task : soonest), null));
@@ -460,6 +488,24 @@ const currentModelLabel = computed(() => {
   }
   if (backendType.value === "dsh") return currentModel.value || "DeepSeek Harness / 本机配置";
   return currentModel.value || (backendType.value === "codex" ? "Codex / 本机配置" : "Claude Code");
+});
+
+const chatHeaderTitle = computed(() => {
+  for (let i = chat.messages.length - 1; i >= 0; i--) {
+    const name = chat.messages[i].agent?.name;
+    if (name) return name;
+  }
+  return "主助理";
+});
+const recentMemories = computed(() => memories.value.slice(0, 5));
+
+const activeTools = computed(() => chat.activity.items.filter((item) => item.kind === "tool"));
+const activityHeadline = computed(() => {
+  const last = activeTools.value[activeTools.value.length - 1];
+  if (last && last.kind === "tool") {
+    return `${last.tool.summary || last.tool.tool_name} · ${toolStatusLabel(last.tool.status)}`;
+  }
+  return "正在理解你的需求";
 });
 
 const currentExecutionModeLabel = computed(() => {
@@ -2498,7 +2544,7 @@ onMounted(async () => {
     toolEvents.value = [];
     pendingConfirm.value = null;
     pendingQuestion.value = null;
-    if (!reply.failed) void speakDashboardReply(stripQuoteMarkers(reply.text));
+    if (!reply.failed) void speakDashboardReply(speakableText(reply.text));
     void scrollDashChatToBottom();
   }, (status, newTurn) => {
     if (newTurn || status.status !== "running") {
@@ -2574,7 +2620,7 @@ onMounted(async () => {
     streamingAnswer.value = "";
     toolEvents.value = [];
     pendingConfirm.value = null;
-    void speakDashboardReply(stripQuoteMarkers(event.payload.text));
+    void speakDashboardReply(speakableText(event.payload.text));
   });
 
   unlistenAiError = await listen<any>("ai-error", (event) => {
@@ -2762,49 +2808,49 @@ ttsPlayer.stop();
             :class="['sidebar-item', { active: activePage === 'home' }]"
             @click="activePage = 'home'"
           >
-            <span class="sidebar-item-icon">⌂</span>
+            <span class="sidebar-item-icon"><House :size="15" /></span>
             <span>首页</span>
           </button>
           <button
             :class="['sidebar-item', { active: activePage === 'chat' }]"
             @click="activePage = 'chat'"
           >
-            <span class="sidebar-item-icon">💬</span>
+            <span class="sidebar-item-icon"><MessageCircle :size="15" /></span>
             <span>对话互动</span>
           </button>
           <button
             :class="['sidebar-item', { active: activePage === 'memory' }]"
             @click="activePage = 'memory'"
           >
-            <span class="sidebar-item-icon">◫</span>
+            <span class="sidebar-item-icon"><Brain :size="15" /></span>
             <span>记忆库</span>
           </button>
           <button
             :class="['sidebar-item', { active: activePage === 'appearance' }]"
             @click="activePage = 'appearance'"
           >
-            <span class="sidebar-item-icon">◐</span>
+            <span class="sidebar-item-icon"><Palette :size="15" /></span>
             <span>个性外观</span>
           </button>
           <button
             :class="['sidebar-item', { active: activePage === 'agents' }]"
             @click="openAgentsPage()"
           >
-            <span class="sidebar-item-icon">🧩</span>
+            <span class="sidebar-item-icon"><Bot :size="15" /></span>
             <span>智能体</span>
           </button>
           <button
             :class="['sidebar-item', { active: activePage === 'voice' }]"
             @click="activePage = 'voice'"
           >
-            <span class="sidebar-item-icon">◌</span>
+            <span class="sidebar-item-icon"><Mic :size="15" /></span>
             <span>语音设置</span>
           </button>
           <button
             :class="['sidebar-item', { active: activePage === 'system' }]"
             @click="activePage = 'system'"
           >
-            <span class="sidebar-item-icon">⌘</span>
+            <span class="sidebar-item-icon"><SettingsIcon :size="15" /></span>
             <span>系统设置</span>
           </button>
 
@@ -2814,7 +2860,7 @@ ttsPlayer.stop();
             :class="['sidebar-item', { active: activePage === 'about' }]"
             @click="activePage = 'about'"
           >
-            <span class="sidebar-item-icon">i</span>
+            <span class="sidebar-item-icon"><Info :size="15" /></span>
             <span>关于</span>
           </button>
         </nav>
@@ -2824,11 +2870,11 @@ ttsPlayer.stop();
             :class="['sidebar-action-btn', 'primary', { active: isPetActive }]"
             @click="isPetActive ? emit('closePet') : emit('openPet'); isPetActive = !isPetActive"
           >
-            <span class="sidebar-action-icon">{{ isPetActive ? '●' : '+' }}</span>
+            <span class="sidebar-action-icon"><PawPrint v-if="isPetActive" :size="14" /><Plus v-else :size="14" /></span>
             <span>{{ isPetActive ? '收回桌宠' : '召唤桌宠' }}</span>
           </button>
           <button class="sidebar-action-btn danger" @click="exitApp">
-            <span class="sidebar-action-icon">×</span>
+            <span class="sidebar-action-icon"><Power :size="14" /></span>
             <span>退出应用</span>
           </button>
         </div>
@@ -2997,6 +3043,17 @@ ttsPlayer.stop();
 
           <!-- ========== 对话互动 (独立页面) ========== -->
           <div v-else-if="activePage === 'chat'" key="chat" class="dash-chat-page">
+           <div class="dash-chat-main">
+            <!-- 对话页头部：会话标题 / 连接状态 / 运行状态 -->
+            <div class="dash-chat-head">
+              <div class="dash-chat-head-title">{{ chatHeaderTitle }}</div>
+              <div class="dash-chat-head-status">
+                <span class="dash-status-pill">{{ currentExecutionModeLabel }}</span>
+                <span :class="['dash-status-pill', 'state', chat.isLoading ? 'busy' : 'ready']">
+                  {{ chat.isLoading ? "运行中" : "就绪" }}
+                </span>
+              </div>
+            </div>
             <!-- 天气信息显示栏 -->
             <div
               v-if="weatherInfo || weatherError || isWeatherLoading"
@@ -3028,15 +3085,14 @@ ttsPlayer.stop();
                 <button type="button" class="weather-refresh-btn" title="重试" @click="refreshWeather">↻</button>
               </template>
             </div>
-            <!-- Glassmorphism drop zone overlay -->
-            <div v-if="isFileOver" class="dash-drop-overlay">
-              <div class="dash-drop-overlay-box">
-                <span class="dash-drop-icon">📂</span>
-                <span class="dash-drop-text">释放文件以添加为附件</span>
-              </div>
-            </div>
-
             <div class="dash-chat-messages" ref="dashChatMessagesRef" @click="closeDashMessageMenu" @scroll.passive="trackChatScroll">
+              <!-- Glassmorphism drop zone overlay -->
+              <div v-if="isFileOver" class="dash-drop-overlay">
+                <div class="dash-drop-overlay-box">
+                  <span class="dash-drop-icon">📂</span>
+                  <span class="dash-drop-text">释放文件以添加为附件</span>
+                </div>
+              </div>
               <div v-if="chat.messages.length === 0" class="dash-chat-empty">
                 🐾 暂无对话历史，跟小家伙说点什么吧！
               </div>
@@ -3063,18 +3119,11 @@ ttsPlayer.stop();
                     <div class="dash-msg-quote-name">{{ quoteSpeakerLabel(msg.quote.role) }}：</div>
                     <div class="dash-msg-quote-text">{{ msg.quote.content }}</div>
                   </div>
-                  <!-- AI 回复中的 [QUOTE] 标记渲染为引用块 -->
-                  <div class="dash-msg-text">
-                    <template v-for="(seg, si) in parseQuoteSegments(msg.displayContent ?? msg.content)" :key="si">
-                      <div v-if="seg.type === 'quote'" class="dash-msg-quote ai-quote" :title="seg.content">
-                        <div class="dash-msg-quote-text">{{ seg.content }}</div>
-                      </div>
-                      <template v-else>
-                        <template v-for="(mseg, mi) in splitMentionSegments(seg.content)" :key="si + '-' + mi">
-                          <span v-if="mseg.type === 'mention'" class="dash-msg-mention">@{{ mseg.content }}</span>
-                          <template v-else>{{ mseg.content }}</template>
-                        </template>
-                      </template>
+                  <!-- AI 回复中的 [QUOTE] 标记渲染为引用块，其余正文按 Markdown 渲染 -->
+                  <div class="dash-msg-text md-body">
+                    <template v-for="(seg, si) in renderedMessageSegments(msg)" :key="si">
+                      <div v-if="seg.type === 'quote'" class="dash-msg-quote ai-quote dash-quote-body" v-html="seg.html"></div>
+                      <div v-else class="dash-msg-body" v-html="seg.html"></div>
                     </template>
                   </div>
 
@@ -3102,10 +3151,13 @@ ttsPlayer.stop();
                 <AgentActivity :items="chat.activity.items" :thinking="thinkingContent" :active="true" :waiting="!!pendingConfirm || !!pendingQuestion" :awaiting-answer="!!pendingQuestion" @stop="abortAi" />
               </div>
               <div ref="dashChatEndRef" class="dash-chat-end" aria-hidden="true"></div>
+              <!-- 新消息悬浮按钮（跟随最新消息时隐藏） -->
+              <button v-if="!followingActivity" type="button" class="dash-scroll-fab" title="回到最新消息" aria-label="回到最新消息" @click="jumpToLatest">
+                <ArrowDown :size="16" />
+              </button>
             </div>
 
             <div class="dash-chat-composer">
-              <button v-if="!followingActivity" type="button" class="activity-jump" title="回到最新消息" aria-label="回到最新消息" @click="jumpToLatest"><ArrowDown :size="16" /></button>
               <!-- 引用回复预览条（微信式） -->
               <Transition name="slide-up">
                 <div v-if="pendingQuote" class="dash-quote-preview">
@@ -3231,50 +3283,123 @@ ttsPlayer.stop();
                   :disabled="chat.isLoading"
                   class="dash-chat-input"
                 />
-                <select
-                  v-if="apiProfiles.length > 0"
-                  class="dash-chat-model-select"
-                  :value="activeApiProfileId"
-                  title="切换直连 API 模型"
-                  @change="activateApiProfile(($event.target as HTMLSelectElement).value)"
-                >
-                  <option v-for="profile in apiProfiles" :key="profile.id" :value="profile.id">
-                    {{ profile.name || profile.model }}
-                  </option>
-                </select>
                 <button
                   @click="sendDashboardMessage"
                   :disabled="(!chatInput.trim() && pendingFiles.length === 0 && !pendingQuote) || chat.isLoading"
                   class="dash-chat-send-btn"
+                  title="发送"
+                  aria-label="发送"
                 >
-                  发送
+                  <Send :size="16" />
                 </button>
               </div>
               <div class="dash-chat-meta-row">
-                <span>模型：{{ currentModelLabel }}</span>
-                <span>上下文：{{ contextUsageLabel }}</span>
-                <select
-                  class="dash-thinking-select"
-                  :value="apiConfig.thinking_depth"
-                  title="思考深度"
-                  @change="updateThinkingDepth(($event.target as HTMLSelectElement).value)"
-                >
-                  <option v-for="opt in thinkingDepthOptions" :key="opt.value" :value="opt.value">
-                    思考：{{ opt.label }}
-                  </option>
-                </select>
-                <select
-                  class="dash-mode-select"
-                  :value="apiConfig.execution_mode"
-                  title="执行模式"
-                  @change="updateExecutionMode(($event.target as HTMLSelectElement).value)"
-                >
-                  <option v-for="mode in executionModeOptions" :key="mode.value" :value="mode.value">
-                    {{ mode.label }}
-                  </option>
-                </select>
+                <span class="dash-chat-hint">发送：Enter · 换行：Shift + Enter · 可拖入文件作为附件</span>
+                <span class="dash-chat-meta-spacer"></span>
+                <label class="dash-meta-field" title="模型">
+                  <span class="dash-meta-label">模型</span>
+                  <select
+                    v-if="apiProfiles.length > 0"
+                    class="dash-chat-model-select"
+                    :value="activeApiProfileId"
+                    @change="activateApiProfile(($event.target as HTMLSelectElement).value)"
+                  >
+                    <option v-for="profile in apiProfiles" :key="profile.id" :value="profile.id">
+                      {{ profile.name || profile.model }}
+                    </option>
+                  </select>
+                  <span v-else class="dash-meta-value">{{ currentModelLabel }}</span>
+                </label>
+                <label class="dash-meta-field" title="思考深度">
+                  <span class="dash-meta-label">思考</span>
+                  <select
+                    class="dash-thinking-select"
+                    :value="apiConfig.thinking_depth"
+                    @change="updateThinkingDepth(($event.target as HTMLSelectElement).value)"
+                  >
+                    <option v-for="opt in thinkingDepthOptions" :key="opt.value" :value="opt.value">
+                      {{ opt.label }}
+                    </option>
+                  </select>
+                </label>
+                <label class="dash-meta-field" title="执行模式">
+                  <span class="dash-meta-label">模式</span>
+                  <select
+                    class="dash-mode-select"
+                    :value="apiConfig.execution_mode"
+                    @change="updateExecutionMode(($event.target as HTMLSelectElement).value)"
+                  >
+                    <option v-for="mode in executionModeOptions" :key="mode.value" :value="mode.value">
+                      {{ mode.label }}
+                    </option>
+                  </select>
+                </label>
+                <button type="button" class="dash-meta-btn" @click="activePage = 'memory'">记忆</button>
+                <button type="button" class="dash-meta-btn" @click="activePage = 'system'">设置</button>
               </div>
             </div>
+           </div>
+
+            <!-- 右侧信息面板：参与者 / 最近记忆 / 任务进度 -->
+            <aside class="dash-chat-aside">
+              <section class="dash-aside-card">
+                <div class="dash-aside-title">参与者</div>
+                <div class="dash-aside-hero">
+                  <div :class="['dash-aside-avatar', { active: chat.isLoading }]">🐾</div>
+                  <div class="dash-aside-hero-main">
+                    <div class="dash-aside-hero-name">{{ chatHeaderTitle }}</div>
+                    <div class="dash-aside-hero-desc">桌面桌宠 · 主助理</div>
+                  </div>
+                </div>
+                <div class="dash-aside-actions">
+                  <button
+                    type="button"
+                    class="dash-aside-btn danger"
+                    title="停止当前回复"
+                    :disabled="!chat.isLoading"
+                    @click="abortAi"
+                  >
+                    停止
+                  </button>
+                  <button
+                    type="button"
+                    class="dash-aside-btn"
+                    title="清空当前对话"
+                    :disabled="chat.isLoading || chat.messages.length === 0"
+                    @click="resetDashChatUi"
+                  >
+                    清空
+                  </button>
+                </div>
+              </section>
+
+              <section class="dash-aside-card">
+                <div class="dash-aside-title">
+                  最近记忆
+                  <button type="button" class="dash-aside-link" @click="activePage = 'memory'">管理</button>
+                </div>
+                <div v-if="recentMemories.length === 0" class="dash-aside-empty">还没有长期记忆</div>
+                <div v-else class="dash-aside-list">
+                  <div v-for="memory in recentMemories" :key="memory.id" class="dash-aside-item">
+                    <span class="dash-aside-date">{{ formatRelativeTime(memory.created_at) }}</span>
+                    <span class="dash-aside-text" :title="memory.value">{{ memory.key }}</span>
+                  </div>
+                </div>
+              </section>
+
+              <section class="dash-aside-card">
+                <div class="dash-aside-title">任务进度</div>
+                <div v-if="!chat.isLoading && activeTools.length === 0" class="dash-aside-empty">当前没有运行中的任务</div>
+                <div v-else class="dash-aside-progress">
+                  <div class="dash-aside-progress-meta">
+                    <span class="dash-aside-progress-label">{{ activityHeadline }}</span>
+                    <span class="dash-aside-progress-count">{{ activeTools.length }} 项</span>
+                  </div>
+                  <div class="dash-aside-progress-bar"><span></span></div>
+                  <div class="dash-aside-progress-hint">完成后会自动收起，可随时点击“停止”中断</div>
+                </div>
+              </section>
+            </aside>
           </div>
 
           <!-- ========== 记忆库 ========== -->

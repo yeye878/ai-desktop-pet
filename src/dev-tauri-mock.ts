@@ -663,7 +663,39 @@ export function installDevTauriMock() {
   mockIPC((cmd, args) => handleMockCommand(cmd, args as MockPayload), {
     shouldMockEvents: true,
   });
-  if (new URLSearchParams(window.location.search).get("activity") === "demo") {
+  const previewQuery = new URLSearchParams(window.location.search);
+  if (previewQuery.get("activity") === "markdown") {
+    // 验收 Markdown 排版：直接把一条带完整语法的回复塞进对话
+    const reply = [
+      "**一、模型侧：两大巨头同日开打**",
+      "- OpenAI 把 **GPT-6 全面开放**，免费用户也能直接用（[报道](https://example.com/news)）。",
+      "- 谷歌 **Gemini 4 Argon** 已对部分用户开放。",
+      "",
+      "1. 先看编码能力",
+      "2. 再看推理芯片",
+      "   - 子条目 `d-Matrix`",
+      "",
+      "> 一句话锐评：模型免费送、人才互相挖。",
+      "",
+      "| 公司 | 动作 |",
+      "| --- | --- |",
+      "| OpenAI | 免费开放 |",
+      "| Anthropic | 降价 |",
+      "",
+      "行内公式：连续性方程 \\(u_x+v_y=0\\)，分数 \\(\\frac{a}{b}\\)。",
+      "",
+      "\\[",
+      "\\begin{cases}",
+      "\\rho(u u_x+v u_y)=-p_x+\\mu(u_{xx}+u_{yy}) \\\\",
+      "u_x+v_y=0",
+      "\\end{cases}",
+      "\\]",
+    ].join("\n");
+    setTimeout(() => {
+      void emit("ai-finished", { text: reply, thinking: null });
+    }, 300);
+  }
+  if (previewQuery.get("activity") === "demo") {
     const tool = { id: "preview-read", tool_name: "read_file", summary: "读取项目入口", path: "src/main.ts", arguments: '{"path":"src/main.ts"}' };
     const frames: [string, unknown][] = [
       ["sync-chat-message", { role: "user", content: "检查项目入口并运行测试" }],

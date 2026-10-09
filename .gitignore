@@ -1,5 +1,7 @@
 node_modules/
 dist/
+.npm-cache/
+.md-check/
 desktop-release/
 target/
 src-tauri/target/
@@ -21,3 +23,4 @@ docs/*.md
 _lab3_review/
 .idea/
 OpenCompanion/
+scripts/_*

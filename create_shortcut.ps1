@@ -31,132 +31,154 @@ public class IconMaker {
         g.CompositingQuality = CompositingQuality.HighQuality;
         g.Clear(Color.Transparent);
 
-        // --- Background circle (purple gradient) ---
+        // --- Background circle (cozy soft sky-indigo gradient) ---
         using (GraphicsPath bgPath = new GraphicsPath()) {
             bgPath.AddEllipse(8, 8, 240, 240);
             using (PathGradientBrush pgb = new PathGradientBrush(bgPath)) {
-                pgb.CenterColor = Color.FromArgb(255, 192, 132, 252);
-                pgb.SurroundColors = new Color[] { Color.FromArgb(255, 109, 40, 217) };
+                pgb.CenterColor = Color.FromArgb(255, 129, 140, 248);
+                pgb.SurroundColors = new Color[] { Color.FromArgb(255, 67, 56, 202) };
                 g.FillPath(pgb, bgPath);
             }
         }
 
-        // --- Ears ---
-        using (SolidBrush ear = new SolidBrush(Color.FromArgb(255, 216, 180, 254))) {
-            g.FillEllipse(ear, 56, 76, 52, 40);
-            g.FillEllipse(ear, 148, 76, 52, 40);
+        // --- Cat Ears (rounded cute kitty ears) ---
+        PointF[] leftEar = { new PointF(62, 100), new PointF(74, 38), new PointF(112, 78) };
+        PointF[] rightEar = { new PointF(194, 100), new PointF(182, 38), new PointF(144, 78) };
+        using (SolidBrush earBrush = new SolidBrush(Color.FromArgb(255, 255, 255, 255))) {
+            g.FillPolygon(earBrush, leftEar);
+            g.FillPolygon(earBrush, rightEar);
         }
-        using (SolidBrush innerEar = new SolidBrush(Color.FromArgb(255, 245, 208, 254))) {
-            g.FillEllipse(innerEar, 64, 82, 28, 22);
-            g.FillEllipse(innerEar, 164, 82, 28, 22);
+        using (Pen earPen = new Pen(Color.FromArgb(255, 51, 65, 85), 5.5f)) {
+            earPen.LineJoin = LineJoin.Round;
+            g.DrawPolygon(earPen, leftEar);
+            g.DrawPolygon(earPen, rightEar);
+        }
+        // Inner ears (sweet sakura pink)
+        PointF[] leftInner = { new PointF(70, 92), new PointF(78, 52), new PointF(104, 78) };
+        PointF[] rightInner = { new PointF(186, 92), new PointF(178, 52), new PointF(152, 78) };
+        using (SolidBrush inEarBrush = new SolidBrush(Color.FromArgb(255, 251, 207, 232))) {
+            g.FillPolygon(inEarBrush, leftInner);
+            g.FillPolygon(inEarBrush, rightInner);
         }
 
-        // --- Body ---
+        // --- Cat Body & Head (Plump marshmallow white) ---
         using (GraphicsPath bodyPath = new GraphicsPath()) {
-            bodyPath.AddEllipse(56, 88, 144, 136);
-            using (PathGradientBrush pgb = new PathGradientBrush(bodyPath)) {
-                pgb.CenterPoint = new PointF(100, 110);
-                pgb.CenterColor = Color.FromArgb(255, 253, 232, 255);
-                pgb.SurroundColors = new Color[] { Color.FromArgb(255, 216, 180, 254) };
-                g.FillPath(pgb, bodyPath);
+            bodyPath.AddEllipse(52, 60, 152, 140);
+            using (SolidBrush whiteB = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
+                g.FillPath(whiteB, bodyPath);
+            using (Pen bodyPen = new Pen(Color.FromArgb(255, 51, 65, 85), 5.5f))
+                g.DrawPath(bodyPen, bodyPath);
+        }
+
+        // --- Red Ribbon Collar with Gold Bell ---
+        using (Pen collar = new Pen(Color.FromArgb(255, 239, 68, 68), 7f)) {
+            collar.StartCap = LineCap.Round;
+            collar.EndCap = LineCap.Round;
+            g.DrawArc(collar, 88, 148, 80, 28, 20, 140);
+        }
+        // Gold Bell
+        using (SolidBrush bell = new SolidBrush(Color.FromArgb(255, 251, 191, 36))) {
+            g.FillEllipse(bell, 120, 166, 16, 16);
+        }
+        using (Pen bellPen = new Pen(Color.FromArgb(255, 180, 83, 9), 1.5f)) {
+            g.DrawEllipse(bellPen, 120, 166, 16, 16);
+        }
+
+        // --- Cheeks (strawberry blush) ---
+        using (SolidBrush cheek = new SolidBrush(Color.FromArgb(170, 253, 164, 175))) {
+            g.FillEllipse(cheek, 68, 116, 28, 18);
+            g.FillEllipse(cheek, 160, 116, 28, 18);
+        }
+
+        // --- Eyes (Big sparkling anime eyes) ---
+        using (SolidBrush eb = new SolidBrush(Color.FromArgb(255, 30, 41, 59))) {
+            g.FillEllipse(eb, 88, 96, 22, 28);
+            g.FillEllipse(eb, 146, 96, 22, 28);
+        }
+        // Big shine highlight
+        using (SolidBrush es1 = new SolidBrush(Color.FromArgb(255, 255, 255, 255))) {
+            g.FillEllipse(es1, 98, 98, 9, 10);
+            g.FillEllipse(es1, 156, 98, 9, 10);
+            g.FillEllipse(es1, 91, 112, 5, 5);
+            g.FillEllipse(es1, 149, 112, 5, 5);
+        }
+
+        // --- Whiskers ---
+        using (Pen whisker = new Pen(Color.FromArgb(200, 148, 163, 184), 2.5f)) {
+            whisker.StartCap = LineCap.Round;
+            whisker.EndCap = LineCap.Round;
+            g.DrawLine(whisker, 72, 122, 38, 118);
+            g.DrawLine(whisker, 72, 128, 36, 130);
+            g.DrawLine(whisker, 184, 122, 218, 118);
+            g.DrawLine(whisker, 184, 128, 220, 130);
+        }
+
+        // --- Nose (Tiny pink) ---
+        using (SolidBrush noseB = new SolidBrush(Color.FromArgb(255, 244, 114, 182))) {
+            g.FillEllipse(noseB, 124, 118, 8, 6);
+        }
+
+        // --- Mouth (:3) ---
+        using (Pen mouth = new Pen(Color.FromArgb(255, 51, 65, 85), 3.5f)) {
+            mouth.StartCap = LineCap.Round;
+            mouth.EndCap = LineCap.Round;
+            g.DrawArc(mouth, 113, 120, 15, 12, 10, 155);
+            g.DrawArc(mouth, 128, 120, 15, 12, 15, 160);
+        }
+
+        // --- Cozy Wooden Desk in Foreground ---
+        using (GraphicsPath deskPath = new GraphicsPath()) {
+            deskPath.AddArc(24, 172, 20, 20, 180, 90);
+            deskPath.AddArc(212, 172, 20, 20, 270, 90);
+            deskPath.AddLine(232, 224, 24, 224);
+            deskPath.CloseFigure();
+            using (LinearGradientBrush db = new LinearGradientBrush(new Point(128, 172), new Point(128, 224), Color.FromArgb(255, 254, 243, 199), Color.FromArgb(255, 245, 158, 11))) {
+                g.FillPath(db, deskPath);
+            }
+            using (Pen dp = new Pen(Color.FromArgb(255, 217, 119, 6), 4f)) {
+                g.DrawPath(dp, deskPath);
             }
         }
 
-        // --- Face ---
-        using (SolidBrush fb = new SolidBrush(Color.FromArgb(255, 255, 248, 255)))
-            g.FillEllipse(fb, 72, 90, 112, 104);
-
-        // --- Eyes outer ---
-        using (SolidBrush eb = new SolidBrush(Color.FromArgb(255, 30, 27, 75))) {
-            g.FillEllipse(eb, 92, 112, 30, 34);
-            g.FillEllipse(eb, 134, 112, 30, 34);
+        // --- Miniature Mechanical Keyboard ---
+        using (GraphicsPath kbPath = new GraphicsPath()) {
+            kbPath.AddArc(54, 182, 8, 8, 180, 90);
+            kbPath.AddArc(194, 182, 8, 8, 270, 90);
+            kbPath.AddArc(194, 208, 8, 8, 0, 90);
+            kbPath.AddArc(54, 208, 8, 8, 90, 90);
+            kbPath.CloseFigure();
+            using (SolidBrush kbB = new SolidBrush(Color.FromArgb(255, 241, 245, 249)))
+                g.FillPath(kbB, kbPath);
+            using (Pen kbp = new Pen(Color.FromArgb(255, 148, 163, 184), 2f))
+                g.DrawPath(kbp, kbPath);
         }
-        // --- Eyes iris ---
-        using (SolidBrush ep = new SolidBrush(Color.FromArgb(255, 109, 40, 217))) {
-            g.FillEllipse(ep, 98, 118, 18, 22);
-            g.FillEllipse(ep, 140, 118, 18, 22);
+        // Pastel Keycaps
+        Color[] keyCols = { Color.FromArgb(255, 186, 230, 253), Color.FromArgb(255, 187, 247, 208), Color.FromArgb(255, 254, 240, 138), Color.FromArgb(255, 251, 207, 232), Color.FromArgb(255, 233, 213, 255) };
+        for (int i = 0; i < 5; i++) {
+            using (SolidBrush kc = new SolidBrush(keyCols[i])) {
+                g.FillRectangle(kc, 64 + i * 26, 186, 20, 10);
+            }
         }
-        // --- Eye shine ---
-        using (SolidBrush es = new SolidBrush(Color.FromArgb(230, 255, 255, 255))) {
-            g.FillEllipse(es, 101, 114, 10, 10);
-            g.FillEllipse(es, 143, 114, 10, 10);
-            g.FillEllipse(es, 96, 126, 5, 5);
-            g.FillEllipse(es, 138, 126, 5, 5);
-        }
-
-        // --- Cheeks ---
-        using (SolidBrush ck = new SolidBrush(Color.FromArgb(110, 249, 168, 212))) {
-            g.FillEllipse(ck, 76, 140, 32, 20);
-            g.FillEllipse(ck, 148, 140, 32, 20);
+        for (int i = 0; i < 4; i++) {
+            using (SolidBrush kc = new SolidBrush(keyCols[(i + 2) % 5])) {
+                g.FillRectangle(kc, 68 + i * 32, 200, 24, 10);
+            }
         }
 
-        // --- Nose ---
-        using (SolidBrush ns = new SolidBrush(Color.FromArgb(180, 192, 132, 252)))
-            g.FillEllipse(ns, 120, 139, 16, 11);
-
-        // --- Smile ---
-        using (Pen sm = new Pen(Color.FromArgb(255, 109, 40, 217), 4f)) {
-            sm.StartCap = LineCap.Round;
-            sm.EndCap   = LineCap.Round;
-            g.DrawArc(sm, 104, 148, 48, 22, 0, 180);
+        // --- Two Bongo Paws Tapping Keyboard ---
+        using (SolidBrush pawBrush = new SolidBrush(Color.FromArgb(255, 255, 255, 255))) {
+            g.FillEllipse(pawBrush, 82, 184, 28, 22);
+            g.FillEllipse(pawBrush, 146, 184, 28, 22);
+        }
+        using (Pen pawPen = new Pen(Color.FromArgb(255, 51, 65, 85), 4f)) {
+            g.DrawEllipse(pawPen, 82, 184, 28, 22);
+            g.DrawEllipse(pawPen, 146, 184, 28, 22);
         }
 
-        // --- Antenna stick ---
-        using (Pen ant = new Pen(Color.FromArgb(255, 192, 132, 252), 4.5f))
-            g.DrawLine(ant, 128, 90, 128, 56);
-
-        // --- Antenna star ---
-        PointF[] star = {
-            new PointF(128, 28),
-            new PointF(133, 42),
-            new PointF(148, 42),
-            new PointF(136, 50),
-            new PointF(140, 64),
-            new PointF(128, 56),
-            new PointF(116, 64),
-            new PointF(120, 50),
-            new PointF(108, 42),
-            new PointF(123, 42)
-        };
-        using (SolidBrush sb2 = new SolidBrush(Color.FromArgb(255, 253, 224, 71)))
-            g.FillPolygon(sb2, star);
-        using (Pen sp = new Pen(Color.FromArgb(255, 251, 191, 36), 1.5f))
-            g.DrawPolygon(sp, star);
-
-        // --- Heart ---
-        GraphicsPath heart = new GraphicsPath();
-        float hx = 114, hy = 176, hw = 28;
-        heart.AddBezier(hx + hw/2, hy + 8,   hx + hw/2, hy,     hx + hw, hy,     hx + hw, hy + 10);
-        heart.AddBezier(hx + hw,   hy + 10,   hx + hw,   hy + 20, hx + hw/2, hy + 26, hx + hw/2, hy + 30);
-        heart.AddBezier(hx + hw/2, hy + 30,   hx + hw/2, hy + 26, hx,       hy + 20, hx,         hy + 10);
-        heart.AddBezier(hx,        hy + 10,   hx,        hy,      hx + hw/2, hy,     hx + hw/2,  hy + 8);
-        using (SolidBrush hb = new SolidBrush(Color.FromArgb(255, 244, 114, 182)))
-            g.FillPath(hb, heart);
-        using (Pen hp = new Pen(Color.FromArgb(255, 236, 72, 153), 1.5f))
-            g.DrawPath(hp, heart);
-
-        // --- Paws ---
-        using (SolidBrush pw = new SolidBrush(Color.FromArgb(255, 233, 213, 255))) {
-            g.FillEllipse(pw, 60, 180, 44, 28);
-            g.FillEllipse(pw, 152, 180, 44, 28);
+        // --- Rim shine ---
+        using (SolidBrush sheen = new SolidBrush(Color.FromArgb(35, 255, 255, 255))) {
+            g.FillEllipse(sheen, 40, 20, 120, 70);
         }
-        using (Pen pp = new Pen(Color.FromArgb(200, 192, 132, 252), 1.8f)) {
-            g.DrawEllipse(pp, 60, 180, 44, 28);
-            g.DrawEllipse(pp, 152, 180, 44, 28);
-        }
-        // Paw toe dots
-        using (SolidBrush pd = new SolidBrush(Color.FromArgb(160, 167, 100, 220))) {
-            g.FillEllipse(pd, 68, 178, 8, 8);
-            g.FillEllipse(pd, 78, 174, 8, 8);
-            g.FillEllipse(pd, 88, 178, 8, 8);
-            g.FillEllipse(pd, 160, 178, 8, 8);
-            g.FillEllipse(pd, 170, 174, 8, 8);
-            g.FillEllipse(pd, 180, 178, 8, 8);
-        }
-
-        // --- Sheen highlight ---
-        using (SolidBrush sh = new SolidBrush(Color.FromArgb(28, 255, 255, 255)))
-            g.FillEllipse(sh, 40, 20, 120, 70);
 
         g.Dispose();
 

@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "postinstall": "node scripts/patch-katex-fonts.cjs",
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
@@ -11,6 +12,7 @@
     "verify:custom-pixel-bg": "node scripts/verify-custom-pixel-background.cjs",
     "verify:multi-agent": "node --test scripts/verify-multi-agent.cjs",
     "verify:agent-activity": "node --test scripts/verify-agent-activity.cjs",
+    "verify:markdown": "node --test scripts/verify-markdown.cjs",
     "verify:agent-activity-browser": "node scripts/verify-agent-activity-browser.cjs",
     "verify:pending-interactions": "node --test scripts/verify-pending-interactions.cjs",
     "verify:interaction-browser": "node scripts/verify-interaction-browser.cjs",
@@ -20,6 +22,7 @@
     "@lucide/vue": "^1.53.0",
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-global-shortcut": "^2.3.1",
+    "katex": "^0.19.0",
     "pinia": "^2.2.6",
     "vue": "^3.5.13"
   },

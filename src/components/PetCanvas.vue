@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
-import { usePetStore, resolveSkinId, type Theme } from "../stores/pet";
+import { usePetStore, resolveSkinId, type Theme, type PetState } from "../stores/pet";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow, currentMonitor } from "@tauri-apps/api/window";
 import { LogicalPosition } from "@tauri-apps/api/dpi";
@@ -242,6 +242,15 @@ function checkStateParticles() {
       case "speaking":
         spawnParticles("note", 3, x + 30, y - 30);
         break;
+      case "listening":
+        spawnParticles("note", 3, x + 25, y - 32);
+        break;
+      case "working":
+        spawnParticles("spark", 5, x, y - 25);
+        break;
+      case "thinking":
+        spawnParticles("star", 4, x + 25, y - 35);
+        break;
       case "confused":
         spawnParticles("question", 4, x, y - 40);
         break;
@@ -270,6 +279,10 @@ function checkStateParticles() {
   // 思考状态持续产生星星
   if (pet.state === "thinking" && frameCount % 20 === 0) {
     spawnParticles("star", 1, pet.position.x + 30 + Math.random() * 15, pet.position.y - 40 - Math.random() * 10);
+  }
+  // 工作状态持续产生专注火花
+  if (pet.state === "working" && frameCount % 24 === 0) {
+    spawnParticles("spark", 1, pet.position.x + (Math.random() - 0.5) * 36, pet.position.y - 20);
   }
   // 馋嘴流口水
   if (pet.state === "hungry" && frameCount % 15 === 0) {
@@ -558,7 +571,7 @@ function drawCustomPixelPet(ctx: CanvasRenderingContext2D) {
   finishFrame(ctx);
 }
 
-// ===== 绘制桌宠 =====
+// ===== 绘制桌宠 (Bongo Cat 经典敲键盘萌猫) =====
 function draw(ctx: CanvasRenderingContext2D) {
   if (activeCharacter() === "custom-pixel") {
     drawCustomPixelPet(ctx);
@@ -572,17 +585,23 @@ function draw(ctx: CanvasRenderingContext2D) {
 
   const { x, y } = pet.position;
   const size = 80;
-  // Update bounce physics
+
+  // 弹跳物理计算 (Spring & gravity)
   if (bounceOffset !== 0 || bounceVy !== 0) {
-    bounceVy += 1.0; // snappy gravity
+    bounceVy += 1.0;
     bounceOffset += bounceVy;
-    if (bounceOffset >= 0) { bounceOffset = 0; bounceVy = 0; }
+    if (bounceOffset >= 0) {
+      bounceOffset = 0;
+      bounceVy = 0;
+    }
   }
-  // Squash recovery
-  squashAmt += (1 - squashAmt) * 0.1;
-  // Tilt toward mouse
-  const targetTilt = petMx > -900 ? Math.max(-0.12, Math.min(0.12, (petMx - x) / x * 0.15)) : 0;
-  tiltAngle += (targetTilt - tiltAngle) * 0.08;
+
+  // 挤压复原 (Squash & stretch recovery)
+  squashAmt += (1 - squashAmt) * 0.12;
+
+  // 视线与身体倾斜 (Tilt toward cursor)
+  const targetTilt = petMx > -900 ? Math.max(-0.12, Math.min(0.12, ((petMx - x) / x) * 0.16)) : 0;
+  tiltAngle += (targetTilt - tiltAngle) * 0.09;
 
   const drawY = y + bounceOffset;
 
@@ -595,241 +614,60 @@ function draw(ctx: CanvasRenderingContext2D) {
     shakeX = Math.sin(frameCount * 1.5) * 6;
   }
 
-  // Apply tilt transform around pet center
+  // 呼吸与身体伸缩
+  const breatheFreq = pet.state === "sleeping" ? 0.03 : 0.055;
+  const breatheAmp = pet.state === "sleeping" ? 0.035 : 0.022;
+  const breathe = 1 + Math.sin(frameCount * breatheFreq) * breatheAmp;
+  const squishState = pet.state === "happy" ? 1 + Math.sin(frameCount * 0.15) * 0.04 : 1;
+  const stuffedExpand = pet.state === "stuffed" ? 1.15 : 1;
+  const bw = (size - 2) * breathe * squishState * stuffedExpand * (2 - squashAmt);
+  const bh = (size - 6) * (breathe / squishState) * squashAmt;
+
+  const theme = pet.visualTheme;
+
+  // 1. 地面柔和环境投影
+  drawBongoGroundShadow(ctx, x, y + 46, bw, bounceOffset, frameCount);
+
+  // 应用桌宠中心倾斜变换
   ctx.save();
   ctx.translate(x + shakeX, drawY);
   ctx.rotate(tiltAngle);
   ctx.translate(-x, -drawY);
 
-
-  // 阴影（带呼吸缩放）
-  const shadowBreath = 1 + Math.sin(frameCount * 0.05) * 0.05;
-  ctx.fillStyle = "rgba(15, 23, 42, 0.1)";
+  // 身体柔和彩色光晕 (跟随主题色，悬停时增亮)
+  const glowAlpha = (pet.isAnimatedSkin ? 0.22 : 0.12) + Math.sin(frameCount * 0.03) * 0.04;
+  ctx.fillStyle = hexToRgba(theme.accent, isHovering ? glowAlpha + 0.14 : glowAlpha);
   ctx.beginPath();
-  ctx.ellipse(x, drawY + size / 2 + 13, (size / 2.35) * shadowBreath, 6, 0, 0, Math.PI * 2);
+  ctx.ellipse(x, drawY + 2, bw / 2 + 10, bh / 2 + 8, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  // Body breathing
-  const breathe = 1 + Math.sin(frameCount * 0.05) * 0.025;
-  const squishState = pet.state === "happy" ? 1 + Math.sin(frameCount * 0.15) * 0.04 : 1;
-  const stuffedExpand = pet.state === "stuffed" ? 1.15 : 1;
-  const bw = size * breathe * squishState * stuffedExpand * (2 - squashAmt);
-  const bh = size * breathe / squishState * squashAmt;
+  // 2. 摇摆白猫尾巴 (层级在身体后方)
+  drawBongoTail(ctx, x, drawY, pet.state, frameCount);
 
-  // 身体颜色根据皮肤、动态主题和心情变化
-  const theme = pet.visualTheme;
-  const baseColor = theme.primary;
-  const lighten = pet.happiness > 0 ? pet.happiness * 15 : pet.happiness * 10;
+  // 3. 萌萌猫耳朵 (外耳 + 柔粉内耳 + 欢快微抖)
+  drawBongoEars(ctx, x, drawY, bw, bh, pet.state, frameCount, isHovering);
 
-  // 身体光晕
-  const glowAlpha = (pet.isAnimatedSkin ? 0.16 : 0.09) + Math.sin(frameCount * 0.03) * 0.04;
-  ctx.fillStyle = hexToRgba(theme.accent, glowAlpha);
-  ctx.beginPath();
-  ctx.ellipse(x, drawY, bw / 2 + 13, bh / 2 + 12, 0, 0, Math.PI * 2);
-  ctx.fill();
+  // 4. Bongo Cat 纯白棉花糖圆润身躯与小铃铛项圈
+  drawBongoBody(ctx, x, drawY, bw, bh, theme, frameCount);
 
-  drawEars(ctx, x, drawY, bw, bh, baseColor, theme, lighten);
+  // 5. 灵动五官 (水灵大眼、视线追踪、自然眨眼、:3猫唇、软萌腮红)
+  const isBlink = frameCount % 165 < 5;
+  drawBongoFace(ctx, x, drawY, bw, bh, pet.state, frameCount, isBlink, petMx, petMy, theme);
 
-  // 身体
-  const bodyGradient = ctx.createLinearGradient(x - bw / 2, drawY - bh / 2, x + bw / 2, drawY + bh / 2);
-  bodyGradient.addColorStop(0, adjustBrightness(theme.accent, lighten + 12));
-  bodyGradient.addColorStop(0.5, adjustBrightness(baseColor, lighten));
-  bodyGradient.addColorStop(1, adjustBrightness(theme.primaryDark, lighten - 3));
-  ctx.fillStyle = bodyGradient;
-  ctx.beginPath();
-  roundRect(ctx, x - bw / 2, drawY - bh / 2, bw, bh, 22);
-  ctx.fill();
+  // 6. 木质小书桌与机械键盘 (Bongo Cat 灵魂核心)
+  drawBongoDeskAndKeyboard(ctx, x, drawY, frameCount, theme, pet.state);
 
-  ctx.strokeStyle = "rgba(255, 255, 255, 0.45)";
-  ctx.lineWidth = 1.25;
-  ctx.stroke();
+  // 7. Bongo 双爪 (敲键盘交替拍击、双手高举欢呼、作揖、托腮)
+  drawBongoPaws(ctx, x, drawY, bw, bh, pet.state, frameCount, theme);
 
-  // Hover glow ring
-  if (isHovering) {
-    ctx.strokeStyle = hexToRgba(theme.accent, 0.35 + Math.sin(frameCount * 0.1) * 0.1);
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.ellipse(x, drawY, bw / 2 + 6, bh / 2 + 5, 0, 0, Math.PI * 2);
-    ctx.stroke();
-  }
+  // 8. 状态专属小道具与微动特效 (思考小鱼干泡泡、按键光芒、沉睡泡泡与Zzz)
+  drawBongoStateEffects(ctx, x, drawY, bw, bh, pet.state, frameCount, theme);
 
-  // Body highlights
-  ctx.fillStyle = "rgba(255, 255, 255, 0.28)";
-  ctx.beginPath();
-  ctx.ellipse(x - 12, drawY - 16, 16, 8, -0.35, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = "rgba(255, 255, 255, 0.18)";
-  ctx.beginPath();
-  ctx.ellipse(x + 12, drawY + 18, 18, 7, -0.15, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Blush
-  if (pet.happiness > 0) {
-    const blushAlpha = Math.min(0.38, pet.happiness * 0.4);
-    ctx.fillStyle = `rgba(255, 142, 162, ${blushAlpha})`;
-    ctx.beginPath();
-    ctx.ellipse(x - 25, drawY + 2, 9, 5, -0.15, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.ellipse(x + 25, drawY + 2, 9, 5, 0.15, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  // Eyes - with mouse tracking
-  const eyeY = drawY - 10;
-  const blinkFrame = frameCount % 150 < 5;
-  ctx.fillStyle = "rgba(255, 255, 255, 0.96)";
-  ctx.beginPath();
-
-  if (pet.state === "stuffed") {
-    // 满足的半闭眼
-    ctx.arc(x - 14, eyeY + 2, 7, 0, Math.PI);
-    ctx.arc(x + 14, eyeY + 2, 7, 0, Math.PI);
-    ctx.fill();
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.96)";
-    ctx.lineWidth = 3;
-    ctx.stroke();
-  } else if (pet.state === "hungry") {
-    // 期待的大圆眼 - 闪闪发光可爱风格
-    // 大白眼框
-    ctx.fillStyle = "rgba(255, 255, 255, 0.96)";
-    ctx.beginPath();
-    ctx.ellipse(x - 14, eyeY, 9, 10, 0, 0, Math.PI * 2);
-    ctx.ellipse(x + 14, eyeY, 9, 10, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // 大瞳孔（放大表示兴奋）
-    ctx.fillStyle = "#263043";
-    ctx.beginPath();
-    ctx.arc(x - 13, eyeY + 1, 5.5, 0, Math.PI * 2);
-    ctx.arc(x + 13, eyeY + 1, 5.5, 0, Math.PI * 2);
-    ctx.fill();
-    // 主高光（大亮点）
-    const sparkleShift = Math.sin(frameCount * 0.12) * 0.8;
-    ctx.fillStyle = "rgba(255, 255, 255, 0.92)";
-    ctx.beginPath();
-    ctx.arc(x - 15 + sparkleShift, eyeY - 1.5, 2.2, 0, Math.PI * 2);
-    ctx.arc(x + 11 + sparkleShift, eyeY - 1.5, 2.2, 0, Math.PI * 2);
-    ctx.fill();
-    // 副高光（小亮点，微微跳动）
-    const sparkle2 = Math.sin(frameCount * 0.18 + 1) * 0.6;
-    ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
-    ctx.beginPath();
-    ctx.arc(x - 11 + sparkle2, eyeY + 2, 1.2, 0, Math.PI * 2);
-    ctx.arc(x + 15 + sparkle2, eyeY + 2, 1.2, 0, Math.PI * 2);
-    ctx.fill();
-  } else {
-    ctx.ellipse(x - 14, eyeY, blinkFrame ? 7 : 7, blinkFrame ? 1 : 8, 0, 0, Math.PI * 2);
-    ctx.ellipse(x + 14, eyeY, blinkFrame ? 7 : 7, blinkFrame ? 1 : 8, 0, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  if (!blinkFrame && pet.state !== "stuffed" && pet.state !== "hungry") {
-    // Pupil tracks mouse position
-    let pupilDx = 0, pupilDy = 0;
-    if (petMx > -900) {
-      const dx = petMx - x, dy = petMy - drawY;
-      const dist = Math.sqrt(dx*dx + dy*dy);
-      if (dist > 0) { pupilDx = (dx/dist) * Math.min(3, dist * 0.06); pupilDy = (dy/dist) * Math.min(2, dist * 0.04); }
-    } else {
-      pupilDx = Math.sin(frameCount * 0.02) * 2;
-    }
-    const pupilSize = pet.state === "happy" ? 4 : pet.state === "sleeping" ? 2 : 3;
-    ctx.fillStyle = "#263043";
-    ctx.beginPath();
-    ctx.arc(x - 12 + pupilDx, eyeY + pupilDy, pupilSize, 0, Math.PI * 2);
-    ctx.arc(x + 12 + pupilDx, eyeY + pupilDy, pupilSize, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = "rgba(255,255,255,0.8)";
-    ctx.beginPath();
-    ctx.arc(x - 13 + pupilDx, eyeY - 1.5 + pupilDy, 1.5, 0, Math.PI * 2);
-    ctx.arc(x + 11 + pupilDx, eyeY - 1.5 + pupilDy, 1.5, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  // 嘴巴
-  ctx.strokeStyle = "#fff";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  if (pet.state === "happy") {
-    // 大笑嘴
-    ctx.arc(x, y + 8, 13, 0.1, Math.PI - 0.1);
-    ctx.stroke();
-    // 嘴巴里面
-    ctx.fillStyle = "rgba(200, 80, 80, 0.3)";
-    ctx.beginPath();
-    ctx.arc(x, y + 8, 10, 0, Math.PI);
-    ctx.fill();
-  } else if (pet.state === "thinking") {
-    // 思考嘴
-    ctx.arc(x, drawY + 10, 5, 0, Math.PI * 2);
-    ctx.stroke();
-    // 旋转星星思考泡泡
-    const bobbleY = drawY - 45 + Math.sin(frameCount * 0.08) * 4;
-    drawThinkingBubbles(ctx, x, bobbleY, frameCount, theme);
-    drawLegs(ctx, x, drawY, size, baseColor, lighten, frameCount);
-    finishFrame(ctx);
-    return;
-  } else if (pet.state === "speaking") {
-    const mouthH = 5 + Math.sin(frameCount * 0.3) * 4;
-    ctx.ellipse(x, y + 10, 10, Math.max(2, mouthH), 0, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.fillStyle = "rgba(200, 80, 80, 0.2)";
-    ctx.beginPath();
-    ctx.ellipse(x, y + 10, 8, Math.max(1, mouthH - 1), 0, 0, Math.PI * 2);
-    ctx.fill();
-  } else if (pet.state === "sleeping") {
-    drawSleeping(ctx, x, drawY, frameCount, theme);
-    drawLegs(ctx, x, drawY, size, baseColor, lighten, frameCount);
-    finishFrame(ctx);
-    return;
-  } else if (pet.state === "waving") {
-    drawWaving(ctx, x, drawY, frameCount, size, baseColor, theme, lighten);
-    drawLegs(ctx, x, drawY, size, baseColor, lighten, frameCount);
-    finishFrame(ctx);
-    return;
-  } else if (pet.state === "confused") {
-    // 波浪嘴
-    ctx.beginPath();
-    for (let i = 0; i <= 16; i++) {
-      const px = x - 8 + i;
-      const py = y + 12 + Math.sin(i * 0.8 + frameCount * 0.1) * 2;
-      i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
-    }
-    ctx.stroke();
-  } else if (pet.state === "hungry") {
-    // 馋嘴张开
-    ctx.arc(x, drawY + 8, 14, 0, Math.PI);
-    ctx.stroke();
-    ctx.fillStyle = "rgba(200, 80, 80, 0.4)";
-    ctx.beginPath();
-    ctx.arc(x, drawY + 8, 12, 0, Math.PI);
-    ctx.fill();
-    // 吞咽小舌头
-    ctx.fillStyle = "rgba(255, 120, 120, 0.8)";
-    ctx.beginPath();
-    ctx.ellipse(x, drawY + 16 + Math.sin(frameCount * 0.4) * 2, 6, 4, 0, 0, Math.PI * 2);
-    ctx.fill();
-  } else if (pet.state === "stuffed") {
-    // 满足的U型嘴
-    ctx.arc(x, drawY + 8, 6, 0.2, Math.PI - 0.2);
-    ctx.stroke();
-  } else if (pet.state === "refusing") {
-    // 拒绝的倒U嘴
-    ctx.arc(x, drawY + 14, 6, Math.PI + 0.2, Math.PI * 2 - 0.2);
-    ctx.stroke();
-  } else {
-    // idle 微笑
-    ctx.arc(x, y + 10, 8, 0.15, Math.PI - 0.15);
-  }
-  ctx.stroke();
-
-  // Legs
-  drawLegs(ctx, x, drawY, size, baseColor, lighten, frameCount);
   finishFrame(ctx);
 }
 
 function finishFrame(ctx: CanvasRenderingContext2D) {
-  ctx.restore(); // always restore the tilt transform save
+  ctx.restore(); // 恢复倾斜变换
   checkStateParticles();
   updateParticles();
   for (const p of particles) {
@@ -837,160 +675,738 @@ function finishFrame(ctx: CanvasRenderingContext2D) {
   }
 }
 
-function drawLegs(
+// 1. 地面柔和阴影
+function drawBongoGroundShadow(
   ctx: CanvasRenderingContext2D,
-  x: number, y: number, size: number,
-  baseColor: string, lighten: number, frame: number,
+  cx: number, cy: number, bw: number,
+  bounceOff: number, frame: number,
 ) {
-  const walkOffset = pet.state === "idle" ? Math.sin(frame * 0.1) * 2 : 0;
-  const bounceOff = pet.state === "happy" ? Math.abs(Math.sin(frame * 0.15)) * 3 : 0;
-  ctx.fillStyle = adjustBrightness(baseColor, lighten - 8);
-  ctx.beginPath();
-  ctx.ellipse(x - 15, y + size / 2 + 4 + walkOffset - bounceOff, 10, 6, 0, 0, Math.PI * 2);
-  ctx.ellipse(x + 15, y + size / 2 + 4 - walkOffset - bounceOff, 10, 6, 0, 0, Math.PI * 2);
-  ctx.fill();
+  const jumpHeight = Math.max(0, -bounceOff);
+  const shadowScale = Math.max(0.35, 1 - jumpHeight / 48);
+  const shadowAlpha = Math.max(0.04, 0.15 * shadowScale);
+  const breath = 1 + Math.sin(frame * 0.05) * 0.03;
+  const sw = (bw * 0.52) * shadowScale * breath;
+  const sh = 7 * shadowScale;
 
-  ctx.fillStyle = "rgba(255, 255, 255, 0.24)";
+  const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, sw);
+  grad.addColorStop(0, `rgba(30, 41, 59, ${shadowAlpha * 1.4})`);
+  grad.addColorStop(0.55, `rgba(30, 41, 59, ${shadowAlpha * 0.6})`);
+  grad.addColorStop(1, "rgba(30, 41, 59, 0)");
+  ctx.fillStyle = grad;
   ctx.beginPath();
-  ctx.ellipse(x - 17, y + size / 2 + 2 + walkOffset - bounceOff, 3, 1.6, 0, 0, Math.PI * 2);
-  ctx.ellipse(x + 13, y + size / 2 + 2 - walkOffset - bounceOff, 3, 1.6, 0, 0, Math.PI * 2);
+  ctx.ellipse(cx, cy, sw, sh, 0, 0, Math.PI * 2);
   ctx.fill();
 }
 
-function drawEars(
+// 2. 摇摆猫尾巴
+function drawBongoTail(
   ctx: CanvasRenderingContext2D,
-  x: number, y: number, bw: number, bh: number,
-  baseColor: string, theme: Theme, lighten: number,
+  cx: number, cy: number,
+  state: PetState, frame: number,
 ) {
-  const earLift = Math.sin(frameCount * (isHovering ? 0.2 : 0.04)) * (isHovering ? 3.5 : 1.3);
-  const earY = y - bh / 2 + 8 + earLift;
-  const earRadius = 13;
-  const leftX = x - bw / 2 + 14;
-  const rightX = x + bw / 2 - 14;
-
-  for (const [earX, flip] of [[leftX, -1], [rightX, 1]] as const) {
-    ctx.save();
-    ctx.translate(earX, earY);
-    ctx.rotate(flip * 0.34);
-    ctx.fillStyle = adjustBrightness(baseColor, lighten - 3);
-    ctx.beginPath();
-    ctx.ellipse(0, 0, earRadius * 0.9, earRadius * 1.15, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.fillStyle = hexToRgba(theme.accent, 0.34);
-    ctx.beginPath();
-    ctx.ellipse(0, 2, earRadius * 0.45, earRadius * 0.62, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  }
-}
-
-function drawThinkingBubbles(
-  ctx: CanvasRenderingContext2D,
-  x: number, bobbleY: number, frame: number, theme: Theme,
-) {
-  // 小圆→大圆 思考链
-  const bubbles = [
-    { ox: 22, oy: 10, r: 4 },
-    { ox: 30, oy: 0, r: 6 },
-    { ox: 38, oy: -10, r: 9 },
-  ];
-  for (const b of bubbles) {
-    ctx.fillStyle = hexToRgba(theme.accent, 0.35);
-    ctx.beginPath();
-    ctx.arc(x + b.ox, bobbleY + b.oy, b.r, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  // 最大泡泡里旋转星星
   ctx.save();
-  ctx.translate(x + 38, bobbleY - 10);
-  ctx.rotate(frame * 0.05);
-  ctx.fillStyle = hexToRgba(theme.primary, 0.7);
+  const wagFreq = state === "happy" ? 0.28 : state === "waving" ? 0.22 : 0.075;
+  const wagAmp = state === "happy" ? 12 : state === "waving" ? 9 : 5.5;
+  const wag = state === "sleeping" ? -2 : Math.sin(frame * wagFreq) * wagAmp;
+
+  const startX = cx + 24;
+  const startY = cy + 22;
+  const cp1X = cx + 36 + wag * 0.4;
+  const cp1Y = cy + 20 - Math.abs(wag) * 0.2;
+  const cp2X = cx + 46 + wag * 0.8;
+  const cp2Y = cy + 6;
+  const endX = cx + 38 + wag;
+  const endY = cy - 6 + Math.abs(wag) * 0.3;
+
+  // 尾巴外描边
+  ctx.strokeStyle = "#334155";
+  ctx.lineWidth = 6.2;
+  ctx.lineCap = "round";
   ctx.beginPath();
-  for (let i = 0; i < 5; i++) {
-    const angle = (i * 4 * Math.PI) / 5 - Math.PI / 2;
-    const method = i === 0 ? "moveTo" : "lineTo";
-    ctx[method](Math.cos(angle) * 4, Math.sin(angle) * 4);
-  }
-  ctx.closePath();
-  ctx.fill();
+  ctx.moveTo(startX, startY);
+  ctx.bezierCurveTo(cp1X, cp1Y, cp2X, cp2Y, endX, endY);
+  ctx.stroke();
+
+  // 尾巴主体雪白
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = 4.2;
+  ctx.beginPath();
+  ctx.moveTo(startX, startY);
+  ctx.bezierCurveTo(cp1X, cp1Y, cp2X, cp2Y, endX, endY);
+  ctx.stroke();
+
   ctx.restore();
 }
 
-function drawSleeping(ctx: CanvasRenderingContext2D, x: number, y: number, frame: number, theme: any) {
-  // 闭眼（弧线）
-  ctx.strokeStyle = "#fff";
-  ctx.lineWidth = 2;
+// 3. 萌萌猫耳朵
+function drawBongoEars(
+  ctx: CanvasRenderingContext2D,
+  cx: number, cy: number,
+  bw: number, bh: number,
+  state: PetState, frame: number,
+  hover: boolean,
+) {
+  ctx.save();
+  const isTwitching = hover || state === "happy";
+  const twitchL = isTwitching && frame % 120 < 14 ? Math.sin(frame * 0.6) * 3 : 0;
+  const twitchR = isTwitching && frame % 135 < 14 ? -Math.sin(frame * 0.6) * 3 : 0;
+
+  const earBaseY = cy - bh * 0.28;
+  const earTipY = cy - bh * 0.52;
+
+  // --- 左耳 ---
+  const leftTipX = cx - bw * 0.32 + twitchL;
+  const leftTipY = earTipY + twitchL * 0.5;
   ctx.beginPath();
-  ctx.arc(x - 14, y - 10, 5, 0.2, Math.PI - 0.2);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.arc(x + 14, y - 10, 5, 0.2, Math.PI - 0.2);
+  ctx.moveTo(cx - bw * 0.42, earBaseY + 4);
+  ctx.quadraticCurveTo(cx - bw * 0.38, earBaseY - 14, leftTipX, leftTipY);
+  ctx.quadraticCurveTo(cx - bw * 0.18, earBaseY - 12, cx - bw * 0.12, earBaseY);
+  ctx.closePath();
+
+  ctx.fillStyle = "#ffffff";
+  ctx.fill();
+  ctx.strokeStyle = "#334155";
+  ctx.lineWidth = 2.4;
   ctx.stroke();
 
-  // 渐变 Zzz
-  const zOff = Math.sin(frame * 0.04) * 6;
-  const zAlpha = 0.4 + Math.sin(frame * 0.06) * 0.3;
-  ctx.fillStyle = hexToRgba(theme.accent, zAlpha);
-  ctx.font = "bold 16px sans-serif";
-  ctx.fillText("Z", x + 25, y - 20 + zOff);
-  ctx.font = "bold 12px sans-serif";
-  ctx.fillText("z", x + 36, y - 32 + zOff * 0.8);
-  ctx.font = "bold 9px sans-serif";
-  ctx.fillText("z", x + 43, y - 42 + zOff * 0.5);
-
-  // 睡觉嘴：小弧线
-  ctx.strokeStyle = "#fff";
-  ctx.lineWidth = 1.5;
+  // 左耳粉嫩耳蜗
   ctx.beginPath();
-  ctx.arc(x, y + 10, 6, 0.3, Math.PI - 0.3);
+  ctx.moveTo(cx - bw * 0.36, earBaseY + 1);
+  ctx.quadraticCurveTo(cx - bw * 0.34, earBaseY - 10, leftTipX + 2, leftTipY + 4);
+  ctx.quadraticCurveTo(cx - bw * 0.22, earBaseY - 8, cx - bw * 0.18, earBaseY);
+  ctx.closePath();
+  ctx.fillStyle = "#fbcfe8";
+  ctx.fill();
+
+  // --- 右耳 ---
+  const rightTipX = cx + bw * 0.32 + twitchR;
+  const rightTipY = earTipY + twitchR * 0.5;
+  ctx.beginPath();
+  ctx.moveTo(cx + bw * 0.12, earBaseY);
+  ctx.quadraticCurveTo(cx + bw * 0.18, earBaseY - 12, rightTipX, rightTipY);
+  ctx.quadraticCurveTo(cx + bw * 0.38, earBaseY - 14, cx + bw * 0.42, earBaseY + 4);
+  ctx.closePath();
+
+  ctx.fillStyle = "#ffffff";
+  ctx.fill();
+  ctx.strokeStyle = "#334155";
+  ctx.lineWidth = 2.4;
   ctx.stroke();
+
+  // 右耳粉嫩耳蜗
+  ctx.beginPath();
+  ctx.moveTo(cx + bw * 0.18, earBaseY);
+  ctx.quadraticCurveTo(cx + bw * 0.22, earBaseY - 8, rightTipX - 2, rightTipY + 4);
+  ctx.quadraticCurveTo(cx + bw * 0.34, earBaseY - 10, cx + bw * 0.36, earBaseY + 1);
+  ctx.closePath();
+  ctx.fillStyle = "#fbcfe8";
+  ctx.fill();
+
+  ctx.restore();
 }
 
-function drawWaving(
+// 4. Bongo Cat 纯白棉花糖身躯与项圈
+function drawBongoBody(
   ctx: CanvasRenderingContext2D,
-  x: number, y: number, frame: number, size: number,
-  baseColor: string, theme: Theme, lighten: number,
+  cx: number, cy: number,
+  bw: number, bh: number,
+  theme: Theme, frame: number,
 ) {
-  // 微笑嘴
-  ctx.strokeStyle = "#fff";
-  ctx.lineWidth = 2;
+  ctx.save();
+  const halfW = bw * 0.44;
+  const halfH = bh * 0.44;
+
+  // 极简圆润猫咪轮廓
   ctx.beginPath();
-  ctx.arc(x, y + 10, 10, 0.1, Math.PI - 0.1);
+  ctx.moveTo(cx - halfW * 0.75, cy - halfH * 0.65);
+  ctx.bezierCurveTo(
+    cx - halfW * 0.45, cy - halfH * 1.05,
+    cx + halfW * 0.45, cy - halfH * 1.05,
+    cx + halfW * 0.75, cy - halfH * 0.65,
+  );
+  ctx.bezierCurveTo(
+    cx + halfW * 1.08, cy - halfH * 0.15,
+    cx + halfW * 1.06, cy + halfH * 0.65,
+    cx + halfW * 0.72, cy + halfH * 0.96,
+  );
+  ctx.bezierCurveTo(
+    cx + halfW * 0.38, cy + halfH * 1.05,
+    cx - halfW * 0.38, cy + halfH * 1.05,
+    cx - halfW * 0.72, cy + halfH * 0.96,
+  );
+  ctx.bezierCurveTo(
+    cx - halfW * 1.06, cy + halfH * 0.65,
+    cx - halfW * 1.08, cy - halfH * 0.15,
+    cx - halfW * 0.75, cy - halfH * 0.65,
+  );
+  ctx.closePath();
+
+  // 渐变填充 (柔和洁白棉花糖)
+  const bodyGrad = ctx.createLinearGradient(cx, cy - halfH, cx, cy + halfH);
+  bodyGrad.addColorStop(0, "#ffffff");
+  bodyGrad.addColorStop(0.75, "#ffffff");
+  bodyGrad.addColorStop(1, "#f1f5f9");
+  ctx.fillStyle = bodyGrad;
+  ctx.fill();
+
+  // 饱满精致深色描边
+  ctx.strokeStyle = "#334155";
+  ctx.lineWidth = 2.4;
   ctx.stroke();
 
-  // 挥手手臂
-  const waveAngle = Math.sin(frame * 0.2) * 0.5;
+  // 可爱小红项圈与金铃铛 (随身体呼吸轻微晃动)
+  const collarY = cy + halfH * 0.32;
+  const collarW = halfW * 0.85;
+  ctx.beginPath();
+  ctx.ellipse(cx, collarY, collarW, 7, 0, 0.15 * Math.PI, 0.85 * Math.PI);
+  ctx.strokeStyle = theme.primary || "#ef4444";
+  ctx.lineWidth = 4.2;
+  ctx.stroke();
+
+  // 迷你金色小铃铛
+  const bellSway = Math.sin(frame * 0.08) * 1.2;
+  const bellX = cx + bellSway;
+  const bellY = collarY + 6.5;
+  ctx.fillStyle = "#fbbf24";
+  ctx.beginPath();
+  ctx.arc(bellX, bellY, 3.8, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "#d97706";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // 铃铛小孔
+  ctx.fillStyle = "#92400e";
+  ctx.beginPath();
+  ctx.arc(bellX, bellY + 1.2, 1, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();
+}
+
+// 5. 灵动五官 (水灵大眼、视线追踪、自然眨眼、:3猫唇、软萌腮红)
+function drawBongoFace(
+  ctx: CanvasRenderingContext2D,
+  cx: number, cy: number,
+  _bw: number, _bh: number,
+  state: PetState, frame: number,
+  isBlink: boolean,
+  mx: number, my: number,
+  _theme: Theme,
+) {
   ctx.save();
-  ctx.translate(x + size / 2, y - 10);
-  ctx.rotate(-0.8 + waveAngle);
-  const handGradient = ctx.createLinearGradient(-4, -12, 4, 18);
-  handGradient.addColorStop(0, adjustBrightness(theme.accent, lighten + 8));
-  handGradient.addColorStop(1, adjustBrightness(baseColor, lighten));
-  ctx.fillStyle = handGradient;
+  const faceY = cy - 2;
+  const eyeDist = 13.5;
+  const leftEyeX = cx - eyeDist;
+  const rightEyeX = cx + eyeDist;
+  const eyeY = faceY - 2;
+
+  // 软萌腮红 (草莓牛奶粉)
+  const blushAlpha = state === "happy" ? 0.72 : 0.52;
+  ctx.fillStyle = `rgba(251, 113, 133, ${blushAlpha})`;
   ctx.beginPath();
-  ctx.roundRect(-4, -4, 8, 28, 4);
+  ctx.ellipse(cx - 21.5, faceY + 5.5, 5.5, 3.2, -0.05, 0, Math.PI * 2);
   ctx.fill();
-  // 手掌
   ctx.beginPath();
-  ctx.arc(0, -8, 7, 0, Math.PI * 2);
+  ctx.ellipse(cx + 21.5, faceY + 5.5, 5.5, 3.2, 0.05, 0, Math.PI * 2);
   ctx.fill();
-  // 手掌高光
-  ctx.fillStyle = "rgba(255,255,255,0.2)";
+
+  // 两侧萌系猫须 (细腻干净)
+  ctx.strokeStyle = "#94a3b8";
+  ctx.lineWidth = 1.3;
+  // 左侧胡须
   ctx.beginPath();
-  ctx.arc(-1, -9, 3, 0, Math.PI * 2);
+  ctx.moveTo(cx - 22, faceY + 3);
+  ctx.lineTo(cx - 35, faceY + 1);
+  ctx.moveTo(cx - 22, faceY + 7);
+  ctx.lineTo(cx - 34, faceY + 8);
+  // 右侧胡须
+  ctx.moveTo(cx + 22, faceY + 3);
+  ctx.lineTo(cx + 35, faceY + 1);
+  ctx.moveTo(cx + 22, faceY + 7);
+  ctx.lineTo(cx + 34, faceY + 8);
+  ctx.stroke();
+
+  // --- 眼睛表情分支 ---
+  if (state === "sleeping") {
+    // 沉睡弯弯睫毛眼 (-- --)
+    ctx.strokeStyle = "#334155";
+    ctx.lineWidth = 2.2;
+    ctx.beginPath();
+    ctx.arc(leftEyeX, eyeY + 1, 4.2, 0.15 * Math.PI, 0.85 * Math.PI);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(rightEyeX, eyeY + 1, 4.2, 0.15 * Math.PI, 0.85 * Math.PI);
+    ctx.stroke();
+  } else if (state === "happy" || state === "waving") {
+    // 开心/抚摸/招手：笑眯眯弯弯月牙眼 (^ ^)
+    ctx.strokeStyle = "#334155";
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.arc(leftEyeX, eyeY + 2, 4.6, 1.15 * Math.PI, 1.85 * Math.PI);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(rightEyeX, eyeY + 2, 4.6, 1.15 * Math.PI, 1.85 * Math.PI);
+    ctx.stroke();
+  } else if (isBlink) {
+    // 自然眨眼线
+    ctx.strokeStyle = "#334155";
+    ctx.lineWidth = 2.4;
+    ctx.beginPath();
+    ctx.moveTo(leftEyeX - 4, eyeY);
+    ctx.lineTo(leftEyeX + 4, eyeY);
+    ctx.moveTo(rightEyeX - 4, eyeY);
+    ctx.lineTo(rightEyeX + 4, eyeY);
+    ctx.stroke();
+  } else {
+    // 经典水灵大眼 (支持光标视线追踪)
+    let lookDx = 0, lookDy = 0;
+    if (mx > -900) {
+      lookDx = Math.max(-1.8, Math.min(1.8, (mx - cx) / 25));
+      lookDy = Math.max(-1.8, Math.min(1.8, (my - eyeY) / 25));
+    }
+
+    // 左眼瞳
+    ctx.fillStyle = "#1e293b";
+    ctx.beginPath();
+    ctx.ellipse(leftEyeX + lookDx, eyeY + lookDy, 4.5, 5.8, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 右眼瞳
+    ctx.beginPath();
+    ctx.ellipse(rightEyeX + lookDx, eyeY + lookDy, 4.5, 5.8, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 灵动大高光 (右上角)
+    ctx.fillStyle = "#ffffff";
+    ctx.beginPath();
+    ctx.arc(leftEyeX + lookDx + 1.6, eyeY + lookDy - 2.0, 1.9, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(rightEyeX + lookDx + 1.6, eyeY + lookDy - 2.0, 1.9, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 细微小高光 (左下角)
+    ctx.beginPath();
+    ctx.arc(leftEyeX + lookDx - 1.5, eyeY + lookDy + 1.8, 1.0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(rightEyeX + lookDx - 1.5, eyeY + lookDy + 1.8, 1.0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // --- 萌系小鼻子与 :3 猫唇 ---
+  const noseY = faceY + 2.6;
+  ctx.fillStyle = "#f472b6";
+  ctx.beginPath();
+  ctx.ellipse(cx, noseY, 1.4, 1.0, 0, 0, Math.PI * 2);
   ctx.fill();
+
+  const mouthY = noseY + 1.8;
+  ctx.strokeStyle = "#334155";
+  ctx.lineWidth = 1.9;
+
+  if (state === "speaking" || (state === "happy" && frame % 40 < 20)) {
+    // 说话或欢笑时张开小嘴 (含萌萌小粉舌)
+    ctx.beginPath();
+    ctx.arc(cx, mouthY + 1.5, 3.8, 0.1 * Math.PI, 0.9 * Math.PI);
+    ctx.fillStyle = "#f43f5e";
+    ctx.fill();
+    ctx.stroke();
+
+    // 舌尖
+    ctx.fillStyle = "#fbcfe8";
+    ctx.beginPath();
+    ctx.arc(cx, mouthY + 3.2, 2.2, 0.1 * Math.PI, 0.9 * Math.PI);
+    ctx.fill();
+  } else {
+    // 标志性 :3 傲娇猫唇
+    ctx.beginPath();
+    ctx.arc(cx - 2.6, mouthY + 1.8, 2.7, 0.15 * Math.PI, 0.95 * Math.PI);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(cx + 2.6, mouthY + 1.8, 2.7, 0.05 * Math.PI, 0.85 * Math.PI);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+// 6. 木质小书桌与机械键盘 (Bongo Cat 灵魂核心)
+function drawBongoDeskAndKeyboard(
+  ctx: CanvasRenderingContext2D,
+  cx: number, cy: number,
+  frame: number,
+  theme: Theme,
+  state: PetState,
+) {
+  ctx.save();
+  const deskX = cx - 46;
+  const deskY = cy + 19;
+  const deskW = 92;
+  const deskH = 26;
+  const deskR = 7;
+
+  // 1. 木质桌面
+  const woodGrad = ctx.createLinearGradient(deskX, deskY, deskX, deskY + deskH);
+  woodGrad.addColorStop(0, "#fef3c7");
+  woodGrad.addColorStop(0.35, "#fde68a");
+  woodGrad.addColorStop(1, "#f59e0b");
+  ctx.fillStyle = woodGrad;
+
+  ctx.beginPath();
+  roundRect(ctx, deskX, deskY, deskW, deskH, deskR);
+  ctx.fill();
+  ctx.strokeStyle = "#d97706";
+  ctx.lineWidth = 2.0;
+  ctx.stroke();
+
+  // 桌面边沿高光
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.65)";
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  ctx.moveTo(deskX + deskR, deskY + 1.5);
+  ctx.lineTo(deskX + deskW - deskR, deskY + 1.5);
+  ctx.stroke();
+
+  // 2. 机械键盘底座
+  const kbX = cx - 35;
+  const kbY = deskY + 3;
+  const kbW = 58;
+  const kbH = 16;
+  const kbR = 3.5;
+
+  ctx.fillStyle = "#f1f5f9";
+  ctx.beginPath();
+  roundRect(ctx, kbX, kbY, kbW, kbH, kbR);
+  ctx.fill();
+  ctx.strokeStyle = "#94a3b8";
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+
+  // 3. 两排彩色马卡龙键帽
+  const keyColors = [
+    "#bae6fd", "#bbf7d0", "#fef08a", "#fbcfe8", "#e9d5ff",
+    "#a7f3d0", "#fed7aa", "#fecdd3", "#c7d2fe", "#f5d0fe",
+  ];
+
+  // 敲键盘按压相位 (根据敲击状态计算当前被按下的键)
+  const typingActive = state === "working" || state === "speaking" || (state === "idle" && frame % 160 < 40);
+  const typePhase = Math.sin(frame * (state === "working" ? 0.38 : 0.18));
+  const leftPress = typingActive && typePhase > 0.2;
+  const rightPress = typingActive && typePhase < -0.2;
+
+  // 上排 5 颗键帽
+  for (let i = 0; i < 5; i++) {
+    const kx = kbX + 4 + i * 10;
+    const isPressed = (i === 1 && leftPress) || (i === 3 && rightPress);
+    const ky = kbY + 2.5 + (isPressed ? 1.4 : 0);
+    ctx.fillStyle = isPressed ? hexToRgba(theme.accent, 0.9) : keyColors[i];
+    ctx.beginPath();
+    roundRect(ctx, kx, ky, 8.5, 4.5, 1.2);
+    ctx.fill();
+  }
+
+  // 下排 4 颗键帽 + 空格键
+  for (let i = 0; i < 4; i++) {
+    const kx = kbX + 5 + i * 12;
+    const isPressed = (i === 0 && leftPress) || (i === 3 && rightPress);
+    const ky = kbY + 8.5 + (isPressed ? 1.4 : 0);
+    ctx.fillStyle = isPressed ? hexToRgba(theme.accent, 0.9) : keyColors[i + 5];
+    ctx.beginPath();
+    roundRect(ctx, kx, ky, 9.5, 4.5, 1.2);
+    ctx.fill();
+  }
+
+  // 4. 桌面右侧萌萌小马克杯 (含小猫爪图标与微弱热气)
+  const cupX = cx + 33;
+  const cupY = deskY + 4;
+  ctx.fillStyle = "#ffffff";
+  ctx.beginPath();
+  roundRect(ctx, cupX, cupY, 9, 11, 2);
+  ctx.fill();
+  ctx.strokeStyle = "#cbd5e1";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // 杯把手
+  ctx.beginPath();
+  ctx.arc(cupX + 9, cupY + 5.5, 2.5, -0.4 * Math.PI, 0.4 * Math.PI);
+  ctx.strokeStyle = "#cbd5e1";
+  ctx.stroke();
+
+  // 杯身小粉爪印
+  ctx.fillStyle = "#f472b6";
+  ctx.beginPath();
+  ctx.arc(cupX + 4.5, cupY + 6.5, 1.4, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 飘动的治愈热气
+  const steamOff = (frame * 0.05) % (Math.PI * 2);
+  ctx.strokeStyle = "rgba(148, 163, 184, 0.45)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(cupX + 4.5, cupY - 1);
+  ctx.quadraticCurveTo(cupX + 2.5 + Math.sin(steamOff) * 1.5, cupY - 4, cupX + 4.5, cupY - 7);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+// 7. Bongo 双爪 (敲键盘交替拍击、高举招手、作揖求喂食、托腮)
+function drawBongoPaws(
+  ctx: CanvasRenderingContext2D,
+  cx: number, cy: number,
+  _bw: number, _bh: number,
+  state: PetState, frame: number,
+  theme: Theme,
+) {
+  ctx.save();
+  const leftPawHomeX = cx - 18;
+  const rightPawHomeX = cx + 8;
+  const pawDeskY = cy + 24;
+
+  if (state === "happy" || state === "waving") {
+    // 双爪高举欢呼开怀舞动 (\( =①ω①= )/) 露出粉嫩肉垫
+    const waveL = Math.sin(frame * 0.22) * 5;
+    const waveR = Math.cos(frame * 0.22) * 5;
+    drawCuteRaisedPaw(ctx, cx - 26, cy + 4 + waveL, true);
+    drawCuteRaisedPaw(ctx, cx + 26, cy + 4 + waveR, false);
+  } else if (state === "thinking") {
+    // 思考中：左爪搭在键盘上，右爪可爱地托着下巴
+    drawTypingPaw(ctx, leftPawHomeX, pawDeskY, 0);
+    // 右爪托腮
+    drawChinPaw(ctx, cx + 16, cy + 6);
+  } else if (state === "hungry") {
+    // 饥饿中：双爪并拢在桌前作揖求小鱼干
+    const begOff = Math.sin(frame * 0.25) * 3;
+    drawTypingPaw(ctx, cx - 7, pawDeskY - 2 + begOff, 0);
+    drawTypingPaw(ctx, cx + 7, pawDeskY - 2 + begOff, 0);
+  } else if (state === "sleeping") {
+    // 沉睡中：双爪交叉平趴在桌上，小脑袋枕着双爪
+    drawSleepingPaws(ctx, cx, pawDeskY);
+  } else {
+    // 正常 / 工作 / 说话：经典 Bongo Cat 左右爪交替拍打键盘！
+    const isTyping = state === "working" || state === "speaking" || (state === "idle" && frame % 160 < 40);
+    const speed = state === "working" ? 0.38 : state === "speaking" ? 0.22 : 0.12;
+    const cycle = isTyping ? Math.sin(frame * speed) : 0;
+
+    // 左爪抬起/拍下 (cycle > 0 拍下，cycle < 0 抬起)
+    const leftLift = isTyping ? (cycle < 0 ? Math.abs(cycle) * 7.5 : 0) : 0;
+    // 右爪抬起/拍下 (与左爪相反)
+    const rightLift = isTyping ? (cycle > 0 ? Math.abs(cycle) * 7.5 : 0) : 0;
+
+    drawTypingPaw(ctx, leftPawHomeX, pawDeskY - leftLift, leftLift > 0.5 ? -0.15 : 0);
+    drawTypingPaw(ctx, rightPawHomeX, pawDeskY - rightLift, rightLift > 0.5 ? 0.15 : 0);
+
+    // 拍击按键时弹出微型打击波
+    if (isTyping && Math.abs(cycle) < 0.15) {
+      const tapX = cycle >= 0 ? rightPawHomeX + 4 : leftPawHomeX + 4;
+      ctx.strokeStyle = hexToRgba(theme.accent, 0.65);
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.ellipse(tapX, pawDeskY + 4, 4.5, 2, 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+
+  ctx.restore();
+}
+
+// 敲键盘棉花糖爪子
+function drawTypingPaw(
+  ctx: CanvasRenderingContext2D,
+  px: number, py: number,
+  rotation: number,
+) {
+  ctx.save();
+  ctx.translate(px, py);
+  ctx.rotate(rotation);
+
+  // 爪爪主体 (纯白棉花糖)
+  ctx.fillStyle = "#ffffff";
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 8.5, 6.2, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = "#334155";
+  ctx.lineWidth = 2.2;
+  ctx.stroke();
+
+  // 爪指微细分线
+  ctx.strokeStyle = "#cbd5e1";
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  ctx.moveTo(-2, -3);
+  ctx.lineTo(-2, 3);
+  ctx.moveTo(2, -3);
+  ctx.lineTo(2, 3);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+// 高举挥舞的小肉垫爪爪
+function drawCuteRaisedPaw(
+  ctx: CanvasRenderingContext2D,
+  px: number, py: number,
+  isLeft: boolean,
+) {
+  ctx.save();
+  ctx.translate(px, py);
+  ctx.rotate(isLeft ? -0.25 : 0.25);
+
+  // 爪手掌
+  ctx.fillStyle = "#ffffff";
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 8.8, 7.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "#334155";
+  ctx.lineWidth = 2.2;
+  ctx.stroke();
+
+  // 粉嫩中心主肉垫
+  ctx.fillStyle = "#f472b6";
+  ctx.beginPath();
+  ctx.ellipse(0, 0.5, 3.6, 2.8, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 3颗可爱指尖小肉垫
+  const dotR = 1.2;
+  ctx.beginPath();
+  ctx.arc(-4.2, -3.2, dotR, 0, Math.PI * 2);
+  ctx.arc(0, -4.5, dotR, 0, Math.PI * 2);
+  ctx.arc(4.2, -3.2, dotR, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();
+}
+
+// 思考时可爱的托腮小爪
+function drawChinPaw(ctx: CanvasRenderingContext2D, px: number, py: number) {
+  ctx.save();
+  ctx.translate(px, py);
+  ctx.rotate(0.35);
+
+  ctx.fillStyle = "#ffffff";
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 8.2, 6.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "#334155";
+  ctx.lineWidth = 2.2;
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+// 睡眠时趴在桌上的双爪
+function drawSleepingPaws(ctx: CanvasRenderingContext2D, cx: number, py: number) {
+  ctx.save();
+  ctx.fillStyle = "#ffffff";
+  ctx.beginPath();
+  ctx.ellipse(cx - 10, py, 9, 5.5, -0.15, 0, Math.PI * 2);
+  ctx.ellipse(cx + 10, py, 9, 5.5, 0.15, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "#334155";
+  ctx.lineWidth = 2.2;
+  ctx.stroke();
+  ctx.restore();
+}
+
+// 8. 状态专属小道具与微动特效 (思考小鱼干泡泡、按键光芒、沉睡泡泡与Zzz)
+function drawBongoStateEffects(
+  ctx: CanvasRenderingContext2D,
+  cx: number, cy: number,
+  _bw: number, bh: number,
+  state: PetState, frame: number,
+  theme: Theme,
+) {
+  ctx.save();
+
+  // 思考中：头顶冒出想着“香喷喷小鱼干”的卡通泡泡
+  if (state === "thinking") {
+    const bobbleY = cy - bh * 0.45;
+    ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+    ctx.strokeStyle = "#94a3b8";
+    ctx.lineWidth = 1.2;
+
+    // 导向小气泡
+    ctx.beginPath();
+    ctx.arc(cx + 22, bobbleY - 6, 2.5, 0, Math.PI * 2);
+    ctx.arc(cx + 28, bobbleY - 14, 4.0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // 大思考气泡
+    const bubbleX = cx + 36;
+    const bubbleY = bobbleY - 26;
+    ctx.fillStyle = "#ffffff";
+    ctx.beginPath();
+    ctx.ellipse(bubbleX, bubbleY, 15, 11, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // 泡泡内的小鱼干
+    ctx.save();
+    ctx.translate(bubbleX, bubbleY);
+    ctx.fillStyle = "#fbbf24";
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 7.5, 4.0, 0, 0, Math.PI * 2);
+    // 鱼尾
+    ctx.moveTo(6, 0);
+    ctx.lineTo(11, -3.5);
+    ctx.lineTo(9, 0);
+    ctx.lineTo(11, 3.5);
+    ctx.closePath();
+    ctx.fill();
+
+    // 鱼眼
+    ctx.fillStyle = "#78350f";
+    ctx.beginPath();
+    ctx.arc(-4, -1, 0.9, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // 沉睡中：Zzz 气泡与呼吸微气泡
+  if (state === "sleeping") {
+    const zOff = Math.sin(frame * 0.05) * 4;
+    const zAlpha = 0.55 + Math.sin(frame * 0.07) * 0.25;
+    ctx.fillStyle = hexToRgba(theme.accent || "#6366f1", zAlpha);
+    ctx.font = "bold 14px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("Z", cx + 26, cy - 20 + zOff);
+    ctx.font = "bold 10px sans-serif";
+    ctx.fillText("z", cx + 35, cy - 30 + zOff * 0.8);
+    ctx.font = "bold 7px sans-serif";
+    ctx.fillText("z", cx + 42, cy - 38 + zOff * 0.5);
+
+    // 睡眠小呼噜气泡
+    const bubbleBreath = 1 + Math.sin(frame * 0.06) * 0.35;
+    ctx.fillStyle = "rgba(255, 255, 255, 0.65)";
+    ctx.strokeStyle = "rgba(148, 163, 184, 0.75)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(cx + 8, cy + 3, 3.2 * bubbleBreath, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  // 工作打字：键盘四周飞溅专注火花
+  if (state === "working") {
+    if (frame % 16 < 8) {
+      const sparkX = cx - 20 + (frame % 3) * 16;
+      ctx.fillStyle = hexToRgba(theme.accent, 0.75);
+      ctx.beginPath();
+      ctx.arc(sparkX, cy + 22, 1.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
   ctx.restore();
 }
 
 // ===== 工具函数 =====
-function adjustBrightness(hex: string, percent: number): string {
-  const num = parseInt(hex.replace("#", ""), 16);
-  const r = Math.min(255, Math.max(0, ((num >> 16) & 0xff) + Math.round(percent * 2.55)));
-  const g = Math.min(255, Math.max(0, ((num >> 8) & 0xff) + Math.round(percent * 2.55)));
-  const b = Math.min(255, Math.max(0, (num & 0xff) + Math.round(percent * 2.55)));
-  return `rgb(${r}, ${g}, ${b})`;
-}
 
 function hexToRgba(hex: string, alpha: number): string {
   const num = parseInt(hex.replace("#", ""), 16);
@@ -1096,9 +1512,11 @@ function onMouseUp(e: MouseEvent) {
     if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
     squashAmt = 1;
     if (!wasPressed || e.button !== 0 || !isPetHit(e)) return;
-    bounceVy = -8.0;
+    bounceVy = -7.5;
     bounceOffset = 0;
-    spawnParticles('heart', 4, pet.position.x, pet.position.y - 30);
+    squashAmt = 0.78;
+    spawnParticles('heart', 5, pet.position.x, pet.position.y - 25);
+    spawnParticles('spark', 3, pet.position.x, pet.position.y - 20);
     emit("petted");
     return;
   }
@@ -1108,10 +1526,12 @@ function onMouseUp(e: MouseEvent) {
   if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
   squashAmt = 1;
   if (!dragStarted) {
-    // Snappy Bounce!
-    bounceVy = -8.0;
+    // Q弹起跳 + 粒子爆发
+    bounceVy = -7.5;
     bounceOffset = 0;
-    spawnParticles('heart', 4, pet.position.x, pet.position.y - 30);
+    squashAmt = 0.78;
+    spawnParticles('heart', 5, pet.position.x, pet.position.y - 25);
+    spawnParticles('spark', 3, pet.position.x, pet.position.y - 20);
     emit("click");
   }
 }

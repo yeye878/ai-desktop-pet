@@ -13,8 +13,8 @@ export const PET_CHARACTER_SETTING_KEY = "pet_character";
 export const PET_CHARACTERS: PetCharacter[] = [
   {
     id: "classic",
-    name: "默认软团",
-    description: "保留当前 Canvas 互动动画",
+    name: "Bongo Cat",
+    description: "经典敲键盘萌系白巧猫，敲桌打字治愈伴侣",
   },
   {
     id: "daimao-batiao",

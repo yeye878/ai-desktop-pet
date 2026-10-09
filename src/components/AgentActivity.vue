@@ -3,8 +3,8 @@ import { computed } from "vue";
 import { Check, ChevronRight, Circle, CircleAlert, CircleX, Clock, FileText, LoaderCircle, Square, Terminal } from "@lucide/vue";
 import { formatArguments, legacyActivity, toolStatusLabel, type AgentActivityItem, type AgentActivityTool } from "../services/agentActivity";
 import { toolLabel } from "../services/tools";
-import { parseQuoteSegments } from "../services/quoteParser";
-import { splitMentionSegments } from "../services/mentions";
+import { renderMessageSegments } from "../services/markdown";
+import { extractMentionNames } from "../services/mentions";
 
 const props = withDefaults(defineProps<{
   items?: AgentActivityItem[];
@@ -40,6 +40,18 @@ function statusIcon(status: string) {
   if (status === "waiting") return Clock;
   return Circle;
 }
+/**
+ * 过程文字（模型输出的中间段落）同样按 Markdown 渲染，
+ * 否则流式输出阶段用户会先看到满屏的 ** 和 #，收尾时才突然变干净。
+ */
+function commentaryHtml(text: string): string {
+  return renderMessageSegments(text, {
+    names: extractMentionNames(text),
+    mention: { htmlTag: '<span class="activity-mention">' },
+  })
+    .map((segment) => segment.html)
+    .join("");
+}
 function activityToolLabel(name: string) {
   const aliases: Record<string, string> = { Read: "读取文件", Write: "写入文件", Edit: "修改文件", Bash: "执行命令", Glob: "查找文件", Grep: "搜索代码", WebSearch: "网页搜索", WebFetch: "读取网页", edit_file: "修改文件", code_search: "搜索代码", ask_user: "询问用户", create_docx: "生成文档" };
   return aliases[name] || toolLabel(name);
@@ -57,17 +69,7 @@ function activityToolLabel(name: string) {
     </div>
     <ol class="activity-list">
       <li v-for="(entry, index) in entries" :key="entry.kind === 'tool' ? entry.tool.id : `entry-${index}`" :class="['activity-entry', entry.kind]">
-        <div v-if="entry.kind === 'text'" class="activity-commentary">
-          <template v-for="(segment, segmentIndex) in parseQuoteSegments(entry.text, active)" :key="segmentIndex">
-            <div v-if="segment.type === 'quote'" class="activity-quote">{{ segment.content }}</div>
-            <template v-else>
-              <template v-for="(part, partIndex) in splitMentionSegments(segment.content)" :key="partIndex">
-                <span v-if="part.type === 'mention'" class="activity-mention">@{{ part.content }}</span>
-                <template v-else>{{ part.content }}</template>
-              </template>
-            </template>
-          </template>
-        </div>
+        <div v-if="entry.kind === 'text'" class="activity-commentary md-body" v-html="commentaryHtml(entry.text)"></div>
         <details v-else-if="entry.kind === 'thinking'" class="activity-reasoning">
           <summary><ChevronRight :size="12" class="activity-chevron" /><span>思考过程</span></summary>
           <p>{{ entry.text }}</p>
@@ -102,7 +104,9 @@ function activityToolLabel(name: string) {
 .activity-stop:hover { background: #eceef1; }
 .activity-list { list-style: none; padding: 0; margin: 0; }
 .activity-entry { min-width: 0; padding: 4px 0; }
-.activity-commentary { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--dash-text-primary, #30343b); font-size: 13px; }
+.activity-commentary { margin: 0; white-space: normal; overflow-wrap: anywhere; color: var(--dash-text-primary, #30343b); font-size: 13px; }
+.activity-commentary .md-p:last-child { margin-bottom: 0; }
+.activity-commentary .md-list { margin: 3px 0 5px; }
 .activity-quote { border-left: 2px solid #c4c9d1; padding-left: 9px; margin: 5px 0; color: var(--dash-text-secondary, #5f6368); }
 .activity-mention { color: #267a9c; font-weight: 500; }
 summary { cursor: pointer; list-style: none; user-select: none; }
