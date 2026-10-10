@@ -5,6 +5,7 @@ mod codex;
 mod cli_activity;
 mod dsh;
 mod interactions;
+mod mcp_permission;
 mod computer_use;
 mod direct_api;
 mod openclaw;
@@ -109,6 +110,8 @@ pub struct AppState {
     pub ai: tokio::sync::Mutex<openclaw::ClaudeAdapter>,
     pub codex: codex::CodexAdapter,
     pub dsh: dsh::DshAdapter,
+    /// Claude Code 的授权确认桥（回环 HTTP + MCP 工具）。
+    pub permission_bridge: StdMutex<Option<mcp_permission::BridgeHandle>>,
     pub collaboration_state: StdMutex<Option<collaboration::CollaborationState>>,
     pub behavior: tokio::sync::Mutex<behavior::BehaviorEngine>,
     pub db: tokio::sync::Mutex<storage::Database>,
@@ -4979,6 +4982,7 @@ pub fn run() {
                 ai: tokio::sync::Mutex::new(openclaw::ClaudeAdapter::new()),
                 codex: codex::CodexAdapter::default(),
                 dsh: dsh::DshAdapter::default(),
+                permission_bridge: StdMutex::new(None),
                 collaboration_state: StdMutex::new(None),
                 behavior: tokio::sync::Mutex::new(behavior::BehaviorEngine::new()),
                 db: tokio::sync::Mutex::new(db),
@@ -5005,6 +5009,31 @@ pub fn run() {
                 subprocs: subprocess::SubprocessManager::new(),
             };
             app.manage(app_state);
+
+            // Claude Code 的授权确认桥：claude -p 会把权限提示交给这个 MCP 工具，
+            // 桌宠据此弹出与直连 API 相同的确认窗口。启动失败不影响其他后端。
+            let bridge_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let answerer: std::sync::Arc<dyn mcp_permission::PermissionAnswerer> =
+                    std::sync::Arc::new(mcp_permission::UiPermission::new(bridge_app.clone()));
+                match mcp_permission::serve(answerer).await {
+                    Ok(bridge) => {
+                        if let Err(error) = mcp_permission::write_config(&bridge_app, &bridge) {
+                            eprintln!("写入 Claude MCP 配置失败: {error}");
+                        }
+                        let slot_state = bridge_app.state::<AppState>();
+                        {
+                            let mut slot = slot_state
+                                .permission_bridge
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner());
+                            *slot = Some(bridge);
+                        }
+                    }
+                    Err(error) => eprintln!("启动 Claude 授权确认服务失败: {error}"),
+                }
+            });
+
             start_scheduled_task_runner(app.handle().clone());
 
             // 启动时检查并发送天气

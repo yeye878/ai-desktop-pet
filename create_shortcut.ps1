@@ -14,6 +14,7 @@ $ShortcutPath = Join-Path $Desktop "AI-Pet.lnk"
 
 Write-Host "Generating cute pet icon..."
 
+if (-not ([System.Management.Automation.PSTypeName]'IconMaker').Type) {
 Add-Type -TypeDefinition @"
 using System;
 using System.Drawing;
@@ -221,6 +222,7 @@ public class IconMaker {
     }
 }
 "@ -ReferencedAssemblies "System.Drawing"
+}
 
 [IconMaker]::MakeIco($IconPath)
 Write-Host "Icon created: $IconPath"
@@ -248,6 +250,9 @@ if (!$BuildText.Contains("/assets/index-")) {
 
 New-Item -ItemType Directory -Force -Path $StableDir | Out-Null
 Copy-Item -LiteralPath $BuildExe -Destination $AppExe -Force
+if (Test-Path -LiteralPath $IconPath) {
+    Copy-Item -LiteralPath $IconPath -Destination (Join-Path $StableDir "pet_shortcut.ico") -Force
+}
 Write-Host "Stable app copied to: $AppExe"
 
 # Create shortcut
@@ -259,6 +264,10 @@ $Shortcut.WorkingDirectory = $StableDir
 $Shortcut.Description      = "AI Desktop Pet - Your cute AI companion"
 $Shortcut.WindowStyle      = 1
 $Shortcut.Save()
+
+try {
+    [System.IO.File]::SetLastWriteTime($ShortcutPath, (Get-Date))
+} catch {}
 
 Write-Host "=== ALL DONE ==="
 Write-Host "Shortcut: $ShortcutPath"

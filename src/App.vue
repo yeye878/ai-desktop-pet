@@ -60,10 +60,14 @@ const APP_WINDOW_LABELS = new Set<AppWindowLabel>([
   "tool-confirm",
 ]);
 
+const urlParams = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
+const queryWindow = urlParams?.get("window") as AppWindowLabel | null;
 const currentWindow = getCurrentWindow();
-const currentLabel: AppWindowLabel = APP_WINDOW_LABELS.has(currentWindow.label as AppWindowLabel)
-  ? currentWindow.label as AppWindowLabel
-  : "main";
+const currentLabel: AppWindowLabel = queryWindow && APP_WINDOW_LABELS.has(queryWindow)
+  ? queryWindow
+  : (APP_WINDOW_LABELS.has(currentWindow.label as AppWindowLabel)
+    ? (currentWindow.label as AppWindowLabel)
+    : "main");
 const petStore = usePetStore();
 const isDraggingPet = ref(false);
 let cursorHitTestTimer: ReturnType<typeof setInterval> | null = null;

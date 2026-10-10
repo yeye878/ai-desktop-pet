@@ -1,0 +1,89 @@
+临时诊断探针（本次已从 src-tauri/src/direct_api/tools.rs 中移除，代码保持原样）
+
+用途：把 `.ws-probe/fixtures/` 里真实抓取到的 Bing 响应喂进**生产管线本体**
+（parse_bing_rss / parse_bing_html / rank_search_results / format_search_results），
+打印模型实际收到的搜索工具文本。只替换了网络层，输出与线上逐字一致。
+
+使用方法：
+  1) 重新抓 fixture：      node .ws-probe\save-manifest.mjs
+  2) 把下面这段原样粘进 src-tauri/src/direct_api/tools.rs 的 `mod tests { ... }` 末尾
+     （即最后一个测试函数之后、模块收尾大括号之前）。`use super::*;` 已存在，
+     serde_json / json! / SearchOptions 都在作用域内，无需额外 use。
+  3) 运行：                cd src-tauri; cargo test --lib probe_dump_production_search_output -- --nocapture
+
+注意：fixture 不存在时它只打印 "no manifest" 并正常通过，不会让 cargo test 失败。
+
+------------------------------ 8< ------------------------------
+
+    /// 诊断用: 把真实抓取的 Bing 响应喂进生产的解析/排序/格式化管线，
+    /// 打印模型实际收到的搜索工具文本 (临时探针，非断言测试)。
+    #[test]
+    fn probe_dump_production_search_output() {
+        let base = concat!(env!("CARGO_MANIFEST_DIR"), "/../.ws-probe/fixtures");
+        let Ok(manifest) = std::fs::read_to_string(format!("{base}/manifest.json")) else {
+            println!("no manifest at {base}");
+            return;
+        };
+        let entries: Vec<serde_json::Value> = serde_json::from_str(&manifest).unwrap();
+
+        for entry in &entries {
+            let id = entry["id"].as_str().unwrap_or("?");
+            let base_query = entry["base"].as_str().unwrap_or("");
+            let expected_eff = entry["eff"].as_str().unwrap_or("");
+            let mut args = json!({ "query": base_query });
+            if let Some(days) = entry["recency"].as_u64() {
+                args["recency_days"] = json!(days);
+            }
+            let options = SearchOptions::from_tool_args(&args).unwrap();
+            assert_eq!(
+                options.effective_query(),
+                expected_eff,
+                "effective_query 与抓取时使用的查询不一致，结论无效"
+            );
+
+            let rss = std::fs::read_to_string(format!("{base}/{}", entry["rss"].as_str().unwrap()))
+                .unwrap_or_default();
+            let html =
+                std::fs::read_to_string(format!("{base}/{}", entry["html"].as_str().unwrap()))
+                    .unwrap_or_default();
+
+            let rss_only = parse_bing_rss(&rss);
+            let html_only = parse_bing_html(&html);
+            let mut merged = Vec::new();
+            for result in rss_only.iter().cloned() {
+                push_unique_search_result(&mut merged, result);
+            }
+            let after_rss = merged.len();
+            for result in html_only.iter().cloned() {
+                push_unique_search_result(&mut merged, result);
+            }
+
+            println!(
+                "\n\n@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n@@ {id} | 用户查询: {base_query}\n@@ 实际发出: {expected_eff} | recency_days={:?}\n@@ 解析: rss={} html={} 合并后={after_rss}->{}",
+                options.recency_days,
+                rss_only.len(),
+                html_only.len(),
+                merged.len(),
+            );
+
+            for (label, set) in [
+                ("A. RSS 单独 (默认第一个源)", rss_only.clone()),
+                ("B. HTML 单独 (RSS 空/失败时的回退)", html_only.clone()),
+                ("C. 生产合并路径 (RSS + HTML)", merged.clone()),
+            ] {
+                let ranked = rank_search_results(
+                    &options.query,
+                    set,
+                    &options.exclude_domains,
+                    options.site.as_deref(),
+                    options.recency_days,
+                );
+                let limit = options.max_results.min(ranked.len());
+                println!(
+                    "\n---------------- {label}: 候选->ranked={} 展示={limit}\n{}",
+                    ranked.len(),
+                    format_search_results("Bing RSS + Bing", &options, &ranked[..limit])
+                );
+            }
+        }
+    }

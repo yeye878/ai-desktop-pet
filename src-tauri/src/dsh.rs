@@ -16,7 +16,7 @@
 
 use crate::cli_activity::ToolEvent;
 use crate::direct_api::ToolConfirmPayload;
-use crate::interactions::{PendingRequest, RequestGuard, RequestKind, WaitResult};
+use crate::interactions::WaitResult;
 use crate::openclaw::StreamParseState;
 use async_trait::async_trait;
 use serde::Serialize;
@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio_util::sync::CancellationToken;
@@ -573,60 +573,21 @@ impl UiApproval {
         }
     }
 
-    /// 思考流里也留一行：弹窗被其他窗口挡住时，用户仍能看到正在等授权。
-    fn note_waiting(&self, summary: &str) {
-        let message = format!("[等待授权] {summary}\n");
-        let state = self.app.state::<crate::AppState>();
-        if let Ok(mut active) = state.active_chat.lock() {
-            if let Some(active) = active.active.as_mut() {
-                active.thinking.push_str(&message);
-            }
-        }
-        let _ = self.app.emit("ai-thinking", &message);
-    }
 }
 
 #[async_trait]
 impl ApprovalAnswerer for UiApproval {
     async fn decide(&self, _request: &DshApprovalRequest, payload: ToolConfirmPayload) -> DshDecision {
-        let confirm_id = payload.id.clone();
-        let (sender, receiver) = tokio::sync::oneshot::channel::<bool>();
+        match crate::interactions::confirm_with_ui(&self.app, &self.cancel, payload, self.timeout)
+            .await
         {
-            let state = self.app.state::<crate::AppState>();
-            let mut confirms = state.pending_confirms.lock().await;
-            confirms.insert(
-                confirm_id.clone(),
-                PendingRequest {
-                    sender,
-                    payload: payload.clone(),
-                },
-            );
+            WaitResult::Answered(true) => DshDecision::Allow,
+            WaitResult::Cancelled => DshDecision::Cancel,
+            // 用户拒绝、超时、窗口关闭都按拒绝处理：失败关闭，不给未确认的操作开口子。
+            WaitResult::Answered(false) | WaitResult::TimedOut | WaitResult::Closed => {
+                DshDecision::Deny
+            }
         }
-        let mut guard = RequestGuard::new(&self.app, &confirm_id, RequestKind::Tool);
-        self.note_waiting(&payload.summary);
-        let _ = self.app.emit("ai-tool-confirm", payload);
-
-        let outcome =
-            crate::interactions::wait_for_response(receiver, &self.cancel, self.timeout).await;
-        {
-            let state = self.app.state::<crate::AppState>();
-            let mut confirms = state.pending_confirms.lock().await;
-            confirms.remove(&confirm_id);
-        }
-        guard.settle();
-
-        let (approved, decision) = match outcome {
-            WaitResult::Answered(true) => (true, DshDecision::Allow),
-            WaitResult::Answered(false) => (false, DshDecision::Deny),
-            WaitResult::Cancelled => (false, DshDecision::Cancel),
-            // 超时与窗口关闭都按拒绝处理：失败关闭，不给未确认的操作开口子。
-            WaitResult::TimedOut | WaitResult::Closed => (false, DshDecision::Deny),
-        };
-        let _ = self.app.emit(
-            "ai-tool-confirm-resolved",
-            serde_json::json!({ "id": confirm_id, "approved": approved }),
-        );
-        decision
     }
 }
 

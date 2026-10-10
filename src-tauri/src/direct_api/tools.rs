@@ -16,6 +16,14 @@ const DEFAULT_SEARCH_RESULTS: usize = 5;
 const MAX_SEARCH_RESULTS: usize = 8;
 const SEARCH_CANDIDATE_LIMIT: usize = 12;
 const MAX_SEARCH_SNIPPET_CHARS: usize = 240;
+const EASTMONEY_SEARCH_URL: &str = "https://search-api-web.eastmoney.com/search/jsonp";
+const EASTMONEY_PAGE_SIZE: usize = 20;
+/// 命中任一词的中文查询视为财经新闻意图，优先走东方财富新闻搜索（均为小写）。
+const FINANCE_NEWS_TERMS: &[&str] = &[
+    "金融", "央行", "人民银行", "逆回购", "降息", "降准", "利率", "汇率", "a股", "沪指", "上证",
+    "深证", "创业板", "科创板", "涨停", "股市", "股票", "基金", "债券", "国债", "财政部", "证监会",
+    "金融监管", "券商", "财联社", "港股", "北向", "南向", "ipo", "lpr", "mlf",
+];
 const MAX_WEBPAGE_CHARS: usize = 12_000;
 const MAX_WEBPAGE_EXCERPTS: usize = 8;
 
@@ -2358,6 +2366,21 @@ async fn web_search_with_options(
     let mut all_results = Vec::new();
     let effective_query = options.effective_query();
 
+    // Bing 对中文财经泛查询只会给百科/官网首页，且不识别 after: 日期算子；
+    // 财经新闻意图先走带发布时间的东方财富新闻搜索，Bing 只在结果不足时补位。
+    if options.site.is_none() && is_cn_finance_news_query(&options.query) {
+        match search_eastmoney_news(&client, &options.query, options.recency_days).await {
+            Ok(results) if !results.is_empty() => {
+                source_names.push("东方财富");
+                for result in results {
+                    push_unique_search_result(&mut all_results, result);
+                }
+            }
+            Ok(_) => failures.push("东方财富 未找到结果".to_string()),
+            Err(e) => failures.push(e),
+        }
+    }
+
     for provider in providers {
         if source_names.len() >= 2 || all_results.len() >= SEARCH_CANDIDATE_LIMIT {
             break;
@@ -2849,6 +2872,152 @@ async fn search_with_provider(
         SearchProvider::BingHtml => parse_bing_html(&body),
     };
     results.truncate(SEARCH_CANDIDATE_LIMIT);
+    Ok(results)
+}
+
+fn is_cn_finance_news_query(query: &str) -> bool {
+    if !query.chars().any(is_cjk) {
+        return false;
+    }
+    let lower = query.to_lowercase();
+    FINANCE_NEWS_TERMS.iter().any(|term| lower.contains(term))
+}
+
+/// 东方财富是按标题/正文关键词检索：只去掉 Bing 专用的 after:/before:/site: 算子。
+/// "2026年10月"之类的日期词要保留——它们会把结果往当月新闻上拉，去掉后同一查询
+/// 会混进整月甚至上月的旧稿（实测"央行 公开市场操作 逆回购"近两天结果从 20 条降到 6 条）。
+fn eastmoney_keyword(query: &str) -> String {
+    query
+        .split_whitespace()
+        .filter(|part| {
+            let lower = part.to_lowercase();
+            !(lower.starts_with("after:")
+                || lower.starts_with("before:")
+                || lower.starts_with("site:"))
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+async fn search_eastmoney_news(
+    client: &reqwest::Client,
+    query: &str,
+    recency_days: Option<u32>,
+) -> Result<Vec<SearchResult>, String> {
+    let keyword = eastmoney_keyword(query);
+    if keyword.is_empty() {
+        return Ok(Vec::new());
+    }
+    let param = json!({
+        "uid": "",
+        "keyword": keyword,
+        "type": ["cmsArticleWebOld"],
+        "client": "web",
+        "clientType": "web",
+        "clientVersion": "curr",
+        "param": {
+            "cmsArticleWebOld": {
+                "searchScope": "default",
+                "sort": "default",
+                "pageIndex": 1,
+                "pageSize": EASTMONEY_PAGE_SIZE,
+                "preTag": "",
+                "postTag": ""
+            }
+        }
+    })
+    .to_string();
+
+    let res = client
+        .get(EASTMONEY_SEARCH_URL)
+        .header("Referer", "https://so.eastmoney.com/")
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .query(&[("cb", "cb"), ("param", param.as_str())])
+        .send()
+        .await
+        .map_err(|e| format!("东方财富 请求失败: {e}"))?;
+    let status = res.status();
+    if !status.is_success() {
+        return Err(format!("东方财富 返回 HTTP {status}"));
+    }
+    let body = res
+        .text()
+        .await
+        .map_err(|e| format!("读取 东方财富 响应失败: {e}"))?;
+
+    parse_eastmoney_news(&body, recency_days, Local::now().date_naive())
+}
+
+/// 解析东方财富 JSONP 响应。发布时间和媒体名写进摘要开头，让模型能按时间戳核对日期；
+/// 设了 recency_days 时只保留窗口内的新闻（窗口内一条都没有则不过滤，避免空结果）。
+fn parse_eastmoney_news(
+    body: &str,
+    recency_days: Option<u32>,
+    today: NaiveDate,
+) -> Result<Vec<SearchResult>, String> {
+    let (Some(start), Some(end)) = (body.find('('), body.rfind(')')) else {
+        return Err("东方财富 返回格式异常".to_string());
+    };
+    if end <= start {
+        return Err("东方财富 返回格式异常".to_string());
+    }
+    let value: serde_json::Value = serde_json::from_str(&body[start + 1..end])
+        .map_err(|e| format!("东方财富 响应解析失败: {e}"))?;
+    if value["code"].as_i64().unwrap_or(0) != 0 {
+        return Err(format!(
+            "东方财富 返回错误: {}",
+            value["msg"].as_str().unwrap_or("未知")
+        ));
+    }
+
+    let items = value["result"]["cmsArticleWebOld"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let mut results = Vec::new();
+    let mut dates = Vec::new();
+    for item in items {
+        let title = clean_html_text(item["title"].as_str().unwrap_or(""));
+        let url = item["url"].as_str().unwrap_or("").to_string();
+        let date_text = item["date"].as_str().unwrap_or("").trim();
+        let media = item["mediaName"].as_str().unwrap_or("").trim();
+        let content = clean_html_text(item["content"].as_str().unwrap_or(""));
+
+        let mut label = date_text.to_string();
+        if !media.is_empty() {
+            if !label.is_empty() {
+                label.push(' ');
+            }
+            label.push_str(media);
+        }
+        let snippet = if label.is_empty() {
+            content
+        } else {
+            format!("[{label}] {content}")
+        };
+        let date = chrono::NaiveDateTime::parse_from_str(date_text, "%Y-%m-%d %H:%M:%S")
+            .ok()
+            .map(|dt| dt.date());
+
+        let before = results.len();
+        push_search_result(&mut results, title, url, snippet);
+        if results.len() > before {
+            dates.push(date);
+        }
+    }
+
+    if let Some(days) = recency_days {
+        let cutoff = today - ChronoDuration::days(days as i64);
+        let fresh: Vec<SearchResult> = results
+            .iter()
+            .zip(&dates)
+            .filter(|(_, date)| date.is_some_and(|d| d >= cutoff))
+            .map(|(result, _)| result.clone())
+            .collect();
+        if !fresh.is_empty() {
+            return Ok(fresh);
+        }
+    }
     Ok(results)
 }
 
@@ -4556,6 +4725,89 @@ mod tests {
             options.effective_query_for_date(chrono::NaiveDate::from_ymd_opt(2026, 6, 10).unwrap());
 
         assert!(query.contains("after:2026-06-03"));
+    }
+
+    #[test]
+    fn finance_news_intent_requires_cjk_and_finance_terms() {
+        assert!(is_cn_finance_news_query("国内金融行业重要新闻 2026年10月9日"));
+        assert!(is_cn_finance_news_query("央行 逆回购 净回笼"));
+        assert!(is_cn_finance_news_query("A股 收盘 沪指 成交额"));
+        assert!(!is_cn_finance_news_query("DeepSeek API 文档"));
+        assert!(!is_cn_finance_news_query("fed rate decision"));
+        assert!(!is_cn_finance_news_query("今天天气怎么样"));
+    }
+
+    #[test]
+    fn eastmoney_keyword_strips_bing_operators_but_keeps_date_words() {
+        assert_eq!(
+            eastmoney_keyword("证监会 发布 新规 2026年10月 after:2026-10-07"),
+            "证监会 发布 新规 2026年10月"
+        );
+        assert_eq!(
+            eastmoney_keyword("A股 10月9日 收盘 site:eastmoney.com"),
+            "A股 10月9日 收盘"
+        );
+        assert_eq!(eastmoney_keyword("after:2026-10-07"), "");
+    }
+
+    fn eastmoney_fixture() -> String {
+        let payload = serde_json::json!({
+            "code": 0,
+            "msg": "OK",
+            "result": { "cmsArticleWebOld": [
+                {
+                    "date": "2026-10-09 17:54:06",
+                    "title": "新华财经晚报：财政部安排使用5500亿元地方政府债务结存限额",
+                    "content": "财政部安排使用5500亿元地方政府债务结存限额。",
+                    "mediaName": "新华财经",
+                    "url": "http://finance.eastmoney.com/a/202610093891345776.html"
+                },
+                {
+                    "date": "2026-09-19 11:38:00",
+                    "title": "证监会吹哨人制度兑现",
+                    "content": "旧闻",
+                    "mediaName": "",
+                    "url": "http://finance.eastmoney.com/a/202609193890000000.html"
+                }
+            ]}
+        });
+        format!("cb({payload})")
+    }
+
+    #[test]
+    fn parse_eastmoney_news_puts_timestamp_and_media_in_snippet() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 9).unwrap();
+        let results = parse_eastmoney_news(&eastmoney_fixture(), None, today).unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert!(results[0]
+            .snippet
+            .starts_with("[2026-10-09 17:54:06 新华财经]"));
+        assert!(results[1].snippet.starts_with("[2026-09-19 11:38:00]"));
+    }
+
+    #[test]
+    fn parse_eastmoney_news_filters_by_recency_but_never_empties() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 9).unwrap();
+
+        let fresh = parse_eastmoney_news(&eastmoney_fixture(), Some(2), today).unwrap();
+        assert_eq!(fresh.len(), 1);
+        assert!(fresh[0].title.contains("5500亿元"));
+
+        // 窗口内一条都没有时保留全部，避免把可用结果过滤成空
+        let far_future = chrono::NaiveDate::from_ymd_opt(2027, 1, 1).unwrap();
+        let kept = parse_eastmoney_news(&eastmoney_fixture(), Some(2), far_future).unwrap();
+        assert_eq!(kept.len(), 2);
+    }
+
+    #[test]
+    fn parse_eastmoney_news_rejects_bad_payloads() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 9).unwrap();
+        assert!(parse_eastmoney_news("<html>blocked</html>", None, today).is_err());
+        assert!(parse_eastmoney_news("cb({\"code\":1,\"msg\":\"bad\"})", None, today).is_err());
+        assert!(parse_eastmoney_news("cb({\"code\":0,\"result\":{}})", None, today)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

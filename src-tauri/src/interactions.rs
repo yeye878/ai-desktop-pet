@@ -85,6 +85,62 @@ pub async fn wait_for_response<T>(
     }
 }
 
+/// 通过直连 API 那套确认弹窗向用户要一次授权。
+///
+/// 本地 CLI 后端（dsh、Claude Code）都走这里：pending_confirms 登记请求 →
+/// 发 ai-tool-confirm 事件（ToolConfirmPanel 窗口）→ 用户点击 → confirm_tool 唤醒。
+/// 等待期间在思考流里留一行，弹窗被挡住时用户也知道正在等授权。
+pub async fn confirm_with_ui(
+    app: &tauri::AppHandle,
+    cancel: &CancellationToken,
+    payload: crate::direct_api::ToolConfirmPayload,
+    timeout: Duration,
+) -> WaitResult<bool> {
+    let confirm_id = payload.id.clone();
+    let (sender, receiver) = tokio::sync::oneshot::channel::<bool>();
+    {
+        let state = app.state::<crate::AppState>();
+        let mut confirms = state.pending_confirms.lock().await;
+        confirms.insert(
+            confirm_id.clone(),
+            PendingRequest {
+                sender,
+                payload: payload.clone(),
+            },
+        );
+    }
+    let mut guard = RequestGuard::new(app, &confirm_id, RequestKind::Tool);
+
+    let waiting = format!("[等待授权] {}\n", payload.summary);
+    {
+        let state = app.state::<crate::AppState>();
+        if let Ok(mut active) = state.active_chat.lock() {
+            if let Some(active) = active.active.as_mut() {
+                active.thinking.push_str(&waiting);
+            }
+        }
+        let _ = app.emit("ai-thinking", &waiting);
+    }
+    let _ = app.emit("ai-tool-confirm", payload);
+
+    let outcome = wait_for_response(receiver, cancel, timeout).await;
+    {
+        let state = app.state::<crate::AppState>();
+        let mut confirms = state.pending_confirms.lock().await;
+        confirms.remove(&confirm_id);
+    }
+    guard.settle();
+
+    if !matches!(outcome, WaitResult::Cancelled) {
+        let approved = matches!(outcome, WaitResult::Answered(true));
+        let _ = app.emit(
+            "ai-tool-confirm-resolved",
+            serde_json::json!({ "id": confirm_id, "approved": approved }),
+        );
+    }
+    outcome
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

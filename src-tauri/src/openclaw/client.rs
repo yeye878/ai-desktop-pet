@@ -159,6 +159,19 @@ impl ClaudeAdapter {
             .arg("--max-budget-usd")
             .arg("0.5");
 
+        // 需要授权的工具调用交给桌宠的 MCP 工具决定，而不是被自动拒绝。
+        // 桥没起来（或配置没写成）时不加这些参数，保持 Claude 自己的默认行为。
+        if let Ok(config) = crate::mcp_permission::config_path(app_handle) {
+            if config.is_file() {
+                cmd.arg("--mcp-config")
+                    .arg(&config)
+                    .arg("--permission-prompt-tool")
+                    .arg(crate::mcp_permission::PROMPT_TOOL)
+                    .arg("--permission-prompts")
+                    .arg("host");
+            }
+        }
+
         // 多轮对话：如果已有 session_id，追加 --resume
         if let Ok(sid) = self.session_id.lock() {
             if let Some(ref id) = *sid {

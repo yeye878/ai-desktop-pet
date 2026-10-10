@@ -4145,7 +4145,7 @@ ttsPlayer.stop();
                 </div>
 
                 <div class="dash-current-model" style="margin-top: 14px;">当前会话模型：{{ currentModel || '加载中...' }}</div>
-                <p class="dash-hint">使用本地 Claude Code CLI 子进程，会话自动保持上下文与本地执行能力。</p>
+                <p class="dash-hint">使用本地 Claude Code CLI 子进程，会话自动保持上下文与本地执行能力；需要授权的工具会弹出与直连 API 相同的确认窗口。</p>
                 
                 <div style="display:flex;gap:12px;margin-top:12px;">
                   <button class="dash-btn primary" @click="resetModel">{{ modelSaved ? "✅ 已重置" : "🔄 重置会话" }}</button>

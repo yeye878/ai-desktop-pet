@@ -44,6 +44,7 @@ function compileModule(file) {
 function loadModule(file) {
   // 工程是 "type": "module"，缓存目录里放一份 commonjs 声明，
   // 编译出来的 .js 才会被当成 CJS，内部的 require("./math") 也能解析
+  fs.mkdirSync(path.dirname(cacheRoot), { recursive: true });
   fs.writeFileSync(path.join(cacheRoot, "..", "package.json"), JSON.stringify({ type: "commonjs" }));
   // 依赖模块也要一起重新编译，否则 require("./math") 会命中上一次的旧产物
   for (const dependency of ["src/services/math.ts"]) compileModule(dependency);

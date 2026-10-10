@@ -33,24 +33,13 @@ const KATEX_OPTIONS = {
   displayMode: false,
 };
 
-/**
- * 调用 KaTeX 的函数：源码用 new Function 生成、tex 与 katex 都走形参传入。
- * 为什么不直接 katex.renderToString(tex)？因为 tex 里全是反斜杠，
- * 一旦被拼进源码字符串就会变成转义符（"\r"、"\t"）把公式弄坏。
- */
-const KATEX_RUNNER = new Function("katex", "tex", "options", "return katex.renderToString(tex, options);") as (
-  katexModule: typeof katex,
-  tex: string,
-  options: Record<string, unknown>,
-) => string;
-
 let sequence = 0;
 
 function renderLatex(latex: string, display: boolean): string {
   const trimmed = latex.trim();
   if (!trimmed) return "";
   try {
-    const html = KATEX_RUNNER(katex, trimmed, { ...KATEX_OPTIONS, displayMode: display });
+    const html = katex.renderToString(trimmed, { ...KATEX_OPTIONS, displayMode: display });
     if (display) {
       return '<span class="md-math md-math-display">' + html + "</span>";
     }

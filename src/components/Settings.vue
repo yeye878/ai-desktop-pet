@@ -1630,7 +1630,7 @@ onUnmounted(() => {
           <!-- Claude Code 模式 -->
           <template v-if="backendType === 'claude_code'">
             <p class="current-model">{{ currentModel || '加载中...' }}</p>
-            <p class="hint">使用本地 Claude Code CLI 子进程，会话自动保持上下文。</p>
+            <p class="hint">使用本地 Claude Code CLI 子进程，会话自动保持上下文；需要授权的工具会弹出与直连 API 相同的确认窗口。</p>
             <div class="model-actions">
               <button class="action-btn" @click="resetModel">
                 {{ modelSaved ? "&#x2705; 已重置" : "&#x1F504; 重置会话" }}

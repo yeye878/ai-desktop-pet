@@ -10,5 +10,8 @@ if (import.meta.env.DEV) {
 }
 
 const app = createApp(App);
+app.config.errorHandler = (err, _instance, info) => {
+  console.error("Vue Global Error:", err, info);
+};
 app.use(createPinia());
 app.mount("#app");
