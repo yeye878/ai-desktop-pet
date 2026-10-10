@@ -169,16 +169,19 @@ HTML 来源的能拿到，两条来源被用不同尺子打分。
 
 1. **不再给 Bing 追加 `after:`**。要么彻底去掉该算子、把时效交给本地排序（`recency_days` 本来就只在
    `score_result_freshness` 里用），要么按引擎适配：Bing 用 `filters=ex1:"ez1"` 之类或干脆不用，
-   东财保持现状。这一条就能救回绝大多数新闻/时效查询。
+   东财保持现状。这一条就能救回绝大多数新闻/时效查询。 → **已修，见 §10**
 2. **给排序加相关性下限**：要求"至少命中一个长度 ≥2 的实词"（过滤掉 `2026`/`年`/`月`/单字滑窗），
    命中数不足时**返回明确提示"结果与查询不相关"**，而不是硬塞 5 条跑题结果让模型去瞎猜。
+   → **已修（按实词数量自适应阈值），见 §10**
 3. **补全实体解码**：加 `&ensp; &emsp; &hellip; &middot; &ndash; &mdash; &lsquo; &rsquo; &ldquo; &rdquo;`
-   以及**支持前导零/十六进制的通用 `&#...;` 解码**。
+   以及**支持前导零/十六进制的通用 `&#...;` 解码**。 → **已修，见 §10**
 4. **换/加一个真正可用的第二引擎**（DDG 在本网络不通）。可选：Bing 国际站、Brave、SearXNG 实例、
-   或接一个带摘要的搜索 API。否则任何单引擎抖动都是全量噪声。
+   或接一个带摘要的搜索 API。否则任何单引擎抖动都是全量噪声。 ← **未做（需要产品选型）**
 5. **RSS 时间戳纳入排序**：解析 `pubDate` 填进 `SearchResult`，与 HTML 摘要统一比较。
+   ← **未做**（要扩 `SearchResult` 字段，会牵动多处结构体字面量，建议和 4 一起做）
 6. **搜索 client 加 `.no_proxy()`**，或显式读一个专用代理配置变量，并让失败原因可见
    （现在只剩"所有搜索源都未返回可用结果"，无法区分"被代理拦了"和"真的没结果"）。
+   ← **未做（产品决策：国内用户可能恰恰需要代理才能出网，不能无脑关）**
 
 ## 8. 附带发现
 
@@ -190,10 +193,57 @@ HTML 来源的能拿到，两条来源被用不同尺子打分。
 
 ## 9. 临时产物（可删，都在工作树里，未提交）
 
-- `.ws-probe/`：`fetch-raw.mjs`、`save-fixtures.mjs`、`save-manifest.mjs`、`after-probe.mjs`、
-  `coverage-probe.mjs`、`net-probe.mjs`、`raw/`、`fixtures/`（抓取的原始响应）
-- `.ws-probe/probe-test.rs.txt`：诊断探针源码 + 贴回方法（**源码未被修改**，
-  为了满足"不改代码"，探针已从 `tools.rs` 中移除，该文件回到原状）
+- `.ws-probe/`：`fetch-raw.mjs`、`save-fixtures.mjs`、`save-manifest.mjs`、`save-fixtures-fixed.mjs`、
+  `after-probe.mjs`、`coverage-probe.mjs`、`net-probe.mjs`、`raw/`、`fixtures/`（抓取的原始响应）
+- `.ws-probe/probe-test.rs.txt`：诊断/验证探针源码 + 贴回方法（**不在源码树里**，用完即删，
+  这样 `tools.rs` 始终只有真实修复，不掺探针）
 - 本报告 `WEB_SEARCH_DIAGNOSIS.md`
 
-以上均为新增的未跟踪文件，`git status` 里显示为 `??`，删除即可，不影响任何已跟踪文件。
+---
+
+## 10. 修复记录（2026-10-10）
+
+只改了 `src-tauri/src/direct_api/tools.rs` 一个文件，落地 §7 的第 1~3 条。
+
+### 改了什么
+
+1. **`effective_query()`（原 `effective_query_for_date()`）**：删掉 `after:` 注入，只保留 `site:`。
+   时效性完全交给 `score_result_freshness` 与东方财富的发布时间过滤。函数不再需要 `today` 参数。
+2. **`rank_search_results()` 加相关性下限**：新增 `RankedSearch { results, off_topic }` 返回值、
+   `is_content_term()`（排除纯数字与单字）、`content_term_hits()`、`min_content_hits()`
+   （实词 ≥4 个时要求命中 ≥2 个不同实词，否则退化为 1）。
+   命中不足的候选计入 `off_topic` 并丢弃；URL 命中不再算相关性依据。
+   - 全部候选跑题时，`web_search_with_options()` **返回明确的错误说明**（"候选全部与查询主题无关…请换更短更具体的关键词"），
+     而不是把噪声塞给模型；有结果但丢弃过跑题候选时，在结果末尾追加一行提示。
+3. **`decode_html_entities()` + 新增 `decode_numeric_entities()`**：补齐 `&ensp; &emsp; &thinsp;`
+   `&hellip; &middot; &ndash; &mdash; &lsquo; &rsquo; &ldquo; &rdquo; &times; &copy; &reg; &deg;`，
+   并支持 `&#0183;`（前导零十进制）与 `&#x27;`（十六进制）等全部数字实体写法；
+   `&amp;` 改为最后解码，NBSP 归一成普通空格。
+
+### 验证（真实数据，非模拟）
+
+`.ws-probe/fixtures/` 里同时存着"修复前生产实际发出的查询（带 `after:`）"和"修复后的查询"两份真实响应，
+探针把两份分别喂进生产管线对比（探针源码见 `.ws-probe/probe-test.rs.txt`）：
+
+| 查询 | 修复前 | 修复后 |
+|---|---|---|
+| `今天上海天气怎么样` | 10 条候选只有 1 条过线，且是**「天长」**天气网（城市都不对） | 10 条全过线 → **5 条上海天气结果**（Raincast、7k7p、上海天气网、中国天气网、随心天气） |
+| `今天有什么AI新闻` | 0 条过线（全是黄历/百度百科「今天」/历史上的今天）→ 报跑题 | 9 条过线 → **5 条真实 AI 快讯**（AI情报台、今日AI新闻、AIKnow…） |
+| `2026年10月 央行 逆回购 公开市场操作` | 0 条过线，10 条跑题（国庆盘点/世界杯/诺贝尔奖/两会） | 仍 0 条过线，10 条跑题 → **如实报错并给出改写建议，不再喂噪声** |
+
+> 第三条属于"Bing 对这个查询本身就不行"，修复的作用是**不再把跑题结果伪装成答案**；
+> 线上该查询会先走东方财富（按发布时间过滤、不受 `after:` 影响），那条路未被改动。
+
+新增回归测试 3 个（用实测内容做用例）：`effective_query_never_injects_unsupported_after_operator`、
+`relevance_floor_drops_off_topic_candidates`、`relevance_floor_keeps_on_topic_candidates`、
+`decodes_bing_html_entities_including_zero_padded_numeric`（共 4 个）。
+
+测试：`cargo test --lib direct_api::tools` → **37 passed / 0 failed**。
+（全量 `cargo test --lib` 有 3 个 `tts::edge_tts` 用例失败，原因是本机沙箱下 TLS 取不到凭证 +
+`speech.platform.bing.com` 走不通，与本改动无关——它们访问的是 TTS 实时接口，
+顺带印证了 §6 的代理问题：报错就是 `tcp connect error: 目标计算机积极拒绝`，
+即 reqwest 用了环境里的 `HTTPS_PROXY`。）
+
+### 仍未做（§7 的 4~6）
+
+第二引擎选型、`pubDate` 纳入排序、代理策略，都需要产品决策，未擅自改动。

@@ -194,29 +194,23 @@ impl SearchOptions {
         })
     }
 
+    /// 真正发给搜索引擎的查询串。
+    ///
+    /// 只追加引擎确实支持的 `site:` 限定。**不再追加 `after:` 日期算子**：
+    /// cn.bing.com 不识别它，会把"词 + after:日期"整体降级成与主题无关的噪声
+    /// （实测 `今天上海天气怎么样 after:2026-10-08` 返回今日黄历/日历/「历史上的今天」，
+    /// 而同一查询去掉算子后返回上海天气网、中国天气网、上海市气象局）。
+    /// 由于 `infer_recency_days` 会把"今天/最近/最新/新闻"这类最常见的时效查询
+    /// 都判成带 recency，注入算子等于让最高频的一类查询必然跑题。
+    ///
+    /// 时效性改由本地负责：`score_result_freshness` 打分、东方财富按发布时间过滤。
     fn effective_query(&self) -> String {
-        self.effective_query_for_date(Local::now().date_naive())
-    }
-
-    fn effective_query_for_date(&self, today: NaiveDate) -> String {
         let query = self.query.trim();
         let lower = query.to_lowercase();
-        let mut parts = vec![query.to_string()];
-
-        if let Some(days) = self.recency_days {
-            if !lower.contains("after:") && !lower.contains("before:") {
-                let start_date = today - ChronoDuration::days(days as i64);
-                parts.push(format!("after:{}", start_date.format("%Y-%m-%d")));
-            }
+        match self.site.as_deref() {
+            Some(site) if !lower.contains("site:") => format!("{query} site:{site}"),
+            _ => query.to_string(),
         }
-
-        if let Some(site) = self.site.as_deref() {
-            if !lower.contains("site:") {
-                parts.push(format!("site:{site}"));
-            }
-        }
-
-        parts.join(" ")
     }
 }
 
@@ -2397,19 +2391,44 @@ async fn web_search_with_options(
         }
     }
 
-    let results = rank_search_results(
+    let ranked = rank_search_results(
         &options.query,
         all_results,
         &options.exclude_domains,
         options.site.as_deref(),
         options.recency_days,
     );
-    if !results.is_empty() {
-        let limit = options.max_results.min(results.len());
-        return Ok(format_search_results(
+    if !ranked.results.is_empty() {
+        let limit = options.max_results.min(ranked.results.len());
+        let mut output = format_search_results(
             &source_names.join(" + "),
             options,
-            &results[..limit],
+            &ranked.results[..limit],
+        );
+        if ranked.off_topic > 0 {
+            output.push_str(&format!(
+                "\n注意: 另有 {} 条候选与查询主题无关，已丢弃；不要基于它们作答。\n",
+                ranked.off_topic
+            ));
+        }
+        return Ok(output);
+    }
+
+    // 候选存在但全被判为跑题：这是"引擎跑偏"，不是"没联网"。
+    // 如实说明，并给出可执行的下一步，而不是把噪声塞给模型。
+    if ranked.off_topic > 0 {
+        return Err(format!(
+            "搜索源返回的 {} 条候选全部与查询「{}」主题无关，已按相关性全部丢弃，没有可用结果。\
+             常见原因：查询词过长或过于宽泛，引擎把其中一两个词当成了主题。\
+             请改用更短、更具体的关键词（保留专有名词，去掉「今天/最新/怎么样」这类词）重试，\
+             或用 site: 限定到具体站点；不要基于本次结果作答。失败源：{}",
+            ranked.off_topic,
+            options.query,
+            if failures.is_empty() {
+                "无".to_string()
+            } else {
+                failures.join("；")
+            }
         ));
     }
 
@@ -3058,17 +3077,70 @@ fn push_unique_search_result(results: &mut Vec<SearchResult>, result: SearchResu
     results.push(result);
 }
 
+/// 一次排序的产出。
+struct RankedSearch {
+    /// 通过相关性下限、并按分数排好序的候选。
+    results: Vec<SearchResult>,
+    /// 与查询没有任何实词交集、被判为跑题而丢弃的候选数。
+    /// 用于如实告诉模型"引擎返回的是跑题结果"，而不是把噪声塞给它。
+    off_topic: usize,
+}
+
+/// 相关性下限要求命中的"实词"个数。
+///
+/// "命中任意一个词就算相关"太松：`query_terms` 会把中文查询拆成全部 2 字滑窗，
+/// 而 `市场`/`今天` 这类高频滑窗在节假日、黄历页面上也能命中，于是跑题结果照样过关
+/// （实测查询「2026年10月 央行 逆回购 公开市场操作」最终返回国庆盘点 / 世界杯 / 诺贝尔奖，
+/// 没有一条提到央行或逆回购）。
+///
+/// 因此按实词数量自适应：实词多说明查询足够具体，要求至少命中 2 个不同实词；
+/// 查询本身只有一两个实词时退化为 1，避免误杀唯一的相关结果。
+fn min_content_hits(content_term_count: usize) -> usize {
+    if content_term_count >= 4 {
+        2
+    } else {
+        1
+    }
+}
+
+/// 该词能否作为"这条结果与查询有关"的证据。
+///
+/// 排除纯数字（`2026`/`10`）与单字（`年`/`月`）：它们在几乎任何网页上都命中，
+/// 只能做加分项，不能当相关性依据。
+fn is_content_term(term: &str) -> bool {
+    let chars: Vec<char> = term.chars().collect();
+    chars.len() >= 2 && !chars.iter().all(char::is_ascii_digit)
+}
+
+/// 统计结果在标题/摘要里命中了多少个不同实词（不含域名与 URL 命中，
+/// 因为 URL 里出现 `2026` 不代表这条结果讲的是 2026 年的事）。
+fn content_term_hits(result: &SearchResult, content_terms: &[String]) -> usize {
+    let title = result.title.to_lowercase();
+    let snippet = result.snippet.to_lowercase();
+    content_terms
+        .iter()
+        .filter(|term| title.contains(term.as_str()) || snippet.contains(term.as_str()))
+        .count()
+}
+
 fn rank_search_results(
     query: &str,
     results: Vec<SearchResult>,
     exclude_domains: &[String],
     site: Option<&str>,
     recency_days: Option<u32>,
-) -> Vec<SearchResult> {
+) -> RankedSearch {
     let terms = query_terms(query);
+    let content_terms = terms
+        .iter()
+        .filter(|term| is_content_term(term))
+        .cloned()
+        .collect::<Vec<_>>();
+    let required_hits = min_content_hits(content_terms.len());
     let site = site.and_then(normalize_domain_filter);
     let today = Local::now().date_naive();
     let mut scored = Vec::new();
+    let mut off_topic = 0usize;
 
     for (index, result) in results.into_iter().enumerate() {
         if !is_usable_search_result(&result) {
@@ -3090,6 +3162,14 @@ fn rank_search_results(
             }
         }
 
+        // 相关性下限：查询本身没有实词（纯数字/纯符号）时放弃该下限，避免误杀。
+        if !content_terms.is_empty()
+            && content_term_hits(&result, &content_terms) < required_hits
+        {
+            off_topic += 1;
+            continue;
+        }
+
         let score = score_search_result(&result, query, &terms, recency_days, today);
         scored.push((score, index, compact_search_result(result)));
     }
@@ -3100,7 +3180,10 @@ fn rank_search_results(
     }
 
     scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    scored.into_iter().map(|(_, _, result)| result).collect()
+    RankedSearch {
+        results: scored.into_iter().map(|(_, _, result)| result).collect(),
+        off_topic,
+    }
 }
 
 fn score_search_result(
@@ -3644,18 +3727,89 @@ fn clean_html_text(s: &str) -> String {
         .join(" ")
 }
 
+/// 解码 HTML 实体。
+///
+/// Bing 的 HTML 摘要每条都以「时间&ensp;&#0183;&ensp;正文」开头，而 `&ensp;` 与
+/// **带前导零**的数字实体 `&#0183;`（= `·`）都不在原表内，于是原始实体会被原样
+/// 送进模型上下文（实测摘要: `14 小时之前&ensp;&#0183;&ensp;今天是第 41 周…`）。
+/// RSS 路径的摘要不含实体，所以线上表现为同一份结果列表里干净与脏的混在一起。
 fn decode_html_entities(s: &str) -> String {
-    s.replace("&amp;", "&")
+    let named = s
+        .replace("&ensp;", " ")
+        .replace("&emsp;", " ")
+        .replace("&thinsp;", " ")
+        .replace("&nbsp;", " ")
+        .replace("&hellip;", "…")
+        .replace("&middot;", "·")
+        .replace("&ndash;", "–")
+        .replace("&mdash;", "—")
+        .replace("&lsquo;", "‘")
+        .replace("&rsquo;", "’")
+        .replace("&ldquo;", "“")
+        .replace("&rdquo;", "”")
+        .replace("&times;", "×")
+        .replace("&copy;", "©")
+        .replace("&reg;", "®")
+        .replace("&deg;", "°");
+
+    // 数字实体统一在此解码（覆盖 `&#x27;` / `&#39;` / `&#0183;` 等所有写法）。
+    let decoded = decode_numeric_entities(&named)
+        .replace('\u{a0}', " ")
+        .replace('\u{2002}', " ")
+        .replace('\u{2003}', " ");
+
+    // `&amp;` 最后处理：先展开它会凭空造出新实体（`&amp;lt;` → `<`）。
+    decoded
+        .replace("&amp;", "&")
         .replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
         .replace("&apos;", "'")
-        .replace("&#x27;", "'")
-        .replace("&#x2F;", "/")
-        .replace("&#39;", "'")
-        .replace("&#34;", "\"")
-        .replace("&#160;", " ")
-        .replace("&nbsp;", " ")
+}
+
+/// 解码 `&#NNN;` / `&#xHH;` 数字实体，允许前导零。
+///
+/// Bing 会输出 `&#0183;`（十进制 183 = `·`）这种带前导零的写法，朴素的
+/// `&#数字;` 替换会整体漏掉。无法映射成非控制字符时保留原样，绝不吞字符。
+fn decode_numeric_entities(value: &str) -> String {
+    let chars = value.chars().collect::<Vec<_>>();
+    let mut out = String::with_capacity(value.len());
+    let mut index = 0;
+
+    while index < chars.len() {
+        if chars[index] == '&' && index + 2 < chars.len() && chars[index + 1] == '#' {
+            let hex = matches!(chars[index + 2], 'x' | 'X');
+            let digits_start = if hex { index + 3 } else { index + 2 };
+            let mut end = digits_start;
+            while end < chars.len()
+                && if hex {
+                    chars[end].is_ascii_hexdigit()
+                } else {
+                    chars[end].is_ascii_digit()
+                }
+            {
+                end += 1;
+            }
+            let terminated = end > digits_start && end < chars.len() && chars[end] == ';';
+            if terminated {
+                let digits = chars[digits_start..end].iter().collect::<String>();
+                let code = u32::from_str_radix(&digits, if hex { 16 } else { 10 });
+                if let Some(character) = code
+                    .ok()
+                    .and_then(char::from_u32)
+                    .filter(|c| !c.is_control())
+                {
+                    out.push(character);
+                    index = end + 1;
+                    continue;
+                }
+            }
+        }
+        out.push(chars[index]);
+        index += 1;
+    }
+
+    out
 }
 
 fn extract_tag_text(s: &str, tag: &str) -> Option<String> {
@@ -4673,10 +4827,13 @@ mod tests {
         let ranked = rank_search_results("DeepSeek chat completions API", results, &[], None, None);
 
         assert_eq!(
-            ranked.first().map(|item| item.url.as_str()),
+            ranked.results.first().map(|item| item.url.as_str()),
             Some("https://api-docs.deepseek.com/guides/chat-completions")
         );
-        assert!(!ranked.iter().any(|item| item.url.contains("bing.com")));
+        assert!(!ranked
+            .results
+            .iter()
+            .any(|item| item.url.contains("bing.com")));
     }
 
     #[test]
@@ -4702,9 +4859,9 @@ mod tests {
             None,
         );
 
-        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked.results.len(), 1);
         assert_eq!(
-            ranked[0].url,
+            ranked.results[0].url,
             "https://docs.rs/reqwest/latest/reqwest/struct.Proxy.html"
         );
     }
@@ -4718,13 +4875,102 @@ mod tests {
     }
 
     #[test]
-    fn effective_query_adds_after_operator_for_recency() {
+    fn effective_query_never_injects_unsupported_after_operator() {
         let mut options = SearchOptions::new("最近的国际新闻");
         options.recency_days = Some(7);
-        let query =
-            options.effective_query_for_date(chrono::NaiveDate::from_ymd_opt(2026, 6, 10).unwrap());
 
-        assert!(query.contains("after:2026-06-03"));
+        // cn.bing.com 不识别 after:，注入它会把查询打成日历/黄历类噪声，因此一律不注入；
+        // 时效性由 score_result_freshness 本地打分（以及东方财富的发布时间过滤）负责。
+        assert_eq!(options.effective_query(), "最近的国际新闻");
+
+        // site: 是 Bing 支持的限定，保留。
+        options.site = Some("news.sina.com.cn".to_string());
+        assert_eq!(
+            options.effective_query(),
+            "最近的国际新闻 site:news.sina.com.cn"
+        );
+
+        // 查询里已经写了 site: 时不重复追加。
+        let mut with_site = SearchOptions::new("deepseek api site:github.com");
+        with_site.site = Some("github.com".to_string());
+        assert_eq!(with_site.effective_query(), "deepseek api site:github.com");
+    }
+
+    /// 回归：真实抓取的 Bing 跑题结果必须被相关性下限挡住，不能进最终结果。
+    /// 用例取自实测——查询「2026年10月 央行 逆回购 公开市场操作」时 Bing 实际返回的内容。
+    #[test]
+    fn relevance_floor_drops_off_topic_candidates() {
+        let off_topic = vec![
+            SearchResult {
+                title: "2026年国庆假期盘点_新闻频道_央视网".to_string(),
+                url: "https://news.cctv.com/2026/10/08/example.shtml".to_string(),
+                snippet: "假日活动丰富多彩，消费市场供需两旺。金秋十月，山河锦绣。".to_string(),
+            },
+            SearchResult {
+                title: "2026年国际足联世界杯_百度百科".to_string(),
+                url: "https://baike.baidu.com/item/example".to_string(),
+                snippet: "2026年国际足联世界杯，于2026年6月11日至7月19日举行。".to_string(),
+            },
+        ];
+
+        let ranked = rank_search_results(
+            "2026年10月 央行 逆回购 公开市场操作",
+            off_topic,
+            &[],
+            None,
+            None,
+        );
+
+        assert!(
+            ranked.results.is_empty(),
+            "跑题结果不应进入最终列表: {:?}",
+            ranked.results
+        );
+        assert_eq!(ranked.off_topic, 2, "应记录被丢弃的跑题候选数");
+    }
+
+    #[test]
+    fn relevance_floor_keeps_on_topic_candidates() {
+        let candidates = vec![SearchResult {
+            title: "央行开展逆回购操作 公开市场净投放".to_string(),
+            url: "https://finance.example.com/example".to_string(),
+            snippet: "央行今日通过公开市场操作开展逆回购，实现净投放。".to_string(),
+        }];
+
+        let ranked = rank_search_results(
+            "2026年10月 央行 逆回购 公开市场操作",
+            candidates,
+            &[],
+            None,
+            None,
+        );
+
+        assert_eq!(ranked.results.len(), 1);
+        assert_eq!(ranked.off_topic, 0);
+    }
+
+    /// 回归：Bing 摘要里的 `&ensp;` 与带前导零的 `&#0183;` 必须被解码，
+    /// 不能把原始实体送进模型上下文。
+    #[test]
+    fn decodes_bing_html_entities_including_zero_padded_numeric() {
+        let html = r#"
+            <ol>
+              <li class="b_algo">
+                <h2><a href="https://example.com/entities">Title</a></h2>
+                <div class="b_caption"><p>14 小时之前&ensp;&#0183;&ensp;正文 &hellip; &#x27;q&#x27;</p></div>
+              </li>
+            </ol>
+        "#;
+
+        let results = parse_bing_html(html);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].snippet, "14 小时之前 · 正文 … 'q'");
+        assert!(
+            !results[0].snippet.contains('&'),
+            "摘要里不应残留未解码实体: {}",
+            results[0].snippet
+        );
     }
 
     #[test]

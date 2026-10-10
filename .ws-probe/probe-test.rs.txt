@@ -1,89 +1,91 @@
-临时诊断探针（本次已从 src-tauri/src/direct_api/tools.rs 中移除，代码保持原样）
+离线诊断/验证探针（不在源码里，需要时手动贴回）
 
-用途：把 `.ws-probe/fixtures/` 里真实抓取到的 Bing 响应喂进**生产管线本体**
-（parse_bing_rss / parse_bing_html / rank_search_results / format_search_results），
-打印模型实际收到的搜索工具文本。只替换了网络层，输出与线上逐字一致。
+用途：把 `.ws-probe/fixtures/` 里真实抓取的 Bing 响应喂进**生产管线本体**
+（parse_bing_rss / parse_bing_html / rank_search_results），对比修复前后的行为，
+只替换网络层，输出与线上逐字一致。这是验证"修复是否真的除掉了噪声"的手段。
 
 使用方法：
-  1) 重新抓 fixture：      node .ws-probe\save-manifest.mjs
-  2) 把下面这段原样粘进 src-tauri/src/direct_api/tools.rs 的 `mod tests { ... }` 末尾
-     （即最后一个测试函数之后、模块收尾大括号之前）。`use super::*;` 已存在，
+  1) 抓 fixture（生成 *-raw-* 与 manifest.json）:  node .ws-probe\save-fixtures-fixed.mjs
+     如需"旧行为"对照组，另跑一次:                node .ws-probe\save-manifest.mjs
+     （save-manifest.mjs 生成的是带 after: 的 *-eff-* 响应，即修复前生产实际发出的查询）
+  2) 把下面这段粘进 src-tauri/src/direct_api/tools.rs 的 `mod tests { ... }` 末尾
+     （最后一个测试函数之后、模块收尾大括号之前）。`use super::*;` 已存在，
      serde_json / json! / SearchOptions 都在作用域内，无需额外 use。
-  3) 运行：                cd src-tauri; cargo test --lib probe_dump_production_search_output -- --nocapture
+  3) 运行：  cd src-tauri; cargo test --lib probe_compare_fix_effect -- --nocapture
+  4) 验证完请删除该测试，保持源码干净（这就是它不在仓库源码里的原因）。
 
-注意：fixture 不存在时它只打印 "no manifest" 并正常通过，不会让 cargo test 失败。
+注意：manifest/fixture 不存在时它只打印或跳过，不会让 cargo test 失败
+（行里的 `let Ok(...) else { continue }` 已处理首轮缺失）。
 
 ------------------------------ 8< ------------------------------
 
-    /// 诊断用: 把真实抓取的 Bing 响应喂进生产的解析/排序/格式化管线，
-    /// 打印模型实际收到的搜索工具文本 (临时探针，非断言测试)。
+    /// 诊断探针（临时，验证后删除）：把真实抓取的 Bing 响应喂进生产管线，
+    /// 对比"旧（带 after:）"与"新（去掉 after: + 相关性下限）"两种行为。
     #[test]
-    fn probe_dump_production_search_output() {
+    fn probe_compare_fix_effect() {
         let base = concat!(env!("CARGO_MANIFEST_DIR"), "/../.ws-probe/fixtures");
-        let Ok(manifest) = std::fs::read_to_string(format!("{base}/manifest.json")) else {
-            println!("no manifest at {base}");
-            return;
-        };
+        let manifest = std::fs::read_to_string(format!("{base}/manifest.json")).unwrap();
         let entries: Vec<serde_json::Value> = serde_json::from_str(&manifest).unwrap();
 
         for entry in &entries {
             let id = entry["id"].as_str().unwrap_or("?");
-            let base_query = entry["base"].as_str().unwrap_or("");
-            let expected_eff = entry["eff"].as_str().unwrap_or("");
-            let mut args = json!({ "query": base_query });
+            let query = entry["query"].as_str().unwrap_or("");
+            let mut args = json!({ "query": query });
             if let Some(days) = entry["recency"].as_u64() {
                 args["recency_days"] = json!(days);
             }
             let options = SearchOptions::from_tool_args(&args).unwrap();
-            assert_eq!(
-                options.effective_query(),
-                expected_eff,
-                "effective_query 与抓取时使用的查询不一致，结论无效"
-            );
 
-            let rss = std::fs::read_to_string(format!("{base}/{}", entry["rss"].as_str().unwrap()))
-                .unwrap_or_default();
-            let html =
-                std::fs::read_to_string(format!("{base}/{}", entry["html"].as_str().unwrap()))
-                    .unwrap_or_default();
-
-            let rss_only = parse_bing_rss(&rss);
-            let html_only = parse_bing_html(&html);
-            let mut merged = Vec::new();
-            for result in rss_only.iter().cloned() {
-                push_unique_search_result(&mut merged, result);
-            }
-            let after_rss = merged.len();
-            for result in html_only.iter().cloned() {
-                push_unique_search_result(&mut merged, result);
-            }
-
-            println!(
-                "\n\n@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n@@ {id} | 用户查询: {base_query}\n@@ 实际发出: {expected_eff} | recency_days={:?}\n@@ 解析: rss={} html={} 合并后={after_rss}->{}",
-                options.recency_days,
-                rss_only.len(),
-                html_only.len(),
-                merged.len(),
-            );
-
-            for (label, set) in [
-                ("A. RSS 单独 (默认第一个源)", rss_only.clone()),
-                ("B. HTML 单独 (RSS 空/失败时的回退)", html_only.clone()),
-                ("C. 生产合并路径 (RSS + HTML)", merged.clone()),
+            for (label, rss_name, html_name) in [
+                (
+                    "旧: 带 after: 的请求",
+                    format!("{id}-eff-rss.xml"),
+                    format!("{id}-eff-html.html"),
+                ),
+                (
+                    "新: 去掉 after: 的请求",
+                    format!("{id}-raw-rss.xml"),
+                    format!("{id}-raw-html.html"),
+                ),
             ] {
+                let Ok(rss) = std::fs::read_to_string(format!("{base}/{rss_name}")) else {
+                    continue;
+                };
+                let html =
+                    std::fs::read_to_string(format!("{base}/{html_name}")).unwrap_or_default();
+
+                let mut merged = Vec::new();
+                for r in parse_bing_rss(&rss) {
+                    push_unique_search_result(&mut merged, r);
+                }
+                for r in parse_bing_html(&html) {
+                    push_unique_search_result(&mut merged, r);
+                }
+                let candidates = merged.len();
                 let ranked = rank_search_results(
                     &options.query,
-                    set,
+                    merged,
                     &options.exclude_domains,
                     options.site.as_deref(),
                     options.recency_days,
                 );
-                let limit = options.max_results.min(ranked.len());
+                let limit = options.max_results.min(ranked.results.len());
+
                 println!(
-                    "\n---------------- {label}: 候选->ranked={} 展示={limit}\n{}",
-                    ranked.len(),
-                    format_search_results("Bing RSS + Bing", &options, &ranked[..limit])
+                    "\n@@@@ {id} | 用户查询: {query} | 发出: {}\n@@ {label}: 候选={candidates} 通过相关性下限={} 丢弃跑题={} 最终展示={limit}",
+                    options.effective_query(),
+                    ranked.results.len(),
+                    ranked.off_topic,
                 );
+                if ranked.results.is_empty() {
+                    println!("   >>> 工具返回错误（如实告知跑题），不再把这些噪声交给模型");
+                } else {
+                    for (i, r) in ranked.results[..limit].iter().enumerate() {
+                        println!("   [{}] {}", i + 1, r.title);
+                        println!("       {}", r.url);
+                        println!("       {}", r.snippet);
+                    }
+                }
             }
         }
     }

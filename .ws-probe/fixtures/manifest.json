@@ -1,26 +1,23 @@
 [
   {
     "id": "weather",
-    "base": "今天上海天气怎么样",
+    "query": "今天上海天气怎么样",
     "recency": 2,
-    "eff": "今天上海天气怎么样 after:2026-10-08",
-    "rss": "weather-eff-rss.xml",
-    "html": "weather-eff-html.html"
+    "rss": "weather-raw-rss.xml",
+    "html": "weather-raw-html.html"
   },
   {
     "id": "ainews",
-    "base": "今天有什么AI新闻",
+    "query": "今天有什么AI新闻",
     "recency": 2,
-    "eff": "今天有什么AI新闻 after:2026-10-08",
-    "rss": "ainews-eff-rss.xml",
-    "html": "ainews-eff-html.html"
+    "rss": "ainews-raw-rss.xml",
+    "html": "ainews-raw-html.html"
   },
   {
     "id": "finance",
-    "base": "2026年10月 央行 逆回购 公开市场操作",
+    "query": "2026年10月 央行 逆回购 公开市场操作",
     "recency": null,
-    "eff": "2026年10月 央行 逆回购 公开市场操作",
-    "rss": "finance-eff-rss.xml",
-    "html": "finance-eff-html.html"
+    "rss": "finance-raw-rss.xml",
+    "html": "finance-raw-html.html"
   }
 ]
