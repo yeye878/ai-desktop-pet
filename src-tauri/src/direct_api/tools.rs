@@ -2248,17 +2248,79 @@ async fn exec_list_directory(args: &serde_json::Value) -> Result<String, String>
     }
 }
 
+/// `run_command` 子进程的兜底回收器。
+///
+/// 为什么需要它：`tokio::process::Child` 被 drop 时默认只 detach、**不 kill**，而本工具的
+/// future 会在用户点"停止"时随整轮 turn 一起被 drop（见 `agent.rs::run_direct_api_agent`
+/// 与 `collaboration/runtime.rs` 中 race `cancel.cancelled()` 的 `tokio::select!`）。
+/// 此前只有"等到 timeout_secs"这一条路径会 kill，于是停止按钮按下去之后，
+/// `cmd /C npm run build` 及其 node 子进程会继续跑到各自结束——最长 600 秒。
+/// 这里用一个 drop guard 覆盖**所有**退出路径：超时、取消/停止、panic、以及未来新增的提前返回。
+///
+/// Windows 走 `crate::kill_process_tree`（`taskkill /F /T`），回收的是整棵进程树而不只是
+/// `cmd.exe`；POSIX 下沿用同一 helper 的 `kill -TERM`（只作用于直接子进程，与项目其它 kill 点一致）。
+/// 回收动作用函数指针注入，测试才能在不真的杀进程的前提下断言"何时杀、杀几次"
+/// （DSH 沙箱内 `taskkill` 会被拒绝访问，真实进程树的端到端验证见 `#[ignore]` 的用例）。
+type TreeKiller = fn(u32);
+
+struct ChildTreeGuard {
+    pid: Option<u32>,
+    killer: TreeKiller,
+}
+
+impl ChildTreeGuard {
+    fn new(pid: Option<u32>) -> Self {
+        Self {
+            pid,
+            killer: crate::kill_process_tree,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_killer(pid: Option<u32>, killer: TreeKiller) -> Self {
+        Self { pid, killer }
+    }
+
+    /// 子进程已确认回收，撤销兜底，避免 pid 复用后误杀无关进程。
+    fn disarm(&mut self) {
+        self.pid = None;
+    }
+
+    /// 立即按 pid 回收整棵进程树，并撤销兜底。
+    fn kill_now(&mut self) {
+        if let Some(pid) = self.pid.take() {
+            (self.killer)(pid);
+        }
+    }
+}
+
+impl Drop for ChildTreeGuard {
+    fn drop(&mut self) {
+        // 只在"没能走到正常回收"的路径触发：取消/停止、panic、提前 return。
+        self.kill_now();
+    }
+}
+
 async fn exec_run_command(args: &serde_json::Value) -> Result<String, String> {
     let command = args["command"].as_str().ok_or("缺少 'command' 参数")?;
 
     // 检查命令安全性
     is_command_safe(command)?;
 
-    let mut cmd = if cfg!(target_os = "windows") {
+    // 命令必须用 raw_arg 原样拼进命令行：`args()` 会按 CommandLineToArgvW 规则把命令里的
+    // 每个 `"` 转义成 `\"`，而 cmd.exe 不做这种反转义，于是 `run_command` 里**任何带引号的命令**
+    // 都会被破坏（很常见：带空格的路径、"C:\Program Files\..."、echo "..."），
+    // 表现为 "不是内部或外部命令" 或输出里多出反斜杠。
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        use std::os::windows::process::CommandExt as _;
         let mut c = tokio::process::Command::new("cmd");
-        c.args(["/C", command]);
+        c.raw_arg("/C");
+        c.raw_arg(command);
         c
-    } else {
+    };
+    #[cfg(not(target_os = "windows"))]
+    let mut cmd = {
         let mut c = tokio::process::Command::new("sh");
         c.args(["-c", command]);
         c
@@ -2273,8 +2335,11 @@ async fn exec_run_command(args: &serde_json::Value) -> Result<String, String> {
 
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
+    // 第二道保险：即使 guard 因故没跑到，tokio 也会在 drop 时杀掉直接子进程。
+    cmd.kill_on_drop(true);
 
     let mut child = cmd.spawn().map_err(|e| format!("执行命令失败: {e}"))?;
+    let mut tree_guard = ChildTreeGuard::new(child.id());
 
     let mut stdout = child.stdout.take().expect("无法打开标准输出");
     let mut stderr = child.stderr.take().expect("无法打开标准错误");
@@ -2302,6 +2367,8 @@ async fn exec_run_command(args: &serde_json::Value) -> Result<String, String> {
 
     match tokio::time::timeout(timeout_duration, child.wait()).await {
         Ok(Ok(status)) => {
+            // wait() 已回收子进程，立刻撤销兜底（此后该 pid 可能被系统复用）。
+            tree_guard.disarm();
             let stdout_bytes = stdout_task.await.unwrap_or_default();
             let stderr_bytes = stderr_task.await.unwrap_or_default();
 
@@ -2328,8 +2395,15 @@ async fn exec_run_command(args: &serde_json::Value) -> Result<String, String> {
 
             Ok(result)
         }
-        Ok(Err(e)) => Err(format!("命令执行失败: {e}")),
+        Ok(Err(e)) => {
+            // wait() 本身失败，子进程状态未知：按"可能仍在运行"处理，整树回收。
+            tree_guard.kill_now();
+            let _ = child.kill().await;
+            Err(format!("命令执行失败: {e}"))
+        }
         Err(_) => {
+            // 超时：子进程仍在运行，此刻 taskkill /T 才能连子孙一起回收。
+            tree_guard.kill_now();
             let _ = child.kill().await;
             Err(format!(
                 "命令执行超时 (限制 {timeout_secs} 秒)。构建/安装/测试等耗时命令请用 timeout_secs 参数设置更长的超时（最长 600 秒）。"
@@ -4131,6 +4205,25 @@ async fn exec_list_scheduled_tasks() -> Result<String, String> {
     }
 }
 
+/// `search_memory` 用的两条查询语句。抽成常量是为了让回归测试能直接 `prepare()` 它们，
+/// 断言占位符数量与绑定参数数量一致——这两个 bug 都属于"静态可测但此前没人测"的类型。
+///
+/// 两处易踩的坑：
+/// 1. **占位符必须连续**。不带 category 的分支曾写成 `LIMIT ?3` 却只绑定 2 个参数，
+///    SQLite 的 `parameter_count()` 因此是 3，导致这条**最常用**的调用形态每次直接报
+///    "Wrong number of parameters passed to query. Got 2, needed 3"。
+/// 2. **`escape_like()` 必须配套 `ESCAPE '\'`**。转义函数会给 `%` `_` `\` 加反斜杠，
+///    若 SQL 里没有 `ESCAPE` 子句，反斜杠会被当成普通字符参与匹配，
+///    于是关键词里含这三个字符时**静默 0 命中**（不报错，看起来只是"没记忆"）。
+const SEARCH_MEMORY_SQL_WITH_CATEGORY: &str = "SELECT id, category, key, value, created_at
+     FROM pet_memory
+     WHERE (key LIKE ?1 ESCAPE '\\' OR value LIKE ?1 ESCAPE '\\') AND category = ?2
+     ORDER BY id DESC LIMIT ?3";
+const SEARCH_MEMORY_SQL_WITHOUT_CATEGORY: &str = "SELECT id, category, key, value, created_at
+     FROM pet_memory
+     WHERE (key LIKE ?1 ESCAPE '\\' OR value LIKE ?1 ESCAPE '\\')
+     ORDER BY id DESC LIMIT ?2";
+
 async fn exec_search_memory(args: &serde_json::Value) -> Result<String, String> {
     let query = args["query"].as_str().ok_or("缺少 'query' 参数")?;
     let category = args["category"].as_str();
@@ -4144,10 +4237,7 @@ async fn exec_search_memory(args: &serde_json::Value) -> Result<String, String> 
 
     let (sql, params): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(cat) = category {
         (
-            "SELECT id, category, key, value, created_at
-             FROM pet_memory
-             WHERE (key LIKE ?1 OR value LIKE ?1) AND category = ?2
-             ORDER BY id DESC LIMIT ?3",
+            SEARCH_MEMORY_SQL_WITH_CATEGORY,
             vec![
                 Box::new(like_pattern),
                 Box::new(cat.to_string()),
@@ -4156,10 +4246,7 @@ async fn exec_search_memory(args: &serde_json::Value) -> Result<String, String> 
         )
     } else {
         (
-            "SELECT id, category, key, value, created_at
-             FROM pet_memory
-             WHERE (key LIKE ?1 OR value LIKE ?1)
-             ORDER BY id DESC LIMIT ?3",
+            SEARCH_MEMORY_SQL_WITHOUT_CATEGORY,
             vec![Box::new(like_pattern), Box::new(limit)],
         )
     };
@@ -5387,5 +5474,401 @@ mod tests {
         assert!(!result.contains("row-2"), "窗口外的行不应出现: {result}");
         assert!(!result.contains("row-7"));
         assert!(result.contains("offset=7"), "应提示下一页 offset: {result}");
+    }
+
+    // ===== A4：search_memory 的 SQL 回归 =====
+    //
+    // 两个 bug 都属于"静态可测、但此前没人测"：
+    // 1) 不带 category 的分支写成 `LIMIT ?3` 却只绑定 2 个参数 → 每次调用直接报错；
+    // 2) escape_like() 转了义却没有配套 `ESCAPE '\'` → 含 % _ \ 的关键词静默 0 命中。
+
+    fn memory_test_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE pet_memory (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 category TEXT NOT NULL,
+                 key TEXT NOT NULL,
+                 value TEXT NOT NULL,
+                 created_at TEXT NOT NULL DEFAULT (strftime('%s','now'))
+             );
+             INSERT INTO pet_memory (category, key, value) VALUES
+                 ('fact', 'p1', '100% done'),
+                 ('fact', 'p2', 'report_final'),
+                 ('fact', 'p3', 'plain note');",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn memory_hit_count(conn: &rusqlite::Connection, query: &str, category: Option<&str>) -> usize {
+        let like = format!("%{}%", escape_like(query));
+        let (sql, params): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = match category {
+            Some(cat) => (
+                SEARCH_MEMORY_SQL_WITH_CATEGORY,
+                vec![Box::new(like), Box::new(cat.to_string()), Box::new(10u32)],
+            ),
+            None => (
+                SEARCH_MEMORY_SQL_WITHOUT_CATEGORY,
+                vec![Box::new(like), Box::new(10u32)],
+            ),
+        };
+        let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = conn.prepare(sql).unwrap();
+        let mut rows = stmt.query(refs.as_slice()).unwrap();
+        let mut count = 0;
+        while rows.next().unwrap().is_some() {
+            count += 1;
+        }
+        count
+    }
+
+    #[test]
+    fn search_memory_sql_placeholder_count_matches_bound_params() {
+        let conn = memory_test_conn();
+        for (label, sql, bound) in [
+            ("带 category", SEARCH_MEMORY_SQL_WITH_CATEGORY, 3usize),
+            ("不带 category", SEARCH_MEMORY_SQL_WITHOUT_CATEGORY, 2usize),
+        ] {
+            let stmt = conn.prepare(sql).unwrap();
+            assert_eq!(
+                stmt.parameter_count(),
+                bound,
+                "{label} 分支的占位符数量必须与绑定参数数量一致，\
+                 否则每次调用都会报 'Wrong number of parameters passed to query'"
+            );
+        }
+    }
+
+    #[test]
+    fn search_memory_like_escapes_literal_wildcards() {
+        let conn = memory_test_conn();
+        // 缺 ESCAPE 子句时 `\%` 会被当成"反斜杠 + 通配符"，下面两条会退化成 0 命中。
+        assert_eq!(memory_hit_count(&conn, "100%", None), 1, "字面量 % 应能命中");
+        assert_eq!(
+            memory_hit_count(&conn, "report_final", None),
+            1,
+            "字面量 _ 应能命中"
+        );
+        assert_eq!(
+            memory_hit_count(&conn, "100%", Some("fact")),
+            1,
+            "带 category 路径同样要能命中"
+        );
+        assert_eq!(memory_hit_count(&conn, "report_final", Some("fact")), 1);
+        // 基本行为不能被破坏
+        assert_eq!(memory_hit_count(&conn, "plain", None), 1);
+        assert_eq!(memory_hit_count(&conn, "100%", Some("nope")), 0);
+        assert_eq!(memory_hit_count(&conn, "missing", None), 0);
+    }
+
+    // ===== A1：run_command 的进程树回收 =====
+
+    #[tokio::test]
+    async fn run_command_preserves_quotes_in_command() {
+        // 回归：`args(["/C", command])` 会把命令里的 `"` 转义成 `\"`，而 cmd.exe 不反转义，
+        // 于是带引号的命令会执行失败或输出被污染。必须用 raw_arg 原样传入。
+        let args = serde_json::json!({
+            "command": "echo \"hello world\"",
+            "timeout_secs": 10,
+        });
+        let output = exec_run_command(&args).await.unwrap();
+        assert!(
+            output.contains("hello world"),
+            "引号内的内容应原样传给 shell: {output}"
+        );
+        assert!(
+            !output.contains("\\\""),
+            "命令里的引号不应被反斜杠转义: {output}"
+        );
+    }
+
+    static GUARD_PROBE_KILLS: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+    static GUARD_NONE_KILLS: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
+    fn recording_tree_killer(pid: u32) {
+        GUARD_PROBE_KILLS.lock().unwrap().push(pid);
+    }
+
+    fn counting_tree_killer(_pid: u32) {
+        GUARD_NONE_KILLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn guard_probe_kill_count(pid: u32) -> usize {
+        GUARD_PROBE_KILLS
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|killed| **killed == pid)
+            .count()
+    }
+
+    #[test]
+    fn child_tree_guard_default_killer_is_the_project_tree_kill() {
+        let mut guard = ChildTreeGuard::new(Some(1));
+        assert_eq!(
+            guard.killer as usize,
+            crate::kill_process_tree as usize,
+            "guard 必须复用项目既有的整树回收（Windows 下 taskkill /F /T），\
+             不能退化成只杀直接子进程"
+        );
+        // 断言完立刻撤销，避免真的去杀 pid 1
+        guard.disarm();
+    }
+
+    #[test]
+    fn child_tree_guard_kills_on_drop_when_armed() {
+        // 这条覆盖"用户点停止 → 整轮 future 被 drop"的路径：drop 即回收。
+        let pid = 990_001;
+        assert_eq!(guard_probe_kill_count(pid), 0);
+        drop(ChildTreeGuard::with_killer(Some(pid), recording_tree_killer));
+        assert_eq!(guard_probe_kill_count(pid), 1);
+    }
+
+    #[test]
+    fn child_tree_guard_disarm_suppresses_drop_kill() {
+        // 子进程已被 wait() 正常回收：不得再按 pid 杀，否则 pid 复用会误杀无关进程。
+        let pid = 990_002;
+        let mut guard = ChildTreeGuard::with_killer(Some(pid), recording_tree_killer);
+        guard.disarm();
+        drop(guard);
+        assert_eq!(guard_probe_kill_count(pid), 0);
+    }
+
+    #[test]
+    fn child_tree_guard_kill_now_is_idempotent() {
+        let pid = 990_003;
+        let mut guard = ChildTreeGuard::with_killer(Some(pid), recording_tree_killer);
+        guard.kill_now();
+        guard.kill_now();
+        drop(guard);
+        assert_eq!(guard_probe_kill_count(pid), 1);
+    }
+
+    #[test]
+    fn child_tree_guard_without_pid_never_kills() {
+        let mut guard = ChildTreeGuard::with_killer(None, counting_tree_killer);
+        guard.kill_now();
+        drop(guard);
+        assert_eq!(
+            GUARD_NONE_KILLS.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+    }
+
+    /// 造一个"外层 cmd → 普通孙进程"的探针：孙进程等约 3 秒后写出 marker 文件。
+    ///
+    /// 结构是实测校准过的（A/B 只差 `taskkill` 的 `/T` 一个参数）：
+    /// **只杀外层 cmd 时孙进程会存活并写出 marker；整树回收时 marker 永不出现。**
+    /// 于是 marker 是否存在，就是"进程树有没有被回收"的判据。
+    #[cfg(target_os = "windows")]
+    fn tree_probe_paths(name: &str) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        // 探针目录放在测试可执行文件旁边（target/…/deps）：谁能跑起这套测试，谁就一定能在这写文件，
+        // 不受 %TEMP% 在不同运行环境（沙箱内 / 普通桌面）下是否可写的影响。
+        let base = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.to_path_buf()))
+            .unwrap_or_else(std::env::temp_dir);
+        let dir = base.join(unique_test_name(name, "d"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("marker.txt");
+        let inner = dir.join("inner.bat");
+        let outer = dir.join("outer.bat");
+        std::fs::write(
+            &inner,
+            format!(
+                "@echo off\r\nping -n 4 127.0.0.1 >nul\r\necho alive> \"{}\"\r\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &outer,
+            format!(
+                "@echo off\r\ncmd /C \"{}\"\r\nping -n 30 127.0.0.1 >nul\r\n",
+                inner.display()
+            ),
+        )
+        .unwrap();
+        (dir, marker, outer)
+    }
+
+    /// 端到端：`run_command` 超时后必须回收整棵进程树，而不只是 `cmd.exe`。
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    #[ignore = "需要能终止进程的环境：DSH 沙箱内 taskkill 返回 Access denied；请在普通桌面 shell 运行 cargo test -- --ignored"]
+    async fn run_command_timeout_reaps_whole_process_tree() {
+        let (dir, marker, outer) = tree_probe_paths("treeprobe-timeout");
+        let args = serde_json::json!({
+            "command": format!("\"{}\"", outer.display()),
+            "timeout_secs": 1,
+        });
+
+        let err = exec_run_command(&args).await.unwrap_err();
+        assert!(err.contains("超时"), "应报超时: {err}");
+
+        // 孙进程若活下来，会在约 3 秒后写出 marker。
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        assert!(
+            !marker.exists(),
+            "超时后整棵进程树都应被回收，但孙进程仍然写出了 marker（只杀了直接子进程？）"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 端到端：用户点"停止"时整轮 turn future 被 drop，子进程树同样要被回收。
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    #[ignore = "同 run_command_timeout_reaps_whole_process_tree"]
+    async fn run_command_cancellation_reaps_whole_process_tree() {
+        let (dir, marker, outer) = tree_probe_paths("treeprobe-cancel");
+        let args = serde_json::json!({
+            "command": format!("\"{}\"", outer.display()),
+            "timeout_secs": 60,
+        });
+
+        // 复刻 agent.rs 的取消语义：select! 里另一分支先完成，整个工具 future 被 drop。
+        let dropped = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            exec_run_command(&args),
+        )
+        .await;
+        assert!(dropped.is_err(), "500ms 后应因外层超时被 drop");
+
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        assert!(
+            !marker.exists(),
+            "取消/停止后整棵进程树都应被回收，但孙进程仍然写出了 marker"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ===== A3：前后端工具清单契约 =====
+    //
+    // `src/services/tools.ts` 是手工维护的：它决定工坊「免确认工具」勾选器能看到什么，
+    // 而 Settings.vue 保存技能时会用 AVAILABLE_TOOL_NAMES 过滤 allowed_tools ——
+    // **不在这份清单里的工具会被静默丢弃**。它曾与 tool_definitions() 漂移
+    // （少了 code_search / edit_file / create_docx / ask_user），所以这里把两边钉死。
+
+    /// 收集 TS 字面量块里的"标识符"，两种写法都要认：
+    /// - 数组元素：`"code_search",`
+    /// - 对象键：`code_search: "搜索代码内容",`
+    /// 从 `start_marker` 之后的第一个 `open`（`[` 或 `{`）开始，到 `end_marker` 结束；
+    /// 只保留 `[A-Za-z0-9_]` 形状的值，以此跳过中文标签。刻意不引入正则依赖。
+    fn block_identifiers(
+        source: &str,
+        start_marker: &str,
+        open: char,
+        end_marker: &str,
+    ) -> Vec<String> {
+        let start = source
+            .find(start_marker)
+            .unwrap_or_else(|| panic!("tools.ts 里找不到起始标记: {start_marker}"));
+        let after_marker = &source[start..];
+        let open_at = after_marker
+            .find(open)
+            .unwrap_or_else(|| panic!("tools.ts 里 {start_marker} 之后找不到 {open}"));
+        let rest = &after_marker[open_at + 1..];
+        let end = rest
+            .find(end_marker)
+            .unwrap_or_else(|| panic!("tools.ts 里找不到结束标记: {end_marker}"));
+        let block = &rest[..end];
+
+        let is_ident = |value: &str| {
+            !value.is_empty() && value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        };
+        let mut out = Vec::new();
+        let mut chars = block.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '"' {
+                let mut value = String::new();
+                for c in chars.by_ref() {
+                    if c == '"' {
+                        break;
+                    }
+                    value.push(c);
+                }
+                if is_ident(&value) {
+                    out.push(value);
+                }
+                continue;
+            }
+            if ch.is_ascii_alphabetic() || ch == '_' {
+                let mut word = String::from(ch);
+                while let Some(&next) = chars.peek() {
+                    if next.is_ascii_alphanumeric() || next == '_' {
+                        word.push(next);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                // 只有"后面紧跟冒号"的裸标识符才算对象键
+                let mut lookahead = chars.clone();
+                let mut is_key = false;
+                while let Some(&next) = lookahead.peek() {
+                    if next.is_whitespace() {
+                        lookahead.next();
+                        continue;
+                    }
+                    is_key = next == ':';
+                    break;
+                }
+                if is_key {
+                    out.push(word);
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn frontend_tool_contract_matches_rust_definitions() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/services/tools.ts");
+        let source = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("读不到前端工具清单 {path}: {e}"));
+
+        let frontend: std::collections::BTreeSet<String> = block_identifiers(
+            &source,
+            "export const AVAILABLE_TOOL_NAMES",
+            '[',
+            "] as const;",
+        )
+        .into_iter()
+        .collect();
+        let labels: std::collections::BTreeSet<String> =
+            block_identifiers(&source, "export const TOOL_LABELS", '{', "};")
+                .into_iter()
+                .collect();
+
+        // 与 lib.rs::tool_purpose_for_factory() 的工坊目录同口径：排除工坊自己的管理工具。
+        let expected: std::collections::BTreeSet<String> = tool_definitions()
+            .iter()
+            .filter_map(|def| def.get("function")?.get("name")?.as_str().map(str::to_string))
+            .filter(|name| {
+                !matches!(
+                    name.as_str(),
+                    "create_agent" | "update_agent" | "list_agents"
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            frontend,
+            expected,
+            "前端 AVAILABLE_TOOL_NAMES 与 Rust tool_definitions() 漂移：缺少={:?} 多余={:?}",
+            expected.difference(&frontend).collect::<Vec<_>>(),
+            frontend.difference(&expected).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            labels,
+            frontend,
+            "TOOL_LABELS 必须与 AVAILABLE_TOOL_NAMES 一一对应，否则 toolLabel() 会回退成英文原名：缺少={:?} 多余={:?}",
+            frontend.difference(&labels).collect::<Vec<_>>(),
+            labels.difference(&frontend).collect::<Vec<_>>()
+        );
     }
 }

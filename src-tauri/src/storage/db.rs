@@ -743,17 +743,19 @@ impl Database {
     ) -> Result<Vec<MemoryItem>> {
         let limit = limit.min(30);
         let like_pattern = format!("%{}%", escape_like_pattern(query));
+        // `escape_like_pattern()` 会给 % _ \ 加反斜杠，所以 LIKE 必须配套 `ESCAPE '\'`：
+        // 少了 ESCAPE 子句，反斜杠会被当作普通字符参与匹配，含这三个字符的关键词静默 0 命中。
         let sql = if category.is_some() {
             "SELECT id, category, key, value, created_at
              FROM pet_memory
-             WHERE (key LIKE ?1 OR value LIKE ?1)
+             WHERE (key LIKE ?1 ESCAPE '\\' OR value LIKE ?1 ESCAPE '\\')
                AND category = ?2
              ORDER BY id DESC
              LIMIT ?3"
         } else {
             "SELECT id, category, key, value, created_at
              FROM pet_memory
-             WHERE (key LIKE ?1 OR value LIKE ?1)
+             WHERE (key LIKE ?1 ESCAPE '\\' OR value LIKE ?1 ESCAPE '\\')
              ORDER BY id DESC
              LIMIT ?3"
         };
@@ -1374,6 +1376,22 @@ mod tests {
         let reloaded = db.list_agents().unwrap().pop().unwrap();
         assert_eq!(reloaded.backend, "codex");
         assert_eq!(reloaded.api_profile_id, "profile-a");
+    }
+
+    #[test]
+    fn search_memories_escapes_literal_wildcards() {
+        // `escape_like_pattern()` 会给 % _ \ 加反斜杠，SQL 必须配套 `ESCAPE '\'`；
+        // 少了它，含这些字符的关键词会静默 0 命中（不报错，看起来只是"没有这条记忆"）。
+        let db = Database::open_in_memory().expect("open in-memory db");
+        db.save_memory("fact", "p1", "100% done").unwrap();
+        db.save_memory("fact", "p2", "report_final").unwrap();
+
+        let hits =
+            |query: &str, category: Option<&str>| db.search_memories(query, category, 10).unwrap().len();
+        assert_eq!(hits("100%", None), 1, "字面量 % 应能命中");
+        assert_eq!(hits("report_final", None), 1, "字面量 _ 应能命中");
+        assert_eq!(hits("100%", Some("fact")), 1, "带 category 路径同样要能命中");
+        assert_eq!(hits("missing", None), 0);
     }
 
     #[test]

@@ -460,3 +460,15 @@ npm run tauri dev
 6. **dev mock**：`dev-tauri-mock.ts` 增加 `get_pet_state` / `tick` / `set_pet_state` 的内存实现，浏览器预览可演示状态变化。
 7. **验证**：`npm run build` 通过；`verify:multi-agent`（13）、`verify:agent-activity`（14）、`verify:pending-interactions`（6）全过；Playwright 实测动作回显、悬停命中、摸摸反馈、清空确认弹窗、宽/窄窗口无横向溢出、缩略图比例 0.8571。**未在真实 Tauri 窗口里跑过**，需手测：召唤桌宠后两边状态一致、桌宠 waving 不因首页轮询加速回落、首页宠物拖不动控制台窗口。
 8. **注意**：`dashboard.css`、`Dashboard.vue` 在仓库中是 CRLF，其余前端文件是 LF；编辑工具可能把它们改成 LF，提交前检查 `git diff --stat` 是否出现整文件重写。
+
+## 今日变更 (2026-10-13) — 工具链三处修复（子进程回收 / 记忆检索 SQL / 前后端工具清单）
+
+来源：桌面端问题清单 `ai-desktop-pet-issue-report.md` 的逐条核验（A 部分全量复核 + B 部分实测），本轮只做第一批 A1 + A4 + A3。
+
+1. **`run_command` 子进程不再脱管（A1）**：此前只有 `timeout_secs` 到点这一条路径会 `child.kill()`，而工具 future 在用户点「停止」时会随整轮 turn 一起被 drop（`agent.rs::run_direct_api_agent` 与 `collaboration/runtime.rs` 中 race `cancel.cancelled()` 的 `tokio::select!`），`tokio::process::Child` 被 drop 时默认只 detach 不 kill → 停止后 `cmd /C npm run build` 及其 node 子进程会继续跑到结束（最长 600 秒）。现改为 `ChildTreeGuard`（drop guard）+ `kill_on_drop(true)`：超时、取消/停止、panic、提前 return 全部路径都按 pid 整树回收（Windows 走既有 `crate::kill_process_tree` = `taskkill /F /T`）；`wait()` 正常回收后立即 `disarm()`，避免 pid 复用误杀。注意这只覆盖直连 API 后端，CLI 后端下 `run_command` 由 CLI 自己执行。
+2. **顺带修掉同一函数的引号 bug（本轮验证时新发现）**：`args(["/C", command])` 会按 CommandLineToArgvW 规则把命令里每个 `"` 转义成 `\"`，而 cmd.exe 不做反转义，于是**任何带引号的命令**（带空格的路径、`"C:\Program Files\..."`、`echo "..."`）都会报「不是内部或外部命令」或输出多出反斜杠。改用 `raw_arg` 原样直传（`raw_arg` 的文档就是为 `cmd.exe /c` 准备的）。
+3. **`search_memory` 两个功能性 bug（A4）**：① 不带 `category` 的分支 SQL 写 `LIMIT ?3` 却只绑定 2 个参数，导致这条**最常用**的调用形态每次都报 `Wrong number of parameters passed to query. Got 2, needed 3`；② `escape_like()` 转了义却没有配套 `ESCAPE '\'`，关键词含 `%` `_` `\` 时静默 0 命中（不报错，看起来只是「没有这条记忆」）。`tools.rs` 与 `storage/db.rs::search_memories`（此前全库无调用点的死代码，同样缺陷）都修了；两条 SQL 抽成常量，回归测试可直接 `prepare()` 断言占位符数量与绑定参数数量一致。
+4. **前后端工具清单同步（A3）**：`src/services/tools.ts` 从 32 补到 36（补 `code_search`/`edit_file`/`create_docx`/`ask_user`，排除工坊自身 3 个管理工具，与 `lib.rs::tool_purpose_for_factory()` 同口径）。此前漏掉 `code_search` 尤其别扭——它是免确认工具，于是形成「不用确认 + UI 看不见也勾不了」。注意 `Settings.vue:698` 保存技能时会用该清单过滤 `allowed_tools`，**不在此清单里的工具会被静默丢弃**；新增 `frontend_tool_contract_matches_rust_definitions()` 比对 Rust `tool_definitions()` 与前端清单/标签集合，漏一个即失败。
+5. **验证**：`cargo test --lib` → **142 passed / 2 failed / 10 ignored**，2 个失败是既存的 TTS 网络用例（`tts::edge_tts::tests::test_synthesize`、`tts::tests::edge_synthesis_decodes_to_wav`，403；相关文件未改动）。新增 2 个 `#[ignore]` 端到端用例（`run_command_timeout_reaps_whole_process_tree`、`run_command_cancellation_reaps_whole_process_tree`）用「外层 cmd → 孙进程延迟写 marker」探针验证整树回收；该探针已用 `taskkill` 的 `/T` 做 A/B 校准（只杀直接子进程时孙进程存活并写出 marker，整树回收时 marker 永不出现）。因 DSH 沙箱内 `taskkill` 会被拒绝访问，请在**非沙箱** shell 里跑 `cargo test --lib -- --ignored run_command_`；本轮已在普通桌面环境实跑通过（6.08s）。`tsc --noEmit` 通过。
+6. **未做（下一批候选）**：A2 协同运行期间全局闸门锁死所有窗口的发送入口（`lib.rs:1820` 单一 `active.active`，且「复用 Queue」属于产品语义变更）、A5 协同每轮重放全量会话且无 token 预算、A6 搜索实际只有一个引擎（BingRss/BingHtml 同源，DDG 不可达）、A7 搜索 client 未关代理且失败原因不可见、A8 RSS `pubDate` 被丢弃导致两套时效尺子、A9-A13 低优先项、B1/B3/B5 性能类、B6 `@` 交接静默失败（需先端到端复现）。
+

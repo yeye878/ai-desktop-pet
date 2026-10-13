@@ -1,4 +1,10 @@
-// 32 个工具的稳定 ID，与 Rust 端 `src-tauri/src/direct_api/tools.rs::tool_definitions()` 顺序一致
+// 工具的稳定 ID，与 Rust 端 `src-tauri/src/direct_api/tools.rs::tool_definitions()` 顺序一致。
+// 排除智能体工坊自己的管理工具（create_agent / update_agent / list_agents），
+// 与 `lib.rs::tool_purpose_for_factory()` 的工坊目录同口径。
+//
+// 这份清单决定工坊「免确认工具」勾选器能看到哪些工具，而且 `Settings.vue` 保存技能时会用它
+// 过滤 `allowed_tools` —— **不在此清单里的工具会被静默丢弃**。因此两边必须严格一致：
+// `tools.rs` 的 `frontend_tool_contract_matches_rust_definitions()` 会比对集合，漏一个即测试失败。
 export const AVAILABLE_TOOL_NAMES = [
   "read_file",
   "write_file",
@@ -31,7 +37,11 @@ export const AVAILABLE_TOOL_NAMES = [
   "search_memory",
   "save_memory",
   "file_search",
+  "code_search",
+  "edit_file",
   "delete_memory",
+  "create_docx",
+  "ask_user",
 ] as const;
 
 export type ToolName = (typeof AVAILABLE_TOOL_NAMES)[number];
@@ -67,8 +77,12 @@ export const TOOL_LABELS: Record<ToolName, string> = {
   list_scheduled_tasks: "列出定时任务",
   search_memory: "搜索记忆",
   save_memory: "保存记忆",
-  delete_memory: "删除记忆",
   file_search: "搜索文件",
+  code_search: "搜索代码内容",
+  edit_file: "局部修改文件",
+  delete_memory: "删除记忆",
+  create_docx: "生成 Word 文档",
+  ask_user: "询问用户",
 };
 
 export function toolLabel(name: string): string {
