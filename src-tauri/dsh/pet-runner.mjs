@@ -50,13 +50,14 @@ const pendingApprovals = new Map()
 const sessionAllows = new Set()
 
 const USAGE = [
-  'dsh --profile dsh-pet --prompt-file <path> [--resume <session-id>]',
+  'dsh --profile dsh-pet --prompt-file <path> [--resume <session-id>] [--model <model>]',
   '',
   '桌宠专用 runner：读取提示词文件，流式输出推理/正文/工具事件，转发授权请求，可选续接已有会话。',
   '',
   'Options:',
   '  --prompt-file <path>    UTF-8 提示词文件（必需）',
   '  --resume <session-id>   续接该会话，失败时自动新建',
+  '  --model <model>         本回合模型覆盖（provider 不变；默认跟随本机配置）',
   '  -h, --help              显示本帮助',
   ''
 ].join('\n')
@@ -73,11 +74,12 @@ function clip(value, limit) {
 }
 
 function parseArgs(argv) {
-  const options = { promptFile: undefined, resume: undefined, help: false }
+  const options = { promptFile: undefined, resume: undefined, model: undefined, help: false }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
     if (arg === '--prompt-file') options.promptFile = argv[index += 1]
     else if (arg === '--resume') options.resume = argv[index += 1]
+    else if (arg === '--model') options.model = argv[index += 1]
     else if (arg === '-h' || arg === '--help') options.help = true
   }
   return options
@@ -162,7 +164,10 @@ async function run(ctx) {
   await ctx.get('loader')?.await()
 
   const defaultModel = ctx.get('agentDefaultModel')
-  const selection = defaultModel.currentSelection()
+  // --model 只覆盖模型 id，provider 仍跟随本机配置。
+  const selection = { ...defaultModel.currentSelection() }
+  const requestedModel = typeof options.model === 'string' ? options.model.trim() : ''
+  if (requestedModel !== '') selection.model = requestedModel
   const agentOptions = { provider: selection.provider, model: selection.model }
   const setup = (agentCtx) => {
     installModelSelection(agentCtx, { current: selection, assembled: undefined })

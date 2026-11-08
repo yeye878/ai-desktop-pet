@@ -236,7 +236,9 @@ export const usePetStore = defineStore("pet", () => {
   const happiness = ref(0.5);   // -1.0 ~ 1.0
   const energy = ref(80);        // 0 ~ 100
   const position = ref({ x: 60, y: 60 });
-  const isDragging = ref(false);
+  // 拖拽状态统一走 PetState 的 "dragging"（后端正行为状态机里也有一份），
+  // 这里不再单独维护一个永远不会被写入的布尔量。
+  const isDragging = computed(() => state.value === "dragging");
   const skin = ref("default");
   const character = ref<PetCharacterId>("classic");
   const customPixelPetAsset = ref<CustomPixelPetAsset | null>(null);
@@ -269,6 +271,12 @@ export const usePetStore = defineStore("pet", () => {
     return "\u{1F610}";
   });
 
+  /**
+   * 只改本窗口的展示状态。
+   *
+   * 注意：常驻桌宠窗口每秒都会用后端行为状态机的值覆盖 store，所以只调这里的状态
+   * 活不过一秒。要让桌宠真的进入某个状态，请用各窗口自己的 syncPetState（会同时写后端）。
+   */
   function setState(newState: PetState) {
     state.value = newState;
   }

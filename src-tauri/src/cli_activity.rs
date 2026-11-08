@@ -2,7 +2,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct ToolEvent {
     pub id: String,
     pub tool_name: String,
@@ -13,6 +13,16 @@ pub struct ToolEvent {
     pub path: Option<String>,
     pub output: Option<String>,
     pub approved: Option<bool>,
+    pub exit_code: Option<i64>,
+    pub duration_ms: Option<u64>,
+    pub changes: Option<Vec<FileChange>>,
+}
+
+/// Codex file_change 的单个条目：路径 + 变更类型（add/update/delete）。
+#[derive(Clone, Debug, Serialize)]
+pub struct FileChange {
+    pub path: String,
+    pub kind: Option<String>,
 }
 
 pub enum Activity {
@@ -44,11 +54,39 @@ fn text_content(value: &Value) -> String {
     String::new()
 }
 
+/// Codex todo_list 的清单数组（不同版本字段名不同，按顺序回退）。
+fn plan_items(item: &Value) -> Value {
+    for key in ["items", "plan", "todos"] {
+        if item[key].is_array() {
+            return item[key].clone();
+        }
+    }
+    Value::Array(Vec::new())
+}
+
+/// Codex file_change 的变更列表，只保留可展示的 path / kind。
+fn file_changes(item: &Value) -> Option<Vec<FileChange>> {
+    let changes = item["changes"].as_array()?;
+    Some(
+        changes
+            .iter()
+            .filter_map(|change| {
+                change["path"].as_str().map(|path| FileChange {
+                    path: path.to_string(),
+                    kind: change["kind"].as_str().map(str::to_string),
+                })
+            })
+            .collect(),
+    )
+}
+
 #[derive(Default)]
 pub struct CliActivityParser {
     tools: HashMap<String, ToolEvent>,
     block_ids: HashMap<u64, String>,
     completed: HashSet<String>,
+    /// 已上报过的 Codex 配置告警：Codex 每轮都会重复同一条 message。
+    notices: HashSet<String>,
     message_text: String,
 }
 
@@ -72,20 +110,61 @@ impl CliActivityParser {
             return Vec::new();
         }
         let kind = item["type"].as_str().unwrap_or_default();
-        let (tool_name, args, output) = match kind {
+        if kind == "reasoning" {
+            // 思考内容由 codex.rs 的 thinking 通道统一输出，不重复计入工具轨迹。
+            return Vec::new();
+        }
+        if kind == "error" {
+            if event_type != "item.completed" {
+                return Vec::new();
+            }
+            // Codex 每一轮都会重复同一条配置告警，同一轮内只上报一次。
+            let message = item["message"].as_str().unwrap_or_default().to_string();
+            if message.is_empty() || !self.notices.insert(message.clone()) {
+                return Vec::new();
+            }
+            let summary = message
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+                .unwrap_or("Codex 提示")
+                .to_string();
+            self.completed.insert(id.to_string());
+            return vec![Activity::Tool(ToolEvent {
+                id: id.to_string(),
+                tool_name: "codex_notice".into(),
+                status: "notice".into(),
+                summary,
+                arguments: "{}".into(),
+                command: None,
+                path: None,
+                output: Some(compact(&message)),
+                approved: None,
+                exit_code: None,
+                duration_ms: None,
+                changes: None,
+            })];
+        }
+        let (tool_name, args, output, changes) = match kind {
             "command_execution" => (
                 "run_command".to_string(),
                 serde_json::json!({ "command": item["command"] }),
                 item["aggregated_output"].as_str().map(compact),
-            ),
-            "file_change" => (
-                "edit_file".to_string(),
-                serde_json::json!({ "changes": item["changes"] }),
                 None,
             ),
+            "file_change" => {
+                let changes = file_changes(item);
+                (
+                    "edit_file".to_string(),
+                    serde_json::json!({ "changes": item["changes"] }),
+                    None,
+                    changes,
+                )
+            }
             "web_search" => (
                 "web_search".to_string(),
-                serde_json::json!({ "query": item["query"] }),
+                serde_json::json!({ "query": item["query"], "action": item["action"] }),
+                None,
                 None,
             ),
             "mcp_tool_call" => (
@@ -99,11 +178,19 @@ impl CliActivityParser {
                     .as_str()
                     .map(compact)
                     .or_else(|| Some(text_content(&item["result"]["content"]))),
+                None,
+            ),
+            "todo_list" => (
+                "update_plan".to_string(),
+                serde_json::json!({ "plan": plan_items(item) }),
+                None,
+                None,
             ),
             _ => return Vec::new(),
         };
+        let exit_code = item["exit_code"].as_i64();
         let failed = item["status"] == "failed"
-            || item["exit_code"].as_i64().is_some_and(|code| code != 0)
+            || exit_code.is_some_and(|code| code != 0)
             || item["error"].is_object();
         let status = if failed {
             "failed"
@@ -116,17 +203,21 @@ impl CliActivityParser {
             self.completed.insert(id.to_string());
         }
         let command = args["command"].as_str().map(str::to_string);
-        let path = item["changes"]
-            .as_array()
+        let path = changes
+            .as_ref()
             .and_then(|changes| changes.first())
-            .and_then(|change| change["path"].as_str())
-            .map(str::to_string);
-        vec![Activity::Tool(ToolEvent {
-            id: id.to_string(),
-            summary: command
+            .map(|change| change.path.clone());
+        let summary = if kind == "todo_list" {
+            "更新任务清单".to_string()
+        } else {
+            command
                 .clone()
                 .or_else(|| path.clone())
-                .unwrap_or_else(|| tool_name.clone()),
+                .unwrap_or_else(|| tool_name.clone())
+        };
+        vec![Activity::Tool(ToolEvent {
+            id: id.to_string(),
+            summary,
             tool_name,
             status: status.into(),
             arguments: serde_json::to_string_pretty(&args).unwrap_or_default(),
@@ -134,6 +225,9 @@ impl CliActivityParser {
             path,
             output,
             approved: None,
+            exit_code,
+            duration_ms: item["duration_ms"].as_u64(),
+            changes,
         })]
     }
 
@@ -245,6 +339,9 @@ impl CliActivityParser {
                             path: None,
                             output: None,
                             approved: None,
+                            exit_code: None,
+                            duration_ms: None,
+                            changes: None,
                         });
                         tool.status = if block["is_error"].as_bool().unwrap_or(false) {
                             "failed"
@@ -282,6 +379,9 @@ impl CliActivityParser {
                 .map(str::to_string),
             output: None,
             approved: None,
+            exit_code: None,
+            duration_ms: None,
+            changes: None,
         };
         self.tools.insert(id.into(), event.clone());
         Some(event)
@@ -339,10 +439,17 @@ mod tests {
         };
         assert_eq!(tool.status, "failed");
         assert_eq!(tool.path.as_deref(), Some("src/main.ts"));
+        assert_eq!(
+            tool.changes
+                .as_ref()
+                .map(|changes| changes[0].kind.as_deref()),
+            Some(Some("update"))
+        );
         let mcp = r#"{"type":"item.completed","item":{"id":"m1","type":"mcp_tool_call","server":"files","tool":"read","arguments":{"path":"a"},"result":{"content":[{"type":"text","text":"结果"},{"type":"image","data":"private-image"}]}}}"#;
         let Activity::Tool(tool) = parser.codex(mcp).remove(0) else {
             panic!()
         };
+        assert_eq!(tool.tool_name, "files / read");
         assert_eq!(tool.output.as_deref(), Some("结果"));
         let search =
             r#"{"type":"item.started","item":{"id":"s1","type":"web_search","query":"测试"}}"#;
@@ -350,7 +457,72 @@ mod tests {
             panic!()
         };
         assert_eq!(tool.tool_name, "web_search");
+        assert_eq!(tool.arguments, "{\n  \"action\": null,\n  \"query\": \"测试\"\n}");
         assert!(compact(&"中".repeat(5000)).chars().count() < 3100);
+    }
+
+    #[test]
+    fn codex_command_file_plan_and_notice_carry_structured_details() {
+        let mut parser = CliActivityParser::default();
+        let command = r#"{"type":"item.completed","item":{"id":"c1","type":"command_execution","command":"cargo test","aggregated_output":"失败","exit_code":-1,"duration_ms":1234,"status":"failed"}}"#;
+        let Activity::Tool(tool) = parser.codex(command).remove(0) else {
+            panic!()
+        };
+        assert_eq!(tool.tool_name, "run_command");
+        assert_eq!(tool.command.as_deref(), Some("cargo test"));
+        assert_eq!(tool.exit_code, Some(-1));
+        assert_eq!(tool.duration_ms, Some(1234));
+        assert_eq!(tool.status, "failed");
+        assert!(tool.changes.is_none());
+        let change = r#"{"type":"item.completed","item":{"id":"f1","type":"file_change","changes":[{"path":"a.rs","kind":"add"},{"path":"b.rs","kind":"delete"},{"path":"c.rs"}]}}"#;
+        let Activity::Tool(tool) = parser.codex(change).remove(0) else {
+            panic!()
+        };
+        assert_eq!(tool.tool_name, "edit_file");
+        assert_eq!(tool.path.as_deref(), Some("a.rs"));
+        let changes = tool.changes.as_ref().expect("changes");
+        assert_eq!(changes.len(), 3);
+        assert_eq!(changes[1].path, "b.rs");
+        assert_eq!(changes[1].kind.as_deref(), Some("delete"));
+        assert!(changes[2].kind.is_none(), "kind 允许为 null");
+        assert!(tool.arguments.contains("\"path\": \"a.rs\""));
+        let plan = r#"{"type":"item.completed","item":{"id":"p1","type":"todo_list","items":[{"text":"第一步","completed":true},{"text":"第二步","completed":false}]}}"#;
+        let Activity::Tool(tool) = parser.codex(plan).remove(0) else {
+            panic!()
+        };
+        assert_eq!(tool.tool_name, "update_plan");
+        assert_eq!(tool.summary, "更新任务清单");
+        assert!(tool.arguments.contains("第一步"));
+        assert!(parser.codex(plan).is_empty(), "completed item 只报一次");
+    }
+
+    #[test]
+    fn codex_notice_is_reported_once_per_turn_and_reasoning_stays_out_of_activity() {
+        let mut parser = CliActivityParser::default();
+        let notice = r#"{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Codex is ignoring 3 unrecognized configuration settings. Check for typos or deprecated settings.\n  user (config.toml): `network_access` is ignored."}}"#;
+        let Activity::Tool(tool) = parser.codex(notice).remove(0) else {
+            panic!()
+        };
+        assert_eq!(tool.tool_name, "codex_notice");
+        assert_eq!(tool.status, "notice");
+        assert_eq!(
+            tool.summary,
+            "Codex is ignoring 3 unrecognized configuration settings. Check for typos or deprecated settings."
+        );
+        assert_eq!(tool.output.as_deref(), Some("Codex is ignoring 3 unrecognized configuration settings. Check for typos or deprecated settings.\n  user (config.toml): `network_access` is ignored."));
+        // Codex 每轮都会重复同一条告警，第二轮重新计一次。
+        assert!(parser.codex(notice).is_empty());
+        let other = r#"{"type":"item.completed","item":{"id":"item_1","type":"error","message":"另一条告警"}}"#;
+        assert_eq!(parser.codex(other).len(), 1);
+        let mut next_turn = CliActivityParser::default();
+        assert_eq!(next_turn.codex(notice).len(), 1);
+        // 思考内容只走 thinking 通道，不重复进工具轨迹。
+        assert!(parser
+            .codex(r#"{"type":"item.completed","item":{"id":"r1","type":"reasoning","text":"先检查配置"}}"#)
+            .is_empty());
+        assert!(parser
+            .codex(r#"{"type":"item.started","item":{"id":"r2","type":"reasoning","text":"思考中"}}"#)
+            .is_empty());
     }
 
     #[test]
@@ -397,15 +569,17 @@ mod tests {
     async fn codex_process_stream_preserves_existing_answer_and_emits_tool_events() {
         let mut child = fixture_child(&[
             serde_json::json!({"type":"item.started","item":{"id":"cmd1","type":"command_execution","command":"fixture","status":"in_progress"}}),
-            serde_json::json!({"type":"item.completed","item":{"id":"cmd1","type":"command_execution","command":"fixture","status":"completed","aggregated_output":"成功"}}),
+            serde_json::json!({"type":"item.completed","item":{"id":"cmd1","type":"command_execution","command":"fixture","status":"completed","aggregated_output":"成功","exit_code":0}}),
+            serde_json::json!({"type":"item.completed","item":{"id":"think1","type":"reasoning","text":"先确认命令结果"}}),
             serde_json::json!({"type":"item.completed","item":{"id":"msg1","type":"agent_message","text":"完成"}}),
             serde_json::json!({"type":"turn.completed"}),
         ]).await;
         let mut text = String::new();
+        let mut thinking = String::new();
         let mut events = Vec::new();
         let state = crate::codex::read_stream_with_activity(
             &mut child,
-            |_| {},
+            |delta| thinking.push_str(delta),
             |delta| text.push_str(delta),
             |event| events.push(event.clone()),
         )
@@ -414,8 +588,48 @@ mod tests {
         assert!(!state.is_error);
         assert_eq!(state.full_text, "完成");
         assert_eq!(text, "完成");
+        assert_eq!(thinking, "先确认命令结果");
+        assert_eq!(state.full_thinking, thinking);
         assert_eq!(events.len(), 2);
         assert_eq!(events[1].output.as_deref(), Some("成功"));
+        assert_eq!(events[1].exit_code, Some(0));
+    }
+
+    #[tokio::test]
+    async fn codex_process_stream_interleaves_thinking_tools_and_text_in_order() {
+        // 跨通道顺序：三类回调共用一个有序日志，钉住"思考 → 工具 → 过程正文 → 最终正文"
+        // 的真实交错。单看各通道内容无法发现 reasoning 被挪到回合末尾这类回归。
+        let mut child = fixture_child(&[
+            serde_json::json!({"type":"item.completed","item":{"id":"think1","type":"reasoning","text":"先看目录"}}),
+            serde_json::json!({"type":"item.started","item":{"id":"cmd1","type":"command_execution","command":"Get-ChildItem","status":"in_progress"}}),
+            serde_json::json!({"type":"item.completed","item":{"id":"cmd1","type":"command_execution","command":"Get-ChildItem","status":"completed","aggregated_output":"a.txt","exit_code":0}}),
+            serde_json::json!({"type":"item.completed","item":{"id":"think2","type":"reasoning","text":"再确认文件"}}),
+            serde_json::json!({"type":"item.completed","item":{"id":"msg1","type":"agent_message","text":"完成"}}),
+            serde_json::json!({"type":"turn.completed"}),
+        ]).await;
+        // 三个回调没有共享的可变捕获，用 RefCell 记录同一个有序日志。
+        let order = std::cell::RefCell::new(Vec::<String>::new());
+        let state = crate::codex::read_stream_with_activity(
+            &mut child,
+            |delta| order.borrow_mut().push(format!("thinking:{delta}")),
+            |delta| order.borrow_mut().push(format!("text:{delta}")),
+            |event| order.borrow_mut().push(format!("tool:{}:{}", event.id, event.status)),
+        )
+        .await
+        .unwrap();
+        assert!(!state.is_error);
+        assert_eq!(
+            order.borrow().as_slice(),
+            [
+                "thinking:先看目录".to_string(),
+                "tool:cmd1:running".to_string(),
+                "tool:cmd1:completed".to_string(),
+                "thinking:再确认文件".to_string(),
+                "text:完成".to_string(),
+            ]
+        );
+        assert_eq!(state.full_thinking, "先看目录\n\n再确认文件");
+        assert_eq!(state.full_text, "完成");
     }
 
     #[tokio::test]

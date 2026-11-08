@@ -20,6 +20,12 @@ export interface ToolEventItem {
   path?: string | null;
   output?: string | null;
   approved?: boolean | null;
+  /** Codex 命令类工具退出码，非 0 时轨迹标红。 */
+  exit_code?: number | null;
+  /** 工具耗时（毫秒）。 */
+  duration_ms?: number | null;
+  /** 文件变更清单。 */
+  changes?: { path: string; kind?: string | null }[] | null;
 }
 
 export interface QuotedMessage {
@@ -64,6 +70,8 @@ export interface Message {
   quote?: QuotedMessage;
   /** 回复来自哪个智能体（@ 提及后由该智能体作答） */
   agent?: MessageAgent | null;
+  /** 所属对话会话 id（多会话 / agent 窗口事件路由用） */
+  session_id?: string;
 }
 
 export type MessageDraft = Omit<Message, "id">;

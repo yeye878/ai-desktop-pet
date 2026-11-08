@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch, nextTick } from "vue";
+import { ref, computed, onMounted, onUnmounted, watch, nextTick, reactive } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -10,16 +10,18 @@ import DshConnection from "./DshConnection.vue";
 import AgentActivity from "./AgentActivity.vue";
 import UserQuestion from "./UserQuestion.vue";
 import { createInteractionSubmission, subscribePendingInteraction, type AskUserPayload } from "../services/pendingInteractions";
-import { isNearBottom, legacyActivity, toolStatusLabel } from "../services/agentActivity";
+import { isNearBottom, legacyActivity, toolStatusLabel, createAgentActivity, type AgentActivityItem } from "../services/agentActivity";
+import { restoreActivityPresentation, saveActivityPresentation } from "../services/agentActivityCache";
 import { ArrowDown, House, MessageCircle, Brain, Palette, Bot, Mic, Settings as SettingsIcon, Info, PawPrint, Send, Plus, Power } from "@lucide/vue";
 import CollaborationBar from "./CollaborationBar.vue";
-import { subscribeCollaboration } from "../services/collaboration";
+import type { CollaborationReply, CollaborationState } from "../services/collaboration";
 import PetCanvas from "./PetCanvas.vue";
 import PetStage from "./PetStage.vue";
-import { usePetStore, THEMES, FONT_COLORS, resolveSkinId } from "../stores/pet";
+import { usePetStore, THEMES, FONT_COLORS, resolveSkinId, type PetState } from "../stores/pet";
 import { useSkillsStore, type Skill } from "../stores/skills";
-import { useChatStore, messageAgentFromPayload, type AiFinishedPayload, type Message, type MessageAgent, type QuotedMessage } from "../stores/chat";
+import { useChatStore, messageAgentFromPayload, type AiFinishedPayload, type Message, type MessageAgent, type QuotedMessage, type ToolEventItem } from "../stores/chat";
 import { useAgentsStore, type Agent } from "../stores/agents";
+import { useSessionsStore, SLOT_DEFAULT_AGENT, AGENT_SLOTS, type ChatSession, type ChatSlot } from "../stores/sessions";
 import {
   stripQuoteMarkers,
   truncateQuoteContent,
@@ -77,12 +79,126 @@ const pet = usePetStore();
 const chat = useChatStore();
 const currentWindow = getCurrentWindow();
 
+/**
+ * 控制台里改桌宠状态要写两处：本地 store 只影响本窗口的预览，
+ * 真正常驻的桌宠窗口每秒 tick 都会从后端状态机回读，只写本地活不过一秒。
+ */
+function syncPetState(state: PetState) {
+  pet.setState(state);
+  void Promise.resolve(invoke("set_pet_state", { newState: state })).catch(() => {});
+}
+
 // === 导航 ===
 type NavPage = "home" | "chat" | "memory" | "agents" | "appearance" | "voice" | "system" | "about";
 const activePage = ref<NavPage>(import.meta.env.DEV && new URLSearchParams(window.location.search).get("activity") === "demo" ? "chat" : "home");
 const isPetActive = ref(false);
 const skillsStore = useSkillsStore();
 const agentsStore = useAgentsStore();
+const sessions = useSessionsStore();
+
+// === 多会话 / 三个 agent 独立对话窗口 ===
+type AgentWindowSlot = Exclude<ChatSlot, "main">;
+const SLOT_WINDOW_LABELS: Record<AgentWindowSlot, string> = {
+  claude: "Claude Code",
+  codex: "Codex",
+  dsh: "DeepSeek Harness",
+};
+/** 侧边栏子项用固定图标区分三个窗口；窗口 header 优先用 agent 自己的头像。 */
+const SLOT_WINDOW_ICONS: Record<AgentWindowSlot, string> = { claude: "✳", codex: "⌘", dsh: "🐋" };
+/** 模型输入框的常用候选；空字符串表示跟随本机/全局配置。 */
+const AGENT_MODEL_PRESETS: Record<AgentWindowSlot, string[]> = {
+  claude: ["sonnet", "opus", "haiku"],
+  codex: ["gpt-5-codex", "gpt-5"],
+  dsh: ["deepseek-chat", "deepseek-reasoner"],
+};
+const CHAT_SLOT_STORAGE_KEY = "dash.chat-slot";
+const AGENT_WINDOW_PREF_PREFIX = "dash.agent-window.";
+const AGENT_SESSION_STORAGE_PREFIX = "dash.agent-session.";
+
+function readStoredValue(key: string): string {
+  try { return localStorage.getItem(key) ?? ""; } catch { return ""; }
+}
+function writeStoredValue(key: string, value: string) {
+  try { localStorage.setItem(key, value); } catch { /* WebView 可能禁用 storage。 */ }
+}
+function isAgentWindowSlot(value: unknown): value is AgentWindowSlot {
+  return value === "claude" || value === "codex" || value === "dsh";
+}
+function readStoredChatSlot(): ChatSlot {
+  const raw = readStoredValue(CHAT_SLOT_STORAGE_KEY);
+  return raw === "main" || isAgentWindowSlot(raw) ? raw : "main";
+}
+
+/** 窗口偏好：新建会话 / 未绑定会话时使用的 agent 与模型。 */
+interface AgentWindowPreference { agentId: string; model: string }
+function readStoredWindowPreference(slot: AgentWindowSlot): AgentWindowPreference {
+  const raw = readStoredValue(`${AGENT_WINDOW_PREF_PREFIX}${slot}`);
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as Partial<AgentWindowPreference> | null;
+      if (parsed && typeof parsed === "object") {
+        return {
+          agentId: typeof parsed.agentId === "string" && parsed.agentId ? parsed.agentId : SLOT_DEFAULT_AGENT[slot],
+          model: typeof parsed.model === "string" ? parsed.model : "",
+        };
+      }
+    } catch { /* 旧数据损坏时回退默认偏好。 */ }
+  }
+  return { agentId: SLOT_DEFAULT_AGENT[slot], model: "" };
+}
+
+const chatSlot = ref<ChatSlot>(readStoredChatSlot());
+const chatNavExpanded = ref(chatSlot.value !== "main");
+const agentWindowPrefs = reactive<Record<AgentWindowSlot, AgentWindowPreference>>({
+  claude: readStoredWindowPreference("claude"),
+  codex: readStoredWindowPreference("codex"),
+  dsh: readStoredWindowPreference("dsh"),
+});
+const agentSessionIds = reactive<Record<AgentWindowSlot, string>>({
+  claude: readStoredValue(`${AGENT_SESSION_STORAGE_PREFIX}claude`),
+  codex: readStoredValue(`${AGENT_SESSION_STORAGE_PREFIX}codex`),
+  dsh: readStoredValue(`${AGENT_SESSION_STORAGE_PREFIX}dsh`),
+});
+const agentModelDraft = ref("");
+const sessionError = ref("");
+const creatingSession = ref(false);
+const switchingSessionId = ref("");
+const renamingSessionId = ref<string | null>(null);
+const renameDraft = ref("");
+const renameInputRef = ref<HTMLInputElement | null>(null);
+const isMainSlot = computed(() => chatSlot.value === "main");
+const agentSlot = computed<AgentWindowSlot | null>(() => (isAgentWindowSlot(chatSlot.value) ? chatSlot.value : null));
+const agentWindowNavItems = computed(() =>
+  AGENT_SLOTS.map((slot) => ({ slot, label: SLOT_WINDOW_LABELS[slot], icon: SLOT_WINDOW_ICONS[slot] })),
+);
+const agentModelPresets = computed<string[]>(() => (agentSlot.value ? AGENT_MODEL_PRESETS[agentSlot.value] : []));
+
+function saveWindowPreference(slot: AgentWindowSlot, patch: Partial<AgentWindowPreference>) {
+  const next: AgentWindowPreference = { ...agentWindowPrefs[slot], ...patch };
+  if (!next.agentId) next.agentId = SLOT_DEFAULT_AGENT[slot];
+  agentWindowPrefs[slot] = next;
+  writeStoredValue(`${AGENT_WINDOW_PREF_PREFIX}${slot}`, JSON.stringify(next));
+}
+
+function rememberAgentSession(slot: AgentWindowSlot, id: string) {
+  agentSessionIds[slot] = id;
+  writeStoredValue(`${AGENT_SESSION_STORAGE_PREFIX}${slot}`, id);
+}
+
+function openChatSlot(slot: ChatSlot) {
+  activePage.value = "chat";
+  if (slot !== "main") chatNavExpanded.value = true;
+  chatSlot.value = slot;
+}
+
+function toggleChatSubnav() {
+  chatNavExpanded.value = !chatNavExpanded.value;
+}
+
+watch(chatSlot, (slot) => {
+  writeStoredValue(CHAT_SLOT_STORAGE_KEY, slot);
+  if (slot !== "main") chatNavExpanded.value = true;
+});
 
 // 自定义提示（Dashboard 速览面板）
 const customPromptDraft = ref("");
@@ -160,6 +276,12 @@ type ToolEvent = {
   path?: string | null;
   output?: string | null;
   approved?: boolean | null;
+  /** Codex 命令类工具的退出码，非 0 时在轨迹里标红。 */
+  exit_code?: number | null;
+  /** 工具耗时（毫秒），用于轨迹行右侧的耗时标注。 */
+  duration_ms?: number | null;
+  /** 文件变更清单，轨迹展开后逐条列出。 */
+  changes?: { path: string; kind?: string | null }[] | null;
 };
 
 type ToolConfirmPayload = {
@@ -410,7 +532,7 @@ const conversationTurnCount = computed(() => chat.messages.filter((msg) => msg.r
  */
 const renderedMessages = computed(() => {
   const map = new Map<number, MessageRenderSegment[]>();
-  for (const message of chat.messages) {
+  for (const message of paneMessages.value) {
     if (message.role !== "assistant" && message.role !== "user") continue;
     const raw = message.displayContent ?? message.content;
     map.set(
@@ -499,15 +621,6 @@ const chatHeaderTitle = computed(() => {
 });
 const recentMemories = computed(() => memories.value.slice(0, 5));
 
-const activeTools = computed(() => chat.activity.items.filter((item) => item.kind === "tool"));
-const activityHeadline = computed(() => {
-  const last = activeTools.value[activeTools.value.length - 1];
-  if (last && last.kind === "tool") {
-    return `${last.tool.summary || last.tool.tool_name} · ${toolStatusLabel(last.tool.status)}`;
-  }
-  return "正在理解你的需求";
-});
-
 const currentExecutionModeLabel = computed(() => {
   if (backendType.value === "codex") return "Codex";
   if (backendType.value === "dsh") return "DeepSeek Harness";
@@ -525,7 +638,7 @@ const contextUsageLabel = computed(() => {
 });
 
 const dashSlashQuery = computed(() => {
-  if (chat.isLoading) return null;
+  if (chat.isLoading || !isMainSlot.value) return null;
   return slashQueryFromInput(chatInput.value);
 });
 const dashSlashItems = computed<DashSlashPickerItem[]>(() => {
@@ -562,7 +675,7 @@ const showDashSlashMenu = computed(
 
 // === @ 提及智能体 ===
 const dashMentionQuery = computed(() => {
-  if (chat.isLoading) return null;
+  if (chat.isLoading || !isMainSlot.value) return null;
   return mentionQueryFromInput(chatInput.value);
 });
 const dashMentionItems = computed<Agent[]>(() => {
@@ -1834,6 +1947,590 @@ let unlistenWeatherUpdate: UnlistenFn | null = null;
 let unlistenDragDrop: UnlistenFn | null = null;
 let unlistenVoiceSettingsChanged: UnlistenFn | null = null;
 let unlistenTtsSettingsChanged: UnlistenFn | null = null;
+// === agent 对话窗口：按 sessionId 分组的本地回合状态（切走再回来不丢） ===
+type AgentTurn = {
+  loading: boolean;
+  thinking: string;
+  toolEvents: ToolEventItem[];
+  activity: ReturnType<typeof createAgentActivity>;
+};
+const agentMessages = reactive<Record<string, Message[]>>({});
+const agentTurns = reactive<Record<string, AgentTurn>>({});
+/** 主对话当前已载入的会话 id：从其它页面切回来时据此判断要不要重载。 */
+const loadedMainSessionId = ref("");
+const agentLoadedSessions = new Set<string>();
+let agentPresentationStorage: Storage | undefined;
+try { agentPresentationStorage = globalThis.localStorage; } catch { /* WebView 可能禁用 storage。 */ }
+/** 乐观插入的本地消息 id 从高位起，避免和历史上库的数据库行 id 撞 key。 */
+let nextAgentMessageId = 1_000_000;
+
+function ensureAgentMessages(sessionId: string): Message[] {
+  if (!agentMessages[sessionId]) agentMessages[sessionId] = [];
+  return agentMessages[sessionId];
+}
+function ensureAgentTurn(sessionId: string): AgentTurn {
+  if (!agentTurns[sessionId]) {
+    agentTurns[sessionId] = {
+      loading: false,
+      thinking: "",
+      toolEvents: [],
+      activity: createAgentActivity(reactive<AgentActivityItem[]>([])),
+    };
+  }
+  return agentTurns[sessionId];
+}
+function clearAgentSessionState(sessionId: string) {
+  if (!sessionId) return;
+  delete agentMessages[sessionId];
+  delete agentTurns[sessionId];
+  agentLoadedSessions.delete(sessionId);
+}
+function clearAllAgentSessionState() {
+  for (const key of Object.keys(agentMessages)) delete agentMessages[key];
+  for (const key of Object.keys(agentTurns)) delete agentTurns[key];
+  agentLoadedSessions.clear();
+  for (const slot of AGENT_SLOTS) rememberAgentSession(slot, "");
+}
+
+// 当前 pane 的派生状态：主对话继续用 chat store，agent 窗口用本地按 session 分组的状态。
+const currentAgentSession = computed<ChatSession | undefined>(() => {
+  const slot = agentSlot.value;
+  if (!slot) return undefined;
+  const storedId = agentSessionIds[slot];
+  if (storedId) {
+    const stored = sessions.find(storedId);
+    if (stored && stored.slot === slot) return stored;
+  }
+  return sessions.bySlot(slot)[0];
+});
+const currentAgentSessionId = computed(() => currentAgentSession.value?.id ?? "");
+const currentSessionId = computed(() => (isMainSlot.value ? sessions.activeMainId : currentAgentSessionId.value));
+const currentSession = computed<ChatSession | undefined>(() => {
+  if (isMainSlot.value) return sessions.find(sessions.activeMainId) ?? sessions.activeMain();
+  return currentAgentSession.value;
+});
+const currentAgentTurn = computed<AgentTurn | undefined>(() => {
+  const id = currentAgentSessionId.value;
+  return id ? agentTurns[id] : undefined;
+});
+const paneMessages = computed<Message[]>(() => {
+  if (isMainSlot.value) return chat.messages;
+  const id = currentAgentSessionId.value;
+  return id ? agentMessages[id] ?? [] : [];
+});
+const paneIsLoading = computed(() => (isMainSlot.value ? chat.isLoading : !!currentAgentTurn.value?.loading));
+const paneThinking = computed(() => (isMainSlot.value ? thinkingContent.value : currentAgentTurn.value?.thinking ?? ""));
+const paneActivityItems = computed<AgentActivityItem[]>(() =>
+  isMainSlot.value ? chat.activity.items : currentAgentTurn.value?.activity.items ?? [],
+);
+const paneSessions = computed<ChatSession[]>(() =>
+  isMainSlot.value ? sessions.bySlot("main") : agentSlot.value ? sessions.bySlot(agentSlot.value) : [],
+);
+const activeToolItems = computed(() => paneActivityItems.value.filter((item) => item.kind === "tool"));
+const paneActivityHeadline = computed(() => {
+  const last = activeToolItems.value[activeToolItems.value.length - 1];
+  if (last && last.kind === "tool") {
+    return (last.tool.summary || last.tool.tool_name) + " · " + toolStatusLabel(last.tool.status);
+  }
+  return "正在理解你的需求";
+});
+const currentSlotLabel = computed(() => (agentSlot.value ? SLOT_WINDOW_LABELS[agentSlot.value] : "主对话"));
+const currentAgentIdentity = computed<{ id: string; name: string; avatar: string }>(() => {
+  const slot = agentSlot.value;
+  if (!slot) return { id: "", name: "", avatar: "" };
+  const session = currentAgentSession.value;
+  const agentId = session?.agent_id || agentWindowPrefs[slot].agentId || SLOT_DEFAULT_AGENT[slot];
+  const agent = agentsStore.agents.find((item) => item.id === agentId);
+  return {
+    id: agentId,
+    name: session?.agent_name || agent?.name || SLOT_WINDOW_LABELS[slot],
+    avatar: session?.agent_avatar || agent?.avatar || SLOT_WINDOW_ICONS[slot],
+  };
+});
+const agentWindowAgentOptions = computed<{ id: string; name: string; avatar: string }[]>(() => {
+  const options = agentsStore.agents.map((agent) => ({ id: agent.id, name: agent.name, avatar: agent.avatar }));
+  const current = currentAgentIdentity.value;
+  if (current.id && !options.some((item) => item.id === current.id)) options.unshift({ ...current });
+  if (!options.length && agentSlot.value) {
+    const slot = agentSlot.value;
+    return [{ id: SLOT_DEFAULT_AGENT[slot], name: SLOT_WINDOW_LABELS[slot], avatar: SLOT_WINDOW_ICONS[slot] }];
+  }
+  return options;
+});
+const currentSessionModelLabel = computed(() => currentAgentSession.value?.model || "跟随本机");
+
+/** 某个 agent 窗口当前是否有回合在跑（侧边栏子项的运行指示灯）。 */
+function agentSlotBusy(slot: AgentWindowSlot): boolean {
+  const sessionId = agentSessionIds[slot];
+  return !!sessionId && !!agentTurns[sessionId]?.loading;
+}
+
+/** 历史消息（Rust ChatMessage / mock ChatMessage）转成前端 MessageDraft。 */
+function historyToMessageDraft(item: any): Omit<Message, "id"> {
+  return {
+    role: item?.role === "assistant" ? "assistant" : "user",
+    content: item?.content || (item?.quoted_content ? "（引用消息）" : item?.content),
+    thinking: item?.thinking || undefined,
+    timestamp: typeof item?.created_at === "number" ? item.created_at : new Date(item?.created_at).getTime(),
+    quote: item?.quoted_content
+      ? {
+          role: item?.quoted_role === "assistant" ? "assistant" as const : "user" as const,
+          content: item.quoted_content,
+        }
+      : undefined,
+    agent: item?.agent_name
+      ? {
+          id: item.agent_id || undefined,
+          name: item.agent_name,
+          avatar: item.agent_avatar || undefined,
+        }
+      : undefined,
+  };
+}
+
+/** 事件路由：旧 payload / 空 session_id 回退主对话；其它会话按 slot 分流。 */
+type RoutedSession =
+  | { kind: "main" }
+  | { kind: "agent"; slot: AgentWindowSlot; sessionId: string }
+  | { kind: "ignore" };
+function routeIncomingSession(sessionId: string | undefined | null): RoutedSession {
+  if (!sessionId) return { kind: "main" };
+  if (sessionId === sessions.activeMainId) return { kind: "main" };
+  const session = sessions.find(sessionId);
+  if (!session || session.slot === "main") return { kind: "ignore" };
+  return { kind: "agent", slot: session.slot, sessionId };
+}
+/** collaboration-* 只服务活跃主会话，agent 窗口的回合不显示协同条。 */
+function isMainScopedPayload(sessionId: string | undefined | null): boolean {
+  return !sessionId || sessionId === sessions.activeMainId;
+}
+
+/** 替代 services/collaboration 的订阅：按 session_id 过滤，避免 agent 窗口回合污染主对话协同条。 */
+function subscribeDashboardCollaboration(): () => void {
+  let stopped = false;
+  const listeners: UnlistenFn[] = [];
+  let observedEvent = false;
+  const handleReply = (reply: CollaborationReply & { session_id?: string }) => {
+    if (stopped || !isMainScopedPayload(reply.session_id)) return;
+    if (!chat.receiveCollaborationReply(reply)) return;
+    const last = chat.messages[chat.messages.length - 1];
+    if (last && toolEvents.value.length) last.toolEvents = JSON.parse(JSON.stringify(toolEvents.value));
+    thinkingContent.value = "";
+    streamingAnswer.value = "";
+    toolEvents.value = [];
+    pendingConfirm.value = null;
+    pendingQuestion.value = null;
+    if (!reply.failed) void speakDashboardReply(speakableText(reply.text));
+    void scrollDashChatToBottom();
+    sessions.scheduleReload();
+  };
+  const handleState = (state: CollaborationState & { session_id?: string }) => {
+    if (stopped || !isMainScopedPayload(state.session_id)) return;
+    const newTurn = chat.collaboration?.run_id !== state.run_id || chat.collaboration?.turn !== state.turn;
+    if (!chat.receiveCollaborationState(state)) return;
+    if (newTurn || state.status !== "running") {
+      thinkingContent.value = "";
+      streamingAnswer.value = "";
+      toolEvents.value = [];
+      if (state.status !== "running") {
+        pendingConfirm.value = null;
+        pendingQuestion.value = null;
+      }
+    }
+    if (state.status === "running") resetLoadingTimeout();
+    else clearLoadingTimeout();
+  };
+  void (async () => {
+    for (const register of [
+      () => listen<CollaborationState & { session_id?: string }>("collaboration-state", ({ payload }) => {
+        observedEvent = true;
+        handleState(payload);
+      }),
+      () => listen<CollaborationReply & { session_id?: string }>("collaboration-reply", ({ payload }) => {
+        handleReply(payload);
+      }),
+    ]) {
+      const unlisten = await register();
+      if (stopped) { unlisten(); return; }
+      listeners.push(unlisten);
+    }
+    if (stopped || observedEvent) return;
+    const current = await invoke<(CollaborationState & { session_id?: string }) | null>("get_collaboration_state");
+    if (!stopped && current) handleState(current);
+  })().catch((error) => console.error("加载协同状态失败", error));
+  return () => { stopped = true; listeners.splice(0).forEach((unlisten) => unlisten()); };
+}
+
+async function restoreAgentActiveTurn(sessionId: string) {
+  try {
+    const active = await invoke<{ thinking?: string; session_id?: string } | null>("get_active_chat");
+    if (!active || active.session_id !== sessionId) return;
+    const turn = ensureAgentTurn(sessionId);
+    turn.loading = true;
+    turn.thinking = active.thinking || "";
+    turn.toolEvents = [];
+    turn.activity.reset();
+    if (active.thinking) turn.activity.items.push(...legacyActivity(active.thinking));
+  } catch { /* 无 Tauri 环境忽略。 */ }
+}
+
+async function loadAgentSessionMessages(sessionId: string, force = false): Promise<void> {
+  if (!sessionId) return;
+  if (!force && agentLoadedSessions.has(sessionId)) return;
+  agentLoadedSessions.add(sessionId);
+  const list = ensureAgentMessages(sessionId);
+  try {
+    const history = await invoke<any[] | null>("get_chat_session_messages", { sessionId, limit: 200 });
+    if (Array.isArray(history)) {
+      list.splice(0, list.length, ...history.map((item) => {
+        const message: Message = {
+          id: typeof item?.id === "number" ? item.id : nextAgentMessageId++,
+          ...historyToMessageDraft(item),
+          session_id: sessionId,
+        };
+        if (message.role === "assistant") {
+          const restored = restoreActivityPresentation(agentPresentationStorage, message);
+          if (restored) Object.assign(message, restored);
+        }
+        return message;
+      }));
+    }
+  } catch (error) {
+    console.error("加载会话历史失败", error);
+  }
+  await restoreAgentActiveTurn(sessionId);
+}
+
+async function ensureAgentWindow(slot: AgentWindowSlot): Promise<void> {
+  if (!sessions.bySlot(slot).length) return;
+  const stored = sessions.find(agentSessionIds[slot]);
+  const session = stored && stored.slot === slot ? stored : sessions.bySlot(slot)[0];
+  if (!session) return;
+  if (agentSessionIds[slot] !== session.id) rememberAgentSession(slot, session.id);
+  await loadAgentSessionMessages(session.id);
+  scrollDashChatToBottom();
+}
+
+async function ensureCurrentChatPane() {
+  if (chatSlot.value === "main") {
+    const stale = loadedMainSessionId.value !== sessions.activeMainId;
+    if (sessions.activeMainId && stale && !chat.isLoading) await refreshChatState();
+  } else {
+    await ensureAgentWindow(chatSlot.value);
+  }
+  scrollDashChatToBottom();
+}
+
+// 主会话被其它窗口切换 / 新建时刷新主对话历史。
+watch(() => sessions.activeMainId, (id, previous) => {
+  if (!id || id === previous) return;
+  if (activePage.value === "chat" && isMainSlot.value) void refreshChatState();
+});
+// 切到 agent 窗口时惰性加载历史；会话列表异步就绪后自动补齐当前会话。
+watch(chatSlot, (slot) => {
+  closeDashMessageMenu();
+  followingActivity.value = true;
+  sessionError.value = "";
+  if (slot === "main") void refreshChatState();
+  else void ensureAgentWindow(slot);
+});
+watch(currentAgentSessionId, (id, previous) => {
+  if (!id || id === previous) return;
+  const slot = agentSlot.value;
+  if (!slot) return;
+  rememberAgentSession(slot, id);
+  void loadAgentSessionMessages(id);
+});
+watch([chatSlot, () => currentAgentSession.value?.id, () => currentAgentSession.value?.model], () => {
+  const slot = agentSlot.value;
+  agentModelDraft.value = currentAgentSession.value?.model ?? (slot ? agentWindowPrefs[slot].model : "");
+});
+
+function openChatSessionFromList(session: ChatSession) {
+  void switchChatSession(session);
+}
+async function createChatSession() {
+  if (creatingSession.value || switchingSessionId.value || paneIsLoading.value) return;
+  creatingSession.value = true;
+  sessionError.value = "";
+  try {
+    const slot = agentSlot.value;
+    if (!slot) {
+      const created = await sessions.create("main");
+      if (!created || !created.id) throw new Error("后端未返回新会话");
+      resetMainPaneTransientState();
+      await refreshChatState();
+      scrollDashChatToBottom();
+      return;
+    }
+    const pref = agentWindowPrefs[slot];
+    const created = await sessions.create(slot, { agentId: pref.agentId || SLOT_DEFAULT_AGENT[slot], model: pref.model });
+    if (!created || !created.id) throw new Error("后端未返回新会话");
+    rememberAgentSession(slot, created.id);
+    agentMessages[created.id] = [];
+    agentLoadedSessions.add(created.id);
+    ensureAgentTurn(created.id);
+    agentModelDraft.value = created.model || pref.model || "";
+    await nextTick();
+    scrollDashChatToBottom();
+  } catch (error) {
+    sessionError.value = "新建会话失败：" + errorMessage(error);
+  } finally {
+    creatingSession.value = false;
+  }
+}
+async function switchChatSession(session: ChatSession) {
+  if (!session || session.id === currentSessionId.value) return;
+  if (sessions.loading || switchingSessionId.value || paneIsLoading.value) return;
+  switchingSessionId.value = session.id;
+  sessionError.value = "";
+  try {
+    if (session.slot === "main") {
+      await sessions.setActiveMain(session.id);
+      resetMainPaneTransientState();
+      await refreshChatState();
+    } else {
+      const slot = agentSlot.value;
+      if (!slot) return;
+      rememberAgentSession(slot, session.id);
+      await loadAgentSessionMessages(session.id);
+    }
+    await nextTick();
+    scrollDashChatToBottom();
+  } catch (error) {
+    sessionError.value = "切换会话失败：" + errorMessage(error);
+  } finally {
+    switchingSessionId.value = "";
+  }
+}
+async function removeChatSession(session: ChatSession) {
+  if (!session || paneIsLoading.value) return;
+  const label = session.title || "未命名会话";
+  if (!window.confirm("确定删除会话「" + label + "」吗？该会话的历史消息会一并删除，且不可撤销。")) return;
+  sessionError.value = "";
+  try {
+    await sessions.remove(session.id);
+    clearAgentSessionState(session.id);
+    if (renamingSessionId.value === session.id) renamingSessionId.value = null;
+    if (session.slot === "main") {
+      await sessions.load();
+      resetDashChatUi();
+      await refreshChatState();
+    } else if (agentSlot.value && agentSessionIds[agentSlot.value] === session.id) {
+      rememberAgentSession(agentSlot.value, "");
+      await ensureAgentWindow(agentSlot.value);
+    }
+    await nextTick();
+    scrollDashChatToBottom();
+  } catch (error) {
+    sessionError.value = "删除会话失败：" + errorMessage(error);
+  }
+}
+function startRenameChatSession(session: ChatSession) {
+  renamingSessionId.value = session.id;
+  renameDraft.value = session.title || "";
+  void nextTick(() => {
+    renameInputRef.value?.focus();
+    renameInputRef.value?.select();
+  });
+}
+function cancelRenameChatSession() {
+  renamingSessionId.value = null;
+}
+function setRenameInputElement(element: unknown) {
+  renameInputRef.value = (element as HTMLInputElement | null) ?? null;
+}
+async function commitRenameChatSession(session: ChatSession) {
+  if (renamingSessionId.value !== session.id) return;
+  const title = renameDraft.value.trim();
+  renamingSessionId.value = null;
+  if (!title || title === (session.title || "")) return;
+  sessionError.value = "";
+  try {
+    await sessions.rename(session.id, title);
+  } catch (error) {
+    sessionError.value = "重命名失败：" + errorMessage(error);
+  }
+}
+
+async function commitAgentModel() {
+  const slot = agentSlot.value;
+  if (!slot) return;
+  const model = agentModelDraft.value.trim();
+  saveWindowPreference(slot, { model });
+  const session = currentAgentSession.value;
+  if (!session || model === (session.model || "")) return;
+  sessionError.value = "";
+  try {
+    await sessions.bind(session.id, { model });
+  } catch (error) {
+    sessionError.value = "保存模型失败：" + errorMessage(error);
+  }
+}
+async function onAgentWindowAgentChange(event: Event) {
+  const slot = agentSlot.value;
+  if (!slot) return;
+  const agentId = (event.target as HTMLSelectElement).value;
+  const agent = agentsStore.agents.find((item) => item.id === agentId);
+  saveWindowPreference(slot, { agentId });
+  const session = currentAgentSession.value;
+  if (!session) return;
+  sessionError.value = "";
+  try {
+    if (agent) {
+      await sessions.bind(session.id, { agentId: agent.id, agentName: agent.name, agentAvatar: agent.avatar, model: session.model || undefined });
+    } else {
+      await sessions.bind(session.id, { agentId, agentName: SLOT_WINDOW_LABELS[slot], agentAvatar: SLOT_WINDOW_ICONS[slot], model: session.model || undefined });
+    }
+  } catch (error) {
+    sessionError.value = "切换智能体失败：" + errorMessage(error);
+  }
+}
+
+async function ensureAgentSessionForSend(slot: AgentWindowSlot): Promise<ChatSession | null> {
+  const existing = currentAgentSession.value;
+  if (existing) return existing;
+  const pref = agentWindowPrefs[slot];
+  try {
+    const created = await sessions.create(slot, { agentId: pref.agentId || SLOT_DEFAULT_AGENT[slot], model: pref.model });
+    if (!created || !created.id) throw new Error("后端未返回新会话");
+    rememberAgentSession(slot, created.id);
+    ensureAgentMessages(created.id);
+    agentLoadedSessions.add(created.id);
+    ensureAgentTurn(created.id);
+    return created;
+  } catch (error) {
+    sessionError.value = "创建会话失败：" + errorMessage(error);
+    return null;
+  }
+}
+
+/** agent 窗口发送：单 agent 回合（不走协同、不带 @ 提及）。 */
+async function sendAgentWindowMessage() {
+  const slot = agentSlot.value;
+  if (!slot) return;
+  const text = chatInput.value.trim();
+  const files = [...pendingFiles.value];
+  const quote = pendingQuote.value ? { ...pendingQuote.value } : undefined;
+  if (!text && files.length === 0 && !quote) return;
+  if (paneIsLoading.value) return;
+  closeDashMessageMenu();
+  if (voiceSettings.value.enabled && voiceSettings.value.autoSpeak) ttsPlayer.preparePlayback();
+  const session = await ensureAgentSessionForSend(slot);
+  if (!session) return;
+  const turn = ensureAgentTurn(session.id);
+  if (turn.loading) return;
+  const messages = ensureAgentMessages(session.id);
+  const fullMessage = buildMessageWithFiles(text, files);
+  const fileAttachments = files.length > 0
+    ? files.map((file) => ({ name: file.name, isImage: file.isImage, extension: file.extension }))
+    : undefined;
+  const aiAttachments = files.length > 0
+    ? files.map((file) => ({ path: file.path, name: file.name, size: file.size, extension: file.extension, isImage: file.isImage }))
+    : [];
+  const displayText = text || (quote ? "（引用消息）" : "(已发送文件)");
+  messages.push({
+    id: nextAgentMessageId++,
+    role: "user",
+    content: displayText,
+    timestamp: Date.now(),
+    files: fileAttachments,
+    quote,
+    session_id: session.id,
+  });
+  chatInput.value = "";
+  pendingQuote.value = null;
+  clearPendingFiles();
+  turn.loading = true;
+  turn.thinking = "";
+  turn.toolEvents = [];
+  turn.activity.reset();
+  followingActivity.value = true;
+  scrollDashChatToBottom();
+  const targetAgentId = session.agent_id || currentAgentIdentity.value.id || SLOT_DEFAULT_AGENT[slot];
+  try {
+    await invoke("send_to_ai", {
+      message: fullMessage,
+      attachments: aiAttachments,
+      quotedRole: quote?.role,
+      quotedContent: quote ? truncateQuoteContent(quote.content) : undefined,
+      mentionAgents: [],
+      collaborationEnabled: false,
+      sessionId: session.id,
+      targetAgentId,
+      model: session.model || "",
+    });
+  } catch (error) {
+    turn.loading = false;
+    turn.activity.reset();
+    messages.push({
+      id: nextAgentMessageId++,
+      role: "assistant",
+      content: "出错了: " + errorMessage(error),
+      timestamp: Date.now(),
+      session_id: session.id,
+    });
+  }
+}
+
+/** agent 回合收尾：插入 assistant 消息（含 thinking / 工具快照 / 活动轨迹快照）。 */
+function settleAgentTurn(
+  sessionId: string,
+  content: string,
+  options: { thinking?: string; toolEvents?: ToolEventItem[]; agent?: MessageAgent | null; reason?: "completed" | "failed" | "aborted" } = {},
+) {
+  const turn = ensureAgentTurn(sessionId);
+  const messages = ensureAgentMessages(sessionId);
+  const toolSnapshot = options.toolEvents?.length ? options.toolEvents : turn.toolEvents;
+  const last = messages[messages.length - 1];
+  if (!(last?.role === "assistant" && last.content === content)) {
+    const message: Message = {
+      id: nextAgentMessageId++,
+      role: "assistant",
+      content,
+      thinking: options.thinking || undefined,
+      timestamp: Date.now(),
+      toolEvents: toolSnapshot.length ? JSON.parse(JSON.stringify(toolSnapshot)) as ToolEventItem[] : undefined,
+      agent: options.agent ?? null,
+      session_id: sessionId,
+    };
+    if (turn.activity.items.length) {
+      const presentation = turn.activity.finish(message.content, options.reason ?? "completed");
+      Object.assign(message, presentation);
+      saveActivityPresentation(agentPresentationStorage, { ...message, ...presentation });
+    }
+    messages.push(message);
+  }
+  turn.loading = false;
+  turn.thinking = "";
+  turn.toolEvents = [];
+  turn.activity.reset();
+  if (sessionId === currentAgentSessionId.value) scrollDashChatToBottom();
+}
+
+async function abortCurrentTurn() {
+  if (isMainSlot.value) {
+    await abortAi();
+    return;
+  }
+  const session = currentAgentSession.value;
+  if (session) {
+    const turn = ensureAgentTurn(session.id);
+    if (turn.loading) {
+      settleAgentTurn(session.id, "已中止", { thinking: turn.thinking || undefined, reason: "aborted" });
+    }
+  }
+  try { await invoke("abort_ai"); } catch {}
+}
+
+/** 主对话的多会话能力也走这里：后端清空所有会话后重置本地 agent 状态。 */
+function resetAllChatSessionUi() {
+  resetDashChatUi();
+  loadedMainSessionId.value = "";
+  clearAllAgentSessionState();
+  void sessions.load().catch((error) => console.error("刷新会话列表失败", error));
+}
+
 let stopCollaboration: (() => void) | null = null;
 
 // === 文件拖拽与预加载相关数据 ===
@@ -2049,32 +2746,33 @@ function handleDragDropEvent(event: any) {
   }
 }
 
-async function refreshChatState() {
+let refreshChatStatePromise: Promise<void> | null = null;
+let refreshChatStateSession = "";
+let refreshChatStateToken = 0;
+/** 载入「活跃主会话」的历史；同会话的并发调用共享请求，切换会话时另起一次。 */
+function refreshChatState(): Promise<void> {
+  const sessionId = sessions.activeMainId || "";
+  if (refreshChatStatePromise && refreshChatStateSession === sessionId) return refreshChatStatePromise;
+  const token = ++refreshChatStateToken;
+  refreshChatStateSession = sessionId;
+  const promise = doRefreshChatState().finally(() => {
+    if (refreshChatStateToken === token) refreshChatStatePromise = null;
+  });
+  refreshChatStatePromise = promise;
+  return promise;
+}
+async function doRefreshChatState() {
+  const sessionId = sessions.activeMainId;
   try {
     const [history, active] = await Promise.all([
-      invoke<any[]>("get_chat_history"),
-      invoke<{ thinking: string } | null>("get_active_chat"),
+      invoke<any[]>("get_chat_history", sessionId ? { sessionId } : {}),
+      invoke<{ thinking?: string; session_id?: string } | null>("get_active_chat"),
     ]);
-    chat.setMessages(history.map(item => ({
-      role: item.role === "assistant" ? "assistant" as const : "user" as const,
-      content: item.content || (item.quoted_content ? "（引用消息）" : item.content),
-      thinking: item.thinking || undefined,
-      timestamp: typeof item.created_at === 'number' ? item.created_at : new Date(item.created_at).getTime(),
-      quote: item.quoted_content
-        ? {
-            role: item.quoted_role === "assistant" ? "assistant" as const : "user" as const,
-            content: item.quoted_content,
-          }
-        : undefined,
-      agent: item.agent_name
-        ? {
-            id: item.agent_id || undefined,
-            name: item.agent_name,
-            avatar: item.agent_avatar || undefined,
-          }
-        : undefined,
-    })));
-    if (active && !chat.activity.items.length) {
+    // 请求期间用户又切了主会话：丢弃旧响应。
+    if (sessionId && sessions.activeMainId && sessions.activeMainId !== sessionId) return;
+    chat.setMessages(Array.isArray(history) ? history.map(historyToMessageDraft) : []);
+    loadedMainSessionId.value = sessions.activeMainId || sessionId;
+    if (active && isMainScopedPayload(active.session_id) && !chat.activity.items.length) {
       chat.isLoading = true;
       thinkingContent.value = active.thinking || "";
       chat.activity.items.push(...legacyActivity(active.thinking));
@@ -2087,6 +2785,22 @@ async function refreshChatState() {
 function resetDashChatUi() {
   chat.clearMessages();
   chat.isLoading = false;
+  thinkingContent.value = "";
+  streamingAnswer.value = "";
+  toolEvents.value = [];
+  pendingConfirm.value = null;
+  pendingQuestion.value = null;
+}
+
+/**
+ * 切换/新建主会话时只清「进行中」的瞬时状态。
+ * 不能走 resetDashChatUi：它会清掉 agentActivityCache，导致回看其它会话时轨迹快照丢失。
+ */
+function resetMainPaneTransientState() {
+  clearLoadingTimeout();
+  chat.isLoading = false;
+  chat.activity.reset();
+  chat.collaboration = null;
   thinkingContent.value = "";
   streamingAnswer.value = "";
   toolEvents.value = [];
@@ -2112,6 +2826,11 @@ async function abortAi() {
 }
 
 async function sendDashboardMessage() {
+  // agent 独立窗口有自己的一套消息与事件，不写主 chat store。
+  if (!isMainSlot.value) {
+    await sendAgentWindowMessage();
+    return;
+  }
 
   const text = chatInput.value.trim();
   const files = [...pendingFiles.value];
@@ -2155,10 +2874,16 @@ async function sendDashboardMessage() {
   streamingAnswer.value = "";
   toolEvents.value = [];
   pendingConfirm.value = null;
-  pet.setState("thinking");
+  syncPetState("thinking");
 
   // Broadcast user message to other windows (like the pet chat bubble)
-  await currentWindow.emit("sync-chat-message", { role: "user", content: displayText, files: fileAttachments, quote });
+  await currentWindow.emit("sync-chat-message", {
+    role: "user",
+    content: displayText,
+    files: fileAttachments,
+    quote,
+    session_id: sessions.activeMainId || undefined,
+  });
 
   try {
     await invoke("send_to_ai", {
@@ -2168,12 +2893,13 @@ async function sendDashboardMessage() {
       quotedContent: quote ? truncateQuoteContent(quote.content) : undefined,
       mentionAgents: dashMentionNames(text),
       collaborationEnabled: chat.collaborationEnabled,
+      sessionId: sessions.activeMainId || undefined,
     });
   } catch (err) {
     chat.isLoading = false;
     streamingAnswer.value = "";
     chat.addMessage("assistant", `出错了: ${err}`);
-    pet.setState("confused");
+    syncPetState("confused");
   }
 }
 
@@ -2250,14 +2976,20 @@ async function runDashSlashCommand(command: SlashCommand) {
 
 async function startDashboardNewConversation() {
   try {
-    await invoke("start_new_conversation");
+    const created = await invoke<ChatSession | null>("start_new_conversation");
     chat.isLoading = false;
     chat.activity.reset();
     thinkingContent.value = "";
     streamingAnswer.value = "";
     pendingConfirm.value = null;
     toolEvents.value = [];
-    if (chat.messages.length > 0) {
+    if (created && typeof created === "object" && "id" in created && created.id) {
+      // 后端已新建并设为活跃主会话：刷新列表与当前历史。
+      await sessions.load();
+      resetMainPaneTransientState();
+      await refreshChatState();
+    } else if (chat.messages.length > 0) {
+      // 老后端 / 预览环境的兼容兜底。
       chat.addSystemMessage("新对话");
     }
     await loadMemories();
@@ -2272,7 +3004,7 @@ async function clearDashboardChatWithConfirm() {
 
   try {
     await invoke("clear_chat_history");
-    resetDashChatUi();
+    resetAllChatSessionUi();
     await loadMemories();
     await currentWindow.emit("chat-history-cleared");
   } catch (err) {
@@ -2381,6 +3113,8 @@ function quoteDashMessage(msg: Message) {
     content: msg.content,
   };
   closeDashMessageMenu();
+  const targetSlot = msg.session_id ? sessions.find(msg.session_id)?.slot : undefined;
+  if (isAgentWindowSlot(targetSlot)) chatSlot.value = targetSlot;
   activePage.value = "chat";
   void nextTick(() => dashChatInputRef.value?.focus());
 }
@@ -2392,7 +3126,7 @@ function clearPendingQuote() {
 
 async function resendDashMessage(msg: Message) {
   const text = msg.content.trim();
-  if (!text || chat.isLoading) return;
+  if (!text || paneIsLoading.value) return;
   closeDashMessageMenu();
   activePage.value = "chat";
   chatInput.value = text;
@@ -2458,13 +3192,13 @@ function runDashChatScroll() {
 }
 
 watch(() => [
-  chat.messages.length,
-  chat.isLoading,
-  thinkingContent.value,
-  streamingAnswer.value,
-  toolEvents.value.length,
-  chat.activity.items.length,
+  paneMessages.value.length,
+  paneIsLoading.value,
+  paneThinking.value,
+  isMainSlot.value ? streamingAnswer.value : "",
+  paneActivityItems.value.length,
   pendingConfirm.value?.id || "",
+  currentSessionId.value,
 ], () => {
   scrollDashChatToBottom();
 }, { flush: "post" });
@@ -2485,7 +3219,7 @@ watch(
 
 watch(activePage, (newPage) => {
   if (newPage === 'chat') {
-    scrollDashChatToBottom();
+    void ensureCurrentChatPane();
   }
   if (newPage === 'memory') {
     void loadMemories();
@@ -2495,7 +3229,7 @@ watch(activePage, (newPage) => {
 
 function handlePageEntered() {
   if (activePage.value === "chat") {
-    scrollDashChatToBottom();
+    void ensureCurrentChatPane();
   }
 }
 
@@ -2536,30 +3270,10 @@ function clearLoadingTimeout() {
 onMounted(async () => {
   stopToolConfirm = subscribePendingInteraction("tool", pendingConfirm);
   stopQuestion = subscribePendingInteraction("question", pendingQuestion);
-  stopCollaboration = subscribeCollaboration(chat, (reply) => {
-    const last = chat.messages[chat.messages.length - 1];
-    if (last && toolEvents.value.length) last.toolEvents = JSON.parse(JSON.stringify(toolEvents.value));
-    thinkingContent.value = "";
-    streamingAnswer.value = "";
-    toolEvents.value = [];
-    pendingConfirm.value = null;
-    pendingQuestion.value = null;
-    if (!reply.failed) void speakDashboardReply(speakableText(reply.text));
-    void scrollDashChatToBottom();
-  }, (status, newTurn) => {
-    if (newTurn || status.status !== "running") {
-      thinkingContent.value = "";
-      streamingAnswer.value = "";
-      toolEvents.value = [];
-      if (status.status !== "running") {
-        pendingConfirm.value = null;
-        pendingQuestion.value = null;
-      }
-    }
-    if (status.status === "running") resetLoadingTimeout();
-    else clearLoadingTimeout();
-  });
+  stopCollaboration = subscribeDashboardCollaboration();
   void agentsStore.startSync().catch((error) => console.error("加载智能体失败", error));
+  // 会话列表要在载入历史之前就绪，activeMainId 才能用于事件路由。
+  try { await sessions.startSync(); } catch (error) { console.error("加载会话列表失败", error); }
   unlistenWeatherUpdate = await listen<WeatherUpdateEvent>("weather-update", handleWeatherUpdate);
 
   resetTaskDraftTime();
@@ -2589,30 +3303,65 @@ onMounted(async () => {
   // 加载对话历史并监听实时同步
   await refreshChatState();
 
-  unlistenThinking = await listen<string>("ai-thinking", (event) => {
+  unlistenThinking = await listen<{ session_id?: string; text?: string } | string>("ai-thinking", (event) => {
+    // 兼容旧 payload（直接是字符串）与契约新 payload（{ session_id, text }）。
+    const raw = typeof event.payload === "string" ? { text: event.payload, session_id: undefined } : event.payload;
+    const text = raw?.text || "";
+    if (!text) return;
+    const route = routeIncomingSession(raw?.session_id);
+    if (route.kind === "ignore") return;
+    if (route.kind === "agent") {
+      const turn = ensureAgentTurn(route.sessionId);
+      turn.loading = true;
+      turn.thinking += text;
+      turn.activity.appendThinking(text);
+      return;
+    }
     chat.isLoading = true;
     resetLoadingTimeout(); // 重置超时
-    thinkingContent.value += event.payload;
-    chat.activity.appendThinking(event.payload);
+    thinkingContent.value += text;
+    chat.activity.appendThinking(text);
   });
 
-  unlistenAnswerDelta = await listen<AnswerDeltaPayload>("ai-answer-delta", (event) => {
+  unlistenAnswerDelta = await listen<AnswerDeltaPayload & { session_id?: string }>("ai-answer-delta", (event) => {
+    const text = event.payload?.text || "";
+    if (!text) return;
+    const route = routeIncomingSession(event.payload?.session_id);
+    if (route.kind === "ignore") return;
+    if (route.kind === "agent") {
+      const turn = ensureAgentTurn(route.sessionId);
+      turn.loading = true;
+      turn.activity.appendText(text);
+      return;
+    }
     chat.isLoading = true;
     resetLoadingTimeout(); // 重置超时
-    streamingAnswer.value += event.payload.text;
-    chat.activity.appendText(event.payload.text);
+    streamingAnswer.value += text;
+    chat.activity.appendText(text);
   });
 
-  unlistenAiFinished = await listen<AiFinishedPayload>("ai-finished", (event) => {
+  unlistenAiFinished = await listen<AiFinishedPayload & { session_id?: string }>("ai-finished", (event) => {
+    const payload = event.payload;
+    const route = routeIncomingSession(payload?.session_id);
+    if (route.kind === "ignore") return;
+    if (route.kind === "agent") {
+      settleAgentTurn(route.sessionId, payload.text, {
+        thinking: payload.thinking || undefined,
+        agent: messageAgentFromPayload(payload),
+      });
+      void sessions.load().catch((error) => console.error("刷新会话列表失败", error));
+      if (route.sessionId === currentAgentSessionId.value) void speakDashboardReply(speakableText(payload.text));
+      return;
+    }
     clearLoadingTimeout(); // 清除超时
     // 将当前工具事件快照附加到 AI 回复消息上
     const toolSnapshot = toolEvents.value.length > 0
       ? JSON.parse(JSON.stringify(toolEvents.value)) as any[]
       : undefined;
-    const replyAgent = messageAgentFromPayload(event.payload);
+    const replyAgent = messageAgentFromPayload(payload);
     const last = chat.messages[chat.messages.length - 1];
-    if (!(last?.role === "assistant" && last.content === event.payload.text)) {
-      const message = chat.addMessage("assistant", event.payload.text, event.payload.thinking || undefined, undefined, toolSnapshot, undefined, replyAgent);
+    if (!(last?.role === "assistant" && last.content === payload.text)) {
+      const message = chat.addMessage("assistant", payload.text, payload.thinking || undefined, undefined, toolSnapshot, undefined, replyAgent);
       chat.captureActivity(message);
     }
     chat.isLoading = false;
@@ -2620,28 +3369,50 @@ onMounted(async () => {
     streamingAnswer.value = "";
     toolEvents.value = [];
     pendingConfirm.value = null;
-    void speakDashboardReply(speakableText(event.payload.text));
+    void speakDashboardReply(speakableText(payload.text));
+    sessions.scheduleReload();
   });
 
-  unlistenAiError = await listen<any>("ai-error", (event) => {
+  unlistenAiError = await listen<{ message?: string; aborted?: boolean; thinking?: string; session_id?: string }>("ai-error", (event) => {
+    const payload = event.payload ?? {};
+    const route = routeIncomingSession(payload.session_id);
+    if (route.kind === "ignore") return;
+    if (route.kind === "agent") {
+      const turn = ensureAgentTurn(route.sessionId);
+      // 区分可恢复中断和致命错误
+      let agentText: string;
+      if (payload.aborted) {
+        agentText = "已中止";
+      } else if (turn.thinking || turn.activity.items.length) {
+        agentText = "⚠️ " + payload.message;
+      } else {
+        agentText = "出错了: " + payload.message;
+      }
+      settleAgentTurn(route.sessionId, agentText, {
+        thinking: payload.thinking || turn.thinking || undefined,
+        reason: payload.aborted ? "aborted" : "failed",
+      });
+      void sessions.load().catch((error) => console.error("刷新会话列表失败", error));
+      return;
+    }
     clearLoadingTimeout(); // 清除超时
     const toolSnapshot = toolEvents.value.length > 0
       ? JSON.parse(JSON.stringify(toolEvents.value)) as any[]
       : undefined;
     // 区分可恢复中断和致命错误
     let text: string;
-    if (event.payload.aborted) {
+    if (payload.aborted) {
       text = "已中止";
     } else if (streamingAnswer.value || thinkingContent.value) {
       // 有部分内容时，显示警告而非错误
-      text = `⚠️ ${event.payload.message}`;
+      text = "⚠️ " + payload.message;
     } else {
-      text = `出错了: ${event.payload.message}`;
+      text = "出错了: " + payload.message;
     }
     const last = chat.messages[chat.messages.length - 1];
     if (!(last?.role === "assistant" && last.content === text)) {
-      const message = chat.addMessage("assistant", text, event.payload.thinking || undefined, undefined, toolSnapshot);
-      chat.captureActivity(message, event.payload.aborted ? "aborted" : "failed");
+      const message = chat.addMessage("assistant", text, payload.thinking || undefined, undefined, toolSnapshot);
+      chat.captureActivity(message, payload.aborted ? "aborted" : "failed");
     }
     chat.isLoading = false;
     thinkingContent.value = "";
@@ -2651,7 +3422,7 @@ onMounted(async () => {
   });
 
   unlistenChatCleared = await listen("chat-history-cleared", () => {
-    resetDashChatUi();
+    resetAllChatSessionUi();
     void loadMemories();
   });
 
@@ -2667,14 +3438,39 @@ onMounted(async () => {
   );
 
   unlistenSyncMessage = await listen<any>("sync-chat-message", (event) => {
-    const payload = event.payload;
+    const payload = event.payload ?? {};
+    const route = routeIncomingSession(payload.session_id);
+    if (route.kind === "ignore") return;
+    const syncAgent: MessageAgent | null = payload.agent?.name
+      ? { id: payload.agent.id || undefined, name: payload.agent.name, avatar: payload.agent.avatar || undefined }
+      : null;
+    if (route.kind === "agent") {
+      const messages = ensureAgentMessages(route.sessionId);
+      const lastAgentMessage = messages[messages.length - 1];
+      if (lastAgentMessage && lastAgentMessage.role === payload.role && lastAgentMessage.content === payload.content) return;
+      messages.push({
+        id: nextAgentMessageId++,
+        role: payload.role === "assistant" ? "assistant" : "user",
+        content: payload.content,
+        timestamp: Date.now(),
+        files: payload.files ?? payload.fileAttachments,
+        quote: payload.quote,
+        agent: syncAgent,
+        session_id: route.sessionId,
+      });
+      if (payload.role === "user") {
+        const turn = ensureAgentTurn(route.sessionId);
+        turn.loading = true;
+        turn.thinking = "";
+        turn.toolEvents = [];
+        turn.activity.reset();
+      }
+      return;
+    }
     const last = chat.messages[chat.messages.length - 1];
     if (last && last.role === payload.role && last.content === payload.content) {
       return;
     }
-    const syncAgent: MessageAgent | null = payload.agent?.name
-      ? { id: payload.agent.id || undefined, name: payload.agent.name, avatar: payload.agent.avatar || undefined }
-      : null;
     chat.addMessage(payload.role, payload.content, undefined, payload.files ?? payload.fileAttachments, undefined, payload.quote, syncAgent);
     if (payload.role === "user") {
       chat.isLoading = true;
@@ -2684,14 +3480,26 @@ onMounted(async () => {
       streamingAnswer.value = "";
       toolEvents.value = [];
       pendingConfirm.value = null;
-      pet.setState("thinking");
+      syncPetState("thinking");
     }
   });
 
-  unlistenToolEvent = await listen<ToolEvent>("ai-tool-event", (event) => {
+  unlistenToolEvent = await listen<ToolEvent & { session_id?: string }>("ai-tool-event", (event) => {
+    const payload = event.payload;
+    const route = routeIncomingSession(payload?.session_id);
+    if (route.kind === "ignore") return;
+    if (route.kind === "agent") {
+      const turn = ensureAgentTurn(route.sessionId);
+      turn.loading = true;
+      turn.activity.upsertTool(payload);
+      const index = turn.toolEvents.findIndex((item) => item.id === payload.id);
+      if (index >= 0) turn.toolEvents[index] = { ...turn.toolEvents[index], ...payload };
+      else turn.toolEvents.push(payload);
+      return;
+    }
     chat.isLoading = true;
     resetLoadingTimeout();
-    upsertToolEvent(event.payload);
+    upsertToolEvent(payload);
   });
 
   unlistenScheduledTasksChanged = await listen("scheduled-tasks-changed", () => {
@@ -2723,12 +3531,14 @@ onMounted(async () => {
 
   await nextTick();
   scrollDashChatToBottom();
+  if (chatSlot.value !== "main") void ensureAgentWindow(chatSlot.value);
 });
 
 onUnmounted(() => {
   clearLoadingTimeout();
   stopCollaboration?.();
   agentsStore.stopSync();
+  sessions.stopSync();
   if (sysInfoTimer) clearInterval(sysInfoTimer);
   if (weatherTimer) clearInterval(weatherTimer);
   if (actionFeedbackTimer) clearTimeout(actionFeedbackTimer);
@@ -2811,13 +3621,38 @@ ttsPlayer.stop();
             <span class="sidebar-item-icon"><House :size="15" /></span>
             <span>首页</span>
           </button>
-          <button
-            :class="['sidebar-item', { active: activePage === 'chat' }]"
-            @click="activePage = 'chat'"
-          >
-            <span class="sidebar-item-icon"><MessageCircle :size="15" /></span>
-            <span>对话互动</span>
-          </button>
+          <div :class="['sidebar-group', { expanded: chatNavExpanded }]">
+            <div :class="['sidebar-item', 'sidebar-item-parent', { active: activePage === 'chat' && chatSlot === 'main' }]">
+              <button type="button" class="sidebar-item-main" title="进入主对话" @click="openChatSlot('main')">
+                <span class="sidebar-item-icon"><MessageCircle :size="15" /></span>
+                <span class="sidebar-item-label">对话互动</span>
+              </button>
+              <button
+                type="button"
+                :class="['sidebar-item-caret', { open: chatNavExpanded }]"
+                :aria-expanded="chatNavExpanded"
+                aria-label="展开/收起 agent 对话窗口"
+                title="展开/收起 agent 对话窗口"
+                @click.stop="toggleChatSubnav"
+              >
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+                  <path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </button>
+            </div>
+            <div v-show="chatNavExpanded" class="sidebar-subnav">
+              <button
+                v-for="item in agentWindowNavItems"
+                :key="item.slot"
+                :class="['sidebar-subitem', { active: activePage === 'chat' && chatSlot === item.slot }]"
+                @click="openChatSlot(item.slot)"
+              >
+                <span class="sidebar-subitem-avatar" aria-hidden="true">{{ item.icon }}</span>
+                <span class="sidebar-subitem-label">{{ item.label }}</span>
+                <span v-if="agentSlotBusy(item.slot)" class="sidebar-subitem-live" aria-hidden="true" />
+              </button>
+            </div>
+          </div>
           <button
             :class="['sidebar-item', { active: activePage === 'memory' }]"
             @click="activePage = 'memory'"
@@ -2939,17 +3774,17 @@ ttsPlayer.stop();
                     v-if="lastConversationMessage"
                     type="button"
                     class="home-convo-preview"
-                    @click="activePage = 'chat'"
+                    @click="openChatSlot('main')"
                   >
                     <span class="home-convo-speaker">{{ lastConversationSpeaker }}</span>
                     <span class="home-convo-text">{{ lastConversationPreview }}</span>
                     <span class="home-convo-time">{{ formatRelativeTime(lastConversationMessage.timestamp) }}</span>
                   </button>
-                  <button v-else type="button" class="home-convo-preview empty" @click="activePage = 'chat'">
+                  <button v-else type="button" class="home-convo-preview empty" @click="openChatSlot('main')">
                     <span class="home-convo-text">还没有聊过天，去和它说句话吧 →</span>
                   </button>
                   <div class="home-convo-actions">
-                    <button type="button" class="dash-mini-btn primary" @click="activePage = 'chat'">继续聊天</button>
+                    <button type="button" class="dash-mini-btn primary" @click="openChatSlot('main')">继续聊天</button>
                     <button
                       v-for="action in conversationActions"
                       :key="action.id"
@@ -3044,15 +3879,58 @@ ttsPlayer.stop();
           <!-- ========== 对话互动 (独立页面) ========== -->
           <div v-else-if="activePage === 'chat'" key="chat" class="dash-chat-page">
            <div class="dash-chat-main">
-            <!-- 对话页头部：会话标题 / 连接状态 / 运行状态 -->
-            <div class="dash-chat-head">
-              <div class="dash-chat-head-title">{{ chatHeaderTitle }}</div>
-              <div class="dash-chat-head-status">
-                <span class="dash-status-pill">{{ currentExecutionModeLabel }}</span>
-                <span :class="['dash-status-pill', 'state', chat.isLoading ? 'busy' : 'ready']">
-                  {{ chat.isLoading ? "运行中" : "就绪" }}
-                </span>
-              </div>
+            <!-- 对话页头部：主对话显示会话标题/状态；agent 窗口显示 agent 与模型选择 -->
+            <div :class="['dash-chat-head', { 'dash-chat-head-agent': !isMainSlot }]">
+              <template v-if="isMainSlot">
+                <div class="dash-chat-head-title">{{ chatHeaderTitle }}</div>
+                <div class="dash-chat-head-status">
+                  <span class="dash-status-pill">{{ currentExecutionModeLabel }}</span>
+                  <span :class="['dash-status-pill', 'state', paneIsLoading ? 'busy' : 'ready']">
+                    {{ paneIsLoading ? "运行中" : "就绪" }}
+                  </span>
+                </div>
+              </template>
+              <template v-else>
+                <div class="dash-agent-head-info">
+                  <span class="dash-agent-head-avatar" aria-hidden="true">{{ currentAgentIdentity.avatar }}</span>
+                  <div class="dash-agent-head-text">
+                    <div class="dash-chat-head-title">{{ currentAgentIdentity.name }}</div>
+                    <div class="dash-agent-head-sub">{{ currentSlotLabel }} 窗口 · {{ currentSession?.title || "新会话" }}</div>
+                  </div>
+                </div>
+                <div class="dash-agent-head-controls">
+                  <label class="dash-agent-field" title="选择该窗口使用的智能体">
+                    <span class="dash-agent-field-label">Agent</span>
+                    <select class="dash-agent-select" :value="currentAgentIdentity.id" @change="onAgentWindowAgentChange($event)">
+                      <option v-for="agent in agentWindowAgentOptions" :key="agent.id" :value="agent.id">
+                        {{ agent.avatar }} {{ agent.name }}
+                      </option>
+                    </select>
+                  </label>
+                  <label class="dash-agent-field" title="模型（留空 = 跟随本机配置）">
+                    <span class="dash-agent-field-label">模型</span>
+                    <input
+                      v-model="agentModelDraft"
+                      class="dash-agent-model-input"
+                      :list="'dash-agent-models-' + (agentSlot || 'none')"
+                      placeholder="跟随本机"
+                      spellcheck="false"
+                      @keydown.enter.prevent="commitAgentModel"
+                      @blur="commitAgentModel"
+                    />
+                    <datalist :id="'dash-agent-models-' + (agentSlot || 'none')">
+                      <option v-for="model in agentModelPresets" :key="model" :value="model" />
+                    </datalist>
+                  </label>
+                  <span :class="['dash-status-pill', 'state', paneIsLoading ? 'busy' : 'ready']">
+                    {{ paneIsLoading ? "运行中" : "就绪" }}
+                  </span>
+                </div>
+              </template>
+            </div>
+            <div v-if="sessionError" class="dash-session-error-bar">
+              <span>{{ sessionError }}</span>
+              <button type="button" title="关闭提示" @click="sessionError = ''">×</button>
             </div>
             <!-- 天气信息显示栏 -->
             <div
@@ -3093,12 +3971,13 @@ ttsPlayer.stop();
                   <span class="dash-drop-text">释放文件以添加为附件</span>
                 </div>
               </div>
-              <div v-if="chat.messages.length === 0" class="dash-chat-empty">
-                🐾 暂无对话历史，跟小家伙说点什么吧！
+              <div v-if="paneMessages.length === 0" class="dash-chat-empty">
+                <template v-if="isMainSlot">🐾 暂无对话历史，跟小家伙说点什么吧！</template>
+                <template v-else>🪄 {{ currentAgentIdentity.name }} 还没有消息，直接发一条开始对话吧。</template>
               </div>
               
               <div
-                v-for="msg in chat.messages" :key="msg.id"
+                v-for="msg in paneMessages" :key="msg.id"
                 :class="['dash-msg-wrapper', msg.role]"
                 @contextmenu.prevent.stop="msg.role !== 'system' && openDashMessageMenu(msg)"
               >
@@ -3143,12 +4022,12 @@ ttsPlayer.stop();
                 >
                   <button type="button" @click="copyDashMessage(msg)">复制</button>
                   <button type="button" @click="quoteDashMessage(msg)">引用</button>
-                  <button type="button" :disabled="chat.isLoading" @click="resendDashMessage(msg)">重新发送</button>
+                  <button type="button" :disabled="paneIsLoading" @click="resendDashMessage(msg)">重新发送</button>
                 </div>
               </div>
 
-              <div v-if="chat.isLoading" class="dash-msg-wrapper assistant loading">
-                <AgentActivity :items="chat.activity.items" :thinking="thinkingContent" :active="true" :waiting="!!pendingConfirm || !!pendingQuestion" :awaiting-answer="!!pendingQuestion" @stop="abortAi" />
+              <div v-if="paneIsLoading" class="dash-msg-wrapper assistant loading">
+                <AgentActivity :items="paneActivityItems" :thinking="paneThinking" :active="true" :waiting="!!pendingConfirm || !!pendingQuestion" :awaiting-answer="!!pendingQuestion" @stop="abortCurrentTurn" />
               </div>
               <div ref="dashChatEndRef" class="dash-chat-end" aria-hidden="true"></div>
               <!-- 新消息悬浮按钮（跟随最新消息时隐藏） -->
@@ -3220,7 +4099,7 @@ ttsPlayer.stop();
               </Transition>
 
               <Transition name="slide-up">
-                <div v-if="showDashMentionMenu" class="dash-mention-menu" @mousedown.prevent>
+                <div v-if="isMainSlot && showDashMentionMenu" class="dash-mention-menu" @mousedown.prevent>
                   <button
                     v-for="(agent, index) in dashMentionItems"
                     :key="agent.id"
@@ -3252,7 +4131,7 @@ ttsPlayer.stop();
               </Transition>
 
               <Transition name="slide-up">
-                <div v-if="showDashSlashMenu" class="dash-slash-menu" @mousedown.prevent>
+                <div v-if="isMainSlot && showDashSlashMenu" class="dash-slash-menu" @mousedown.prevent>
                   <button
                     v-for="(item, index) in dashSlashItems"
                     :key="item.key"
@@ -3272,20 +4151,20 @@ ttsPlayer.stop();
                 </div>
               </Transition>
 
-              <CollaborationBar />
+              <CollaborationBar v-if="isMainSlot" />
               <div class="dash-chat-input-area">
                 <input
                   ref="dashChatInputRef"
                   type="text"
                   v-model="chatInput"
                   @keydown="onDashboardChatKeyDown"
-                  placeholder="发送消息或拖入文件/应用快捷方式给桌宠..."
-                  :disabled="chat.isLoading"
+                  :placeholder="isMainSlot ? '发送消息或拖入文件/应用快捷方式给桌宠...' : ('给 ' + currentAgentIdentity.name + ' 发消息，可拖入文件...')"
+                  :disabled="paneIsLoading"
                   class="dash-chat-input"
                 />
                 <button
                   @click="sendDashboardMessage"
-                  :disabled="(!chatInput.trim() && pendingFiles.length === 0 && !pendingQuote) || chat.isLoading"
+                  :disabled="(!chatInput.trim() && pendingFiles.length === 0 && !pendingQuote) || paneIsLoading"
                   class="dash-chat-send-btn"
                   title="发送"
                   aria-label="发送"
@@ -3296,59 +4175,124 @@ ttsPlayer.stop();
               <div class="dash-chat-meta-row">
                 <span class="dash-chat-hint">发送：Enter · 换行：Shift + Enter · 可拖入文件作为附件</span>
                 <span class="dash-chat-meta-spacer"></span>
-                <label class="dash-meta-field" title="模型">
-                  <span class="dash-meta-label">模型</span>
-                  <select
-                    v-if="apiProfiles.length > 0"
-                    class="dash-chat-model-select"
-                    :value="activeApiProfileId"
-                    @change="activateApiProfile(($event.target as HTMLSelectElement).value)"
-                  >
-                    <option v-for="profile in apiProfiles" :key="profile.id" :value="profile.id">
-                      {{ profile.name || profile.model }}
-                    </option>
-                  </select>
-                  <span v-else class="dash-meta-value">{{ currentModelLabel }}</span>
-                </label>
-                <label class="dash-meta-field" title="思考深度">
-                  <span class="dash-meta-label">思考</span>
-                  <select
-                    class="dash-thinking-select"
-                    :value="apiConfig.thinking_depth"
-                    @change="updateThinkingDepth(($event.target as HTMLSelectElement).value)"
-                  >
-                    <option v-for="opt in thinkingDepthOptions" :key="opt.value" :value="opt.value">
-                      {{ opt.label }}
-                    </option>
-                  </select>
-                </label>
-                <label class="dash-meta-field" title="执行模式">
-                  <span class="dash-meta-label">模式</span>
-                  <select
-                    class="dash-mode-select"
-                    :value="apiConfig.execution_mode"
-                    @change="updateExecutionMode(($event.target as HTMLSelectElement).value)"
-                  >
-                    <option v-for="mode in executionModeOptions" :key="mode.value" :value="mode.value">
-                      {{ mode.label }}
-                    </option>
-                  </select>
-                </label>
-                <button type="button" class="dash-meta-btn" @click="activePage = 'memory'">记忆</button>
-                <button type="button" class="dash-meta-btn" @click="activePage = 'system'">设置</button>
+                <template v-if="isMainSlot">
+                  <label class="dash-meta-field" title="模型">
+                    <span class="dash-meta-label">模型</span>
+                    <select
+                      v-if="apiProfiles.length > 0"
+                      class="dash-chat-model-select"
+                      :value="activeApiProfileId"
+                      @change="activateApiProfile(($event.target as HTMLSelectElement).value)"
+                    >
+                      <option v-for="profile in apiProfiles" :key="profile.id" :value="profile.id">
+                        {{ profile.name || profile.model }}
+                      </option>
+                    </select>
+                    <span v-else class="dash-meta-value">{{ currentModelLabel }}</span>
+                  </label>
+                  <label class="dash-meta-field" title="思考深度">
+                    <span class="dash-meta-label">思考</span>
+                    <select
+                      class="dash-thinking-select"
+                      :value="apiConfig.thinking_depth"
+                      @change="updateThinkingDepth(($event.target as HTMLSelectElement).value)"
+                    >
+                      <option v-for="opt in thinkingDepthOptions" :key="opt.value" :value="opt.value">
+                        {{ opt.label }}
+                      </option>
+                    </select>
+                  </label>
+                  <label class="dash-meta-field" title="执行模式">
+                    <span class="dash-meta-label">模式</span>
+                    <select
+                      class="dash-mode-select"
+                      :value="apiConfig.execution_mode"
+                      @change="updateExecutionMode(($event.target as HTMLSelectElement).value)"
+                    >
+                      <option v-for="mode in executionModeOptions" :key="mode.value" :value="mode.value">
+                        {{ mode.label }}
+                      </option>
+                    </select>
+                  </label>
+                  <button type="button" class="dash-meta-btn" @click="activePage = 'memory'">记忆</button>
+                  <button type="button" class="dash-meta-btn" @click="activePage = 'system'">设置</button>
+                </template>
+                <template v-else>
+                  <span class="dash-agent-meta-pill" title="该窗口当前绑定的模型（在顶部输入框修改）">模型：{{ currentSessionModelLabel }}</span>
+                  <button type="button" class="dash-meta-btn" @click="openAgentEditor(); activePage = 'agents'">智能体</button>
+                </template>
               </div>
             </div>
            </div>
 
-            <!-- 右侧信息面板：参与者 / 最近记忆 / 任务进度 -->
+            <!-- 右侧信息面板：会话 / 参与者 / 最近记忆 / 任务进度 -->
             <aside class="dash-chat-aside">
+              <section class="dash-aside-card dash-sessions-card">
+                <div class="dash-aside-title">
+                  会话
+                  <button
+                    type="button"
+                    class="dash-aside-link dash-session-new-btn"
+                    :disabled="sessions.loading || creatingSession || paneIsLoading"
+                    title="新建会话"
+                    @click="createChatSession"
+                  >
+                    ＋ 新建
+                  </button>
+                </div>
+                <div v-if="sessions.loading && paneSessions.length === 0" class="dash-aside-empty">正在加载会话…</div>
+                <div v-else-if="paneSessions.length === 0" class="dash-aside-empty">
+                  还没有会话，点「＋ 新建」开始。
+                </div>
+                <div v-else class="dash-session-list">
+                  <div
+                    v-for="item in paneSessions"
+                    :key="item.id"
+                    :class="['dash-session-item', { active: item.id === currentSessionId, switching: switchingSessionId === item.id }]"
+                  >
+                    <template v-if="renamingSessionId === item.id">
+                      <input
+                        :ref="setRenameInputElement"
+                        v-model="renameDraft"
+                        class="dash-session-rename-input"
+                        maxlength="80"
+                        @click.stop
+                        @keydown.enter.prevent="commitRenameChatSession(item)"
+                        @keydown.esc.prevent="cancelRenameChatSession"
+                        @blur="commitRenameChatSession(item)"
+                      />
+                    </template>
+                    <template v-else>
+                      <button
+                        type="button"
+                        class="dash-session-main"
+                        :disabled="sessions.loading || !!switchingSessionId || paneIsLoading"
+                        :title="item.title || '未命名会话'"
+                        @click="openChatSessionFromList(item)"
+                      >
+                        <span class="dash-session-title">{{ item.title || "未命名会话" }}</span>
+                        <span class="dash-session-meta">
+                          <span>{{ formatRelativeTime(item.updated_at) }}</span>
+                          <span v-if="item.message_count">{{ item.message_count }} 条</span>
+                        </span>
+                        <span v-if="item.preview" class="dash-session-preview">{{ item.preview }}</span>
+                      </button>
+                      <div class="dash-session-actions">
+                        <button type="button" title="重命名会话" @click.stop="startRenameChatSession(item)">重命名</button>
+                        <button type="button" class="danger" title="删除会话" @click.stop="removeChatSession(item)">删除</button>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+              </section>
+
               <section class="dash-aside-card">
                 <div class="dash-aside-title">参与者</div>
                 <div class="dash-aside-hero">
-                  <div :class="['dash-aside-avatar', { active: chat.isLoading }]">🐾</div>
+                  <div :class="['dash-aside-avatar', { active: paneIsLoading }]">{{ isMainSlot ? "🐾" : currentAgentIdentity.avatar }}</div>
                   <div class="dash-aside-hero-main">
-                    <div class="dash-aside-hero-name">{{ chatHeaderTitle }}</div>
-                    <div class="dash-aside-hero-desc">桌面桌宠 · 主助理</div>
+                    <div class="dash-aside-hero-name">{{ isMainSlot ? chatHeaderTitle : currentAgentIdentity.name }}</div>
+                    <div class="dash-aside-hero-desc">{{ isMainSlot ? "桌面桌宠 · 主助理" : currentSlotLabel + " 独立窗口" }}</div>
                   </div>
                 </div>
                 <div class="dash-aside-actions">
@@ -3356,19 +4300,30 @@ ttsPlayer.stop();
                     type="button"
                     class="dash-aside-btn danger"
                     title="停止当前回复"
-                    :disabled="!chat.isLoading"
-                    @click="abortAi"
+                    :disabled="!paneIsLoading"
+                    @click="abortCurrentTurn"
                   >
                     停止
                   </button>
                   <button
+                    v-if="isMainSlot"
                     type="button"
                     class="dash-aside-btn"
-                    title="清空当前对话"
-                    :disabled="chat.isLoading || chat.messages.length === 0"
+                    title="清空主对话当前窗口"
+                    :disabled="paneIsLoading || paneMessages.length === 0"
                     @click="resetDashChatUi"
                   >
                     清空
+                  </button>
+                  <button
+                    v-else
+                    type="button"
+                    class="dash-aside-btn"
+                    title="新建一个该窗口的会话"
+                    :disabled="creatingSession || paneIsLoading"
+                    @click="createChatSession"
+                  >
+                    新会话
                   </button>
                 </div>
               </section>
@@ -3389,11 +4344,11 @@ ttsPlayer.stop();
 
               <section class="dash-aside-card">
                 <div class="dash-aside-title">任务进度</div>
-                <div v-if="!chat.isLoading && activeTools.length === 0" class="dash-aside-empty">当前没有运行中的任务</div>
+                <div v-if="!paneIsLoading && activeToolItems.length === 0" class="dash-aside-empty">当前没有运行中的任务</div>
                 <div v-else class="dash-aside-progress">
                   <div class="dash-aside-progress-meta">
-                    <span class="dash-aside-progress-label">{{ activityHeadline }}</span>
-                    <span class="dash-aside-progress-count">{{ activeTools.length }} 项</span>
+                    <span class="dash-aside-progress-label">{{ paneActivityHeadline }}</span>
+                    <span class="dash-aside-progress-count">{{ activeToolItems.length }} 项</span>
                   </div>
                   <div class="dash-aside-progress-bar"><span></span></div>
                   <div class="dash-aside-progress-hint">完成后会自动收起，可随时点击“停止”中断</div>
@@ -3595,7 +4550,7 @@ ttsPlayer.stop();
                     </div>
                   </div>
                   <div class="dash-agent-card-actions">
-                    <button class="dash-mini-btn" @click="activePage = 'chat'; chatInput = chatInput + (chatInput && !/\s$/.test(chatInput) ? ' ' : '') + '@' + agentsStore.mentionName(agent) + ' '">召唤</button>
+                    <button class="dash-mini-btn" @click="openChatSlot('main'); chatInput = chatInput + (chatInput && !/\s$/.test(chatInput) ? ' ' : '') + '@' + agentsStore.mentionName(agent) + ' '">召唤</button>
                     <button v-if="agent.is_builtin" class="dash-mini-btn" @click="configureBuiltinAgent(agent)">登录配置</button>
                     <button v-if="!agent.is_builtin" class="dash-mini-btn" @click="openAgentEditor(agent)">编辑</button>
                     <button

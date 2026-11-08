@@ -386,6 +386,10 @@ function buildManifest(
       hungry: { frames: [28, 29, 30, 31], fps: 8, loop: true },
       stuffed: { frames: [32, 33, 34, 35], fps: 9, loop: false },
       refusing: { frames: [36, 37, 38, 39], fps: 12, loop: false },
+      // 这两态沿用相邻姿势帧：精灵图只有 10 组动作，13 态靠 PetCanvas 的状态叠加层补语义符号
+      listening: { frames: [8, 9, 10, 11], fps: 7, loop: true },
+      confused: { frames: [36, 37, 38, 39], fps: 5, loop: true },
+      waving: { frames: [4, 5, 6, 7], fps: 10, loop: true },
     },
   };
 }

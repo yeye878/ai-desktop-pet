@@ -5,7 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { useChatStore } from "../stores/chat";
-import { usePetStore } from "../stores/pet";
+import { usePetStore, type PetState } from "../stores/pet";
 import {
   DEFAULT_VOICE_SETTINGS,
   VoiceController,
@@ -35,6 +35,16 @@ const chat = useChatStore();
 const pet = usePetStore();
 const voice = new VoiceController();
 const ttsPlayer = new TtsPlayer();
+
+/**
+ * 同步桌宠状态：语音面板是独立窗口，只改本地 store 影响不到常驻桌宠，
+ * 必须同时写回后端行为状态机，桌宠窗口每秒 tick 轮询时才会亮起对应状态。
+ */
+function syncPetState(state: PetState) {
+  pet.setState(state);
+  // 写状态失败（例如应用正在退出）不应影响语音交互本身，因此只吞掉错误
+  void Promise.resolve(invoke("set_pet_state", { newState: state })).catch(() => {});
+}
 
 const settings = ref<VoiceSettings>({ ...DEFAULT_VOICE_SETTINGS });
 const ttsSettings = ref<TtsSettings>({ ...DEFAULT_TTS_SETTINGS });
@@ -151,7 +161,7 @@ async function beginListening() {
   interimText.value = "";
   errorText.value = "";
   status.value = "listening";
-  pet.setState("listening");
+  syncPetState("listening");
 
   try {
     const result = await voice.listen(settings.value, (text) => {
@@ -163,10 +173,10 @@ async function beginListening() {
     if (!transcript.value) {
       errorText.value = "没有听清楚，再说一次吧";
       status.value = "error";
-      pet.setState("confused");
+      syncPetState("confused");
       return;
     }
-    pet.setState("idle");
+    syncPetState("idle");
     if (settings.value.autoSend) {
       await sendTranscript();
     }
@@ -174,7 +184,7 @@ async function beginListening() {
     interimText.value = "";
     errorText.value = err instanceof Error ? err.message : String(err);
     status.value = "error";
-    pet.setState("confused");
+    syncPetState("confused");
   }
 }
 
@@ -223,7 +233,7 @@ async function sendTranscript() {
   errorText.value = "";
   isSending.value = true;
   chat.isLoading = true;
-  pet.setState("thinking");
+  syncPetState("thinking");
 
   // 60s 超时兜底：若 ai-finished/ai-error 事件丢失，自动恢复状态
   clearSendTimeout();
@@ -233,7 +243,7 @@ async function sendTranscript() {
       chat.isLoading = false;
       errorText.value = "AI 响应超时，请重试";
       status.value = "error";
-      pet.setState("confused");
+      syncPetState("confused");
     }
   }, 60_000);
 
@@ -249,7 +259,7 @@ async function sendTranscript() {
     isSending.value = false;
     errorText.value = `发送失败: ${err instanceof Error ? err.message : String(err)}`;
     status.value = "error";
-    pet.setState("confused");
+    syncPetState("confused");
     // 保留文本，用户可直接重试发送
   }
 }
@@ -265,7 +275,7 @@ function cancelVoice() {
   chat.isLoading = false;
   isGenerating.value = false;
   status.value = "idle";
-  pet.setState("idle");
+  syncPetState("idle");
   emit("close");
 }
 
@@ -466,10 +476,10 @@ onMounted(async () => {
     clearSendTimeout();
     isSending.value = false;
     chat.isLoading = false;
-    pet.setState("speaking");
+    syncPetState("speaking");
     status.value = "idle";
     isGenerating.value = false;
-    if (pet.state === "speaking") pet.setState("idle");
+    if (pet.state === "speaking") syncPetState("idle");
   });
 
   unlistenAiError = await listen<AiErrorPayload>("ai-error", (event) => {
@@ -478,7 +488,7 @@ onMounted(async () => {
     chat.isLoading = false;
     errorText.value = event.payload.aborted ? "已中止" : event.payload.message;
     status.value = event.payload.aborted ? "idle" : "error";
-    pet.setState(event.payload.aborted ? "idle" : "confused");
+    syncPetState(event.payload.aborted ? "idle" : "confused");
   });
 
   unlistenStartListening = await listen("voice-start-listening", () => {

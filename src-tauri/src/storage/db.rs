@@ -1,5 +1,6 @@
 use rusqlite::{Connection, OptionalExtension, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use super::Skill;
@@ -101,6 +102,10 @@ pub fn is_builtin_skill_id(id: &str) -> bool {
 
 #[derive(Debug, Serialize, Clone)]
 pub struct ChatMessage {
+    /// 全局自增主键：前端用它做稳定 key，也用于按 id ASC 还原顺序。
+    pub id: i64,
+    /// 所属会话 id；旧消息（迁移前）落到默认会话。
+    pub session_id: String,
     pub role: String,
     pub content: String,
     pub thinking: Option<String>,
@@ -115,6 +120,76 @@ pub struct ChatMessage {
     pub agent_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_avatar: Option<String>,
+}
+
+/// 迁移前保存的历史消息统一归到这个会话。
+pub const DEFAULT_CHAT_SESSION_ID: &str = "session-default";
+/// 当前活跃主会话 id 在 pet_settings 里的 key（前端启动时由 get_active_chat_session 读取）。
+pub const ACTIVE_MAIN_SESSION_KEY: &str = "active_main_session_id";
+/// 主对话槽位名；chat_sessions.slot 的取值之一。
+pub const MAIN_CHAT_SLOT: &str = "main";
+
+/// 一个对话会话：主对话窗口（kind=main/slot=main）与三个 agent 窗口
+/// （kind=agent/slot=claude|codex|dsh）共用同一种结构。
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChatSession {
+    pub id: String,
+    pub title: String,
+    pub kind: String,
+    pub slot: String,
+    pub agent_id: String,
+    pub agent_name: String,
+    pub agent_avatar: String,
+    pub model: String,
+    /// 各 CLI 后端的续接会话 id：{ "claude_code": "...", "codex": "...", "dsh": "..." }。
+    /// 只给后端用，不返回给前端。
+    #[serde(default, skip_serializing)]
+    pub cli_sessions: HashMap<String, String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    #[serde(default)]
+    pub message_count: i64,
+    #[serde(default)]
+    pub preview: String,
+}
+
+impl ChatSession {
+    pub fn cli_session(&self, backend: &str) -> Option<&str> {
+        self.cli_sessions
+            .get(backend)
+            .map(String::as_str)
+            .filter(|id| !id.trim().is_empty())
+    }
+}
+
+/// 新建会话的入参；命令层填好默认值（标题 / 绑定的内置 agent）后落库。
+#[derive(Debug, Clone, Default)]
+pub struct NewChatSession {
+    pub title: String,
+    pub kind: String,
+    pub slot: String,
+    pub agent_id: String,
+    pub agent_name: String,
+    pub agent_avatar: String,
+    pub model: String,
+}
+
+impl NewChatSession {
+    pub fn for_slot(slot: &str) -> Self {
+        let kind = if slot == MAIN_CHAT_SLOT { "main" } else { "agent" };
+        Self {
+            slot: slot.to_string(),
+            kind: kind.to_string(),
+            ..Self::default()
+        }
+    }
+
+    pub fn with_agent(mut self, agent: &Agent) -> Self {
+        self.agent_id = agent.id.clone();
+        self.agent_name = agent.name.clone();
+        self.agent_avatar = agent.avatar.clone();
+        self
+    }
 }
 
 /// 用户自定义的智能体（可在对话中通过 @名称 唤起）。
@@ -259,7 +334,9 @@ impl Database {
              CREATE INDEX IF NOT EXISTS idx_chat_history_created_at ON chat_history(created_at);
              CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_enabled_due ON scheduled_tasks(enabled, due_at);
              CREATE INDEX IF NOT EXISTS idx_clipboard_items_pinned_id ON clipboard_items(pinned DESC, id DESC);
-             CREATE INDEX IF NOT EXISTS idx_skills_is_active ON skills(is_active) WHERE is_active = 1;",
+             CREATE INDEX IF NOT EXISTS idx_skills_is_active ON skills(is_active) WHERE is_active = 1;
+             CREATE INDEX IF NOT EXISTS idx_chat_sessions_slot_updated ON chat_sessions(slot, updated_at DESC);
+             CREATE INDEX IF NOT EXISTS idx_chat_history_session_id ON chat_history(session_id, id);",
         )?;
         Ok(())
     }
@@ -271,6 +348,7 @@ impl Database {
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
                 thinking TEXT,
+                session_id TEXT NOT NULL DEFAULT '',
                 created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
             );
             CREATE TABLE IF NOT EXISTS pet_memory (
@@ -348,13 +426,28 @@ impl Database {
                 allowed_tools_json TEXT NOT NULL DEFAULT '[]',
                 created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
                 updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+            );
+            CREATE TABLE IF NOT EXISTS chat_sessions (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL DEFAULT '',
+                kind TEXT NOT NULL DEFAULT 'main',
+                slot TEXT NOT NULL DEFAULT 'main',
+                agent_id TEXT NOT NULL DEFAULT '',
+                agent_name TEXT NOT NULL DEFAULT '',
+                agent_avatar TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                cli_sessions_json TEXT NOT NULL DEFAULT '{}',
+                created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+                updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
             );",
         )?;
         self.ensure_chat_thinking_column()?;
         self.ensure_chat_quote_columns()?;
         self.ensure_chat_agent_columns()?;
+        self.ensure_chat_session_column()?;
         self.ensure_clipboard_pinned_column()?;
         self.ensure_scheduled_tasks_columns()?;
+        self.init_chat_sessions()?;
         self.ensure_builtin_skills()?;
         Ok(())
     }
@@ -417,6 +510,96 @@ impl Database {
             }
         }
         Ok(())
+    }
+
+    fn ensure_chat_session_column(&self) -> Result<()> {
+        let columns = self
+            .conn
+            .prepare("PRAGMA table_info(chat_history)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>>>()?;
+        if !columns.iter().any(|column| column == "session_id") {
+            self.conn.execute(
+                "ALTER TABLE chat_history ADD COLUMN session_id TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// chat_sessions 迁移：
+    /// 1. 表为空时插入默认会话（session-default）；
+    /// 2. 旧 chat_history 行（session_id='')归入默认会话；
+    /// 3. 修正 pet_settings.active_main_session_id，指向一个真实存在的主会话。
+    fn init_chat_sessions(&self) -> Result<()> {
+        let empty: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM chat_sessions", [], |row| row.get(0))?;
+        if empty == 0 {
+            self.insert_default_session()?;
+        }
+        self.conn.execute(
+            "UPDATE chat_history SET session_id = ?1 WHERE session_id = ''",
+            [DEFAULT_CHAT_SESSION_ID],
+        )?;
+        self.ensure_active_main_session()?;
+        Ok(())
+    }
+
+    fn insert_default_session(&self) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO chat_sessions (id, title, kind, slot, created_at, updated_at)
+             VALUES (?1, '默认对话', 'main', 'main', strftime('%s', 'now'), strftime('%s', 'now'))",
+            [DEFAULT_CHAT_SESSION_ID],
+        )?;
+        Ok(())
+    }
+
+    /// 保证至少存在一个主会话；返回最新主会话 id（优先默认会话）。
+    /// 表里只有 agent 会话时会补建默认主会话。
+    pub fn ensure_default_session(&self) -> Result<String> {
+        if let Some(id) = self.latest_main_session_id()? {
+            return Ok(id);
+        }
+        self.insert_default_session()?;
+        Ok(DEFAULT_CHAT_SESSION_ID.to_string())
+    }
+
+    fn latest_main_session_id(&self) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT id FROM chat_sessions
+                 WHERE slot = ?1
+                 ORDER BY updated_at DESC, rowid DESC
+                 LIMIT 1",
+                [MAIN_CHAT_SLOT],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+    }
+
+    /// 读取 setting 里的活跃主会话；失效（为空 / 不存在 / 不是主会话）时回退到
+    /// 最新主会话（必要时重建默认会话）并写回 setting。
+    pub fn ensure_active_main_session(&self) -> Result<String> {
+        if let Some(id) = self.get_setting(ACTIVE_MAIN_SESSION_KEY)? {
+            let id = id.trim().to_string();
+            if !id.is_empty() {
+                if let Some(session) = self.get_chat_session(&id)? {
+                    if session.slot == MAIN_CHAT_SLOT {
+                        return Ok(id);
+                    }
+                }
+            }
+        }
+        let id = self.ensure_default_session()?;
+        self.save_setting(ACTIVE_MAIN_SESSION_KEY, &id)?;
+        Ok(id)
+    }
+
+    /// 当前活跃主会话 id（不修正、不建会话；启动迁移后一定存在）。
+    pub fn active_main_session_id(&self) -> Result<Option<String>> {
+        self.get_setting(ACTIVE_MAIN_SESSION_KEY)
+            .map(|value| value.map(|id| id.trim().to_string()).filter(|id| !id.is_empty()))
     }
 
     fn ensure_clipboard_pinned_column(&self) -> Result<()> {
@@ -557,10 +740,68 @@ impl Database {
         Ok(())
     }
 
+    // ===== 对话历史（按会话）=====
+    // 生产路径都走 *_in 版本；旧方法写 session_id=''，只为保留既有单测/兼容代码。
+
+    pub fn save_message_in(&self, session_id: &str, role: &str, content: &str) -> Result<()> {
+        self.save_message_with_thinking_in(session_id, role, content, None)
+    }
+
+    pub fn save_message_with_thinking_in(
+        &self,
+        session_id: &str,
+        role: &str,
+        content: &str,
+        thinking: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO chat_history (session_id, role, content, thinking) VALUES (?1, ?2, ?3, ?4)",
+            (session_id, role, content, thinking),
+        )?;
+        Ok(())
+    }
+
+    /// 保存带引用信息的用户消息（quoted_role/quoted_content 记录被引用的前文对话）。
+    pub fn save_message_with_quote_in(
+        &self,
+        session_id: &str,
+        role: &str,
+        content: &str,
+        thinking: Option<&str>,
+        quoted_role: Option<&str>,
+        quoted_content: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO chat_history (session_id, role, content, thinking, quoted_role, quoted_content)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            (session_id, role, content, thinking, quoted_role, quoted_content),
+        )?;
+        Ok(())
+    }
+
+    /// 保存带智能体归属的消息（agent_id/agent_name/agent_avatar 标识回复来自哪个智能体）。
+    pub fn save_message_with_agent_in(
+        &self,
+        session_id: &str,
+        role: &str,
+        content: &str,
+        thinking: Option<&str>,
+        agent_id: Option<&str>,
+        agent_name: Option<&str>,
+        agent_avatar: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO chat_history (session_id, role, content, thinking, agent_id, agent_name, agent_avatar)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            (session_id, role, content, thinking, agent_id, agent_name, agent_avatar),
+        )?;
+        Ok(())
+    }
+
     pub fn get_recent_messages(&self, limit: u32) -> Result<Vec<ChatMessage>> {
         let mut stmt = self.conn.prepare(
             "SELECT role, content, thinking, created_at, quoted_role, quoted_content,
-                    agent_id, agent_name, agent_avatar
+                    agent_id, agent_name, agent_avatar, id, session_id
              FROM chat_history
              ORDER BY id DESC
              LIMIT ?1",
@@ -576,6 +817,8 @@ impl Database {
                 agent_id: row.get(6)?,
                 agent_name: row.get(7)?,
                 agent_avatar: row.get(8)?,
+                id: row.get(9)?,
+                session_id: row.get(10)?,
             })
         })?;
         let mut messages = Vec::new();
@@ -591,11 +834,18 @@ impl Database {
         Ok(())
     }
 
+    /// 清空某个会话的历史消息（保留会话本身）。
+    pub fn clear_session_messages(&self, session_id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM chat_history WHERE session_id = ?1", [session_id])?;
+        Ok(())
+    }
+
     /// 只返回 id > after_id 的最近 limit 条消息（用于 AI 上下文隔离）
     pub fn get_recent_messages_after(&self, after_id: i64, limit: u32) -> Result<Vec<ChatMessage>> {
         let mut stmt = self.conn.prepare(
             "SELECT role, content, thinking, created_at, quoted_role, quoted_content,
-                    agent_id, agent_name, agent_avatar
+                    agent_id, agent_name, agent_avatar, id, session_id
              FROM chat_history
              WHERE id > ?1
              ORDER BY id DESC
@@ -612,6 +862,8 @@ impl Database {
                 agent_id: row.get(6)?,
                 agent_name: row.get(7)?,
                 agent_avatar: row.get(8)?,
+                id: row.get(9)?,
+                session_id: row.get(10)?,
             })
         })?;
         let mut messages = Vec::new();
@@ -626,12 +878,14 @@ impl Database {
     pub fn get_conversation_messages(&self, after_id: i64) -> Result<Vec<ChatMessage>> {
         let mut stmt = self.conn.prepare(
             "SELECT role, content, thinking, created_at, quoted_role, quoted_content,
-                    agent_id, agent_name, agent_avatar FROM chat_history WHERE id > ?1 ORDER BY id ASC",
+                    agent_id, agent_name, agent_avatar, id, session_id
+             FROM chat_history WHERE id > ?1 ORDER BY id ASC",
         )?;
         let rows = stmt.query_map([after_id], |row| Ok(ChatMessage {
             role: row.get(0)?, content: row.get(1)?, thinking: row.get(2)?, created_at: row.get(3)?,
             quoted_role: row.get(4)?, quoted_content: row.get(5)?, agent_id: row.get(6)?,
             agent_name: row.get(7)?, agent_avatar: row.get(8)?,
+            id: row.get(9)?, session_id: row.get(10)?,
         }))?;
         rows.collect()
     }
@@ -643,6 +897,234 @@ impl Database {
                 row.get(0)
             })
             .map_err(|e| e.into())
+    }
+
+    /// 某个会话的全部可见消息（默认最多 500 条），按 id ASC 返回。
+    pub fn get_session_messages(
+        &self,
+        session_id: &str,
+        limit: Option<u32>,
+    ) -> Result<Vec<ChatMessage>> {
+        let limit = limit.unwrap_or(500).clamp(1, 5_000);
+        let mut stmt = self.conn.prepare(
+            "SELECT role, content, thinking, created_at, quoted_role, quoted_content,
+                    agent_id, agent_name, agent_avatar, id, session_id
+             FROM (
+                SELECT * FROM chat_history
+                WHERE session_id = ?1
+                ORDER BY id DESC
+                LIMIT ?2
+             )
+             ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map((session_id, limit as i64), |row| {
+            Ok(ChatMessage {
+                role: row.get(0)?,
+                content: row.get(1)?,
+                thinking: row.get(2)?,
+                created_at: row.get(3)?,
+                quoted_role: row.get(4)?,
+                quoted_content: row.get(5)?,
+                agent_id: row.get(6)?,
+                agent_name: row.get(7)?,
+                agent_avatar: row.get(8)?,
+                id: row.get(9)?,
+                session_id: row.get(10)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    // ===== 会话（chat_sessions）=====
+
+    pub fn create_chat_session(&self, new: NewChatSession) -> Result<ChatSession> {
+        let kind = match new.kind.trim() {
+            "" if new.slot.trim() == MAIN_CHAT_SLOT => "main",
+            "" => "agent",
+            kind => kind,
+        };
+        let slot = match new.slot.trim() {
+            "" => MAIN_CHAT_SLOT,
+            slot => slot,
+        };
+        let title = match new.title.trim() {
+            "" => "新对话",
+            title => title,
+        };
+        let id = format!("session-{}", uuid::Uuid::new_v4());
+        self.conn.execute(
+            "INSERT INTO chat_sessions (
+                id, title, kind, slot, agent_id, agent_name, agent_avatar, model,
+                cli_sessions_json, created_at, updated_at
+             ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, '{}',
+                strftime('%s', 'now'), strftime('%s', 'now')
+             )",
+            (
+                id.as_str(),
+                title,
+                kind,
+                slot,
+                new.agent_id.trim(),
+                new.agent_name.trim(),
+                new.agent_avatar.trim(),
+                new.model.trim(),
+            ),
+        )?;
+        self.get_chat_session(&id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    /// 会话列表（updated_at DESC）。slot 为空时返回全部槽位。
+    /// message_count 与 preview 由 chat_history 实时算出。
+    pub fn list_chat_sessions(&self, slot: Option<&str>) -> Result<Vec<ChatSession>> {
+        let slot = slot.map(str::trim).filter(|slot| !slot.is_empty());
+        let sql = match slot {
+            Some(_) => format!(
+                "{CHAT_SESSION_SELECT} WHERE s.slot = ?1 ORDER BY s.updated_at DESC, s.rowid DESC"
+            ),
+            None => {
+                format!("{CHAT_SESSION_SELECT} ORDER BY s.updated_at DESC, s.rowid DESC")
+            }
+        };
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = if let Some(slot) = slot {
+            stmt.query_map([slot], chat_session_from_row)?
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            stmt.query_map([], chat_session_from_row)?
+                .collect::<Result<Vec<_>>>()?
+        };
+        Ok(rows)
+    }
+
+    pub fn get_chat_session(&self, id: &str) -> Result<Option<ChatSession>> {
+        let sql = format!("{CHAT_SESSION_SELECT} WHERE s.id = ?1");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut rows = stmt.query_map([id], chat_session_from_row)?;
+        match rows.next() {
+            Some(Ok(session)) => Ok(Some(session)),
+            Some(Err(error)) => Err(error),
+            None => Ok(None),
+        }
+    }
+
+    /// 更新会话的标题 / 绑定 / 模型 / CLI 续接 id；同时刷新 updated_at。
+    /// 每个 Option 为 None 表示不动该字段。
+    pub fn update_chat_session(
+        &self,
+        id: &str,
+        title: Option<&str>,
+        agent: Option<(&str, &str, &str)>,
+        model: Option<&str>,
+        cli_sessions: Option<&HashMap<String, String>>,
+    ) -> Result<ChatSession> {
+        if let Some(title) = title.map(str::trim).filter(|title| !title.is_empty()) {
+            self.conn.execute(
+                "UPDATE chat_sessions SET title = ?1 WHERE id = ?2",
+                (title, id),
+            )?;
+        }
+        if let Some((agent_id, agent_name, agent_avatar)) = agent {
+            self.conn.execute(
+                "UPDATE chat_sessions
+                 SET agent_id = ?1, agent_name = ?2, agent_avatar = ?3
+                 WHERE id = ?4",
+                (agent_id, agent_name, agent_avatar, id),
+            )?;
+        }
+        if let Some(model) = model {
+            self.conn.execute(
+                "UPDATE chat_sessions SET model = ?1 WHERE id = ?2",
+                (model.trim(), id),
+            )?;
+        }
+        if let Some(cli_sessions) = cli_sessions {
+            let json = serde_json::to_string(cli_sessions)
+                .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+            self.conn.execute(
+                "UPDATE chat_sessions SET cli_sessions_json = ?1 WHERE id = ?2",
+                (json, id),
+            )?;
+        }
+        self.conn.execute(
+            "UPDATE chat_sessions SET updated_at = strftime('%s', 'now') WHERE id = ?1",
+            [id],
+        )?;
+        self.get_chat_session(id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)
+    }
+
+    /// 删除会话及其全部历史消息。
+    pub fn delete_chat_session(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM chat_history WHERE session_id = ?1", [id])?;
+        self.conn
+            .execute("DELETE FROM chat_sessions WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// 消息落库后的会话更新：刷新 updated_at；标题还是占位标题时用首条消息生成。
+    /// preview 不落库（列表由 chat_history 实时计算），只在标题为空时兜底。
+    pub fn touch_chat_session(
+        &self,
+        id: &str,
+        title_if_empty: Option<&str>,
+        preview: Option<&str>,
+    ) -> Result<()> {
+        let fallback = title_if_empty
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            .or_else(|| preview.map(str::trim).filter(|preview| !preview.is_empty()));
+        let current_title: Option<String> = self
+            .conn
+            .query_row("SELECT title FROM chat_sessions WHERE id = ?1", [id], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        let Some(current_title) = current_title else {
+            return Ok(());
+        };
+        // 用户手动改过的标题永远保留；只覆盖空标题与「新对话 N」这类占位标题。
+        let replace_title = fallback
+            .filter(|title| is_placeholder_session_title(&current_title) && !title.is_empty());
+        match replace_title {
+            Some(title) => {
+                self.conn.execute(
+                    "UPDATE chat_sessions
+                     SET title = ?1, updated_at = strftime('%s', 'now')
+                     WHERE id = ?2",
+                    (title, id),
+                )?;
+            }
+            None => {
+                self.conn.execute(
+                    "UPDATE chat_sessions SET updated_at = strftime('%s', 'now') WHERE id = ?1",
+                    [id],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// 清空所有会话与历史，重建默认主会话；返回新的活跃主会话 id。
+    pub fn clear_all_chat_sessions(&self) -> Result<String> {
+        self.conn.execute("DELETE FROM chat_history", [])?;
+        self.conn.execute("DELETE FROM chat_sessions", [])?;
+        self.conn
+            .execute("DELETE FROM pet_settings WHERE key = ?1", [ACTIVE_MAIN_SESSION_KEY])?;
+        self.insert_default_session()?;
+        self.save_setting(ACTIVE_MAIN_SESSION_KEY, DEFAULT_CHAT_SESSION_ID)?;
+        Ok(DEFAULT_CHAT_SESSION_ID.to_string())
+    }
+
+    /// 主会话数量，用于「新对话 N」的递增标题。
+    pub fn count_main_sessions(&self) -> Result<i64> {
+        self.conn.query_row(
+            "SELECT COUNT(*) FROM chat_sessions WHERE slot = ?1",
+            [MAIN_CHAT_SLOT],
+            |row| row.get(0),
+        )
     }
 
     // ===== 宠物记忆 =====
@@ -1276,6 +1758,53 @@ impl Database {
     }
 }
 
+/// 会话查询列：末尾两个子查询给出消息数与最后一条消息（预览）。
+const CHAT_SESSION_SELECT: &str = "SELECT s.id, s.title, s.kind, s.slot, s.agent_id, s.agent_name, \
+     s.agent_avatar, s.model, s.cli_sessions_json, s.created_at, s.updated_at, \
+     (SELECT COUNT(*) FROM chat_history h WHERE h.session_id = s.id) AS message_count, \
+     (SELECT h.content FROM chat_history h WHERE h.session_id = s.id ORDER BY h.id DESC LIMIT 1) AS preview \
+     FROM chat_sessions s";
+
+fn chat_session_from_row(row: &rusqlite::Row<'_>) -> Result<ChatSession> {
+    let cli_sessions_json: String = row.get(8)?;
+    Ok(ChatSession {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        kind: row.get(2)?,
+        slot: row.get(3)?,
+        agent_id: row.get(4)?,
+        agent_name: row.get(5)?,
+        agent_avatar: row.get(6)?,
+        model: row.get(7)?,
+        cli_sessions: serde_json::from_str(&cli_sessions_json).unwrap_or_default(),
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
+        message_count: row.get(11)?,
+        preview: compact_preview(row.get::<_, Option<String>>(12)?),
+    })
+}
+
+/// 会话标题是否还是占位标题（空 / 「默认对话」/「新对话」/「新对话 N」）。
+/// 占位标题允许被首条消息覆盖；用户手动改过的标题永远保留。
+fn is_placeholder_session_title(title: &str) -> bool {
+    let title = title.trim();
+    title.is_empty()
+        || title == "默认对话"
+        || title == "新对话"
+        || title
+            .strip_prefix("新对话 ")
+            .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_digit()))
+}
+
+/// 会话列表预览：折叠空白后取前 60 个字符。
+fn compact_preview(content: Option<String>) -> String {
+    let Some(content) = content else {
+        return String::new();
+    };
+    let compact = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    compact.chars().take(60).collect()
+}
+
 fn agent_from_row(row: &rusqlite::Row<'_>) -> Result<Agent> {
     let allowed_tools_json: String = row.get(6)?;
     Ok(Agent {
@@ -1431,5 +1960,262 @@ mod tests {
         {
             assert!(after.iter().any(|s| s.id == *id), "其他内置技能应仍在: {id}");
         }
+    }
+
+    #[test]
+    fn legacy_chat_history_migrates_into_the_default_session() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE chat_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                thinking TEXT,
+                created_at INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO chat_history (role, content) VALUES ('user', '迁移前的旧消息');",
+        )
+        .unwrap();
+        let db = Database { conn };
+        db.init_tables().unwrap();
+        db.ensure_indexes().unwrap();
+
+        let sessions = db.list_chat_sessions(None).unwrap();
+        assert_eq!(sessions.len(), 1, "迁移后应只有一个默认会话");
+        assert_eq!(sessions[0].id, DEFAULT_CHAT_SESSION_ID);
+        assert_eq!(sessions[0].kind, "main");
+        assert_eq!(sessions[0].slot, "main");
+        assert_eq!(sessions[0].title, "默认对话");
+
+        let messages = db.get_session_messages(DEFAULT_CHAT_SESSION_ID, None).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content, "迁移前的旧消息");
+        assert_eq!(messages[0].session_id, DEFAULT_CHAT_SESSION_ID);
+        assert_eq!(
+            db.active_main_session_id().unwrap().as_deref(),
+            Some(DEFAULT_CHAT_SESSION_ID),
+            "活跃主会话必须指向迁移出的默认会话"
+        );
+    }
+
+    #[test]
+    fn chat_sessions_keep_messages_isolated_with_title_and_preview() {
+        let db = Database::open_in_memory().unwrap();
+        let main = db.ensure_default_session().unwrap();
+        assert_eq!(main, DEFAULT_CHAT_SESSION_ID);
+
+        let mut new_session = NewChatSession::for_slot("main");
+        new_session.title = "第二段对话".into();
+        let second = db.create_chat_session(new_session).unwrap();
+        assert_eq!(second.kind, "main");
+        assert_eq!(second.title, "第二段对话");
+
+        db.save_message_with_quote_in(
+            &second.id,
+            "user",
+            "第一条用户消息",
+            None,
+            Some("assistant"),
+            Some("被引用的内容"),
+        )
+        .unwrap();
+        db.touch_chat_session(&second.id, Some("首条消息标题"), None)
+            .unwrap();
+        db.save_message_with_agent_in(
+            &second.id,
+            "assistant",
+            "助手回复内容",
+            None,
+            Some("builtin-claude"),
+            Some("claude"),
+            Some("⌘"),
+        )
+        .unwrap();
+        db.save_message_in(&main, "user", "主会话消息").unwrap();
+
+        let messages = db.get_session_messages(&second.id, None).unwrap();
+        assert_eq!(messages.len(), 2, "不同会话的消息必须隔离");
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[0].quoted_content.as_deref(), Some("被引用的内容"));
+        assert!(messages[0].id < messages[1].id, "必须按 id ASC 返回");
+        assert_eq!(messages[1].agent_id.as_deref(), Some("builtin-claude"));
+        assert_eq!(messages[1].session_id, second.id);
+
+        let main_messages = db.get_session_messages(&main, None).unwrap();
+        assert_eq!(main_messages.len(), 1);
+        assert_eq!(main_messages[0].content, "主会话消息");
+
+        let listed = db.list_chat_sessions(None).unwrap();
+        let listed_second = listed.iter().find(|item| item.id == second.id).unwrap();
+        assert_eq!(listed_second.message_count, 2);
+        assert_eq!(listed_second.preview, "助手回复内容");
+
+        // 用户可读的标题不会被后续消息覆盖。
+        db.touch_chat_session(&second.id, Some("不应覆盖"), None)
+            .unwrap();
+        assert_eq!(
+            db.get_chat_session(&second.id).unwrap().unwrap().title,
+            "第二段对话"
+        );
+    }
+
+    #[test]
+    fn first_message_replaces_only_placeholder_session_titles() {
+        let db = Database::open_in_memory().unwrap();
+        // create_chat_session 对空标题填「新对话」，首条消息应当覆盖它。
+        let auto = db
+            .create_chat_session(NewChatSession::for_slot("main"))
+            .unwrap();
+        assert_eq!(auto.title, "新对话");
+        db.touch_chat_session(&auto.id, Some("今天要做什么"), None)
+            .unwrap();
+        assert_eq!(
+            db.get_chat_session(&auto.id).unwrap().unwrap().title,
+            "今天要做什么"
+        );
+        db.touch_chat_session(&auto.id, Some("第二条消息"), None)
+            .unwrap();
+        assert_eq!(
+            db.get_chat_session(&auto.id).unwrap().unwrap().title,
+            "今天要做什么",
+            "首条消息生成后不再变化"
+        );
+
+        // 手动重命名后的标题必须保留。
+        db.update_chat_session(&auto.id, Some("手动命名"), None, None, None)
+            .unwrap();
+        db.touch_chat_session(&auto.id, Some("不应覆盖"), None)
+            .unwrap();
+        assert_eq!(
+            db.get_chat_session(&auto.id).unwrap().unwrap().title,
+            "手动命名"
+        );
+
+        // 「新对话 N」同样是占位标题，首条消息会覆盖它。
+        let numbered = db
+            .create_chat_session(NewChatSession::for_slot("main"))
+            .unwrap();
+        db.update_chat_session(&numbered.id, Some("新对话 3"), None, None, None)
+            .unwrap();
+        db.touch_chat_session(&numbered.id, Some("第三条消息"), None)
+            .unwrap();
+        assert_eq!(
+            db.get_chat_session(&numbered.id).unwrap().unwrap().title,
+            "第三条消息"
+        );
+    }
+
+    #[test]
+    fn session_messages_return_the_latest_in_ascending_order() {
+        let db = Database::open_in_memory().unwrap();
+        let session = db.ensure_default_session().unwrap();
+        for index in 0..10 {
+            db.save_message_in(&session, "user", &format!("消息{index}"))
+                .unwrap();
+        }
+        let all = db.get_session_messages(&session, None).unwrap();
+        assert_eq!(all.len(), 10);
+        assert_eq!(all.first().unwrap().content, "消息0");
+        assert_eq!(all.last().unwrap().content, "消息9");
+
+        let limited = db.get_session_messages(&session, Some(3)).unwrap();
+        assert_eq!(limited.len(), 3, "limit 取最新 N 条");
+        assert_eq!(limited.first().unwrap().content, "消息7");
+        assert_eq!(limited.last().unwrap().content, "消息9");
+    }
+
+    #[test]
+    fn deleting_a_session_removes_only_its_own_messages() {
+        let db = Database::open_in_memory().unwrap();
+        let main = db.ensure_default_session().unwrap();
+        let mut new_session = NewChatSession::for_slot("claude");
+        new_session.agent_id = "builtin-claude".into();
+        let agent_session = db.create_chat_session(new_session).unwrap();
+        db.save_message_in(&main, "user", "主会话消息").unwrap();
+        db.save_message_in(&agent_session.id, "user", "agent 会话消息")
+            .unwrap();
+
+        db.delete_chat_session(&agent_session.id).unwrap();
+        assert!(db.get_chat_session(&agent_session.id).unwrap().is_none());
+        assert!(db
+            .get_session_messages(&agent_session.id, None)
+            .unwrap()
+            .is_empty());
+        assert_eq!(db.get_session_messages(&main, None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn updating_a_session_writes_binding_model_and_cli_ids() {
+        let db = Database::open_in_memory().unwrap();
+        let mut new_session = NewChatSession::for_slot("codex");
+        let session = db.create_chat_session(new_session.clone()).unwrap();
+        assert_eq!(session.kind, "agent");
+
+        let mut cli_sessions = HashMap::new();
+        cli_sessions.insert("codex".to_string(), "0199a213-thread".to_string());
+        let updated = db
+            .update_chat_session(
+                &session.id,
+                Some("重命名后的标题"),
+                Some(("builtin-codex", "codex", "⌘")),
+                Some("gpt-5-codex"),
+                Some(&cli_sessions),
+            )
+            .unwrap();
+        assert_eq!(updated.title, "重命名后的标题");
+        assert_eq!(updated.agent_id, "builtin-codex");
+        assert_eq!(updated.agent_name, "codex");
+        assert_eq!(updated.model, "gpt-5-codex");
+        assert_eq!(updated.cli_session("codex"), Some("0199a213-thread"));
+
+        // cli_sessions 只给后端用，不能通过 IPC 泄漏到前端。
+        let wire = serde_json::to_value(&updated).unwrap();
+        assert!(wire.get("cli_sessions").is_none());
+
+        // 空标题 / None 字段不覆盖既有值。
+        let unchanged = db
+            .update_chat_session(&session.id, Some("   "), None, None, None)
+            .unwrap();
+        assert_eq!(unchanged.title, "重命名后的标题");
+        assert_eq!(unchanged.model, "gpt-5-codex");
+
+        new_session.title.clear();
+        assert_eq!(NewChatSession::for_slot("main").kind, "main");
+    }
+
+    #[test]
+    fn clearing_all_sessions_rebuilds_the_default_active_session() {
+        let db = Database::open_in_memory().unwrap();
+        let main = db.ensure_default_session().unwrap();
+        let extra = db
+            .create_chat_session(NewChatSession::for_slot("dsh"))
+            .unwrap();
+        db.save_message_in(&main, "user", "旧消息").unwrap();
+        db.save_message_in(&extra.id, "user", "旧 agent 消息").unwrap();
+
+        let rebuilt = db.clear_all_chat_sessions().unwrap();
+        assert_eq!(rebuilt, DEFAULT_CHAT_SESSION_ID);
+        let sessions = db.list_chat_sessions(None).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, DEFAULT_CHAT_SESSION_ID);
+        assert!(db.get_session_messages(DEFAULT_CHAT_SESSION_ID, None).unwrap().is_empty());
+        assert_eq!(
+            db.active_main_session_id().unwrap().as_deref(),
+            Some(DEFAULT_CHAT_SESSION_ID)
+        );
+    }
+
+    #[test]
+    fn falling_back_when_the_active_main_session_disappears() {
+        let db = Database::open_in_memory().unwrap();
+        let main = db.ensure_default_session().unwrap();
+        db.save_setting(ACTIVE_MAIN_SESSION_KEY, &main).unwrap();
+        db.delete_chat_session(&main).unwrap();
+        let recovered = db.ensure_active_main_session().unwrap();
+        assert_eq!(recovered, DEFAULT_CHAT_SESSION_ID, "默认会话应被重建");
+        assert_eq!(
+            db.active_main_session_id().unwrap().as_deref(),
+            Some(DEFAULT_CHAT_SESSION_ID)
+        );
     }
 }

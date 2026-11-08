@@ -3,7 +3,8 @@ use crate::{
     agent_turn::{TurnError, TurnOutput},
     direct_api, AppState,
 };
-use tauri::{Emitter, Manager};
+use crate::ai_events::AiEmit;
+use tauri::Manager;
 use tokio_util::sync::CancellationToken;
 
 fn owns_run(state: &AppState, id: &str) -> bool {
@@ -29,6 +30,7 @@ fn publish(app: &tauri::AppHandle, value: CollaborationState) {
     let _ = app.emit("collaboration-state", value);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     app: tauri::AppHandle,
     message: String,
@@ -37,6 +39,7 @@ pub async fn run(
     allow_handoffs: bool,
     run_id: String,
     cancel: CancellationToken,
+    session_id: String,
 ) {
     let state = app.state::<AppState>();
     let all = {
@@ -90,7 +93,8 @@ pub async fn run(
                 ),
             },
         );
-        let result = execute_job(&app, &job, &all, &attachments, allow_handoffs, &cancel).await;
+        let result =
+            execute_job(&app, &job, &all, &attachments, allow_handoffs, &cancel, &session_id).await;
         if cancel.is_cancelled() || !owns_run(&state, &run_id) {
             break;
         }
@@ -115,7 +119,8 @@ pub async fn run(
             if cancel.is_cancelled() || !owns_run(&state, &run_id) {
                 break;
             }
-            db.save_message_with_agent(
+            let saved = db.save_message_with_agent_in(
+                &session_id,
                 "assistant",
                 &reply.text,
                 if reply.thinking.is_empty() {
@@ -126,8 +131,14 @@ pub async fn run(
                 Some(&job.agent.id),
                 Some(&job.agent.name),
                 Some(&job.agent.avatar),
-            )
+            );
+            if saved.is_ok() {
+                let preview = crate::conversation_preview_from(&reply.text);
+                let _ = db.touch_chat_session(&session_id, None, Some(preview.as_str()));
+            }
+            saved
         };
+        crate::notify_sessions_changed(&app);
         if let Err(error) = saved {
             finish(
                 &app,
@@ -205,6 +216,7 @@ pub(crate) async fn finish(
     };
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_job(
     app: &tauri::AppHandle,
     job: &Job,
@@ -212,16 +224,14 @@ async fn execute_job(
     attachments: &[direct_api::UserAttachment],
     allow_handoffs: bool,
     cancel: &CancellationToken,
+    session_id: &str,
 ) -> Result<TurnOutput, TurnError> {
     let state = app.state::<AppState>();
-    let start_id = *state
-        .chat_start_id
-        .lock()
-        .map_err(|_| TurnError::failed("无法读取会话起点", ""))?;
     let (history, skills, skill, custom_prompt, profile) = {
         let db = state.db.lock().await;
+        // 协同角色看到的是本会话的完整共享记录。
         let history = db
-            .get_conversation_messages(start_id)
+            .get_session_messages(session_id, None)
             .map_err(|error| TurnError::failed(error.to_string(), ""))?;
         let profile = if job.agent.backend == "direct_api" {
             if job.agent.api_profile_id.is_empty() {
@@ -284,33 +294,37 @@ async fn execute_job(
                 Some(crate::AgentContext { agents: vec![job.agent.clone()] }), grants, cancel.clone(), job.agent.api_profile_id.is_empty()) => result,
         };
     }
-    execute_cli(app, &job.agent.backend, &message, &system, cancel).await
+    execute_cli(app, &job.agent, &message, &system, cancel).await
 }
 
 async fn execute_cli(
     app: &tauri::AppHandle,
-    backend: &str,
+    agent: &Agent,
     message: &str,
     system: &str,
     cancel: &CancellationToken,
 ) -> Result<TurnOutput, TurnError> {
+    let backend = agent.backend.as_str();
+    let model = Some(agent.model.as_str())
+        .map(str::trim)
+        .filter(|model| !model.is_empty());
     // Each role invocation has its own CLI context. Reconstruct it from the full
     // transcript instead of borrowing the ordinary pet's CLI session.
     let mut child = match backend {
         "claude_code" => {
             crate::openclaw::ClaudeAdapter::new()
-                .spawn_streaming(app, message, system)
+                .spawn_streaming_with(app, message, system, None, model)
                 .await
         }
         "codex" => {
             crate::codex::CodexAdapter::default()
-                .spawn_streaming(app, message, system)
+                .spawn_streaming_with(app, message, system, None, model)
                 .await
         }
         "dsh" => {
             // 角色调用不复用桌宠的 dsh 会话：上下文由完整共享记录重建。
             crate::dsh::DshAdapter::default()
-                .spawn_streaming(app, message, &[], system)
+                .spawn_streaming_with(app, message, &[], system, None, model)
                 .await
         }
         _ => {

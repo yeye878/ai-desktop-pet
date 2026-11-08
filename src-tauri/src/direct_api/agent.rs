@@ -13,7 +13,8 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
-use tauri::{Emitter, Manager};
+use crate::ai_events::AiEmit;
+use tauri::Manager;
 
 const MAX_AGENT_TURNS: u32 = 160;
 const MAX_VISION_IMAGES: usize = 5;
@@ -101,21 +102,17 @@ pub async fn run_direct_api_agent(
     let full_text = output.text;
     let full_thinking = output.thinking;
     let single_agent = agent.as_ref().and_then(|ctx| ctx.single());
-    {
-        let db = state.db.lock().await;
-        let _ = db.save_message_with_agent(
-            "assistant",
-            &full_text,
-            if full_thinking.is_empty() {
-                None
-            } else {
-                Some(&full_thinking)
-            },
-            single_agent.map(|a| a.id.as_str()),
-            single_agent.map(|a| a.name.as_str()),
-            single_agent.map(|a| a.avatar.as_str()),
-        );
-    }
+    crate::save_assistant_message(
+        &app_handle,
+        &full_text,
+        if full_thinking.is_empty() {
+            None
+        } else {
+            Some(full_thinking.as_str())
+        },
+        single_agent.map(|a| (a.id.as_str(), a.name.as_str(), a.avatar.as_str())),
+    )
+    .await;
 
     {
         let mut behavior = state.behavior.lock().await;
@@ -1705,6 +1702,8 @@ fn emit_tool_event(
     approved: Option<bool>,
 ) {
     let arguments = serde_json::to_string_pretty(args).unwrap_or_else(|_| "{}".to_string());
+    // 工具执行期把桌宠切到 working，跑完切回 thinking（与 CLI 后端同一套映射）
+    crate::apply_tool_status_to_pet(app_handle, status);
     let _ = app_handle.emit(
         "ai-tool-event",
         ToolEventPayload {
@@ -1908,16 +1907,17 @@ async fn send_error(app_handle: &tauri::AppHandle, err_msg: String, full_thinkin
     {
         let saved_text =
             interrupted_message_with_progress(&format!("[执行中断] {err_msg}"), full_thinking);
-        let db = state.db.lock().await;
-        let _ = db.save_message_with_thinking(
-            "assistant",
+        crate::save_assistant_message(
+            app_handle,
             &saved_text,
             if full_thinking.trim().is_empty() {
                 None
             } else {
                 Some(full_thinking)
             },
-        );
+            None,
+        )
+        .await;
     }
 
     let _ = app_handle.emit(
@@ -1941,21 +1941,22 @@ async fn send_aborted(app_handle: &tauri::AppHandle, full_text: &str, full_think
 
     // 有部分内容时保存到数据库，使"继续"时 AI 能接续
     if !full_text.trim().is_empty() || !full_thinking.trim().is_empty() {
-        let db = state.db.lock().await;
         let saved_text = if full_text.trim().is_empty() {
             interrupted_message_with_progress("[思考中，已被中止]", full_thinking)
         } else {
             interrupted_message_with_progress(full_text, full_thinking)
         };
-        let _ = db.save_message_with_thinking(
-            "assistant",
+        crate::save_assistant_message(
+            app_handle,
             &saved_text,
             if full_thinking.trim().is_empty() {
                 None
             } else {
                 Some(full_thinking)
             },
-        );
+            None,
+        )
+        .await;
     }
 
     let _ = app_handle.emit(
@@ -2212,6 +2213,8 @@ private reasoning that should not be replayed
 "#;
 
         let msg = crate::storage::ChatMessage {
+            id: 0,
+            session_id: String::new(),
             role: "assistant".to_string(),
             content: "[执行中断] 测试".to_string(),
             thinking: Some(thinking.to_string()),

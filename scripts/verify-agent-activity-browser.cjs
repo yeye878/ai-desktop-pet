@@ -126,8 +126,15 @@ fs.mkdirSync(output, { recursive: true });
     await confirmPage.close();
     const demo = await browser.newPage({ viewport: { width: 1280, height: 820 } });
     await demo.goto(baseUrl + '/?activity=demo');
-    await demo.getByText('检查完成，活动流和历史消息均正常。', { exact: true }).waitFor();
-    assert.equal(await demo.locator('.activity-tool.completed').count(), 2);
+    // Codex 风格夹具：思考增量 + 提示 + 清单 + 命令失败 + 文件变更 + 重跑成功。
+    await demo.getByText('入口使用 Vue 3 + Pinia，回归用例先失败后修复通过。', { exact: true }).waitFor();
+    assert.equal(await demo.locator('.activity-tool.completed').count(), 4, 'four finished tools plus one failure');
+    assert.equal(await demo.locator('.activity-tool.failed').count(), 1, 'the first test run stays failed');
+    assert.equal(await demo.locator('.activity-tool.notice').count(), 1, 'configuration notice is shown once');
+    assert.equal(await demo.getByText('退出码 1', { exact: true }).count(), 1, 'failed command keeps its exit code');
+    assert.ok(await demo.locator('.activity-plan li').count() >= 3, 'update_plan renders as a checklist');
+    assert.ok(await demo.locator('.activity-change-kind').count() >= 1, 'file change kind is labelled');
+    assert.ok(await demo.locator('.activity-reasoning').count() >= 2, 'reasoning segments stay separate');
     await demo.screenshot({ path: path.join(output, 'demo.png') });
     await demo.close();
     console.log(`Screenshots: ${output}`);

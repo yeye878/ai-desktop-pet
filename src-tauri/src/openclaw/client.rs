@@ -102,12 +102,28 @@ impl ClaudeAdapter {
         }
     }
 
-    /// 启动 Claude CLI 子进程（stream-json 模式），返回 Child 供调用方逐行读取
+    /// 启动 Claude CLI 子进程（stream-json 模式），返回 Child 供调用方逐行读取。
+    /// 旧签名：会话 id 取自适配器内部状态。
     pub async fn spawn_streaming(
         &self,
         app_handle: &tauri::AppHandle,
         message: &str,
         system_prompt: &str,
+    ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
+        let session = self.session_id.lock().ok().and_then(|id| id.clone());
+        self.spawn_streaming_with(app_handle, message, system_prompt, session.as_deref(), None)
+            .await
+    }
+
+    /// 显式会话 / 模型版本：不依赖适配器内部状态，供多会话与协作调用。
+    /// session 为 Some 时追加 `--resume`，model 为 Some 时追加 `--model`。
+    pub async fn spawn_streaming_with(
+        &self,
+        app_handle: &tauri::AppHandle,
+        message: &str,
+        system_prompt: &str,
+        session: Option<&str>,
+        model: Option<&str>,
     ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
         let mut cmd_path = PathBuf::from("claude.cmd");
         let mut extra_path = None;
@@ -172,11 +188,14 @@ impl ClaudeAdapter {
             }
         }
 
-        // 多轮对话：如果已有 session_id，追加 --resume
-        if let Ok(sid) = self.session_id.lock() {
-            if let Some(ref id) = *sid {
-                cmd.args(["--resume", id]);
-            }
+        // 本回合模型覆盖（空 = 跟随本机配置）。
+        if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
+            cmd.args(["--model", model]);
+        }
+
+        // 多轮对话：已有会话 id 时续接。
+        if let Some(id) = session.map(str::trim).filter(|id| !id.is_empty()) {
+            cmd.args(["--resume", id]);
         }
 
         cmd.stdout(Stdio::piped());

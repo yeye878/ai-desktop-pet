@@ -1,4 +1,5 @@
 mod agent_turn;
+mod ai_events;
 mod collaboration;
 mod behavior;
 mod codex;
@@ -23,7 +24,7 @@ use std::{
     fs::OpenOptions,
     io::Write,
     path::PathBuf,
-    sync::Mutex as StdMutex,
+    sync::{Mutex as StdMutex, RwLock as StdRwLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{Emitter, Manager};
@@ -36,6 +37,8 @@ pub struct ActiveChatSnapshot {
     pub message: String,
     pub thinking: String,
     pub started_at: i64,
+    /// 正在生成回复的会话 id（前端据此只更新对应窗口）。
+    pub session_id: String,
 }
 
 #[derive(Default)]
@@ -133,7 +136,12 @@ pub struct AppState {
         tokio::sync::Mutex<std::collections::HashMap<String, interactions::PendingRequest<String, direct_api::AskUserPayload>>>,
     pub approved_tool_types: tokio::sync::Mutex<std::collections::HashSet<String>>,
     pub abort_token: tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>,
+    /// 保留字段：多会话后历史按 chat_history.session_id 隔离，新逻辑不再读它。
     pub chat_start_id: StdMutex<i64>,
+    /// 当前活跃主会话 id（启动时从 DB 载入）。
+    pub active_main_session_id: StdMutex<String>,
+    /// 当前 AI 回合归属的会话 id；所有 ai-* 事件靠它带上 session_id。
+    pub current_turn_session: StdRwLock<String>,
     pub http_client: reqwest::Client,
     pub weather_cache: tokio::sync::Mutex<Option<system::WeatherInfo>>,
     pub last_active_skill_id: tokio::sync::Mutex<Option<String>>,
@@ -145,6 +153,322 @@ fn unix_now() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
         .unwrap_or_default()
+}
+
+// ===== 多会话 / agent 窗口：共享状态与事件工具 =====
+
+/// 当前活跃主会话 id 的内存快照（启动迁移后一定非空）。
+fn active_main_session_id(state: &AppState) -> String {
+    state
+        .active_main_session_id
+        .lock()
+        .map(|id| id.clone())
+        .unwrap_or_default()
+}
+
+fn set_active_main_session_id(state: &AppState, id: &str) {
+    if let Ok(mut current) = state.active_main_session_id.lock() {
+        *current = id.to_string();
+    }
+}
+
+/// 本轮 AI 回合归属的会话 id：所有 ai-* 事件都靠它路由到对应窗口。
+fn current_turn_session(state: &AppState) -> String {
+    state
+        .current_turn_session
+        .read()
+        .map(|id| id.clone())
+        .unwrap_or_default()
+}
+
+fn set_current_turn_session(state: &AppState, id: &str) {
+    if let Ok(mut current) = state.current_turn_session.write() {
+        *current = id.to_string();
+    }
+}
+
+/// 给 payload 注入 session_id。字符串 payload（如原来的 ai-thinking）
+/// 统一包成 `{ text }` 对象，前端用同一套 payload.session_id 路由。
+fn with_session_id(payload: serde_json::Value, session_id: &str) -> serde_json::Value {
+    let mut value = if payload.is_object() {
+        payload
+    } else {
+        serde_json::json!({ "text": payload })
+    };
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "session_id".to_string(),
+            serde_json::Value::String(session_id.to_string()),
+        );
+    }
+    value
+}
+
+/// 广播带 session_id 的 AI 事件。
+fn emit_ai_for<S: Serialize>(app: &tauri::AppHandle, session_id: &str, event: &str, payload: S) {
+    let value = serde_json::to_value(payload).unwrap_or(serde_json::Value::Null);
+    let _ = app.emit(event, with_session_id(value, session_id));
+}
+
+/// 广播当前回合的 AI 事件（自动注入 current_turn_session）。
+pub fn emit_ai<S: Serialize>(app: &tauri::AppHandle, event: &str, payload: S) {
+    let state = app.state::<AppState>();
+    emit_ai_for(app, &current_turn_session(&state), event, payload);
+}
+
+/// 会话列表 / 标题 / 预览变化，通知前端刷新（前端自行节流）。
+pub(crate) fn notify_sessions_changed(app: &tauri::AppHandle) {
+    let _ = app.emit("chat-sessions-changed", serde_json::json!({}));
+}
+
+/// 活跃主会话变化：推送完整会话对象。
+fn notify_active_session_changed(app: &tauri::AppHandle, session: &storage::ChatSession) {
+    let _ = app.emit(
+        "chat-session-changed",
+        serde_json::json!({ "session": session }),
+    );
+    notify_sessions_changed(app);
+}
+
+/// 折叠空白并截断，用于会话标题 / 预览。
+fn compact_session_text(text: &str, limit: usize) -> String {
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    compact.chars().take(limit).collect()
+}
+
+fn conversation_title_from(text: &str) -> String {
+    compact_session_text(text, 24)
+}
+
+pub(crate) fn conversation_preview_from(text: &str) -> String {
+    compact_session_text(text, 60)
+}
+
+/// 新会话默认标题：主对话「新对话 N」，agent 窗口用角色名 / 槽位名。
+fn default_session_title(db: &storage::Database, slot: &str, agent_name: &str) -> String {
+    if slot == storage::MAIN_CHAT_SLOT {
+        let count = db.count_main_sessions().unwrap_or(0);
+        format!("新对话 {}", count + 1)
+    } else if agent_name.trim().is_empty() {
+        slot.to_string()
+    } else {
+        agent_name.trim().to_string()
+    }
+}
+
+/// 三个内置 agent 窗口的默认角色 id。
+fn default_agent_id_for_slot(slot: &str) -> Option<&'static str> {
+    match slot {
+        "claude" => Some("builtin-claude"),
+        "codex" => Some("builtin-codex"),
+        "dsh" => Some("builtin-dsh"),
+        _ => None,
+    }
+}
+
+fn find_agent(catalog: &[storage::Agent], id: &str) -> Option<storage::Agent> {
+    catalog.iter().find(|agent| agent.id == id).cloned()
+}
+
+/// 内置 + 自定义智能体全量目录。
+async fn agent_catalog(state: &tauri::State<'_, AppState>) -> Result<Vec<storage::Agent>, String> {
+    let db = state.db.lock().await;
+    Ok(collaboration::catalog(
+        db.list_agents().map_err(|e| e.to_string())?,
+    ))
+}
+
+/// 本回合生效的模型：显式 model > 会话绑定模型 > 角色绑定模型；
+/// 空表示跟随本机 CLI / 全局配置。
+fn resolve_turn_model(
+    model_override: Option<&str>,
+    session_model: &str,
+    agent_model: &str,
+) -> Option<String> {
+    [model_override.unwrap_or(""), session_model, agent_model]
+        .into_iter()
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+/// 会话解析：显式 sessionId 优先，否则用活跃主会话。
+async fn resolve_chat_session(
+    state: &tauri::State<'_, AppState>,
+    session_id: Option<&str>,
+) -> Result<storage::ChatSession, String> {
+    let requested = session_id
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string);
+    let db = state.db.lock().await;
+    let id = match requested {
+        Some(id) => id,
+        None => match db.active_main_session_id().map_err(|e| e.to_string())? {
+            Some(id) => id,
+            None => db.ensure_active_main_session().map_err(|e| e.to_string())?,
+        },
+    };
+    db.get_chat_session(&id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("会话不存在：{id}"))
+}
+
+/// 把指定主会话设为活跃主会话（写 setting + 内存快照 + 事件）。
+async fn apply_active_main_session(
+    app: &tauri::AppHandle,
+    id: &str,
+) -> Result<storage::ChatSession, String> {
+    let state = app.state::<AppState>();
+    let session = {
+        let db = state.db.lock().await;
+        let session = db
+            .get_chat_session(id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("会话不存在：{id}"))?;
+        if session.slot != storage::MAIN_CHAT_SLOT {
+            return Err("只有主对话会话可以设为活跃会话".to_string());
+        }
+        db.save_setting(storage::ACTIVE_MAIN_SESSION_KEY, &session.id)
+            .map_err(|e| e.to_string())?;
+        session
+    };
+    set_active_main_session_id(&state, &session.id);
+    notify_active_session_changed(app, &session);
+    Ok(session)
+}
+
+/// 消息落库后刷新会话标题 / 更新时间并通知前端。
+fn touch_session_after_message(
+    app: &tauri::AppHandle,
+    db: &storage::Database,
+    session_id: &str,
+    message: &str,
+) {
+    let title = conversation_title_from(message);
+    let preview = conversation_preview_from(message);
+    let _ = db.touch_chat_session(session_id, Some(title.as_str()), Some(preview.as_str()));
+    notify_sessions_changed(app);
+}
+
+/// 把本轮 CLI 后端返回的续接 id 写回会话行。
+fn persist_cli_session(
+    db: &storage::Database,
+    session: &storage::ChatSession,
+    backend: &str,
+    cli_session_id: &str,
+) {
+    let cli_session_id = cli_session_id.trim();
+    if cli_session_id.is_empty() {
+        return;
+    }
+    // 以库里的最新状态为准：同一会话可能先后绑定过不同后端，
+    // 直接拿调用方手里的旧快照写回会丢掉其它后端的续接 id。
+    let mut cli_sessions = db
+        .get_chat_session(&session.id)
+        .ok()
+        .flatten()
+        .map(|current| current.cli_sessions)
+        .unwrap_or_else(|| session.cli_sessions.clone());
+    if cli_sessions.get(backend).map(String::as_str) == Some(cli_session_id) {
+        return;
+    }
+    cli_sessions.insert(backend.to_string(), cli_session_id.to_string());
+    let _ = db.update_chat_session(&session.id, None, None, None, Some(&cli_sessions));
+}
+
+/// 保存助手消息（按当前回合会话），并刷新会话预览。
+/// direct_api / 本地 CLI / 错误与中断路径共用。
+pub(crate) async fn save_assistant_message(
+    app: &tauri::AppHandle,
+    text: &str,
+    thinking: Option<&str>,
+    agent: Option<(&str, &str, &str)>,
+) {
+    let state = app.state::<AppState>();
+    let session_id = current_turn_session(&state);
+    let db = state.db.lock().await;
+    let (agent_id, agent_name, agent_avatar) = match agent {
+        Some((id, name, avatar)) => (Some(id), Some(name), Some(avatar)),
+        None => (None, None, None),
+    };
+    let result = if session_id.is_empty() {
+        db.save_message_with_agent("assistant", text, thinking, agent_id, agent_name, agent_avatar)
+    } else {
+        db.save_message_with_agent_in(
+            &session_id,
+            "assistant",
+            text,
+            thinking,
+            agent_id,
+            agent_name,
+            agent_avatar,
+        )
+    };
+    if result.is_ok() && !session_id.is_empty() {
+        let preview = conversation_preview_from(text);
+        let _ = db.touch_chat_session(&session_id, None, Some(preview.as_str()));
+    }
+    drop(db);
+    if !session_id.is_empty() {
+        notify_sessions_changed(app);
+    }
+}
+
+/// 从 catch_unwind 的 panic payload 里取出可读消息。
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = panic.downcast_ref::<String>() {
+        message.clone()
+    } else if let Some(message) = panic.downcast_ref::<&str>() {
+        message.to_string()
+    } else {
+        "未知内部错误".to_string()
+    }
+}
+
+/// 首轮（该后端还没有续接 id）把会话记录拼进 CLI prompt 的纯文本格式。
+fn cli_history_text(history: &[storage::ChatMessage]) -> String {
+    history
+        .iter()
+        .map(|message| {
+            let speaker = message.agent_name.clone().unwrap_or_else(|| {
+                if message.role == "user" {
+                    "用户".into()
+                } else {
+                    "助手".into()
+                }
+            });
+            let mut line = format!("{speaker}: {}", message.content.trim());
+            if let (Some(role), Some(content)) =
+                (&message.quoted_role, &message.quoted_content)
+            {
+                line.push_str(&format!(
+                    "\n（引用了{}：{}）",
+                    if role == "user" { "用户" } else { "助手" },
+                    content.trim()
+                ));
+            }
+            line
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 首轮给 Claude Code / Codex 的 prompt：把已有会话记录一起带进去。
+fn compose_cli_prompt(
+    message: &str,
+    history: &[storage::ChatMessage],
+    resumed: bool,
+) -> String {
+    if resumed || history.is_empty() {
+        message.to_string()
+    } else {
+        format!(
+            "【当前会话记录（按时间顺序，最后一条最新）】\n{}\n\n{}",
+            cli_history_text(history),
+            message
+        )
+    }
 }
 
 const API_PROFILES_KEY: &str = "api_model_profiles";
@@ -1427,6 +1751,8 @@ mod tests {
 
     fn chat_message(role: &str, content: &str, created_at: i64) -> storage::ChatMessage {
         storage::ChatMessage {
+            id: 0,
+            session_id: String::new(),
             role: role.to_string(),
             content: content.to_string(),
             thinking: None,
@@ -1717,6 +2043,109 @@ mod tests {
         assert!(after.iter().any(|s| s.id == "builtin-translation-polish"),
             "reset_builtin_skills 应让被墓碑封存的内置技能回来");
     }
+
+    #[test]
+    fn ai_event_payloads_always_carry_the_session_id() {
+        // ai-thinking 原来是裸字符串，现在统一包成 { text, session_id }。
+        let thinking = with_session_id(serde_json::Value::String("思考中".into()), "session-a");
+        assert_eq!(thinking["session_id"], "session-a");
+        assert_eq!(thinking["text"], "思考中");
+
+        // 对象 payload 直接补字段，原字段保持不变。
+        let finished = with_session_id(
+            serde_json::json!({ "text": "完成", "aborted": false }),
+            "session-b",
+        );
+        assert_eq!(finished["session_id"], "session-b");
+        assert_eq!(finished["text"], "完成");
+        assert_eq!(finished["aborted"], false);
+    }
+
+    #[test]
+    fn turn_model_priority_prefers_override_then_session_then_agent() {
+        assert_eq!(
+            resolve_turn_model(Some("m-override"), "m-session", "m-agent").as_deref(),
+            Some("m-override"),
+            "本回合显式 model 最优先"
+        );
+        assert_eq!(
+            resolve_turn_model(Some("   "), "m-session", "m-agent").as_deref(),
+            Some("m-session"),
+            "空 model 表示跟随会话绑定"
+        );
+        assert_eq!(
+            resolve_turn_model(None, "", " m-agent ").as_deref(),
+            Some("m-agent"),
+            "会话未绑定时回落到角色模型"
+        );
+        assert_eq!(resolve_turn_model(None, "  ", " "), None, "全部为空 = 跟随本机配置");
+    }
+
+    #[test]
+    fn conversation_titles_collapse_whitespace_and_truncate() {
+        assert_eq!(
+            conversation_title_from("  第一行\n第二行\t第三行 "),
+            "第一行 第二行 第三行",
+            "换行折叠为空格"
+        );
+        let long_title = conversation_title_from(&"字".repeat(30));
+        assert_eq!(long_title.chars().count(), 24, "标题取前 24 个字符");
+        let preview = conversation_preview_from(&"x".repeat(80));
+        assert_eq!(preview.chars().count(), 60, "预览取前 60 个字符");
+    }
+
+    #[test]
+    fn cli_prompt_replays_history_only_on_the_first_turn() {
+        let history = vec![
+            chat_message("user", "旧问题", 1),
+            chat_message("assistant", "旧回答", 2),
+        ];
+        assert_eq!(
+            compose_cli_prompt("新问题", &history, true),
+            "新问题",
+            "续接回合只发本轮消息"
+        );
+        let first_turn = compose_cli_prompt("新问题", &history, false);
+        assert!(first_turn.contains("旧问题"));
+        assert!(first_turn.contains("旧回答"));
+        assert!(first_turn.ends_with("新问题"));
+        assert_eq!(compose_cli_prompt("新问题", &[], false), "新问题");
+    }
+
+    #[test]
+    fn agent_slot_defaults_match_the_builtin_catalog() {
+        let catalog = collaboration::catalog(vec![]);
+        for (slot, expected_id, expected_backend) in [
+            ("claude", "builtin-claude", "claude_code"),
+            ("codex", "builtin-codex", "codex"),
+            ("dsh", "builtin-dsh", "dsh"),
+        ] {
+            let id = default_agent_id_for_slot(slot).expect("槽位应有默认角色");
+            assert_eq!(id, expected_id);
+            let agent = find_agent(&catalog, id).expect("内置角色必须存在于目录");
+            assert_eq!(agent.backend, expected_backend);
+        }
+        assert!(default_agent_id_for_slot("main").is_none());
+        assert!(find_agent(&catalog, "不存在").is_none());
+    }
+
+    #[test]
+    fn cli_session_ids_are_written_back_per_backend() {
+        let db = storage::Database::open_in_memory().unwrap();
+        let session = db
+            .create_chat_session(storage::NewChatSession::for_slot("main"))
+            .unwrap();
+        persist_cli_session(&db, &session, "claude_code", "claude-session-1");
+        persist_cli_session(&db, &session, "dsh", " session-abc ");
+        let reloaded = db.get_chat_session(&session.id).unwrap().unwrap();
+        assert_eq!(reloaded.cli_session("claude_code"), Some("claude-session-1"));
+        assert_eq!(reloaded.cli_session("dsh"), Some("session-abc"), "id 两侧空白被裁剪");
+        assert_eq!(reloaded.cli_session("codex"), None, "不同后端各自记录续接 id");
+        // 空 id 不写库。
+        persist_cli_session(&db, &session, "codex", "   ");
+        let reloaded = db.get_chat_session(&session.id).unwrap().unwrap();
+        assert_eq!(reloaded.cli_session("codex"), None);
+    }
 }
 
 fn kill_process_tree(pid: u32) {
@@ -1758,39 +2187,45 @@ async fn stop_active_response(state: &tauri::State<'_, AppState>) {
     }
 }
 
-async fn reset_conversation(
-    state: &tauri::State<'_, AppState>,
-    reset_cli_session: bool,
-) -> Result<Option<i64>, String> {
-    stop_active_response(state).await;
+/// 清空所有会话（chat_history + chat_sessions）并重建默认主会话。
+/// 返回重建后的活跃主会话。
+async fn reset_conversation(app: &tauri::AppHandle) -> Result<storage::ChatSession, String> {
+    let state = app.state::<AppState>();
+    stop_active_response(&state).await;
 
-    let saved_memory_id = {
+    {
         let db = state.db.lock().await;
-        let saved_memory_id = save_chat_summary_if_needed(&db)?;
-        db.clear_messages().map_err(|e| e.to_string())?;
-        // 持久化 chat_start_id 到数据库，清空对话时重置为 0
+        let _ = save_chat_summary_if_needed(&db);
+        db.clear_all_chat_sessions().map_err(|e| e.to_string())?;
         let _ = db.save_setting("chat_start_id", "0");
-        saved_memory_id
-    };
+    }
 
-    // 清空对话后重置对话起点
+    // 清空对话后重置对话起点（保留字段，仅作兼容）
     if let Ok(mut start_id) = state.chat_start_id.lock() {
         *start_id = 0;
     }
 
     state.approved_tool_types.lock().await.clear();
 
-    if reset_cli_session {
+    {
         let ai = state.ai.lock().await;
         ai.reset_session();
         state.codex.reset_session();
         state.dsh.reset_session();
     }
 
-    let mut behavior = state.behavior.lock().await;
-    behavior.set_state(behavior::PetState::Idle);
+    {
+        let mut behavior = state.behavior.lock().await;
+        behavior.set_state(behavior::PetState::Idle);
+    }
 
-    Ok(saved_memory_id)
+    let session_id = {
+        let db = state.db.lock().await;
+        db.ensure_active_main_session().map_err(|e| e.to_string())?
+    };
+    let session = apply_active_main_session(app, &session_id).await?;
+    let _ = app.emit("chat-history-cleared", serde_json::json!({}));
+    Ok(session)
 }
 
 #[tauri::command]
@@ -1801,6 +2236,9 @@ async fn send_to_ai(
     quoted_content: Option<String>,
     mention_agents: Option<Vec<String>>,
     collaboration_enabled: Option<bool>,
+    session_id: Option<String>,
+    target_agent_id: Option<String>,
+    model: Option<String>,
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
@@ -1808,9 +2246,33 @@ async fn send_to_ai(
         return Err("message is empty".to_string());
     }
 
+    // 1) 解析目标会话（缺省 = 活跃主会话）。
+    let session = resolve_chat_session(&state, session_id.as_deref()).await?;
+    let model_override = model
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let target_agent_id = target_agent_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    // agent 窗口：直接以该 agent 执行单 agent 回合，不走协同 / @ 解析 / 计划任务解析。
+    let target_agent = match target_agent_id.as_deref() {
+        Some(agent_id) => {
+            let catalog = agent_catalog(&state).await?;
+            Some(find_agent(&catalog, agent_id).ok_or_else(|| format!("智能体不存在：{agent_id}"))?)
+        }
+        None => None,
+    };
+
     let mut names = mention_agents.unwrap_or_default();
-    names.extend(collaboration::mention_names(&message));
-    let mentioned_agents = resolve_mentioned_agents(&state, Some(names)).await?;
+    if target_agent.is_none() {
+        names.extend(collaboration::mention_names(&message));
+    }
+    let mentioned_agents = if target_agent.is_some() {
+        Vec::new()
+    } else {
+        resolve_mentioned_agents(&state, Some(names)).await?
+    };
 
     {
         let mut active = state
@@ -1824,12 +2286,16 @@ async fn send_to_ai(
             message: message.clone(),
             thinking: String::new(),
             started_at: unix_now(),
+            session_id: session.id.clone(),
         });
     }
+    set_current_turn_session(&state, &session.id);
 
+    // 2) 用户消息写入该会话（不同窗口 / 会话互相隔离）。
     {
         let db = state.db.lock().await;
-        db.save_message_with_quote(
+        db.save_message_with_quote_in(
+            &session.id,
             "user",
             &message,
             None,
@@ -1837,6 +2303,56 @@ async fn send_to_ai(
             quoted_content.as_deref(),
         )
         .map_err(|e| e.to_string())?;
+        touch_session_after_message(&app_handle, &db, &session.id, &message);
+    }
+
+    // 3) agent 窗口：直接跑单 agent 回合，不进入协同 / @ 菜单。
+    if let Some(agent) = target_agent {
+        *state
+            .collaboration_state
+            .lock()
+            .map_err(|_| "协同状态不可用")? = None;
+        {
+            let mut behavior = state.behavior.lock().await;
+            behavior.on_user_interaction();
+            behavior.set_state(behavior::PetState::Thinking);
+        }
+        emit_ai(&app_handle, "ai-started", serde_json::json!({ "message": message }));
+        let app_clone = app_handle.clone();
+        let session_clone = session.clone();
+        let msg_clone = message.clone();
+        let att_clone = attachments.unwrap_or_default();
+        let quote_clone = quoted_role
+            .as_deref()
+            .zip(quoted_content.as_deref())
+            .map(|(role, content)| (role.to_string(), content.to_string()));
+        tauri::async_runtime::spawn(async move {
+            let task = std::panic::AssertUnwindSafe(run_agent_session_turn(
+                app_clone.clone(),
+                session_clone,
+                agent,
+                msg_clone,
+                att_clone,
+                quote_clone,
+                model_override,
+            ));
+            if let Err(panic) = task.catch_unwind().await {
+                let state = app_clone.state::<AppState>();
+                if let Ok(mut active) = state.active_chat.lock() {
+                    active.active = None;
+                }
+                emit_ai(
+                    &app_clone,
+                    "ai-error",
+                    serde_json::json!({
+                        "message": format!("内部错误: {}", panic_message(panic.as_ref())),
+                        "thinking": null,
+                        "aborted": false
+                    }),
+                );
+            }
+        });
+        return Ok(serde_json::json!({ "started": true }));
     }
 
     if let Some(parsed_task) = if mentioned_agents.is_empty() { parse_schedule_request(&message, unix_now()) } else { None } {
@@ -1856,10 +2372,13 @@ async fn send_to_ai(
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| "定时任务保存后读取失败".to_string())?;
             let reply = schedule_confirmation_text(&task, unix_now());
-            db.save_message("assistant", &reply)
+            db.save_message_in(&session.id, "assistant", &reply)
                 .map_err(|e| e.to_string())?;
+            let reply_preview = conversation_preview_from(&reply);
+            let _ = db.touch_chat_session(&session.id, None, Some(reply_preview.as_str()));
             (task, reply)
         };
+        notify_sessions_changed(&app_handle);
 
         if let Ok(mut active) = state.active_chat.lock() {
             active.active = None;
@@ -1871,7 +2390,8 @@ async fn send_to_ai(
         }
 
         let _ = app_handle.emit("scheduled-tasks-changed", serde_json::json!({}));
-        let _ = app_handle.emit(
+        emit_ai(
+            &app_handle,
             "ai-finished",
             AiFinishedPayload {
                 text: saved_task.1,
@@ -1897,7 +2417,7 @@ async fn send_to_ai(
             turn: 0, max_turns: collaboration::MAX_TURNS, message: "准备协同任务".into(),
         };
         *state.collaboration_state.lock().map_err(|_| "协同状态不可用")? = Some(initial.clone());
-        let _ = app_handle.emit("collaboration-state", initial);
+        emit_ai(&app_handle, "collaboration-state", initial);
         Some((run_id, cancel))
     } else {
         *state.collaboration_state.lock().map_err(|_| "协同状态不可用")? = None;
@@ -1911,7 +2431,7 @@ async fn send_to_ai(
         behavior.set_state(behavior::PetState::Thinking);
     }
 
-    let _ = app_handle.emit("ai-started", &message);
+    emit_ai(&app_handle, "ai-started", serde_json::json!({ "message": message }));
     let app_handle_clone = app_handle.clone();
     let msg_clone = message.clone();
     let att_clone = attachments.unwrap_or_default();
@@ -1919,26 +2439,21 @@ async fn send_to_ai(
         .as_deref()
         .zip(quoted_content.as_deref())
         .map(|(role, content)| (role.to_string(), content.to_string()));
+    let session_clone = session.clone();
     tauri::async_runtime::spawn(async move {
         let task = async {
             if let Some((run_id, cancel)) = collaboration_run {
                 collaboration::run(app_handle_clone.clone(), msg_clone, att_clone, mentioned_agents,
-                    collaboration_enabled.unwrap_or(true), run_id, cancel).await;
+                    collaboration_enabled.unwrap_or(true), run_id, cancel, session_clone.id).await;
             } else {
-                run_ai_message(app_handle_clone.clone(), msg_clone, att_clone, quote_clone, vec![]).await;
+                run_ai_message(app_handle_clone.clone(), session_clone, msg_clone, att_clone, quote_clone, vec![], model_override).await;
             }
         };
         let result = std::panic::AssertUnwindSafe(task)
         .catch_unwind()
         .await;
         if let Err(panic) = result {
-            let panic_msg = if let Some(s) = panic.downcast_ref::<String>() {
-                s.clone()
-            } else if let Some(s) = panic.downcast_ref::<&str>() {
-                s.to_string()
-            } else {
-                "未知内部错误".to_string()
-            };
+            let panic_msg = panic_message(panic.as_ref());
             let team = app_handle_clone.state::<AppState>().collaboration_state.lock().ok().and_then(|team| team.clone());
             if let Some(team) = team.filter(|team| team.status == "running") {
                 collaboration::finish(&app_handle_clone, &team.run_id, "failed", team.turn, format!("协同执行异常：{panic_msg}")).await;
@@ -1949,7 +2464,8 @@ async fn send_to_ai(
             if let Ok(mut active) = state.active_chat.lock() {
                 active.active = None;
             }
-            let _ = app_handle_clone.emit(
+            emit_ai(
+                &app_handle_clone,
                 "ai-error",
                 serde_json::json!({
                     "message": format!("内部错误: {}", panic_msg),
@@ -1975,12 +2491,15 @@ async fn resolve_mentioned_agents(
     Ok(collaboration::resolve_agents(&all, &names))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_ai_message(
     app_handle: tauri::AppHandle,
+    session: storage::ChatSession,
     message: String,
     attachments: Vec<direct_api::UserAttachment>,
     quote: Option<(String, String)>,
     agents: Vec<storage::Agent>,
+    model_override: Option<String>,
 ) {
     let state = app_handle.state::<AppState>();
     let backend = state.backend_type.lock().await.clone();
@@ -1995,7 +2514,8 @@ async fn run_ai_message(
                 let mut behavior = state.behavior.lock().await;
                 behavior.set_state(behavior::PetState::Confused);
             }
-            let _ = app_handle.emit(
+            emit_ai(
+                &app_handle,
                 "ai-error",
                 AiErrorPayload {
                     message: "未配置直接 API 后端，请先在设置中配置 API Key。".to_string(),
@@ -2006,8 +2526,17 @@ async fn run_ai_message(
             return;
         };
 
-        // Resolve the actual model before generating its identity prompt.
+        // 模型优先级：本回合显式 model > 会话绑定模型 > 角色模型 > 全局配置。
         apply_agent_model(&mut config, &agents);
+        let inherited_model = agents
+            .first()
+            .map(|agent| agent.model.as_str())
+            .unwrap_or("");
+        if let Some(model) =
+            resolve_turn_model(model_override.as_deref(), &session.model, inherited_model)
+        {
+            config.model = model;
+        }
         let (system_prompt, active_skill) = {
             let personality = state.personality.lock().await.clone();
             let profession = state.profession.lock().await.clone();
@@ -2038,14 +2567,11 @@ async fn run_ai_message(
             (base, active_skill)
         };
 
+        // 会话历史按 session 隔离；直连 API 使用整段会话记录。
         let chat_history = {
-            let start_id = *state
-                .chat_start_id
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
             let db = state.db.lock().await;
             let mut history = db
-                .get_recent_messages_after(start_id, 50)
+                .get_session_messages(&session.id, None)
                 .unwrap_or_default();
             if history
                 .last()
@@ -2111,17 +2637,6 @@ async fn run_ai_message(
     }
 
     // 本地 CLI 共用桌宠设定、技能、历史保存和取消流程。
-    let is_codex = backend == "codex";
-    let is_dsh = backend == "dsh";
-    let cli_name = if is_codex {
-        "Codex"
-    } else if is_dsh {
-        "DeepSeek Harness"
-    } else {
-        "Claude Code"
-    };
-    let cancel_token = tokio_util::sync::CancellationToken::new();
-    *state.abort_token.lock().await = Some(cancel_token.clone());
     let (system_prompt, active_skill) = {
         let state = app_handle.state::<AppState>();
         let personality = state.personality.lock().await.clone();
@@ -2165,44 +2680,109 @@ async fn run_ai_message(
         *last_id = None;
     }
 
+    run_cli_turn(
+        app_handle,
+        session,
+        backend,
+        message,
+        quote,
+        system_prompt,
+        agents,
+        model_override,
+    )
+    .await;
+}
+
+/// 本地 CLI（Claude Code / Codex / DeepSeek Harness）的一轮对话。
+///
+/// 续接 id 与模型都走显式参数（不依赖适配器内部状态），回合成功后把 CLI
+/// 返回的 session id 写回会话行，下一轮据此 `--resume`。
+#[allow(clippy::too_many_arguments)]
+async fn run_cli_turn(
+    app_handle: tauri::AppHandle,
+    session: storage::ChatSession,
+    backend: String,
+    message: String,
+    quote: Option<(String, String)>,
+    system_prompt: String,
+    agents: Vec<storage::Agent>,
+    model_override: Option<String>,
+) {
+    let state = app_handle.state::<AppState>();
+    let is_codex = backend == "codex";
+    let is_dsh = backend == "dsh";
+    let cli_name = if is_codex {
+        "Codex"
+    } else if is_dsh {
+        "DeepSeek Harness"
+    } else {
+        "Claude Code"
+    };
+    let cancel_token = tokio_util::sync::CancellationToken::new();
+    *state.abort_token.lock().await = Some(cancel_token.clone());
+
+    // 该后端在本会话里的续接 id；为空表示该后端首轮，需要带上会话记录。
+    let resumed_session = session.cli_session(&backend).map(str::to_string);
+    let inherited_model = agents
+        .first()
+        .map(|agent| agent.model.as_str())
+        .unwrap_or("");
+    let model = resolve_turn_model(model_override.as_deref(), &session.model, inherited_model);
+    let history = if resumed_session.is_some() {
+        Vec::new()
+    } else {
+        let db = state.db.lock().await;
+        let mut history = db
+            .get_session_messages(&session.id, Some(50))
+            .unwrap_or_default();
+        // 用户消息本身已在写库时保存，这里只取它之前的历史。
+        if history
+            .last()
+            .map(|msg| msg.role == "user" && msg.content == message)
+            .unwrap_or(false)
+        {
+            history.pop();
+        }
+        history
+    };
+    let message_for_cli = apply_quote_context(&message, quote.as_ref());
+    let prompt = compose_cli_prompt(&message_for_cli, &history, resumed_session.is_some());
     let child_result = {
-        let state = app_handle.state::<AppState>();
-        let message_for_cli = apply_quote_context(&message, quote.as_ref());
+        let model = model.as_deref();
         if is_codex {
             state
                 .codex
-                .spawn_streaming(&app_handle, &message_for_cli, &system_prompt)
+                .spawn_streaming_with(
+                    &app_handle,
+                    &prompt,
+                    &system_prompt,
+                    resumed_session.as_deref(),
+                    model,
+                )
                 .await
         } else if is_dsh {
-            // 已经有可续接的 dsh 会话时只发本轮消息；首轮才需要带上最近记录。
-            let history = if state.dsh.has_session() {
-                Vec::new()
-            } else {
-                let start_id = *state
-                    .chat_start_id
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner());
-                let db = state.db.lock().await;
-                let mut history = db
-                    .get_recent_messages_after(start_id, 50)
-                    .unwrap_or_default();
-                // 用户消息本身已在写库时保存，这里只取它之前的历史。
-                if history
-                    .last()
-                    .map(|msg| msg.role == "user" && msg.content == message)
-                    .unwrap_or(false)
-                {
-                    history.pop();
-                }
-                history
-            };
+            // dsh 自己会用 history 组装首轮任务文本。
             state
                 .dsh
-                .spawn_streaming(&app_handle, &message_for_cli, &history, &system_prompt)
+                .spawn_streaming_with(
+                    &app_handle,
+                    &message_for_cli,
+                    &history,
+                    &system_prompt,
+                    resumed_session.as_deref(),
+                    model,
+                )
                 .await
         } else {
             let ai = state.ai.lock().await;
-            ai.spawn_streaming(&app_handle, &message_for_cli, &system_prompt).await
+            ai.spawn_streaming_with(
+                &app_handle,
+                &prompt,
+                &system_prompt,
+                resumed_session.as_deref(),
+                model,
+            )
+            .await
         }
     };
     let mut child = match child_result {
@@ -2219,7 +2799,8 @@ async fn run_ai_message(
                 let mut behavior = state.behavior.lock().await;
                 behavior.set_state(behavior::PetState::Confused);
             }
-            let _ = app_handle.emit(
+            emit_ai(
+                &app_handle,
                 "ai-error",
                 AiErrorPayload {
                     message: format!("启动 {cli_name} 失败: {err}"),
@@ -2258,7 +2839,7 @@ async fn run_ai_message(
                 }
             };
         }
-        let _ = app_for_stream.emit("ai-thinking", delta);
+        emit_ai(&app_for_stream, "ai-thinking", delta);
     };
     let stream_result = if is_dsh {
         // 需要授权的操作走直连 API 同一套确认弹窗，而不是直接失败。
@@ -2267,28 +2848,35 @@ async fn run_ai_message(
         ));
         dsh::read_stream_with_activity(&mut child, on_thinking, |text| {
             if !cancel_token.is_cancelled() {
-                let _ = app_for_stream
-                    .emit("ai-answer-delta", serde_json::json!({ "text": text }));
+                emit_ai(&app_for_stream, "ai-answer-delta", serde_json::json!({ "text": text }));
             }
         }, |tool| {
-            if !cancel_token.is_cancelled() { let _ = app_for_stream.emit("ai-tool-event", tool); }
+            if !cancel_token.is_cancelled() {
+                crate::apply_tool_status_to_pet(&app_for_stream, &tool.status);
+                emit_ai(&app_for_stream, "ai-tool-event", tool);
+            }
         }, approvals)
         .await
     } else if is_codex {
         codex::read_stream_with_activity(&mut child, on_thinking, |text| {
             if !cancel_token.is_cancelled() {
-                let _ = app_for_stream
-                    .emit("ai-answer-delta", serde_json::json!({ "text": text }));
+                emit_ai(&app_for_stream, "ai-answer-delta", serde_json::json!({ "text": text }));
             }
         }, |tool| {
-            if !cancel_token.is_cancelled() { let _ = app_for_stream.emit("ai-tool-event", tool); }
+            if !cancel_token.is_cancelled() {
+                crate::apply_tool_status_to_pet(&app_for_stream, &tool.status);
+                emit_ai(&app_for_stream, "ai-tool-event", tool);
+            }
         })
         .await
     } else {
         openclaw::read_stream_with_activity(&mut child, on_thinking, |text| {
-            if !cancel_token.is_cancelled() { let _ = app_for_stream.emit("ai-answer-delta", serde_json::json!({ "text": text })); }
+            if !cancel_token.is_cancelled() { emit_ai(&app_for_stream, "ai-answer-delta", serde_json::json!({ "text": text })); }
         }, |tool| {
-            if !cancel_token.is_cancelled() { let _ = app_for_stream.emit("ai-tool-event", tool); }
+            if !cancel_token.is_cancelled() {
+                crate::apply_tool_status_to_pet(&app_for_stream, &tool.status);
+                emit_ai(&app_for_stream, "ai-tool-event", tool);
+            }
         }).await
     };
 
@@ -2310,17 +2898,10 @@ async fn run_ai_message(
 
     match stream_result {
         Ok(parsed) => {
-            // 更新 session_id
-            if let Some(ref sid) = parsed.session_id {
-                let state = app_handle.state::<AppState>();
-                if is_codex {
-                    state.codex.update_session(sid);
-                } else if is_dsh {
-                    state.dsh.update_session(sid);
-                } else {
-                    let ai = state.ai.lock().await;
-                    ai.update_session(sid);
-                }
+            // 把 CLI 返回的会话 id 写回会话行，下一轮据此 --resume。
+            if let Some(sid) = parsed.session_id.as_deref() {
+                let db = state.db.lock().await;
+                persist_cli_session(&db, &session, &backend, sid);
             }
 
             if parsed.is_error {
@@ -2333,7 +2914,8 @@ async fn run_ai_message(
                 if let Ok(mut active) = state.active_chat.lock() {
                     active.active = None;
                 }
-                let _ = app_handle.emit(
+                emit_ai(
+                    &app_handle,
                     "ai-error",
                     AiErrorPayload {
                         message: format!("{cli_name} 执行失败: {msg}"),
@@ -2356,7 +2938,8 @@ async fn run_ai_message(
                 if let Ok(mut active) = state.active_chat.lock() {
                     active.active = None;
                 }
-                let _ = app_handle.emit(
+                emit_ai(
+                    &app_handle,
                     "ai-error",
                     AiErrorPayload {
                         message: "已中断".to_string(),
@@ -2378,21 +2961,19 @@ async fn run_ai_message(
             } else {
                 None
             };
-            {
-                let db = state.db.lock().await;
-                let _ = db.save_message_with_agent(
-                    "assistant",
-                    &parsed.full_text,
-                    if parsed.full_thinking.is_empty() {
-                        None
-                    } else {
-                        Some(parsed.full_thinking.as_str())
-                    },
-                    single_agent.map(|agent| agent.id.as_str()),
-                    single_agent.map(|agent| agent.name.as_str()),
-                    single_agent.map(|agent| agent.avatar.as_str()),
-                );
-            }
+            save_assistant_message(
+                &app_handle,
+                &parsed.full_text,
+                if parsed.full_thinking.is_empty() {
+                    None
+                } else {
+                    Some(parsed.full_thinking.as_str())
+                },
+                single_agent.map(|agent| {
+                    (agent.id.as_str(), agent.name.as_str(), agent.avatar.as_str())
+                }),
+            )
+            .await;
 
             // 切换到说话状态
             let mut behavior = state.behavior.lock().await;
@@ -2409,7 +2990,8 @@ async fn run_ai_message(
                 active.active = None;
             }
 
-            let _ = app_handle.emit(
+            emit_ai(
+                &app_handle,
                 "ai-finished",
                 AiFinishedPayload {
                     text: parsed.full_text,
@@ -2434,7 +3016,8 @@ async fn run_ai_message(
             }
             let mut behavior = state.behavior.lock().await;
             behavior.set_state(behavior::PetState::Idle);
-            let _ = app_handle.emit(
+            emit_ai(
+                &app_handle,
                 "ai-error",
                 AiErrorPayload {
                     message: "已中断".to_string(),
@@ -2444,6 +3027,255 @@ async fn run_ai_message(
             );
         }
     }
+}
+
+/// 单 agent 回合（agent 窗口）：直接以指定智能体执行一轮对话。
+///
+/// 系统提示词 = 基础桌宠人设 + memory/apps/custom/skill 注入 +
+/// collaboration_prompt(agent, all, false)（禁止自动交接）；后端由
+/// agent.backend 决定：direct_api 走直连 API，其余走本机 CLI。
+#[allow(clippy::too_many_arguments)]
+async fn run_agent_session_turn(
+    app_handle: tauri::AppHandle,
+    session: storage::ChatSession,
+    agent: storage::Agent,
+    message: String,
+    attachments: Vec<direct_api::UserAttachment>,
+    quote: Option<(String, String)>,
+    model_override: Option<String>,
+) {
+    let state = app_handle.state::<AppState>();
+    let backend = agent.backend.clone();
+    let (all_agents, all_skills, active_skill, custom_prompt) = {
+        let db = state.db.lock().await;
+        (
+            collaboration::catalog(db.list_agents().unwrap_or_default()),
+            db.list_skills().unwrap_or_default(),
+            db.get_active_skill().unwrap_or(None),
+            db.get_setting("custom_system_prompt")
+                .unwrap_or(None)
+                .unwrap_or_default(),
+        )
+    };
+    let personality = state.personality.lock().await.clone();
+    let profession = state.profession.lock().await.clone();
+    let mut system = openclaw::build_system_prompt(&personality, &profession);
+    system = attach_memory_prompt(system);
+    system = attach_registered_apps_prompt(system, &state).await;
+    system = attach_custom_prompt(system, &custom_prompt);
+    system = attach_skill_prompt(
+        system,
+        active_skill.as_ref(),
+        &all_skills,
+        backend == "direct_api",
+    )
+    .await;
+    system.push_str("\n\n");
+    system.push_str(&collaboration::collaboration_prompt(&agent, &all_agents, false));
+    // 模型优先级：本回合 model > 会话 model > 角色 model > 配置 model。
+    let model = resolve_turn_model(model_override.as_deref(), &session.model, &agent.model);
+
+    if backend == "direct_api" {
+        let config_opt = {
+            let db = state.db.lock().await;
+            if agent.api_profile_id.trim().is_empty() {
+                Some(active_api_profile(&db))
+            } else {
+                load_api_profiles(&db)
+                    .into_iter()
+                    .find(|profile| profile.id == agent.api_profile_id)
+            }
+        };
+        let Some(mut config) = config_opt else {
+            if let Ok(mut active) = state.active_chat.lock() {
+                active.active = None;
+            }
+            {
+                let mut behavior = state.behavior.lock().await;
+                behavior.set_state(behavior::PetState::Confused);
+            }
+            emit_ai(
+                &app_handle,
+                "ai-error",
+                AiErrorPayload {
+                    message: "此智能体的 API 配置已不存在，请在智能体工坊重新选择。".to_string(),
+                    thinking: None,
+                    aborted: false,
+                },
+            );
+            return;
+        };
+        if let Some(model) = model.as_deref() {
+            config.model = model.to_string();
+        }
+        system = attach_runtime_identity_prompt(system, &config);
+        system = attach_execution_mode_prompt(system, &config);
+        system = attach_quote_prompt(system);
+        system = attach_word_and_ask_prompt(system);
+        system = attach_agent_factory_prompt(system);
+        system = attach_coding_prompt(system);
+        system = attach_computer_use_prompt(system);
+        system = attach_weather_prompt(system);
+        system = attach_search_prompt(system);
+        let history = {
+            let db = state.db.lock().await;
+            let mut history = db
+                .get_session_messages(&session.id, None)
+                .unwrap_or_default();
+            if history
+                .last()
+                .map(|msg| msg.role == "user" && msg.content == message)
+                .unwrap_or(false)
+            {
+                history.pop();
+            }
+            history
+        };
+        let grants = collect_turn_tool_grants(std::slice::from_ref(&agent), active_skill.as_ref());
+        let cancel = tokio_util::sync::CancellationToken::new();
+        *state.abort_token.lock().await = Some(cancel.clone());
+        let task = direct_api::execute_direct_api_turn(
+            app_handle.clone(),
+            message,
+            config,
+            system,
+            history,
+            attachments,
+            quote,
+            Some(AgentContext {
+                agents: vec![agent.clone()],
+            }),
+            grants,
+            cancel.clone(),
+            agent.api_profile_id.trim().is_empty(),
+        );
+        let result = tokio::select! {
+            _ = cancel.cancelled() => Err(agent_turn::TurnError::aborted("", "")),
+            result = task => result,
+        };
+        *state.abort_token.lock().await = None;
+        if let Ok(mut active) = state.active_chat.lock() {
+            active.active = None;
+        }
+        match result {
+            Ok(output) => {
+                save_assistant_message(
+                    &app_handle,
+                    &output.text,
+                    if output.thinking.is_empty() {
+                        None
+                    } else {
+                        Some(output.thinking.as_str())
+                    },
+                    Some((agent.id.as_str(), agent.name.as_str(), agent.avatar.as_str())),
+                )
+                .await;
+                {
+                    let mut behavior = state.behavior.lock().await;
+                    behavior.set_state(behavior::PetState::Speaking);
+                    behavior.mood.update(Some(0.05), None);
+                }
+                emit_ai(
+                    &app_handle,
+                    "ai-finished",
+                    AiFinishedPayload {
+                        text: output.text,
+                        thinking: if output.thinking.is_empty() {
+                            None
+                        } else {
+                            Some(output.thinking)
+                        },
+                        agent_id: Some(agent.id.clone()),
+                        agent_name: Some(agent.name.clone()),
+                        agent_avatar: Some(agent.avatar.clone()),
+                    },
+                );
+            }
+            Err(error) => {
+                if error.aborted {
+                    if !error.partial_text.trim().is_empty() || !error.thinking.trim().is_empty() {
+                        let saved_text = if error.partial_text.trim().is_empty() {
+                            "[思考中，已被中止]".to_string()
+                        } else {
+                            error.partial_text.clone()
+                        };
+                        save_assistant_message(
+                            &app_handle,
+                            &saved_text,
+                            if error.thinking.is_empty() {
+                                None
+                            } else {
+                                Some(error.thinking.as_str())
+                            },
+                            Some((agent.id.as_str(), agent.name.as_str(), agent.avatar.as_str())),
+                        )
+                        .await;
+                    }
+                    {
+                        let mut behavior = state.behavior.lock().await;
+                        behavior.set_state(behavior::PetState::Idle);
+                    }
+                    emit_ai(
+                        &app_handle,
+                        "ai-error",
+                        AiErrorPayload {
+                            message: "已中止".to_string(),
+                            thinking: if error.thinking.is_empty() {
+                                None
+                            } else {
+                                Some(error.thinking.clone())
+                            },
+                            aborted: true,
+                        },
+                    );
+                } else {
+                    {
+                        let mut behavior = state.behavior.lock().await;
+                        behavior.set_state(behavior::PetState::Confused);
+                    }
+                    // 与主对话一致：错误也落库，切换会话回来还能看到中断原因。
+                    let saved_text = format!("[执行中断] {}", error.message);
+                    save_assistant_message(
+                        &app_handle,
+                        &saved_text,
+                        if error.thinking.is_empty() {
+                            None
+                        } else {
+                            Some(error.thinking.as_str())
+                        },
+                        Some((agent.id.as_str(), agent.name.as_str(), agent.avatar.as_str())),
+                    )
+                    .await;
+                    emit_ai(
+                        &app_handle,
+                        "ai-error",
+                        AiErrorPayload {
+                            message: error.message,
+                            thinking: if error.thinking.is_empty() {
+                                None
+                            } else {
+                                Some(error.thinking)
+                            },
+                            aborted: false,
+                        },
+                    );
+                }
+            }
+        }
+        return;
+    }
+
+    run_cli_turn(
+        app_handle,
+        session,
+        backend,
+        message,
+        quote,
+        system,
+        vec![agent],
+        model,
+    )
+    .await;
 }
 
 #[tauri::command]
@@ -3021,6 +3853,25 @@ async fn set_pet_state(new_state: String, state: tauri::State<'_, AppState>) -> 
     Ok(())
 }
 
+/// 让工具执行状态驱动桌宠：工具开始跑 → working，跑完（成功或失败）→ thinking。
+///
+/// 该函数在流式解析的同步回调里被调用，拿不到 behavior 锁就直接跳过——下一个工具事件
+/// 会再补一次，绝不阻塞事件流（因此用 try_lock 而不是 await）。
+pub(crate) fn apply_tool_status_to_pet(app: &tauri::AppHandle, status: &str) {
+    let next = match status {
+        "running" => behavior::PetState::Working,
+        "completed" | "failed" => behavior::PetState::Thinking,
+        _ => return,
+    };
+    let state = app.state::<AppState>();
+    // 先落到局部变量：try_lock 的结果里带着借用 state 的 MutexGuard，
+    // 直接写在 if let 条件里会让这个临时值活到函数结尾，晚于 state 释放。
+    let lock_result = state.behavior.try_lock();
+    if let Ok(mut engine) = lock_result {
+        engine.set_state(next);
+    }
+}
+
 #[tauri::command]
 async fn get_system_info(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
     let mut monitor = state.monitor.lock().await;
@@ -3246,9 +4097,272 @@ async fn check_and_send_weather(
 }
 
 #[tauri::command]
-async fn get_chat_history(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
+async fn list_chat_sessions(
+    slot: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<storage::ChatSession>, String> {
     let db = state.db.lock().await;
-    let messages = db.get_recent_messages(50).map_err(|e| e.to_string())?;
+    db.list_chat_sessions(slot.as_deref())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_chat_session(
+    id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<storage::ChatSession>, String> {
+    let db = state.db.lock().await;
+    db.get_chat_session(id.trim()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn create_chat_session(
+    slot: String,
+    agent_id: Option<String>,
+    model: Option<String>,
+    title: Option<String>,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<storage::ChatSession, String> {
+    let slot = slot.trim().to_string();
+    if !matches!(slot.as_str(), "main" | "claude" | "codex" | "dsh") {
+        return Err(format!("不支持的会话槽位：{slot}"));
+    }
+    let requested_agent_id = agent_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let requested_model = model
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default();
+    let requested_title = title
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default();
+
+    let session = {
+        let db = state.db.lock().await;
+        let catalog = collaboration::catalog(db.list_agents().unwrap_or_default());
+        // 只传 slot 时绑定该槽位默认内置角色，保证 agent 窗口开箱可用。
+        let agent = match requested_agent_id {
+            Some(agent_id) => Some(
+                find_agent(&catalog, &agent_id)
+                    .ok_or_else(|| format!("智能体不存在：{agent_id}"))?,
+            ),
+            None => default_agent_id_for_slot(&slot).and_then(|id| find_agent(&catalog, id)),
+        };
+        let mut new = storage::NewChatSession::for_slot(&slot);
+        if let Some(agent) = agent.as_ref() {
+            new = new.with_agent(agent);
+        }
+        new.model = requested_model;
+        new.title = if requested_title.is_empty() {
+            default_session_title(
+                &db,
+                &slot,
+                agent
+                    .as_ref()
+                    .map(|agent| agent.name.as_str())
+                    .unwrap_or(""),
+            )
+        } else {
+            requested_title
+        };
+        db.create_chat_session(new).map_err(|e| e.to_string())?
+    };
+
+    if session.slot == storage::MAIN_CHAT_SLOT {
+        // slot=main 时同时设为活跃主会话。
+        return apply_active_main_session(&app_handle, &session.id).await;
+    }
+    notify_sessions_changed(&app_handle);
+    Ok(session)
+}
+
+#[tauri::command]
+async fn get_chat_session_messages(
+    session_id: String,
+    limit: Option<u32>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<storage::ChatMessage>, String> {
+    let db = state.db.lock().await;
+    db.get_session_messages(session_id.trim(), limit)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn rename_chat_session(
+    id: String,
+    title: String,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<storage::ChatSession, String> {
+    let title = title.trim().to_string();
+    if title.is_empty() {
+        return Err("会话标题不能为空".to_string());
+    }
+    if title.chars().count() > 120 {
+        return Err("会话标题不能超过 120 个字符".to_string());
+    }
+    let session = {
+        let db = state.db.lock().await;
+        db.update_chat_session(id.trim(), Some(&title), None, None, None)
+            .map_err(|e| e.to_string())?
+    };
+    notify_sessions_changed(&app_handle);
+    Ok(session)
+}
+
+#[tauri::command]
+async fn delete_chat_session(
+    id: String,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let id = id.trim().to_string();
+    let previous_active = active_main_session_id(&state);
+    let (active_id, active_session) = {
+        let db = state.db.lock().await;
+        db.delete_chat_session(&id).map_err(|e| e.to_string())?;
+        // 删掉的是活跃主会话（或最后一个主会话）时修正活跃主会话。
+        let active_id = db.ensure_active_main_session().map_err(|e| e.to_string())?;
+        let active_session = db
+            .get_chat_session(&active_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "活跃会话读取失败".to_string())?;
+        (active_id, active_session)
+    };
+    notify_sessions_changed(&app_handle);
+    if active_id != previous_active {
+        set_active_main_session_id(&state, &active_id);
+        notify_active_session_changed(&app_handle, &active_session);
+    }
+    Ok(serde_json::json!({ "active_main_session_id": active_id }))
+}
+
+#[tauri::command]
+async fn set_chat_session_binding(
+    id: String,
+    agent_id: Option<String>,
+    agent_name: Option<String>,
+    agent_avatar: Option<String>,
+    model: Option<String>,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<storage::ChatSession, String> {
+    let id = id.trim().to_string();
+    let requested_agent_id = agent_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let requested_agent_name = agent_name
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let requested_agent_avatar = agent_avatar
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    let session = {
+        let db = state.db.lock().await;
+        let existing = db
+            .get_chat_session(&id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("会话不存在：{id}"))?;
+        let catalog = collaboration::catalog(db.list_agents().unwrap_or_default());
+
+        // agent_id 变化时补全角色名 / 头像，避免前端只传 id 时列表显示为空。
+        let mut next_agent_id = requested_agent_id
+            .clone()
+            .unwrap_or_else(|| existing.agent_id.clone());
+        let resolved = find_agent(&catalog, &next_agent_id);
+        let mut next_agent_name = requested_agent_name.unwrap_or_else(|| {
+            resolved
+                .as_ref()
+                .map(|agent| agent.name.clone())
+                .unwrap_or_else(|| existing.agent_name.clone())
+        });
+        let mut next_agent_avatar = requested_agent_avatar.unwrap_or_else(|| {
+            resolved
+                .as_ref()
+                .map(|agent| agent.avatar.clone())
+                .unwrap_or_else(|| existing.agent_avatar.clone())
+        });
+        if next_agent_id.is_empty() {
+            next_agent_id = default_agent_id_for_slot(&existing.slot)
+                .map(str::to_string)
+                .unwrap_or_default();
+            if let Some(agent) = find_agent(&catalog, &next_agent_id) {
+                next_agent_name = agent.name.clone();
+                next_agent_avatar = agent.avatar.clone();
+            }
+        }
+
+        let mut cli_sessions_cleared: Option<std::collections::HashMap<String, String>> = None;
+        let next_model = model.map(|value| value.trim().to_string());
+        if let Some(next_model) = next_model.as_deref() {
+            if next_model != existing.model {
+                // 模型换了：旧的 CLI 续接 id 不再适用，清空后重新建立上下文。
+                cli_sessions_cleared = Some(std::collections::HashMap::new());
+            }
+        }
+        let binding = (
+            next_agent_id.as_str(),
+            next_agent_name.as_str(),
+            next_agent_avatar.as_str(),
+        );
+        db.update_chat_session(
+            &existing.id,
+            None,
+            Some(binding),
+            next_model.as_deref(),
+            cli_sessions_cleared.as_ref(),
+        )
+        .map_err(|e| e.to_string())?
+    };
+    notify_sessions_changed(&app_handle);
+    Ok(session)
+}
+
+#[tauri::command]
+async fn set_active_chat_session(
+    id: String,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<storage::ChatSession, String> {
+    let _ = &state;
+    apply_active_main_session(&app_handle, id.trim()).await
+}
+
+#[tauri::command]
+async fn get_active_chat_session(
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<storage::ChatSession>, String> {
+    let id = active_main_session_id(&state);
+    let db = state.db.lock().await;
+    if id.is_empty() {
+        let id = db.ensure_active_main_session().map_err(|e| e.to_string())?;
+        set_active_main_session_id(&state, &id);
+        return db.get_chat_session(&id).map_err(|e| e.to_string());
+    }
+    db.get_chat_session(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_chat_history(
+    session_id: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let db = state.db.lock().await;
+    let id = match session_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        Some(id) => id,
+        None => match db.active_main_session_id().map_err(|e| e.to_string())? {
+            Some(id) => id,
+            None => db.ensure_active_main_session().map_err(|e| e.to_string())?,
+        },
+    };
+    let messages = db
+        .get_session_messages(&id, Some(50))
+        .map_err(|e| e.to_string())?;
     Ok(serde_json::json!(messages))
 }
 
@@ -3265,44 +4379,40 @@ async fn get_active_chat(
 
 #[tauri::command]
 async fn clear_chat_history(
+    app_handle: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let saved_memory_id = reset_conversation(&state, false).await?;
-    Ok(serde_json::json!({ "saved_memory_id": saved_memory_id }))
+    let _ = &state;
+    let session = reset_conversation(&app_handle).await?;
+    Ok(serde_json::json!({ "active_main_session_id": session.id }))
 }
 
 #[tauri::command]
 async fn start_new_conversation(
+    app_handle: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
-) -> Result<serde_json::Value, String> {
+) -> Result<storage::ChatSession, String> {
     stop_active_response(&state).await;
 
-    let saved_memory_id = {
+    {
         let db = state.db.lock().await;
-        let saved_memory_id = save_chat_summary_if_needed(&db)?;
-        // 记录当前最大消息 ID 作为新对话起点，旧消息不再进入 AI 上下文
-        let max_id = db.get_max_message_id().unwrap_or(0);
-        if let Ok(mut start_id) = state.chat_start_id.lock() {
-            *start_id = max_id;
-        }
-        // 持久化 chat_start_id 到数据库，确保重启后对话上下文不丢失
-        let _ = db.save_setting("chat_start_id", &max_id.to_string());
-        saved_memory_id
-    };
+        let _ = save_chat_summary_if_needed(&db);
+    }
 
     state.approved_tool_types.lock().await.clear();
 
     {
-        let ai = state.ai.lock().await;
-        ai.reset_session();
-        state.codex.reset_session();
-        state.dsh.reset_session();
+        let mut behavior = state.behavior.lock().await;
+        behavior.set_state(behavior::PetState::Idle);
     }
 
-    let mut behavior = state.behavior.lock().await;
-    behavior.set_state(behavior::PetState::Idle);
-
-    Ok(serde_json::json!({ "saved_memory_id": saved_memory_id }))
+    let session = {
+        let db = state.db.lock().await;
+        let mut new = storage::NewChatSession::for_slot(storage::MAIN_CHAT_SLOT);
+        new.title = default_session_title(&db, storage::MAIN_CHAT_SLOT, "");
+        db.create_chat_session(new).map_err(|e| e.to_string())?
+    };
+    apply_active_main_session(&app_handle, &session.id).await
 }
 
 const MAX_MEMORY_VALUE_BYTES: usize = 64 * 1024;
@@ -3435,13 +4545,19 @@ async fn process_due_scheduled_tasks(app_handle: &tauri::AppHandle) {
         return;
     }
 
+    let session_id = active_main_session_id(&state);
     for task in due_tasks {
         let message = scheduled_task_message(&task);
         {
             let db = state.db.lock().await;
             let next_due = next_due_at_for_repeat(&task.repeat, task.due_at, now);
             let _ = db.reschedule_triggered_task(task.id, next_due, now);
-            let _ = db.save_message("system", &message);
+            if session_id.is_empty() {
+                let _ = db.save_message("system", &message);
+            } else {
+                let _ = db.save_message_in(&session_id, "system", &message);
+                let _ = db.touch_chat_session(&session_id, None, Some(message.as_str()));
+            }
         }
 
         let _ = app_handle.emit(
@@ -3451,7 +4567,9 @@ async fn process_due_scheduled_tasks(app_handle: &tauri::AppHandle) {
                 message: message.clone(),
             },
         );
-        let _ = app_handle.emit(
+        emit_ai_for(
+            app_handle,
+            &session_id,
             "sync-chat-message",
             serde_json::json!({
                 "role": "system",
@@ -3459,6 +4577,7 @@ async fn process_due_scheduled_tasks(app_handle: &tauri::AppHandle) {
             }),
         );
     }
+    notify_sessions_changed(app_handle);
 }
 
 fn start_scheduled_task_runner(app_handle: tauri::AppHandle) {
@@ -3738,20 +4857,40 @@ async fn tick(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, St
 }
 
 #[tauri::command]
-async fn switch_model(state: tauri::State<'_, AppState>) -> Result<(), String> {
+async fn switch_model(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
     stop_active_response(&state).await;
     {
         let db = state.db.lock().await;
-        let _ = save_chat_summary_if_needed(&db)?;
-        db.clear_messages().map_err(|e| e.to_string())?;
+        let session_id = db
+            .active_main_session_id()
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let _ = save_chat_summary_if_needed(&db);
+        // 只清空当前主会话，避免误删其它窗口的会话历史。
+        if session_id.is_empty() {
+            db.clear_messages().map_err(|e| e.to_string())?;
+        } else {
+            db.clear_session_messages(&session_id)
+                .map_err(|e| e.to_string())?;
+            let _ = db.touch_chat_session(&session_id, None, None);
+        }
     }
     state.approved_tool_types.lock().await.clear();
-    let mut ai = state.ai.lock().await;
-    *ai = openclaw::ClaudeAdapter::new();
+    {
+        let mut ai = state.ai.lock().await;
+        *ai = openclaw::ClaudeAdapter::new();
+    }
     state.codex.reset_session();
     state.dsh.reset_session();
     let mut current = state.current_model.lock().await;
     *current = "claude:claude-code".to_string();
+    drop(current);
+    let _ = app_handle.emit("chat-history-cleared", serde_json::json!({}));
+    notify_sessions_changed(&app_handle);
     Ok(())
 }
 
@@ -4931,13 +6070,18 @@ pub fn run() {
 
     let direct_config = Some(active_api_profile(&db));
 
-    // 从数据库读取 chat_start_id，确保重启后对话上下文不丢失
+    // 从数据库读取 chat_start_id（兼容字段，多会话后新逻辑不再读它）
     let chat_start_id = db
         .get_setting("chat_start_id")
         .ok()
         .flatten()
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(0);
+
+    // 多会话迁移：确保存在主会话，并把活跃主会话载入内存（Database::new 已迁移）。
+    let active_main_session = db
+        .ensure_active_main_session()
+        .expect("failed to ensure the active chat session");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -5003,6 +6147,8 @@ pub fn run() {
                 approved_tool_types: tokio::sync::Mutex::new(std::collections::HashSet::new()),
                 abort_token: tokio::sync::Mutex::new(None),
                 chat_start_id: StdMutex::new(chat_start_id),
+                active_main_session_id: StdMutex::new(active_main_session),
+                current_turn_session: StdRwLock::new(String::new()),
                 http_client,
                 weather_cache: tokio::sync::Mutex::new(None),
                 last_active_skill_id: tokio::sync::Mutex::new(None),
@@ -5062,6 +6208,15 @@ pub fn run() {
             get_active_chat,
             clear_chat_history,
             start_new_conversation,
+            list_chat_sessions,
+            get_chat_session,
+            create_chat_session,
+            get_chat_session_messages,
+            rename_chat_session,
+            delete_chat_session,
+            set_chat_session_binding,
+            set_active_chat_session,
+            get_active_chat_session,
             save_memory,
             get_memories,
             delete_memory,

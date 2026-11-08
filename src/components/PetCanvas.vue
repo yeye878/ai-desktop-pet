@@ -288,6 +288,14 @@ function checkStateParticles() {
   if (pet.state === "hungry" && frameCount % 15 === 0) {
     spawnParticles("drop", 1, pet.position.x + 10, pet.position.y + 10);
   }
+  // 收音中持续飘音符
+  if (pet.state === "listening" && frameCount % 22 === 0) {
+    spawnParticles("note", 1, pet.position.x + 26, pet.position.y - 30);
+  }
+  // 困惑时持续冒问号
+  if (pet.state === "confused" && frameCount % 34 === 0) {
+    spawnParticles("question", 1, pet.position.x + (Math.random() - 0.5) * 30, pet.position.y - 38);
+  }
 }
 
 // 定时从后端同步状态
@@ -415,6 +423,154 @@ function drawDaimaoVideo(
   return true;
 }
 
+/**
+ * 角色无关的状态叠加层。
+ *
+ * 呆猫八条和像素工坊用的是自己的贴图/精灵图，没有逐状态的五官细节，
+ * 之前在它们身上切换状态等于"看不出来"。这里统一补一层通用语义符号，
+ * 让 13 态在任何角色下都能被认出来。
+ */
+function drawCharacterStateOverlay(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  state: PetState,
+  frame: number,
+  theme: Theme,
+) {
+  ctx.save();
+  ctx.textAlign = "center";
+  ctx.lineCap = "round";
+
+  if (state === "sleeping") {
+    const zOff = Math.sin(frame * 0.05) * 4;
+    const zAlpha = 0.6 + Math.sin(frame * 0.07) * 0.25;
+    ctx.fillStyle = hexToRgba("#6366f1", zAlpha);
+    ctx.font = "bold 15px sans-serif";
+    ctx.fillText("Z", cx + 30, cy - 26 + zOff);
+    ctx.font = "bold 11px sans-serif";
+    ctx.fillText("z", cx + 40, cy - 36 + zOff * 0.8);
+    ctx.font = "bold 8px sans-serif";
+    ctx.fillText("z", cx + 47, cy - 44 + zOff * 0.5);
+  }
+
+  if (state === "thinking") {
+    const bob = Math.sin(frame * 0.08) * 2;
+    ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+    ctx.strokeStyle = "#94a3b8";
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.arc(cx + 26, cy - 34 + bob, 3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.ellipse(cx + 38, cy - 48 + bob, 12, 9, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  if (state === "speaking") {
+    const pulse = 1 + Math.sin(frame * 0.25) * 0.15;
+    ctx.fillStyle = hexToRgba(theme.accent, 0.9);
+    ctx.beginPath();
+    ctx.arc(cx + 30, cy - 8, 4 * pulse, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = hexToRgba(theme.accent, 0.55);
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.arc(cx + 30, cy - 8, 8 * pulse, -0.5 * Math.PI, 0.5 * Math.PI);
+    ctx.stroke();
+  }
+
+  if (state === "listening") {
+    const wavePhase = (frame % 45) / 45;
+    ctx.strokeStyle = hexToRgba(theme.accent, 0.75 * (1 - wavePhase));
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 3; i++) {
+      const radius = 8 + wavePhase * 15 + i * 7;
+      ctx.beginPath();
+      ctx.arc(cx + 38, cy - 12, radius, -0.55 * Math.PI, 0.55 * Math.PI);
+      ctx.stroke();
+    }
+    ctx.fillStyle = hexToRgba(theme.accent, 0.9);
+    const noteBob = Math.sin(frame * 0.09) * 3;
+    ctx.font = "bold 12px sans-serif";
+    ctx.fillText("♪", cx - 34, cy - 30 + noteBob);
+    ctx.font = "bold 9px sans-serif";
+    ctx.fillText("♫", cx - 44, cy - 18 - noteBob);
+  }
+
+  if (state === "confused") {
+    const qScale = 1 + Math.sin(frame * 0.1) * 0.12;
+    ctx.save();
+    ctx.translate(cx + 32, cy - 40);
+    ctx.scale(qScale, qScale);
+    ctx.fillStyle = "#f59e0b";
+    ctx.font = "bold 22px sans-serif";
+    ctx.fillText("?", 0, 0);
+    ctx.restore();
+  }
+
+  if (state === "working") {
+    if (frame % 16 < 8) {
+      ctx.fillStyle = hexToRgba(theme.accent, 0.85);
+      ctx.beginPath();
+      ctx.arc(cx - 26 + (frame % 3) * 14, cy + 6, 1.8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  if (state === "happy" || state === "waving") {
+    const heartBob = Math.sin(frame * 0.12) * 3;
+    ctx.fillStyle = "#fb7185";
+    ctx.font = "bold 13px sans-serif";
+    ctx.fillText("♥", cx - 34, cy - 32 + heartBob);
+    if (state === "waving") {
+      ctx.fillText("♥", cx + 34, cy - 24 - heartBob);
+    }
+  }
+
+  if (state === "hungry") {
+    ctx.fillStyle = "#f97316";
+    ctx.font = "bold 13px sans-serif";
+    ctx.fillText("…", cx + 32, cy - 34);
+  }
+
+  if (state === "stuffed") {
+    ctx.fillStyle = "#22c55e";
+    ctx.font = "bold 13px sans-serif";
+    ctx.fillText("♥", cx + 32, cy - 34);
+  }
+
+  if (state === "refusing") {
+    const crossBob = Math.sin(frame * 0.2) * 2;
+    ctx.strokeStyle = "#ef4444";
+    ctx.lineWidth = 2.4;
+    ctx.beginPath();
+    ctx.moveTo(cx + 28, cy - 44 + crossBob);
+    ctx.lineTo(cx + 38, cy - 34 + crossBob);
+    ctx.moveTo(cx + 38, cy - 44 + crossBob);
+    ctx.lineTo(cx + 28, cy - 34 + crossBob);
+    ctx.stroke();
+  }
+
+  if (state === "dragging") {
+    ctx.strokeStyle = "rgba(100, 116, 139, 0.8)";
+    ctx.lineWidth = 1.6;
+    const lines = [-18, 0, 18];
+    for (let i = 0; i < lines.length; i++) {
+      const lx = cx + lines[i];
+      const off = ((frame * 1.6 + i * 9) % 18) - 9;
+      ctx.beginPath();
+      ctx.moveTo(lx, cy - 68 + off);
+      ctx.lineTo(lx, cy - 60 + off);
+      ctx.stroke();
+    }
+  }
+
+  ctx.restore();
+}
+
 function drawDaimaoPet(ctx: CanvasRenderingContext2D) {
   ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
   const media = pickDaimaoMedia();
@@ -429,10 +585,21 @@ function drawDaimaoPet(ctx: CanvasRenderingContext2D) {
   ctx.ellipse(ctx.canvas.width / 2, ctx.canvas.height - 12, 36, 5.5, 0, 0, Math.PI * 2);
   ctx.fill();
 
+  // 呆猫八条是整张贴图，用整体位移表达"被拎起来"的手感
+  const dragging = pet.state === "dragging";
+  ctx.save();
+  if (dragging) {
+    ctx.translate(Math.sin(frameCount * 0.5) * 2.5, -Math.abs(Math.sin(frameCount * 0.35)) * 6);
+  }
+
   if (media?.type === "video") {
     const video = ensureDaimaoVideo();
     if (video.paused) void video.play().catch(() => {});
-    if (drawDaimaoVideo(ctx, video, drawX, drawY, drawW, drawH)) return;
+    if (drawDaimaoVideo(ctx, video, drawX, drawY, drawW, drawH)) {
+      ctx.restore();
+      drawCharacterStateOverlay(ctx, ctx.canvas.width / 2, drawY, pet.state, frameCount, pet.visualTheme);
+      return;
+    }
   }
 
   const fallbackImage =
@@ -440,6 +607,9 @@ function drawDaimaoPet(ctx: CanvasRenderingContext2D) {
   if (fallbackImage?.complete) {
     ctx.drawImage(fallbackImage, drawX, drawY, drawW, drawH);
   }
+  ctx.restore();
+
+  drawCharacterStateOverlay(ctx, ctx.canvas.width / 2, drawY, pet.state, frameCount, pet.visualTheme);
 }
 
 function activeCharacter() {
@@ -532,6 +702,7 @@ function drawCustomPixelPet(ctx: CanvasRenderingContext2D) {
 
   if (!manifest || !customSpriteImage || customSpriteFailed || !customSpriteReady) {
     drawCustomPixelFallback(ctx);
+    drawCharacterStateOverlay(ctx, ctx.canvas.width / 2, 30, pet.state, frameCount, pet.visualTheme);
     if (!props.preview && (!asset || !manifest || customSpriteFailed)) {
       pet.character = "classic";
     }
@@ -566,8 +737,12 @@ function drawCustomPixelPet(ctx: CanvasRenderingContext2D) {
   if (pet.state === "refusing") {
     ctx.translate(Math.sin(frameCount * 1.5) * 4, 0);
   }
+  if (pet.state === "dragging") {
+    ctx.translate(Math.sin(frameCount * 0.5) * 2.5, -Math.abs(Math.sin(frameCount * 0.35)) * 5);
+  }
   ctx.drawImage(customSpriteImage, sx, sy, frameW, frameH, drawX, drawY, drawW, drawH);
   ctx.restore();
+  drawCharacterStateOverlay(ctx, ctx.canvas.width / 2, drawY, pet.state, frameCount, pet.visualTheme);
   finishFrame(ctx);
 }
 
@@ -948,6 +1123,39 @@ function drawBongoFace(
     ctx.beginPath();
     ctx.arc(rightEyeX, eyeY + 2, 4.6, 1.15 * Math.PI, 1.85 * Math.PI);
     ctx.stroke();
+  } else if (state === "listening") {
+    // 收音中：睁大的圆眼 + 双高光，像在认真捕捉声音
+    ctx.fillStyle = "#1e293b";
+    ctx.beginPath();
+    ctx.ellipse(leftEyeX, eyeY, 5.4, 6.6, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(rightEyeX, eyeY, 5.4, 6.6, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#ffffff";
+    ctx.beginPath();
+    ctx.arc(leftEyeX + 1.7, eyeY - 2.4, 2.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(rightEyeX + 1.7, eyeY - 2.4, 2.2, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (state === "confused") {
+    // 困惑：左眼大、右眼小，视线左右飘忽
+    const wobble = Math.sin(frame * 0.08) * 0.6;
+    ctx.fillStyle = "#1e293b";
+    ctx.beginPath();
+    ctx.ellipse(leftEyeX + wobble, eyeY, 5.0, 6.0, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(rightEyeX - wobble, eyeY + 1.2, 3.2, 3.8, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#ffffff";
+    ctx.beginPath();
+    ctx.arc(leftEyeX + wobble + 1.5, eyeY - 2.2, 1.8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(rightEyeX - wobble + 1.0, eyeY - 1.0, 1.1, 0, Math.PI * 2);
+    ctx.fill();
   } else if (isBlink) {
     // 自然眨眼线
     ctx.strokeStyle = "#334155";
@@ -1019,6 +1227,18 @@ function drawBongoFace(
     ctx.beginPath();
     ctx.arc(cx, mouthY + 3.2, 2.2, 0.1 * Math.PI, 0.9 * Math.PI);
     ctx.fill();
+  } else if (state === "confused") {
+    // 困惑：小波浪嘴，像在"嗯？"
+    ctx.beginPath();
+    ctx.moveTo(cx - 5.5, mouthY + 2.0);
+    ctx.quadraticCurveTo(cx - 2.6, mouthY + 0.2, cx, mouthY + 2.0);
+    ctx.quadraticCurveTo(cx + 2.6, mouthY + 3.8, cx + 5.5, mouthY + 2.0);
+    ctx.stroke();
+  } else if (state === "listening") {
+    // 收音中：微微张开的小圆嘴
+    ctx.beginPath();
+    ctx.arc(cx, mouthY + 1.5, 2.1, 0, Math.PI * 2);
+    ctx.stroke();
   } else {
     // 标志性 :3 傲娇猫唇
     ctx.beginPath();
@@ -1403,6 +1623,67 @@ function drawBongoStateEffects(
     }
   }
 
+  // 收音中：头侧扩散的声波弧线 + 漂浮音符
+  if (state === "listening") {
+    const wavePhase = (frame % 45) / 45;
+    ctx.strokeStyle = hexToRgba(theme.accent, 0.75 * (1 - wavePhase));
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 3; i++) {
+      const radius = 9 + wavePhase * 16 + i * 7;
+      ctx.beginPath();
+      ctx.arc(cx + 30, cy - bh * 0.18, radius, -0.55 * Math.PI, 0.55 * Math.PI);
+      ctx.stroke();
+    }
+
+    ctx.fillStyle = hexToRgba(theme.accent, 0.9);
+    const noteBob = Math.sin(frame * 0.09) * 3;
+    ctx.font = "bold 12px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("♪", cx - 28, cy - 22 + noteBob);
+    ctx.font = "bold 9px sans-serif";
+    ctx.fillText("♫", cx - 38, cy - 10 - noteBob);
+  }
+
+  // 困惑：头顶大问号，随呼吸缩放
+  if (state === "confused") {
+    const qScale = 1 + Math.sin(frame * 0.1) * 0.12;
+    ctx.save();
+    ctx.translate(cx + 24, cy - bh * 0.5);
+    ctx.scale(qScale, qScale);
+    ctx.fillStyle = "#f59e0b";
+    ctx.font = "bold 20px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("?", 0, 0);
+    ctx.restore();
+  }
+
+  // 被拖拽：上下运动线 + 惊讶汗滴
+  if (state === "dragging") {
+    ctx.strokeStyle = "rgba(100, 116, 139, 0.8)";
+    ctx.lineWidth = 1.6;
+    const lines = [-20, 0, 20];
+    for (let i = 0; i < lines.length; i++) {
+      const lx = cx + lines[i];
+      const off = ((frame * 1.6 + i * 9) % 18) - 9;
+      ctx.beginPath();
+      ctx.moveTo(lx, cy - bh * 0.62 + off);
+      ctx.lineTo(lx, cy - bh * 0.62 + off + 8);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(lx, cy + bh * 0.52 + off);
+      ctx.lineTo(lx, cy + bh * 0.52 + off + 8);
+      ctx.stroke();
+    }
+
+    const sweatY = cy - bh * 0.28 + ((frame * 0.7) % 14);
+    ctx.fillStyle = "rgba(96, 165, 250, 0.9)";
+    ctx.beginPath();
+    ctx.moveTo(cx + 34, sweatY - 4);
+    ctx.quadraticCurveTo(cx + 38, sweatY + 2, cx + 34, sweatY + 4);
+    ctx.quadraticCurveTo(cx + 30, sweatY + 2, cx + 34, sweatY - 4);
+    ctx.fill();
+  }
+
   ctx.restore();
 }
 
@@ -1447,6 +1728,24 @@ function pointerToCanvas(e: MouseEvent) {
   const rect = canvas.getBoundingClientRect();
   const s = displayScale.value;
   return { x: (e.clientX - rect.left) / s, y: (e.clientY - rect.top) / s };
+}
+
+/**
+ * 桌宠窗口改状态必须"本地 store + 后端行为状态机"一起写。
+ *
+ * 本地 store 只影响本窗口这一帧：每秒 tick 都会用后端状态覆盖回来，
+ * 只改 store 的话状态活不过一秒。
+ */
+function syncPetState(state: PetState) {
+  pet.setState(state);
+  void Promise.resolve(invoke("set_pet_state", { newState: state })).catch(() => {});
+}
+
+/**
+ * 拖拽桌宠时切到 dragging，松手回 idle（set_pet_state 只接受状态名，不能"恢复上一次状态"）。
+ */
+function setDraggingState(dragging: boolean) {
+  syncPetState(dragging ? "dragging" : "idle");
 }
 
 function isPetHit(e: MouseEvent) {
@@ -1496,6 +1795,8 @@ function onMouseMove(e: MouseEvent) {
   const dy = e.screenY - mouseDownScreen.y;
   if (!dragStarted && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) {
     dragStarted = true;
+    // 真正拖动起来才切 dragging，避免"按下没动"也被当成拖拽
+    setDraggingState(true);
   }
   if (dragStarted) {
     getCurrentWindow().setPosition(
@@ -1523,6 +1824,8 @@ function onMouseUp(e: MouseEvent) {
   if (!dragFromCanvas || e.button !== 0) return;
   dragFromCanvas = false;
   emit("dragging", false);
+  if (dragStarted) setDraggingState(false);
+  dragStarted = false;
   if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
   squashAmt = 1;
   if (!dragStarted) {
@@ -1562,11 +1865,9 @@ async function resetPosition() {
 async function eatFiles(paths: string[]) {
   try {
     await invoke("eat_files", { paths });
-    pet.setState("stuffed");
-    invoke("set_pet_state", { newState: "stuffed" });
+    syncPetState("stuffed");
   } catch (err) {
-    pet.setState("refusing");
-    invoke("set_pet_state", { newState: "refusing" });
+    syncPetState("refusing");
   }
 }
 
@@ -1620,13 +1921,11 @@ onMounted(async () => {
       // .lnk 文件由 ChatBubble 处理注册，不“吃”
       const hasLnk = e.payload.paths.some((p: string) => p.toLowerCase().endsWith(".lnk"));
       if (hasLnk) return;
-      pet.setState("hungry");
-      invoke("set_pet_state", { newState: "hungry" });
+      syncPetState("hungry");
     } else if (e.payload.type === "over") {
       // over 事件不携带 paths，保持当前状态
     } else if (e.payload.type === "leave") {
-      pet.setState("idle");
-      invoke("set_pet_state", { newState: "idle" });
+      syncPetState("idle");
     } else if (e.payload.type === "drop") {
       const paths = e.payload.paths;
       // .lnk 文件由 ChatBubble 处理注册，不“吃”
@@ -1642,6 +1941,8 @@ onUnmounted(() => {
   window.removeEventListener("mouseup", onMouseUp);
   if (unlistenDragDrop) unlistenDragDrop();
   emit("dragging", false);
+  // 组件销毁时若还停在 dragging，后端状态机会一直等到 60 秒兜底才回 idle
+  if (dragStarted) setDraggingState(false);
   if (tickTimer) clearInterval(tickTimer);
 });
 </script>

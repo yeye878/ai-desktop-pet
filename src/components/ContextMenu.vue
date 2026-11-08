@@ -23,11 +23,10 @@ async function action(name: string) {
       await invoke("set_pet_state", { newState: "waving" });
       break;
     case "new-chat":
+      // 新建主会话并设为活跃；返回的 ChatSession 由 sessions store / chat-session-changed 事件同步，
+      // 浮动聊天窗会自己刷新历史，这里只重置回合状态。
       await invoke("start_new_conversation");
       chat.isLoading = false;
-      if (chat.messages.length > 0) {
-        chat.addSystemMessage("新对话");
-      }
       break;
     case "clear":
       await invoke("clear_chat_history");

@@ -119,7 +119,7 @@ pub async fn confirm_with_ui(
                 active.thinking.push_str(&waiting);
             }
         }
-        let _ = app.emit("ai-thinking", &waiting);
+        crate::emit_ai(app, "ai-thinking", &waiting);
     }
     let _ = app.emit("ai-tool-confirm", payload);
 

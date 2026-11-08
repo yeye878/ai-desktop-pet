@@ -71,6 +71,39 @@ type MockWeatherConfig = {
   location: string;
   api_url: string;
 };
+type MockChatSlot = "main" | "claude" | "codex" | "dsh";
+type MockChatSession = {
+  id: string;
+  title: string;
+  kind: "main" | "agent";
+  slot: MockChatSlot;
+  agent_id: string;
+  agent_name: string;
+  agent_avatar: string;
+  model: string;
+  created_at: number;
+  updated_at: number;
+};
+type MockChatMessage = {
+  id: number;
+  session_id: string;
+  role: "user" | "assistant";
+  content: string;
+  thinking?: string | null;
+  created_at: number;
+  quoted_role?: string | null;
+  quoted_content?: string | null;
+  agent_id?: string | null;
+  agent_name?: string | null;
+  agent_avatar?: string | null;
+};
+type MockActiveChat = {
+  message: string;
+  thinking: string;
+  started_at: number;
+  session_id: string;
+};
+type MockAgentIdentity = { id: string; name: string; avatar: string };
 
 const settingStore = new Map<string, string>([
   ["voice_settings", JSON.stringify(DEFAULT_VOICE_SETTINGS)],
@@ -322,6 +355,265 @@ function mockWeatherInfo(location = weatherConfig.location) {
 
 const mockPetState = { state: "idle", happiness: 0.2, energy: 64 };
 
+// === 多会话 / 三个 agent 窗口的内存版数据（浏览器、无 Tauri 环境用） ===
+const MOCK_AGENT_SLOTS: Array<Exclude<MockChatSlot, "main">> = ["claude", "codex", "dsh"];
+let mockChatSessions: MockChatSession[] = [];
+let mockChatMessages: MockChatMessage[] = [];
+let mockActiveMainSessionId = "";
+let nextChatSessionId = 1;
+let nextChatMessageId = 1;
+let mockChatSeeded = false;
+const mockActiveChats = new Map<string, MockActiveChat>();
+const mockChatTimers: Array<ReturnType<typeof setTimeout>> = [];
+
+function nowSeconds() {
+  return Math.floor(Date.now() / 1000);
+}
+
+function normalizeMockSlot(value: unknown): MockChatSlot {
+  const slot = String(value || "main").trim();
+  return slot === "claude" || slot === "codex" || slot === "dsh" ? slot : "main";
+}
+
+function mockSlotAgent(slot: Exclude<MockChatSlot, "main">): MockAgentIdentity {
+  const agent = mockAgents.find((item) => item.id === `builtin-${slot}`);
+  return { id: agent?.id || `builtin-${slot}`, name: agent?.name || slot, avatar: agent?.avatar || "⌘" };
+}
+
+function findMockChatSession(id: string) {
+  return mockChatSessions.find((session) => session.id === id);
+}
+
+function mockSessionOrder(id: string) {
+  const match = /(\d+)$/.exec(id);
+  return match ? Number(match[1]) : 0;
+}
+
+function publicMockChatSession(session: MockChatSession) {
+  const messages = mockChatMessages.filter((message) => message.session_id === session.id);
+  const last = messages[messages.length - 1];
+  return {
+    ...session,
+    message_count: messages.length,
+    preview: (last?.content || "").replace(/\s+/g, " ").trim().slice(0, 60),
+  };
+}
+
+function sortedMockChatSessions() {
+  return mockChatSessions
+    .map(publicMockChatSession)
+    .sort((left, right) => (right.updated_at - left.updated_at) || (mockSessionOrder(right.id) - mockSessionOrder(left.id)));
+}
+
+function nextMockConversationTitle() {
+  const count = mockChatSessions.filter((session) => session.slot === "main").length;
+  return count === 0 ? "默认对话" : `新对话 ${count}`;
+}
+
+function createMockChatSession(options: {
+  slot: MockChatSlot;
+  title?: string;
+  agentId?: string;
+  model?: string;
+  createdAt?: number;
+  updatedAt?: number;
+}): MockChatSession {
+  const isMain = options.slot === "main";
+  const fallbackAgent = isMain ? null : mockSlotAgent(options.slot as Exclude<MockChatSlot, "main">);
+  const agentId = options.agentId || fallbackAgent?.id || "";
+  const boundAgent = mockAgents.find((agent) => agent.id === agentId);
+  const createdAt = options.createdAt ?? nowSeconds();
+  const session: MockChatSession = {
+    id: `mock-session-${nextChatSessionId++}`,
+    title: options.title || (isMain ? "新对话" : `${boundAgent?.name || fallbackAgent?.name || options.slot} 对话`),
+    kind: isMain ? "main" : "agent",
+    slot: options.slot,
+    agent_id: isMain ? "" : agentId,
+    agent_name: isMain ? "" : (boundAgent?.name || fallbackAgent?.name || ""),
+    agent_avatar: isMain ? "" : (boundAgent?.avatar || fallbackAgent?.avatar || ""),
+    model: options.model || "",
+    created_at: createdAt,
+    updated_at: options.updatedAt ?? createdAt,
+  };
+  mockChatSessions.push(session);
+  return session;
+}
+
+function appendMockChatMessage(
+  sessionId: string,
+  role: MockChatMessage["role"],
+  content: string,
+  extra: Partial<MockChatMessage> = {},
+) {
+  const message: MockChatMessage = {
+    id: nextChatMessageId++,
+    session_id: sessionId,
+    role,
+    content,
+    created_at: nowSeconds(),
+    ...extra,
+  };
+  mockChatMessages.push(message);
+  return message;
+}
+
+function touchMockChatSession(session: MockChatSession) {
+  session.updated_at = nowSeconds();
+}
+
+function createDefaultMockMainSession(): MockChatSession {
+  const session = createMockChatSession({ slot: "main", title: "默认对话" });
+  mockActiveMainSessionId = session.id;
+  return session;
+}
+
+function resolveMockActiveMainSession(): MockChatSession {
+  seedMockChatState();
+  const active = findMockChatSession(mockActiveMainSessionId);
+  if (active && active.slot === "main") return active;
+  const newest = sortedMockChatSessions().find((session) => session.slot === "main");
+  if (newest) {
+    mockActiveMainSessionId = newest.id;
+    return findMockChatSession(newest.id) as MockChatSession;
+  }
+  return createDefaultMockMainSession();
+}
+
+function emitMockActiveSession(session: MockChatSession) {
+  void emit("chat-session-changed", { session: publicMockChatSession(session) });
+}
+
+function emitMockSessionsChanged() {
+  void emit("chat-sessions-changed", {});
+}
+
+/** 预览夹具事件统一补 session_id，保证和真实后端的事件形状一致。 */
+function emitMockPreviewEvent(event: string, payload: unknown) {
+  if (event.startsWith("ai-") || event === "sync-chat-message") {
+    const sessionId = resolveMockActiveMainSession().id;
+    if (payload && typeof payload === "object") {
+      void emit(event, { session_id: sessionId, ...(payload as Record<string, unknown>) });
+    } else {
+      void emit(event, { session_id: sessionId, text: payload });
+    }
+    return;
+  }
+  void emit(event, payload);
+}
+
+function seedMockChatState() {
+  if (mockChatSeeded) return;
+  mockChatSeeded = true;
+  const now = nowSeconds();
+  const main = createMockChatSession({ slot: "main", title: "默认对话", createdAt: now - 7200, updatedAt: now - 60 });
+  mockActiveMainSessionId = main.id;
+  appendMockChatMessage(
+    main.id,
+    "assistant",
+    "预览模式已就绪：主对话和 claude / codex / dsh 三个窗口各自保存独立的会话与历史。",
+    { created_at: now - 60 },
+  );
+  MOCK_AGENT_SLOTS.forEach((slot, index) => {
+    const agent = mockSlotAgent(slot);
+    const session = createMockChatSession({
+      slot,
+      title: `${agent.name} 对话`,
+      agentId: agent.id,
+      createdAt: now - 3600 + index,
+      updatedAt: now - 180 + index,
+    });
+    appendMockChatMessage(session.id, "assistant", `这里是 ${agent.name} 独立窗口的预览会话，可以继续提问。`, {
+      created_at: now - 180 + index,
+      agent_id: agent.id,
+      agent_name: agent.name,
+      agent_avatar: agent.avatar,
+    });
+  });
+}
+
+function resetMockChatState() {
+  mockChatTimers.splice(0).forEach((timer) => clearTimeout(timer));
+  mockActiveChats.clear();
+  mockChatSessions = [];
+  mockChatMessages = [];
+  mockActiveMainSessionId = "";
+  nextChatSessionId = 1;
+  nextChatMessageId = 1;
+  // 清空后只重建默认主会话，与后端 clear_chat_history 的行为一致。
+  mockChatSeeded = true;
+  createDefaultMockMainSession();
+}
+
+function scheduleMockChatTurn(
+  session: MockChatSession,
+  active: MockActiveChat,
+  reply: string,
+  agent: MockAgentIdentity | null,
+) {
+  const sessionId = session.id;
+  const stillActive = () => mockActiveChats.get(sessionId) === active && Boolean(findMockChatSession(sessionId));
+  const later = (delay: number, action: () => void) => {
+    mockChatTimers.push(setTimeout(action, delay));
+  };
+
+  later(420, () => {
+    if (!stillActive()) return;
+    const text = "正在检索当前会话的上下文……";
+    active.thinking += text;
+    void emit("ai-thinking", { session_id: sessionId, text });
+  });
+
+  if (agent) {
+    later(760, () => {
+      if (!stillActive()) return;
+      void emit("ai-tool-event", {
+        id: `mock-tool-${Date.now().toString(36)}`,
+        tool_name: "run_command",
+        status: "completed",
+        summary: "预览模式：模拟一次工具调用",
+        arguments: JSON.stringify({ command: "echo preview-session" }),
+        command: "echo preview-session",
+        output: "preview",
+        exit_code: 0,
+        duration_ms: 32,
+        session_id: sessionId,
+      });
+    });
+  }
+
+  const splitAt = Math.ceil(reply.length * 0.55);
+  later(1000, () => {
+    if (!stillActive()) return;
+    void emit("ai-answer-delta", { session_id: sessionId, text: reply.slice(0, splitAt) });
+  });
+
+  later(1450, () => {
+    if (!stillActive()) return;
+    void emit("ai-answer-delta", { session_id: sessionId, text: reply.slice(splitAt) });
+  });
+
+  later(1900, () => {
+    if (!stillActive()) return;
+    mockActiveChats.delete(sessionId);
+    appendMockChatMessage(sessionId, "assistant", reply, {
+      thinking: active.thinking || null,
+      agent_id: agent?.id ?? null,
+      agent_name: agent?.name ?? null,
+      agent_avatar: agent?.avatar ?? null,
+    });
+    touchMockChatSession(session);
+    void emit("ai-finished", {
+      text: reply,
+      thinking: active.thinking || null,
+      session_id: sessionId,
+      agent_id: agent?.id ?? null,
+      agent_name: agent?.name ?? null,
+      agent_avatar: agent?.avatar ?? null,
+    });
+    emitMockSessionsChanged();
+  });
+}
+
 function handleMockCommand(cmd: string, args: MockPayload) {
   if (cmd.startsWith("plugin:")) {
     if (cmd === "plugin:window|get_all_windows") return ["main"];
@@ -342,10 +634,171 @@ function handleMockCommand(cmd: string, args: MockPayload) {
       if (mockPetState.state === "happy") mockPetState.happiness = Math.min(1, mockPetState.happiness + 0.2);
       if (mockPetState.state === "sleeping") mockPetState.energy = Math.min(100, mockPetState.energy + 15);
       return null;
-    case "get_chat_history":
-      return [];
-    case "get_active_chat":
-      return null;
+    case "list_chat_sessions": {
+      seedMockChatState();
+      const slotFilter = readArg(args, "slot", "slot", "").trim();
+      return sortedMockChatSessions().filter((session) => !slotFilter || session.slot === slotFilter);
+    }
+    case "get_chat_session": {
+      seedMockChatState();
+      const id = readArg(args, "id", "id");
+      const session = findMockChatSession(id);
+      return session ? publicMockChatSession(session) : null;
+    }
+    case "create_chat_session": {
+      seedMockChatState();
+      const slot = normalizeMockSlot(args?.slot);
+      const session = createMockChatSession({
+        slot,
+        title: readArg(args, "title", "title", "").trim() || (slot === "main" ? nextMockConversationTitle() : undefined),
+        agentId: readArg(args, "agentId", "agent_id", "").trim() || undefined,
+        model: readArg(args, "model", "model", "").trim(),
+      });
+      if (slot === "main") {
+        mockActiveMainSessionId = session.id;
+        emitMockActiveSession(session);
+      }
+      emitMockSessionsChanged();
+      return publicMockChatSession(session);
+    }
+    case "get_chat_session_messages": {
+      seedMockChatState();
+      const sessionId = readArg(args, "sessionId", "session_id", "") || resolveMockActiveMainSession().id;
+      const requestedLimit = Number(args?.limit);
+      const limit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? requestedLimit : 500;
+      const messages = mockChatMessages.filter((message) => message.session_id === sessionId);
+      const selected = messages.length > limit ? messages.slice(-limit) : messages;
+      return selected.map((message) => ({ ...message }));
+    }
+    case "rename_chat_session": {
+      seedMockChatState();
+      const session = findMockChatSession(readArg(args, "id", "id"));
+      if (!session) throw new Error("会话不存在");
+      const title = readArg(args, "title", "title").trim();
+      if (!title) throw new Error("会话标题不能为空");
+      session.title = title;
+      touchMockChatSession(session);
+      emitMockSessionsChanged();
+      return publicMockChatSession(session);
+    }
+    case "delete_chat_session": {
+      seedMockChatState();
+      const id = readArg(args, "id", "id");
+      const session = findMockChatSession(id);
+      if (!session) throw new Error("会话不存在");
+      mockChatSessions = mockChatSessions.filter((item) => item.id !== id);
+      mockChatMessages = mockChatMessages.filter((message) => message.session_id !== id);
+      mockActiveChats.delete(id);
+      let activeChanged = false;
+      if (mockActiveMainSessionId === id) {
+        const newest = sortedMockChatSessions().find((item) => item.slot === "main");
+        if (newest) mockActiveMainSessionId = newest.id;
+        else createDefaultMockMainSession();
+        activeChanged = true;
+      }
+      emitMockSessionsChanged();
+      if (activeChanged) {
+        const activeSession = findMockChatSession(mockActiveMainSessionId);
+        if (activeSession) emitMockActiveSession(activeSession);
+      }
+      return { active_main_session_id: mockActiveMainSessionId };
+    }
+    case "set_chat_session_binding": {
+      seedMockChatState();
+      const session = findMockChatSession(readArg(args, "id", "id"));
+      if (!session) throw new Error("会话不存在");
+      const agentId = args?.agentId ?? args?.agent_id;
+      const agentName = args?.agentName ?? args?.agent_name;
+      const agentAvatar = args?.agentAvatar ?? args?.agent_avatar;
+      const model = args?.model;
+      if (agentId !== undefined) session.agent_id = String(agentId);
+      if (agentName !== undefined) session.agent_name = String(agentName);
+      if (agentAvatar !== undefined) session.agent_avatar = String(agentAvatar);
+      if (model !== undefined) session.model = String(model);
+      touchMockChatSession(session);
+      emitMockSessionsChanged();
+      return publicMockChatSession(session);
+    }
+    case "set_active_chat_session": {
+      seedMockChatState();
+      const session = findMockChatSession(readArg(args, "id", "id"));
+      if (!session) throw new Error("会话不存在");
+      if (session.slot !== "main") throw new Error("只有主对话会话可以设为活跃会话");
+      mockActiveMainSessionId = session.id;
+      touchMockChatSession(session);
+      emitMockActiveSession(session);
+      emitMockSessionsChanged();
+      return publicMockChatSession(session);
+    }
+    case "get_active_chat_session":
+      return publicMockChatSession(resolveMockActiveMainSession());
+    case "start_new_conversation": {
+      seedMockChatState();
+      const session = createMockChatSession({ slot: "main", title: nextMockConversationTitle() });
+      mockActiveMainSessionId = session.id;
+      emitMockActiveSession(session);
+      emitMockSessionsChanged();
+      return publicMockChatSession(session);
+    }
+    case "get_chat_history": {
+      seedMockChatState();
+      const requested = readArg(args, "sessionId", "session_id", "");
+      const session = requested ? findMockChatSession(requested) : undefined;
+      const sessionId = session?.id || resolveMockActiveMainSession().id;
+      const requestedLimit = Number(args?.limit);
+      const limit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? requestedLimit : 50;
+      const messages = mockChatMessages.filter((message) => message.session_id === sessionId);
+      const selected = messages.length > limit ? messages.slice(-limit) : messages;
+      return selected.map((message) => ({ ...message }));
+    }
+    case "get_active_chat": {
+      const activeChats = [...mockActiveChats.values()];
+      return activeChats.length > 0 ? { ...activeChats[activeChats.length - 1] } : null;
+    }
+    case "clear_chat_history": {
+      resetMockChatState();
+      const session = resolveMockActiveMainSession();
+      void emit("chat-history-cleared", {});
+      emitMockSessionsChanged();
+      emitMockActiveSession(session);
+      return { active_main_session_id: session.id };
+    }
+    case "send_to_ai": {
+      seedMockChatState();
+      const message = readArg(args, "message", "message", "").trim();
+      if (!message) throw new Error("消息不能为空");
+      if (mockActiveChats.size > 0) throw new Error("AI 正在思考中，请稍等当前回复完成后");
+      const requestedSessionId = readArg(args, "sessionId", "session_id", "");
+      const session = (requestedSessionId && findMockChatSession(requestedSessionId)) || resolveMockActiveMainSession();
+      const targetAgentId = readArg(args, "targetAgentId", "target_agent_id", "").trim();
+      const targetAgent = targetAgentId ? mockAgents.find((agent) => agent.id === targetAgentId) : undefined;
+      const agentInfo: MockAgentIdentity | null = targetAgentId
+        ? { id: targetAgent?.id || targetAgentId, name: targetAgent?.name || targetAgentId, avatar: targetAgent?.avatar || "🤖" }
+        : null;
+      const model = readArg(args, "model", "model", "").trim();
+      const quotedRole = readArg(args, "quotedRole", "quoted_role", "").trim();
+      const quotedContent = readArg(args, "quotedContent", "quoted_content", "").trim();
+      appendMockChatMessage(session.id, "user", message, {
+        quoted_role: quotedRole || null,
+        quoted_content: quotedContent || null,
+      });
+      touchMockChatSession(session);
+      if (!session.title) {
+        session.title = message.replace(/\s+/g, " ").trim().slice(0, 24);
+      }
+      emitMockSessionsChanged();
+      const active: MockActiveChat = { message, thinking: "", started_at: nowSeconds(), session_id: session.id };
+      mockActiveChats.set(session.id, active);
+      void emit("ai-started", { session_id: session.id, message });
+      const label = agentInfo ? `「${agentInfo.name}」` : "主对话";
+      const modelHint = model ? `（${model}）` : "";
+      const compactMessage = message.replace(/\s+/g, " ").slice(0, 140);
+      const reply = agentInfo
+        ? `${label}${modelHint}收到：${compactMessage}\n\n这是无 Tauri 的预览回复，真实 CLI 接入后这里会显示 ${agentInfo.name} 的实际输出。`
+        : `预览模式收到：${compactMessage}${modelHint}\n\n这是浏览器 mock 的模拟回复，可以在会话列表里切换会话验证历史隔离。`;
+      scheduleMockChatTurn(session, active, reply, agentInfo);
+      return { started: true };
+    }
     case "get_system_info":
       return { cpu: 18.6, memory: 42.3 };
     case "get_weather_config":
@@ -497,16 +950,6 @@ function handleMockCommand(cmd: string, args: MockPayload) {
       if (index >= 0) scheduledTasks.splice(index, 1);
       return null;
     }
-    case "clear_chat_history":
-    case "start_new_conversation":
-      memories.unshift({
-        id: nextMemoryId++,
-        category: "conversation",
-        key: "对话摘要",
-        value: "预览模式下自动保存的对话摘要。",
-        created_at: Date.now(),
-      });
-      return { saved_memory_id: memories[0].id };
     case "get_setting_value":
       return getMockSetting(args);
     case "set_setting_value":
@@ -692,21 +1135,31 @@ export function installDevTauriMock() {
       "\\]",
     ].join("\n");
     setTimeout(() => {
-      void emit("ai-finished", { text: reply, thinking: null });
+      emitMockPreviewEvent("ai-finished", { text: reply, thinking: null });
     }, 300);
   }
   if (previewQuery.get("activity") === "demo") {
-    const tool = { id: "preview-read", tool_name: "read_file", summary: "读取项目入口", path: "src/main.ts", arguments: '{"path":"src/main.ts"}' };
+    // Codex 后端轨迹夹具：思考增量、命令生命周期、文件变更、任务清单、
+    // 非 0 退出码、配置提示与最终回复，用来在没有真实 CLI 的预览环境里
+    // 验收 "思考过程 + 工具轨迹" 的完整展示链路。
     const frames: [string, unknown][] = [
       ["sync-chat-message", { role: "user", content: "检查项目入口并运行测试" }],
-      ["ai-answer-delta", { text: "先检查入口与事件链路。" }],
-      ["ai-tool-event", { ...tool, status: "running" }],
-      ["ai-tool-event", { ...tool, status: "completed", output: "预览数据：入口使用 Vue 3 + Pinia。" }],
-      ["ai-answer-delta", { text: "接下来验证工具状态和历史消息。" }],
-      ["ai-tool-event", { id: "preview-test", tool_name: "run_command", status: "completed", summary: "运行回归用例", command: "npm run verify:agent-activity", output: "预览数据：活动流回归用例通过。" }],
-      ["ai-answer-delta", { text: "检查完成，活动流和历史消息均正常。" }],
-      ["ai-finished", { text: "先检查入口与事件链路。接下来验证工具状态和历史消息。检查完成，活动流和历史消息均正常。", thinking: null }],
+      ["ai-thinking", { text: "**确认入口与事件链路**\n\n先看入口文件怎么装配，再确认活动流事件的名字。" }],
+      ["ai-thinking", { text: "\n\n运行前需要知道回归用例的命令，读一下 package.json。" }],
+      ["ai-tool-event", { id: "preview-notice", tool_name: "codex_notice", status: "notice", summary: "Codex is ignoring 3 unrecognized configuration settings.", arguments: "{}", output: "Codex is ignoring 3 unrecognized configuration settings.\n  user (C:\\Users\\demo\\.codex\\config.toml): `disable_response_storage` is ignored." }],
+      ["ai-tool-event", { id: "preview-plan", tool_name: "update_plan", status: "completed", summary: "更新任务清单", arguments: JSON.stringify({ plan: [{ step: "读取入口文件", status: "completed" }, { step: "运行回归用例", status: "in_progress" }, { step: "汇总结果", status: "pending" }] }, null, 2), duration_ms: 12 }],
+      ["ai-tool-event", { id: "preview-read", tool_name: "run_command", status: "running", summary: "Get-Content src/main.ts", command: "Get-Content src/main.ts", arguments: JSON.stringify({ command: "Get-Content src/main.ts" }) }],
+      ["ai-tool-event", { id: "preview-read", tool_name: "run_command", status: "completed", summary: "Get-Content src/main.ts", command: "Get-Content src/main.ts", arguments: JSON.stringify({ command: "Get-Content src/main.ts" }), output: "import { createApp } from \"vue\";\nimport { createPinia } from \"pinia\";", exit_code: 0, duration_ms: 412 }],
+      ["ai-thinking", { text: "入口使用 Vue 3 + Pinia，接下来跑回归用例确认活动流没有回归。" }],
+      ["ai-tool-event", { id: "preview-test", tool_name: "run_command", status: "running", summary: "npm run verify:agent-activity", command: "npm run verify:agent-activity", arguments: JSON.stringify({ command: "npm run verify:agent-activity" }) }],
+      ["ai-tool-event", { id: "preview-test", tool_name: "run_command", status: "failed", summary: "npm run verify:agent-activity", command: "npm run verify:agent-activity", arguments: JSON.stringify({ command: "npm run verify:agent-activity" }), output: "not ok 4 - 活动流顺序断言失败\n# 预期 reasoning 在 command 之前", exit_code: 1, duration_ms: 2640 }],
+      ["ai-thinking", { text: "回归用例失败，需要修正顺序后再跑一次。" }],
+      ["ai-tool-event", { id: "preview-fix", tool_name: "edit_file", status: "completed", summary: "src/services/agentActivity.ts", path: "src/services/agentActivity.ts", arguments: JSON.stringify({ changes: [{ path: "src/services/agentActivity.ts", kind: "update" }] }), changes: [{ path: "src/services/agentActivity.ts", kind: "update" }], duration_ms: 96 }],
+      ["ai-tool-event", { id: "preview-retest", tool_name: "run_command", status: "completed", summary: "npm run verify:agent-activity", command: "npm run verify:agent-activity", arguments: JSON.stringify({ command: "npm run verify:agent-activity" }), output: "ok 1 - 轨迹顺序\nok 2 - 思考增量\nok 3 - 终态不回退", exit_code: 0, duration_ms: 2180 }],
+      ["ai-tool-event", { id: "preview-plan", tool_name: "update_plan", status: "completed", summary: "更新任务清单", arguments: JSON.stringify({ plan: [{ step: "读取入口文件", status: "completed" }, { step: "运行回归用例", status: "completed" }, { step: "汇总结果", status: "completed" }] }, null, 2), duration_ms: 9 }],
+      ["ai-answer-delta", { text: "入口使用 Vue 3 + Pinia，回归用例先失败后修复通过。" }],
+      ["ai-finished", { text: "入口使用 Vue 3 + Pinia，回归用例先失败后修复通过。", thinking: "**确认入口与事件链路**\n\n先看入口文件怎么装配，再确认活动流事件的名字。\n\n运行前需要知道回归用例的命令，读一下 package.json。入口使用 Vue 3 + Pinia，接下来跑回归用例确认活动流没有回归。回归用例失败，需要修正顺序后再跑一次。" }],
     ];
-    frames.forEach(([event, payload], index) => setTimeout(() => { void emit(event, payload); }, 1000 + index * 450));
+    frames.forEach(([event, payload], index) => setTimeout(() => { emitMockPreviewEvent(event, payload); }, 1000 + index * 420));
   }
 }

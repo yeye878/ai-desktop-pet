@@ -4,6 +4,7 @@ import { useChatStore, messageAgentFromPayload, type AiFinishedPayload, type Fil
 import { usePetStore } from "../stores/pet";
 import { useSkillsStore, type Skill } from "../stores/skills";
 import { useAgentsStore, type Agent } from "../stores/agents";
+import { useSessionsStore } from "../stores/sessions";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow, type DragDropEvent } from "@tauri-apps/api/window";
@@ -17,7 +18,7 @@ import { createInteractionSubmission, subscribePendingInteraction, type AskUserP
 import { isNearBottom, legacyActivity, type AgentActivityTool } from "../services/agentActivity";
 import { ArrowDown } from "@lucide/vue";
 import CollaborationBar from "./CollaborationBar.vue";
-import { subscribeCollaboration } from "../services/collaboration";
+import { subscribeCollaboration, type CollaborationReply, type CollaborationState } from "../services/collaboration";
 import {
   SLASH_COMMANDS,
   slashCommandMatches,
@@ -43,6 +44,7 @@ const chat = useChatStore();
 const pet = usePetStore();
 const skillsStore = useSkillsStore();
 const agentsStore = useAgentsStore();
+const sessions = useSessionsStore();
 
 type ActiveTab = "chat" | "clipboard";
 type ClipboardItem = {
@@ -52,6 +54,8 @@ type ClipboardItem = {
   created_at: string | number;
 };
 type ChatHistoryItem = {
+  id?: number;
+  session_id?: string;
   role: string;
   content: string;
   thinking?: string | null;
@@ -66,15 +70,25 @@ type ActiveChat = {
   message: string;
   thinking: string;
   started_at: string | number;
+  session_id?: string | null;
 };
-type AiErrorPayload = {
+/** 所有 AI / 协同事件都带 session_id，用于把事件路由到正确的会话窗口。 */
+type SessionScopedPayload = {
+  session_id?: string | null;
+};
+type AiThinkingPayload = SessionScopedPayload & {
+  text?: string;
+};
+type AiErrorPayload = SessionScopedPayload & {
   message: string;
   thinking: string | null;
   aborted: boolean;
 };
-type AnswerDeltaPayload = {
+type AnswerDeltaPayload = SessionScopedPayload & {
   text: string;
 };
+type AiFinishedEventPayload = AiFinishedPayload & SessionScopedPayload;
+type AiToolEventPayload = AgentActivityTool & SessionScopedPayload;
 type ApiProfile = {
   id: string;
   name: string;
@@ -146,6 +160,9 @@ let unlistenToolEvent: UnlistenFn | null = null;
 let unlistenAiFinished: UnlistenFn | null = null;
 let unlistenAiError: UnlistenFn | null = null;
 let unlistenChatCleared: UnlistenFn | null = null;
+let unlistenSessionChanged: UnlistenFn | null = null;
+let unlistenSessionsChanged: UnlistenFn | null = null;
+let sessionRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 let unlistenVoiceChanged: UnlistenFn | null = null;
 let unlistenSyncMessage: UnlistenFn | null = null;
 let unlistenApiConfigChanged: UnlistenFn | null = null;
@@ -340,7 +357,22 @@ function clearLoadingTimeout() {
 onMounted(async () => {
   stopToolConfirm = subscribePendingInteraction("tool", pendingConfirm);
   stopQuestion = subscribePendingInteraction("question", pendingQuestion);
-  stopCollaboration = subscribeCollaboration(chat, () => {
+  // 协同事件也带 session_id：只把当前活跃主会话的状态/回复写入 chat store，
+  // 避免别的会话（或 agent 窗口）的协同事件污染浮动聊天窗。
+  const sessionScopedChat = {
+    get collaboration() {
+      return chat.collaboration;
+    },
+    receiveCollaborationState(state: CollaborationState) {
+      if (!isActiveMainSessionEvent(state as CollaborationState & SessionScopedPayload)) return false;
+      return chat.receiveCollaborationState(state);
+    },
+    receiveCollaborationReply(reply: CollaborationReply) {
+      if (!isActiveMainSessionEvent(reply as CollaborationReply & SessionScopedPayload)) return false;
+      return chat.receiveCollaborationReply(reply);
+    },
+  } as unknown as ReturnType<typeof useChatStore>;
+  stopCollaboration = subscribeCollaboration(sessionScopedChat, () => {
     thinkingContent.value = "";
     streamingAnswer.value = "";
     pendingConfirm.value = null;
@@ -358,19 +390,26 @@ onMounted(async () => {
     else { clearLoadingTimeout(); pet.setState("idle"); }
   });
   void agentsStore.startSync().catch((error) => console.error("加载智能体失败", error));
+  void sessions.startSync().catch((error) => console.error("加载会话失败", error));
   unlistenDragDrop = await currentWindow.onDragDropEvent((event) => {
     handleDragDropEvent(event.payload);
   });
 
-  unlistenThinking = await listen<string>("ai-thinking", (event) => {
+  unlistenThinking = await listen<AiThinkingPayload | string>("ai-thinking", (event) => {
+    const payload = typeof event.payload === "string" ? { text: event.payload } : event.payload;
+    if (!isActiveMainSessionEvent(payload)) return;
+    const text = payload?.text ?? "";
+    if (!text) return;
     chat.isLoading = true;
     resetLoadingTimeout(); // 重置超时
-    thinkingContent.value += event.payload;
-    chat.activity.appendThinking(event.payload);
+    thinkingContent.value += text;
+    chat.activity.appendThinking(text);
     scrollToBottomAfterRender();
   });
 
   unlistenAnswerDelta = await listen<AnswerDeltaPayload>("ai-answer-delta", (event) => {
+    if (!isActiveMainSessionEvent(event.payload)) return;
+    if (!event.payload?.text) return;
     chat.isLoading = true;
     resetLoadingTimeout(); // 重置超时
     streamingAnswer.value += event.payload.text;
@@ -378,7 +417,8 @@ onMounted(async () => {
     scrollToBottomAfterRender();
   });
 
-  unlistenAiFinished = await listen<AiFinishedPayload>("ai-finished", (event) => {
+  unlistenAiFinished = await listen<AiFinishedEventPayload>("ai-finished", (event) => {
+    if (!isActiveMainSessionEvent(event.payload)) return;
     clearLoadingTimeout(); // 清除超时
     const replyAgent = messageAgentFromPayload(event.payload);
     appendAssistantOnce(event.payload.text, event.payload.thinking ?? undefined, replyAgent);
@@ -396,6 +436,7 @@ onMounted(async () => {
   });
 
   unlistenAiError = await listen<AiErrorPayload>("ai-error", (event) => {
+    if (!isActiveMainSessionEvent(event.payload)) return;
     clearLoadingTimeout(); // 清除超时
     // 区分可恢复中断和致命错误
     const hadContent = !!streamingAnswer.value || !!thinkingContent.value;
@@ -422,8 +463,17 @@ onMounted(async () => {
     resetChatUi();
   });
 
+  // 活跃主会话切换 / 会话列表变化（新建、改名、删除、首条消息生成标题）后刷新历史。
+  unlistenSessionChanged = await listen<{ session?: { id?: string; slot?: string } }>("chat-session-changed", () => {
+    scheduleHistoryRefresh();
+  });
+  unlistenSessionsChanged = await listen("chat-sessions-changed", () => {
+    scheduleHistoryRefresh();
+  });
+
   unlistenSyncMessage = await listen<any>("sync-chat-message", (event) => {
     const payload = event.payload;
+    if (!isActiveMainSessionEvent(payload)) return;
     const last = chat.messages[chat.messages.length - 1];
     if (last && last.role === payload.role && last.content === payload.content) {
       return;
@@ -441,7 +491,8 @@ onMounted(async () => {
     }
   });
 
-  unlistenToolEvent = await listen<AgentActivityTool>("ai-tool-event", (event) => {
+  unlistenToolEvent = await listen<AiToolEventPayload>("ai-tool-event", (event) => {
+    if (!isActiveMainSessionEvent(event.payload)) return;
     chat.isLoading = true;
     resetLoadingTimeout();
     chat.activity.upsertTool(event.payload);
@@ -485,6 +536,11 @@ onBeforeUnmount(() => {
   unlistenToolEvent?.();
   stopCollaboration?.();
   agentsStore.stopSync();
+  sessions.stopSync();
+  if (sessionRefreshTimer !== null) {
+    clearTimeout(sessionRefreshTimer);
+    sessionRefreshTimer = null;
+  }
   pendingConfirm.value = null;
   if (scrollFrame !== null) {
     cancelAnimationFrame(scrollFrame);
@@ -517,6 +573,14 @@ onBeforeUnmount(() => {
   if (unlistenChatCleared) {
     unlistenChatCleared();
     unlistenChatCleared = null;
+  }
+  if (unlistenSessionChanged) {
+    unlistenSessionChanged();
+    unlistenSessionChanged = null;
+  }
+  if (unlistenSessionsChanged) {
+    unlistenSessionsChanged();
+    unlistenSessionsChanged = null;
   }
   if (unlistenSyncMessage) {
     unlistenSyncMessage();
@@ -624,7 +688,8 @@ async function sendMessage() {
   await currentWindow.emit("sync-chat-message", {
     role: "user",
     content: displayText,
-    fileAttachments: fileAttachments
+    fileAttachments: fileAttachments,
+    session_id: sessions.activeMainId || undefined,
   });
 
   input.value = "";
@@ -643,12 +708,14 @@ async function sendMessage() {
   scrollToBottom();
 
   try {
-    await invoke<{ started: boolean }>("send_to_ai", {
+    const sendArgs: Record<string, unknown> = {
       message: fullMessage,
       attachments: aiAttachments,
       mentionAgents: petMentionNames(text),
       collaborationEnabled: chat.collaborationEnabled,
-    });
+    };
+    if (sessions.activeMainId) sendArgs.sessionId = sessions.activeMainId;
+    await invoke<{ started: boolean }>("send_to_ai", sendArgs);
   } catch (err) {
     chat.isLoading = false;
     isThinkingCollapsed.value = true;
@@ -852,22 +919,73 @@ async function refreshClipboardItems() {
   );
 }
 
+/**
+ * 事件归属判断：payload 带 session_id 时只处理当前活跃主会话的事件；
+ * 老后端/预览夹具缺省 session_id 时保持旧行为（兼容）。
+ */
+function isActiveMainSessionEvent(payload: SessionScopedPayload | null | undefined): boolean {
+  const sessionId = payload?.session_id;
+  if (!sessionId) return true;
+  const activeId = sessions.activeMainId;
+  return !activeId || sessionId === activeId;
+}
+
+/** 会话列表/活跃会话变化后稍等再刷新，让 sessions store 先完成 activeMainId 更新。 */
+function scheduleHistoryRefresh(delay = 140) {
+  if (sessionRefreshTimer !== null) clearTimeout(sessionRefreshTimer);
+  sessionRefreshTimer = setTimeout(() => {
+    sessionRefreshTimer = null;
+    void refreshChatState().catch((error) => console.error("刷新会话历史失败", error));
+  }, delay);
+}
+
+function sessionMessageKey(message: Message): string {
+  return [message.role, message.content, message.thinking || "", message.agent?.id || message.agent?.name || ""].join("\u0000");
+}
+
 async function refreshChatState() {
+  if (!sessions.activeMainId) {
+    try {
+      await sessions.load();
+    } catch (error) {
+      console.error("加载会话列表失败", error);
+    }
+  }
+  const sessionId = sessions.activeMainId;
+  const historyArgs = sessionId ? { sessionId } : {};
   const [history, active] = await Promise.all([
-    invoke<ChatHistoryItem[]>("get_chat_history"),
+    invoke<ChatHistoryItem[]>("get_chat_history", historyArgs),
     invoke<ActiveChat | null>("get_active_chat"),
   ]);
 
+  // 会话列表刷新会重建消息数组；把仍在内存里的工具轨迹/展示片段按内容合并回去，
+  // 避免刚结束的回合因为一次 reload 丢掉思考与工具过程（数据库不存这些展示数据）。
+  const previousMessages = new Map<string, Message>();
+  for (const message of chat.messages) previousMessages.set(sessionMessageKey(message), message);
+
   chat.setMessages(history.map(normalizeChatHistoryItem));
 
-  if (active) {
-    if (!chat.messages.some((msg) => msg.role === "user" && msg.content === active.message)) {
-      chat.addMessage("user", active.message);
+  for (const message of chat.messages) {
+    if (message.activity?.length) continue;
+    const previous = previousMessages.get(sessionMessageKey(message));
+    if (!previous) continue;
+    if (previous.activity?.length) message.activity = previous.activity;
+    if (previous.toolEvents?.length) message.toolEvents = previous.toolEvents;
+    if (previous.displayContent) message.displayContent = previous.displayContent;
+  }
+
+  const activeForCurrentSession = active && (!active.session_id || !sessionId || active.session_id === sessionId)
+    ? active
+    : null;
+
+  if (activeForCurrentSession) {
+    if (!chat.messages.some((msg) => msg.role === "user" && msg.content === activeForCurrentSession.message)) {
+      chat.addMessage("user", activeForCurrentSession.message);
     }
     chat.isLoading = true;
-    thinkingContent.value = active.thinking || "";
+    thinkingContent.value = activeForCurrentSession.thinking || "";
     chat.activity.reset();
-    chat.activity.items.push(...legacyActivity(active.thinking));
+    chat.activity.items.push(...legacyActivity(activeForCurrentSession.thinking));
     isThinkingCollapsed.value = false;
     pet.setState("thinking");
   } else {
@@ -882,6 +1000,7 @@ async function refreshChatState() {
 
 function normalizeChatHistoryItem(item: ChatHistoryItem) {
   return {
+    session_id: item.session_id,
     role: item.role === "assistant" ? "assistant" as const : "user" as const,
     content: item.content,
     thinking: item.thinking || undefined,
@@ -985,7 +1104,8 @@ function resetChatUi() {
 async function startNewConversation() {
   try {
     await invoke("start_new_conversation");
-    // 新对话：保留聊天记录显示，仅重置 AI 状态
+    // 新会话由后端创建并设为活跃主会话；刷新列表后载入该会话（通常为空）的历史。
+    await sessions.load();
     chat.isLoading = false;
     chat.activity.reset();
     thinkingContent.value = "";
@@ -993,10 +1113,7 @@ async function startNewConversation() {
     isThinkingCollapsed.value = true;
     pendingConfirm.value = null;
     pendingQuestion.value = null;
-    // 插入分割线，标记新对话开始
-    if (chat.messages.length > 0) {
-      chat.addSystemMessage("新对话");
-    }
+    await refreshChatState();
     await scrollToBottomAfterRender();
   } catch (err) {
     chat.addMessage("assistant", `新对话创建失败: ${err}`);
@@ -1072,7 +1189,8 @@ async function addToPendingFiles(paths: string[]) {
           chat.addMessage("assistant", successMsg);
           await currentWindow.emit("sync-chat-message", {
             role: "assistant",
-            content: successMsg
+            content: successMsg,
+            session_id: sessions.activeMainId || undefined,
           });
 
           try {

@@ -1,3 +1,5 @@
+export type AgentActivityFileChange = { path: string; kind?: string | null };
+
 export type AgentActivityTool = {
   id: string;
   tool_name: string;
@@ -8,6 +10,12 @@ export type AgentActivityTool = {
   path?: string | null;
   output?: string | null;
   approved?: boolean | null;
+  /** Codex 事件里的进程退出码：0 表示成功，非 0 需要在轨迹里标红。 */
+  exit_code?: number | null;
+  /** 工具耗时（毫秒）。 */
+  duration_ms?: number | null;
+  /** file_change 事件涉及的文件；kind 通常是 add/update/delete。 */
+  changes?: AgentActivityFileChange[] | null;
 };
 
 export type AgentActivityItem =
@@ -15,7 +23,9 @@ export type AgentActivityItem =
   | { kind: "thinking"; text: string }
   | { kind: "tool"; tool: AgentActivityTool };
 
-const terminalStatuses = new Set(["completed", "denied", "skipped", "failed", "interrupted"]);
+// notice 是 Codex 的配置提示，只报告一次、没有生命周期：中止回合时不能把它
+// 改写成"已中止"，否则界面上会出现一条并不存在的失败。
+const terminalStatuses = new Set(["completed", "denied", "skipped", "failed", "interrupted", "notice"]);
 const statusLabels: Record<string, string> = {
   requested: "已请求",
   waiting: "等待确认",
@@ -26,6 +36,7 @@ const statusLabels: Record<string, string> = {
   skipped: "已跳过",
   failed: "失败",
   interrupted: "已中止",
+  notice: "提示",
 };
 
 export function toolStatusLabel(status: string): string {
@@ -62,9 +73,12 @@ function mergeTool(previous: AgentActivityTool, next: AgentActivityTool): AgentA
   const regressed = previous.status in ranks && next.status in ranks && ranks[next.status] < ranks[previous.status];
   const nextStatus = previousTerminal || regressed ? previous.status : next.status;
   const result: AgentActivityTool = { ...previous, ...next, status: nextStatus };
-  for (const key of ["summary", "arguments", "command", "path", "output", "approved"] as const) {
+  // 迟到的状态更新常常缺少终态已经上报过的字段（退出码、耗时、变更文件）。
+  // 空值一律不覆盖旧值；0 是合法取值（exit_code / duration_ms），必须保留。
+  for (const key of ["summary", "arguments", "command", "path", "output", "approved", "exit_code", "duration_ms", "changes"] as const) {
     const value = next[key];
-    if (value === null || value === undefined || value === "") Object.assign(result, { [key]: previous[key] });
+    const empty = value === null || value === undefined || value === "" || (Array.isArray(value) && value.length === 0);
+    if (empty) Object.assign(result, { [key]: previous[key] });
   }
   return result;
 }

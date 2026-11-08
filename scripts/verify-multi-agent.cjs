@@ -100,9 +100,35 @@ for (const component of ["Dashboard", "ChatBubble"]) {
     const callback = node.arguments[1].getText(source);
     const chatModule = loadModule("src/stores/chat.ts");
     const chat = chatModule.useChatStore(createPinia());
+    const sessionFilter = { activeMainId: "" };
+    const agentTurns = [];
+    const sessionLoads = { count: 0 };
+    const agentSession = { id: "session-agent", slot: "dsh", kind: "agent" };
+    const sessionsMock = {
+      get activeMainId() { return sessionFilter.activeMainId; },
+      find(id) { return id === agentSession.id ? agentSession : undefined; },
+      async load() { sessionLoads.count += 1; },
+      scheduleReload() {},
+    };
     const state = {
       chat, clearLoadingTimeout() {}, setTimeout() {},
       messageAgentFromPayload: chatModule.messageAgentFromPayload,
+      // Dashboard / ChatBubble 的 ai-finished 监听都会按 session_id 路由，这里提供同等语义的桩。
+      sessions: sessionsMock,
+      isActiveMainSessionEvent(payload) {
+        const sessionId = payload?.session_id;
+        if (!sessionId) return true;
+        return !sessionFilter.activeMainId || sessionId === sessionFilter.activeMainId;
+      },
+      routeIncomingSession(sessionId) {
+        if (!sessionId) return { kind: "main" };
+        if (sessionId === sessionFilter.activeMainId) return { kind: "main" };
+        const session = sessionsMock.find(sessionId);
+        if (!session || session.slot === "main") return { kind: "ignore" };
+        return { kind: "agent", slot: session.slot, sessionId };
+      },
+      currentAgentSessionId: { value: "" },
+      settleAgentTurn(sessionId, text, extra) { agentTurns.push({ sessionId, text, ...extra }); },
       toolEvents: { value: [] }, thinkingContent: { value: "" }, streamingAnswer: { value: "" },
       pendingConfirm: { value: null }, isThinkingCollapsed: { value: false },
       pet: { setState() {}, updateMood() {} }, speakDashboardReply() {}, stripQuoteMarkers: (text) => text, speakableText: (text) => text,
@@ -115,6 +141,32 @@ for (const component of ["Dashboard", "ChatBubble"]) {
     assert.equal(chat.isLoading, false);
     handler({ payload: { text: "普通桌宠回复", thinking: null } });
     assert.equal(chat.messages[1].agent, null);
+
+    // ai-finished 带 session_id：活跃主会话写主对话；agent slot 走 agent 窗口回合；未知会话忽略。
+    sessionFilter.activeMainId = "session-a";
+    chat.clearMessages();
+    chat.isLoading = true;
+    handler({ payload: { text: "别的会话的回复", thinking: null, session_id: "session-b", agent_name: "别的" } });
+    assert.equal(chat.messages.length, 0, "非活跃会话的 ai-finished 不能写入主对话");
+    assert.equal(chat.isLoading, true, "非活跃会话的事件不能结束主对话 loading");
+    handler({ payload: { text: "agent 回复", thinking: "t", session_id: agentSession.id, agent_id: "builtin-dsh", agent_name: "dsh", agent_avatar: "⌘" } });
+    assert.equal(chat.messages.length, 0, "agent 窗口的回复不能混进主对话");
+    if (component === "Dashboard") {
+      assert.equal(agentTurns.length, 1, "Dashboard 应把 agent 会话的完成事件写入 agent 回合状态");
+      assert.equal(agentTurns[0].sessionId, agentSession.id);
+      assert.equal(agentTurns[0].text, "agent 回复");
+      assert.equal(agentTurns[0].agent?.name, "dsh");
+      assert.equal(sessionLoads.count, 1, "agent 回合结束后应刷新会话列表");
+    } else {
+      assert.equal(agentTurns.length, 0, "浮动聊天窗不处理 agent 窗口回合");
+    }
+    handler({ payload: { text: "未知会话", thinking: null, session_id: "session-unknown" } });
+    assert.equal(chat.messages.length, 0, "未知 session_id 的 ai-finished 必须忽略");
+    if (component === "Dashboard") assert.equal(agentTurns.length, 1);
+    handler({ payload: { text: "当前会话的回复", thinking: null, session_id: "session-a" } });
+    assert.equal(chat.messages.length, 1);
+    assert.equal(chat.messages[0].content, "当前会话的回复");
+    assert.equal(chat.isLoading, false);
   });
 }
 

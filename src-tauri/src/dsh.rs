@@ -388,13 +388,18 @@ fn sweep_stale_prompts(dir: &Path) {
     }
 }
 
-fn runner_args(prompt_file: &Path, session: Option<&str>) -> Vec<String> {
+fn runner_args(prompt_file: &Path, session: Option<&str>, model: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "--profile".into(),
         PROFILE_NAME.into(),
         "--prompt-file".into(),
         prompt_file.to_string_lossy().into_owned(),
     ];
+    // 本回合模型覆盖：runner 支持 --model 时直接覆盖 selection.model（provider 不变）。
+    if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
+        args.push("--model".into());
+        args.push(model.to_string());
+    }
     if let Some(id) = session.filter(|id| !id.trim().is_empty()) {
         args.push("--resume".into());
         args.push(id.to_string());
@@ -449,6 +454,7 @@ impl DshAdapter {
 
     /// 启动一轮 dsh 任务。工作目录就是 DSH 的 cwd 与 workspace-write 沙箱根。
     /// 已有会话时只发本轮消息；首轮才需要把会话记录一起带上。
+    /// 旧签名：会话 id 取自适配器内部状态。
     pub async fn spawn_streaming(
         &self,
         app: &tauri::AppHandle,
@@ -456,10 +462,41 @@ impl DshAdapter {
         history: &[crate::storage::ChatMessage],
         system_prompt: &str,
     ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
+        let session = self.session_id.lock().ok().and_then(|id| id.clone());
+        self.spawn_streaming_with(
+            app,
+            message,
+            history,
+            system_prompt,
+            session.as_deref(),
+            None,
+        )
+        .await
+    }
+
+    /// 显式会话 / 模型版本：不依赖适配器内部状态，供多会话与协作调用。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn spawn_streaming_with(
+        &self,
+        app: &tauri::AppHandle,
+        message: &str,
+        history: &[crate::storage::ChatMessage],
+        system_prompt: &str,
+        session: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
         let workspace = workspace_dir(app)?;
         let prompts = prompt_dir(app)?;
-        self.spawn_in_workspace(&workspace, &prompts, message, history, system_prompt)
-            .await
+        self.spawn_in_workspace_with(
+            &workspace,
+            &prompts,
+            message,
+            history,
+            system_prompt,
+            session,
+            model,
+        )
+        .await
     }
 
     /// 工作目录与提示词目录显式传入，便于测试复用同一条真实路径。
@@ -472,6 +509,31 @@ impl DshAdapter {
         system_prompt: &str,
     ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
         let session = self.session_id.lock().ok().and_then(|id| id.clone());
+        self.spawn_in_workspace_with(
+            workspace,
+            prompt_root,
+            message,
+            history,
+            system_prompt,
+            session.as_deref(),
+            None,
+        )
+        .await
+    }
+
+    /// 显式会话 / 模型 / 目录版本。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn spawn_in_workspace_with(
+        &self,
+        workspace: &Path,
+        prompt_root: &Path,
+        message: &str,
+        history: &[crate::storage::ChatMessage],
+        system_prompt: &str,
+        session: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
+        let session = session.map(str::to_string);
         let task = if session.is_some() {
             assemble_task(system_prompt, &[], message)
         } else {
@@ -491,7 +553,8 @@ impl DshAdapter {
                 return Err(error.into());
             }
         };
-        let mut command = launcher_command(&launcher, &runner_args(&prompt_file, session.as_deref()));
+        let mut command =
+            launcher_command(&launcher, &runner_args(&prompt_file, session.as_deref(), model));
         command
             .current_dir(workspace)
             // stdin 是授权往返的回程通道：runner 把请求写在 stdout，桌宠把决定写回来。
@@ -628,6 +691,7 @@ impl RunnerParser {
                 path: None,
                 output: None,
                 approved: None,
+                ..Default::default()
             });
         update(entry);
         // 摘要随阶段推进更新：start 只有工具名，call 之后能给出命令或路径。
@@ -1103,6 +1167,8 @@ mod tests {
 
     fn message(role: &str, content: &str) -> crate::storage::ChatMessage {
         crate::storage::ChatMessage {
+            id: 0,
+            session_id: String::new(),
             role: role.into(),
             content: content.into(),
             thinking: None,
@@ -1356,14 +1422,24 @@ mod tests {
 
     #[test]
     fn builds_resume_arguments_without_a_positional_task() {
-        let args = runner_args(Path::new("C:\\tmp\\p.txt"), Some("session-1"));
+        let args = runner_args(Path::new("C:\\tmp\\p.txt"), Some("session-1"), None);
         assert_eq!(
             args,
             ["--profile", "dsh-pet", "--prompt-file", "C:\\tmp\\p.txt", "--resume", "session-1"]
         );
-        let args = runner_args(Path::new("/tmp/p.txt"), None);
+        let args = runner_args(Path::new("/tmp/p.txt"), None, None);
         assert_eq!(args.len(), 4);
         assert!(!args.iter().any(|arg| arg == "--resume"));
+    }
+
+    #[test]
+    fn passes_an_explicit_model_override_to_the_runner() {
+        let args = runner_args(Path::new("/tmp/p.txt"), None, Some("deepseek-reasoner"));
+        assert!(args.windows(2).any(|pair| pair == ["--model", "deepseek-reasoner"]));
+        // 空模型字符串表示跟随本机配置。
+        let args = runner_args(Path::new("/tmp/p.txt"), Some("session-1"), Some("  "));
+        assert!(!args.iter().any(|arg| arg == "--model"));
+        assert!(args.windows(2).any(|pair| pair == ["--resume", "session-1"]));
     }
 
     #[test]

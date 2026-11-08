@@ -14,16 +14,27 @@ function read(storage: CacheStorage): CacheEntry[] {
   const data: unknown = JSON.parse(storage.getItem(CACHE_KEY) || "[]");
   return Array.isArray(data) ? data.filter((item) => item && typeof item.identity === "string" && typeof item.timestamp === "number" && typeof item.displayContent === "string" && Array.isArray(item.activity) && item.activity.every(validActivity)) : [];
 }
+function optionalString(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === "string";
+}
+function optionalNumber(value: unknown): boolean {
+  return value === undefined || value === null || (typeof value === "number" && Number.isFinite(value));
+}
+function optionalChanges(value: unknown): boolean {
+  return value === undefined || value === null
+    || (Array.isArray(value) && value.every((change) => !!change && typeof change === "object" && typeof (change as { path?: unknown }).path === "string"));
+}
 function validActivity(value: unknown): value is AgentActivityItem {
   if (!value || typeof value !== "object") return false;
   const entry = value as Partial<AgentActivityItem>;
   if (entry.kind === "text" || entry.kind === "thinking") return typeof entry.text === "string";
   if (entry.kind !== "tool" || !entry.tool) return false;
-  return typeof entry.tool.id === "string" && typeof entry.tool.tool_name === "string" && typeof entry.tool.status === "string"
-    && ["arguments", "summary", "command", "path", "output"].every((key) => {
-      const field = (entry.tool as unknown as Record<string, unknown>)[key];
-      return field === undefined || field === null || typeof field === "string";
-    });
+  const tool = entry.tool as unknown as Record<string, unknown>;
+  // Codex 轨迹字段（exit_code / duration_ms / changes）可选：旧缓存缺少它们时
+  // 依然要能还原，字段类型不对则整条丢弃，避免把脏数据渲染到界面上。
+  return typeof tool.id === "string" && typeof tool.tool_name === "string" && typeof tool.status === "string"
+    && ["arguments", "summary", "command", "path", "output"].every((key) => optionalString(tool[key]))
+    && optionalNumber(tool.exit_code) && optionalNumber(tool.duration_ms) && optionalChanges(tool.changes);
 }
 
 // Display-only, bounded cache. Database history remains the authority for

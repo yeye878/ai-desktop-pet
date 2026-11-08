@@ -1,7 +1,13 @@
 //! Local Codex CLI integration. Authentication and model selection stay in Codex.
 use crate::openclaw::StreamParseState;
 use serde::Serialize;
-use std::{collections::HashSet, path::PathBuf, process::Stdio, sync::Mutex, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    process::Stdio,
+    sync::Mutex,
+    time::Duration,
+};
 use tauri::Manager;
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
@@ -59,7 +65,7 @@ pub struct CodexAdapter {
     session_id: Mutex<Option<String>>,
 }
 
-fn exec_args(session_id: Option<&str>) -> Vec<String> {
+fn exec_args(session_id: Option<&str>, model: Option<&str>) -> Vec<String> {
     // exec cannot ask for approval in the desktop chat. Keep a bounded writable
     // workspace and fail commands that would need additional permission.
     let mut args: Vec<String> = [
@@ -68,10 +74,17 @@ fn exec_args(session_id: Option<&str>) -> Vec<String> {
         "workspace-write",
         "-c",
         "approval_policy=\"never\"",
+        // 默认配置下 reasoning 事件常常为空，detailed 摘要才能展示"思考过程"。
+        "-c",
+        "model_reasoning_summary=\"detailed\"",
     ]
     .iter()
     .map(|arg| (*arg).to_string())
     .collect();
+    // 本回合模型覆盖必须放在子命令（resume）之前。
+    if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
+        args.extend(["-m".into(), model.to_string()]);
+    }
     if let Some(id) = session_id {
         args.extend(["resume".into(), id.into()]);
     }
@@ -80,27 +93,55 @@ fn exec_args(session_id: Option<&str>) -> Vec<String> {
 }
 
 impl CodexAdapter {
+    /// 旧签名：会话 id 取自适配器内部状态。
     pub async fn spawn_streaming(
         &self,
         app: &tauri::AppHandle,
         message: &str,
         system_prompt: &str,
     ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
-        let workspace = workspace_dir(app)?;
-        self.spawn_in_workspace(&workspace, message, system_prompt)
+        let session = self.session_id.lock().unwrap().clone();
+        self.spawn_streaming_with(app, message, system_prompt, session.as_deref(), None)
             .await
     }
 
+    /// 显式会话 / 模型版本：不依赖适配器内部状态，供多会话与协作调用。
+    pub async fn spawn_streaming_with(
+        &self,
+        app: &tauri::AppHandle,
+        message: &str,
+        system_prompt: &str,
+        session: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
+        let workspace = workspace_dir(app)?;
+        self.spawn_in_workspace_with(&workspace, message, system_prompt, session, model)
+            .await
+    }
+
+    #[cfg(test)]
     async fn spawn_in_workspace(
         &self,
         workspace: &std::path::Path,
         message: &str,
         system_prompt: &str,
     ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
-        std::fs::create_dir_all(&workspace)?;
         let session = self.session_id.lock().unwrap().clone();
+        self.spawn_in_workspace_with(workspace, message, system_prompt, session.as_deref(), None)
+            .await
+    }
+
+    async fn spawn_in_workspace_with(
+        &self,
+        workspace: &std::path::Path,
+        message: &str,
+        system_prompt: &str,
+        session: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
+        std::fs::create_dir_all(&workspace)?;
         let mut child = cli_command(&find_cli()?)
-            .args(exec_args(session.as_deref()))
+            .args(exec_args(session, model))
             .current_dir(workspace)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -132,53 +173,76 @@ impl CodexAdapter {
     }
 }
 
+/// 一行 Codex 事件产生的有序增量：思考与正文分开，调用方按顺序消费。
+#[derive(Debug, PartialEq, Eq)]
+enum Delta {
+    Thinking(String),
+    Text(String),
+}
+
+/// 取文本字段：字符串直接使用，数组按 text 子字段拼接。
+fn text_field(value: &serde_json::Value) -> Option<String> {
+    if let Some(text) = value.as_str() {
+        return (!text.is_empty()).then(|| text.to_string());
+    }
+    let joined = value
+        .as_array()?
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| entry["text"].as_str().map(str::to_string))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!joined.is_empty()).then_some(joined)
+}
+
+/// reasoning 文本：优先 text，为空时回退 summary_text / raw_content。
+fn reasoning_text(item: &serde_json::Value) -> Option<String> {
+    ["text", "summary_text", "raw_content"]
+        .iter()
+        .find_map(|key| text_field(&item[*key]))
+}
+
+/// 返回 text 相对 previous 的新增部分（按最长公共前缀计算），避免重复上报。
+fn increment(previous: &str, text: &str) -> String {
+    let common = previous
+        .char_indices()
+        .zip(text.char_indices())
+        .find(|((_, left), (_, right))| left != right)
+        .map_or_else(
+            || previous.len().min(text.len()),
+            |((index, _), _)| index,
+        );
+    text[common..].to_string()
+}
+
 #[derive(Default)]
 struct EventParser {
     completed_items: HashSet<String>,
     turn_completed: bool,
     last_error: Option<String>,
+    /// reasoning 条目 id → 已输出文本，item.started/updated 只补增量。
+    reasoning_items: HashMap<String, String>,
+    /// 最近一次输出思考的条目 id，用于判断是否需要插入分隔。
+    last_reasoning_id: Option<String>,
 }
 
 impl EventParser {
-    fn parse_line(&mut self, state: &mut StreamParseState, line: &str) -> Option<String> {
+    /// 解析一行 Codex --json 事件，返回本行按真实顺序产生的思考/正文增量。
+    fn parse_line(&mut self, state: &mut StreamParseState, line: &str) -> Vec<Delta> {
         let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
-            return None;
+            return Vec::new();
         };
+        let mut deltas = Vec::new();
         match event["type"].as_str().unwrap_or_default() {
             "thread.started" => {
                 state.session_id = event["thread_id"].as_str().map(str::to_string);
             }
-            "item.completed" => {
-                let item = &event["item"];
-                if let Some(id) = item["id"].as_str() {
-                    if !self.completed_items.insert(id.to_string()) {
-                        return None;
-                    }
-                }
-                let text = item["text"].as_str().unwrap_or_default();
-                if text.is_empty() {
-                    return None;
-                }
-                match item["type"].as_str() {
-                    Some("agent_message") => {
-                        if !state.full_text.is_empty() {
-                            state.full_text.push_str("\n\n");
-                        }
-                        state.full_text.push_str(text);
-                        state.text_len = state.full_text.len();
-                    }
-                    Some("reasoning") => {
-                        let delta = if state.full_thinking.is_empty() {
-                            text.to_string()
-                        } else {
-                            format!("\n\n{text}")
-                        };
-                        state.full_thinking.push_str(&delta);
-                        state.thinking_len = state.full_thinking.len();
-                        return Some(delta);
-                    }
-                    _ => {}
-                }
+            "item.started" | "item.updated" | "item.completed" => {
+                self.item(&event, state, &mut deltas);
             }
             "turn.completed" => self.turn_completed = true,
             "turn.failed" => {
@@ -197,7 +261,92 @@ impl EventParser {
             }
             _ => {}
         }
-        None
+        deltas
+    }
+
+    /// 处理单个 item：reasoning 进思考通道，agent_message 进正文通道。
+    /// 返回值内的增量顺序即事件顺序，所以 reasoning 一定排在它之后的
+    /// agent_message 之前。
+    fn item(
+        &mut self,
+        event: &serde_json::Value,
+        state: &mut StreamParseState,
+        deltas: &mut Vec<Delta>,
+    ) {
+        let event_type = event["type"].as_str().unwrap_or_default();
+        let item = &event["item"];
+        let id = item["id"].as_str().unwrap_or_default();
+        match item["type"].as_str().unwrap_or_default() {
+            "reasoning" => {
+                if event_type == "item.completed" {
+                    // 定稿事件只发尚未流出的尾部，避免与 started/updated 重复。
+                    if !self.completed_items.insert(id.to_string()) {
+                        return;
+                    }
+                    let text = reasoning_text(item).unwrap_or_default();
+                    let previous = self.reasoning_items.remove(id).unwrap_or_default();
+                    let delta = increment(&previous, &text);
+                    self.emit_thinking(state, deltas, id, &delta);
+                } else {
+                    // started/updated 可能重复推送同一份文本，按 id 记住上次内容。
+                    let Some(text) = reasoning_text(item) else {
+                        return;
+                    };
+                    let previous = self.reasoning_items.get(id).cloned().unwrap_or_default();
+                    // 比已缓存文本更短的事件直接忽略：否则缓存被改短后，定稿事件
+                    // 会按最长公共前缀把中段再补发一次，思考过程出现重复段落。
+                    if text.chars().count() <= previous.chars().count() {
+                        return;
+                    }
+                    let delta = increment(&previous, &text);
+                    self.reasoning_items.insert(id.to_string(), text);
+                    self.emit_thinking(state, deltas, id, &delta);
+                }
+            }
+            "agent_message" => {
+                // 只在定稿事件处理。若某个 CLI 版本改用 started/updated 增量推送，
+                // 定稿事件仍带完整文本；提前把 id 记入 completed_items 会让定稿被
+                // 丢弃，最终回复直接截断。
+                if event_type != "item.completed" {
+                    return;
+                }
+                if !self.completed_items.insert(id.to_string()) {
+                    return;
+                }
+                let text = item["text"].as_str().unwrap_or_default();
+                if text.is_empty() {
+                    return;
+                }
+                if !state.full_text.is_empty() {
+                    state.full_text.push_str("\n\n");
+                }
+                state.full_text.push_str(text);
+                state.text_len = state.full_text.len();
+                deltas.push(Delta::Text(text.to_string()));
+            }
+            _ => {}
+        }
+    }
+
+    /// 追加思考增量：只有换了条目才插入分隔，同一 item 的增量保持连续。
+    fn emit_thinking(
+        &mut self,
+        state: &mut StreamParseState,
+        deltas: &mut Vec<Delta>,
+        id: &str,
+        delta: &str,
+    ) {
+        if delta.is_empty() {
+            return;
+        }
+        let separate = id.is_empty() || self.last_reasoning_id.as_deref() != Some(id);
+        if separate && !state.full_thinking.is_empty() {
+            state.full_thinking.push_str("\n\n");
+        }
+        state.full_thinking.push_str(delta);
+        state.thinking_len = state.full_thinking.len();
+        self.last_reasoning_id = Some(id.to_string());
+        deltas.push(Delta::Thinking(delta.to_string()));
     }
 
     fn finish(&self, state: &mut StreamParseState, success: bool, stderr: &str) {
@@ -266,12 +415,11 @@ where
                 for event in activity.codex(&line) {
                     if let crate::cli_activity::Activity::Tool(tool) = event { on_tool(&tool); }
                 }
-                let text_len = state.full_text.len();
-                if let Some(delta) = parser.parse_line(&mut state, &line) {
-                    on_thinking(&delta);
-                }
-                if state.full_text.len() > text_len {
-                    on_text(&state.full_text[text_len..]);
+                for delta in parser.parse_line(&mut state, &line) {
+                    match delta {
+                        Delta::Thinking(delta) => on_thinking(&delta),
+                        Delta::Text(delta) => on_text(&delta),
+                    }
                 }
             }
             Ok(None) => break,
@@ -393,10 +541,16 @@ mod tests {
             &mut state,
             r#"{"type":"thread.started","thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a53"}"#,
         );
-        assert_eq!(parser.parse_line(&mut state, r#"{"type":"item.completed","item":{"id":"r1","type":"reasoning","text":"先检查配置"}}"#).as_deref(), Some("先检查配置"));
+        assert_eq!(
+            parser.parse_line(&mut state, r#"{"type":"item.completed","item":{"id":"r1","type":"reasoning","text":"先检查配置"}}"#),
+            vec![Delta::Thinking("先检查配置".into())]
+        );
         let answer = r#"{"type":"item.completed","item":{"id":"a1","type":"agent_message","text":"连接正常。"}}"#;
-        parser.parse_line(&mut state, answer);
-        parser.parse_line(&mut state, answer);
+        assert_eq!(
+            parser.parse_line(&mut state, answer),
+            vec![Delta::Text("连接正常。".into())]
+        );
+        assert!(parser.parse_line(&mut state, answer).is_empty());
         parser.parse_line(&mut state, r#"{"type":"item.completed","item":{"id":"cmd1","type":"command_execution","aggregated_output":"private command output"}}"#);
         parser.parse_line(&mut state, r#"{"type":"item.completed","item":{"id":"a2","type":"agent_message","text":"可以继续对话。"}}"#);
         parser.parse_line(&mut state, r#"{"type":"turn.completed"}"#);
@@ -404,7 +558,171 @@ mod tests {
         assert!(!state.is_error);
         assert_eq!(state.full_text, "连接正常。\n\n可以继续对话。");
         assert_eq!(state.full_thinking, "先检查配置");
+        assert_eq!(state.text_len, state.full_text.len());
+        assert_eq!(state.thinking_len, state.full_thinking.len());
         assert!(state.session_id.is_some());
+    }
+
+    #[test]
+    fn ordered_deltas_keep_reasoning_before_the_answer_that_follows_it() {
+        // 事件顺序取自真实 codex exec --json 输出。
+        let lines = [
+            r#"{"type":"thread.started","thread_id":"01a13874-fe8d-7ad1-a47d-dd45d8cb2e6c"}"#,
+            r#"{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Codex is ignoring 3 unrecognized configuration settings."}}"#,
+            r#"{"type":"turn.started"}"#,
+            r#"{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"我会先查看当前目录。"}}"#,
+            r#"{"type":"item.started","item":{"id":"item_3","type":"command_execution","command":"Get-ChildItem","aggregated_output":"","exit_code":null,"status":"in_progress"}}"#,
+            r#"{"type":"item.completed","item":{"id":"item_4","type":"reasoning","text":"**Exploring command execution**\n\n先确认工具行为。"}}"#,
+            r#"{"type":"item.completed","item":{"id":"item_5","type":"command_execution","command":"Get-ChildItem","aggregated_output":"failed","exit_code":-1,"status":"failed"}}"#,
+            r#"{"type":"item.completed","item":{"id":"item_8","type":"agent_message","text":"任务未完成。"}}"#,
+            r#"{"type":"turn.completed","usage":{"input_tokens":96970}}"#,
+        ];
+        let mut parser = EventParser::default();
+        let mut state = StreamParseState::new();
+        let mut deltas = Vec::new();
+        for line in lines {
+            deltas.extend(parser.parse_line(&mut state, line));
+        }
+        parser.finish(&mut state, true, "");
+        assert!(!state.is_error);
+        assert_eq!(
+            deltas,
+            vec![
+                Delta::Text("我会先查看当前目录。".into()),
+                Delta::Thinking("**Exploring command execution**\n\n先确认工具行为。".into()),
+                Delta::Text("任务未完成。".into()),
+            ]
+        );
+        assert_eq!(state.full_text, "我会先查看当前目录。\n\n任务未完成。");
+    }
+
+    #[test]
+    fn streamed_reasoning_only_reports_new_text_and_never_repeats() {
+        let mut parser = EventParser::default();
+        let mut state = StreamParseState::new();
+        assert_eq!(
+            parser.parse_line(&mut state, r#"{"type":"item.started","item":{"id":"r1","type":"reasoning","text":"第一步"}}"#),
+            vec![Delta::Thinking("第一步".into())]
+        );
+        // 同一份文本再次推送（updated）不产生任何增量。
+        assert!(parser
+            .parse_line(&mut state, r#"{"type":"item.updated","item":{"id":"r1","type":"reasoning","text":"第一步"}}"#)
+            .is_empty());
+        assert_eq!(
+            parser.parse_line(&mut state, r#"{"type":"item.updated","item":{"id":"r1","type":"reasoning","text":"第一步，第二步"}}"#),
+            vec![Delta::Thinking("，第二步".into())]
+        );
+        // completed 只补尚未流出的尾部。
+        assert_eq!(
+            parser.parse_line(&mut state, r#"{"type":"item.completed","item":{"id":"r1","type":"reasoning","text":"第一步，第二步，结论"}}"#),
+            vec![Delta::Thinking("，结论".into())]
+        );
+        assert!(parser
+            .parse_line(&mut state, r#"{"type":"item.completed","item":{"id":"r1","type":"reasoning","text":"第一步，第二步，结论"}}"#)
+            .is_empty());
+        assert_eq!(state.full_thinking, "第一步，第二步，结论");
+        assert_eq!(state.thinking_len, state.full_thinking.len());
+    }
+
+    #[test]
+    fn shorter_reasoning_updates_never_replay_the_middle_of_the_summary() {
+        // 回归：先收到全文、再收到更短的 updated 时，缓存不能被改短，
+        // 否则定稿事件会按最长公共前缀把中段当成新增内容重复上报。
+        let mut parser = EventParser::default();
+        let mut state = StreamParseState::new();
+        assert_eq!(
+            parser.parse_line(&mut state, r#"{"type":"item.updated","item":{"id":"r1","type":"reasoning","text":"第一段思考内容，结论"}}"#),
+            vec![Delta::Thinking("第一段思考内容，结论".into())]
+        );
+        assert!(
+            parser
+                .parse_line(&mut state, r#"{"type":"item.updated","item":{"id":"r1","type":"reasoning","text":"第一段思考内容"}}"#)
+                .is_empty(),
+            "shorter update must be ignored"
+        );
+        assert!(
+            parser
+                .parse_line(&mut state, r#"{"type":"item.completed","item":{"id":"r1","type":"reasoning","text":"第一段思考内容，结论"}}"#)
+                .is_empty(),
+            "final event must not replay the middle"
+        );
+        assert_eq!(state.full_thinking, "第一段思考内容，结论");
+    }
+
+    #[test]
+    fn settled_reasoning_appends_only_the_tail_beyond_streamed_text() {
+        // 钉住"定稿比已流出内容更长"的分支：只补尾部，不重复已流出的部分。
+        // （上一条用例只覆盖了"定稿 == 已缓存"的零增量情形。）
+        let mut parser = EventParser::default();
+        let mut state = StreamParseState::new();
+        assert_eq!(
+            parser.parse_line(&mut state, r#"{"type":"item.updated","item":{"id":"r1","type":"reasoning","text":"第一段"}}"#),
+            vec![Delta::Thinking("第一段".into())]
+        );
+        assert_eq!(
+            parser.parse_line(&mut state, r#"{"type":"item.completed","item":{"id":"r1","type":"reasoning","text":"第一段，第二段"}}"#),
+            vec![Delta::Thinking("，第二段".into())]
+        );
+        assert_eq!(state.full_thinking, "第一段，第二段");
+        assert_eq!(state.thinking_len, state.full_thinking.len());
+    }
+
+    #[test]
+    fn agent_message_is_only_settled_by_item_completed() {
+        // 回归：若某版本用 started/updated 增量推送正文，定稿事件不能被丢弃，
+        // 否则 full_text（即最终回复）会被截断。
+        let mut parser = EventParser::default();
+        let mut state = StreamParseState::new();
+        assert!(parser
+            .parse_line(&mut state, r#"{"type":"item.updated","item":{"id":"m1","type":"agent_message","text":"前半段"}}"#)
+            .is_empty());
+        assert!(parser
+            .parse_line(&mut state, r#"{"type":"item.started","item":{"id":"m1","type":"agent_message","text":"前半段"}}"#)
+            .is_empty());
+        assert_eq!(
+            parser.parse_line(&mut state, r#"{"type":"item.completed","item":{"id":"m1","type":"agent_message","text":"前半段，后半段。"}}"#),
+            vec![Delta::Text("前半段，后半段。".into())]
+        );
+        assert_eq!(state.full_text, "前半段，后半段。");
+        // 定稿重复到达时仍然只算一次。
+        assert!(parser
+            .parse_line(&mut state, r#"{"type":"item.completed","item":{"id":"m1","type":"agent_message","text":"前半段，后半段。"}}"#)
+            .is_empty());
+        assert_eq!(state.full_text, "前半段，后半段。");
+    }
+
+    #[test]
+    fn reasoning_falls_back_to_summary_text_and_raw_content() {
+        let mut parser = EventParser::default();
+        let mut state = StreamParseState::new();
+        assert_eq!(
+            parser.parse_line(&mut state, r#"{"type":"item.completed","item":{"id":"r1","type":"reasoning","text":"","summary_text":"摘要思考"}}"#),
+            vec![Delta::Thinking("摘要思考".into())]
+        );
+        assert_eq!(
+            parser.parse_line(&mut state, r#"{"type":"item.completed","item":{"id":"r2","type":"reasoning","raw_content":[{"type":"text","text":"原始甲"},{"type":"text","text":"原始乙"}]}}"#),
+            vec![Delta::Thinking("原始甲\n原始乙".into())]
+        );
+        // 不同条目之间插入空行，同一条目内部保持连续。
+        assert_eq!(state.full_thinking, "摘要思考\n\n原始甲\n原始乙");
+        assert!(parser
+            .parse_line(&mut state, r#"{"type":"item.completed","item":{"id":"r3","type":"reasoning"}}"#)
+            .is_empty());
+    }
+
+    #[test]
+    fn exec_args_ask_for_detailed_reasoning_summaries() {
+        let args = exec_args(None, None);
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-c", "model_reasoning_summary=\"detailed\""]),
+            "reasoning summary config missing: {args:?}"
+        );
+        let sandbox = args.iter().position(|arg| arg == "--sandbox").unwrap();
+        assert_eq!(args[sandbox + 1], "workspace-write");
+        assert!(args.iter().any(|arg| arg == "approval_policy=\"never\""));
+        assert!(args.iter().any(|arg| arg == "--json"));
+        assert!(args.iter().any(|arg| arg == "--skip-git-repo-check"));
     }
 
     #[test]
@@ -448,9 +766,9 @@ mod tests {
     #[test]
     fn resumes_only_its_own_session_and_resets_it() {
         let adapter = CodexAdapter::default();
-        assert!(!exec_args(None).iter().any(|arg| arg == "resume"));
+        assert!(!exec_args(None, None).iter().any(|arg| arg == "resume"));
         adapter.update_session("0199a213-81c0-7800-8aa1-bbab2a035a53");
-        let args = exec_args(adapter.session_id.lock().unwrap().as_deref());
+        let args = exec_args(adapter.session_id.lock().unwrap().as_deref(), None);
         assert!(args
             .windows(2)
             .any(|args| args == ["resume", "0199a213-81c0-7800-8aa1-bbab2a035a53"]));
@@ -461,6 +779,18 @@ mod tests {
         adapter.reset_session();
         adapter.update_session("invalid session & shell command");
         assert!(adapter.session_id.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn explicit_model_is_passed_before_the_resume_subcommand() {
+        let args = exec_args(Some("0199a213-81c0-7800-8aa1-bbab2a035a53"), Some("gpt-5-codex"));
+        let model = args.iter().position(|arg| arg == "-m").expect("缺少 -m");
+        assert_eq!(args[model + 1], "gpt-5-codex");
+        let resume = args.iter().position(|arg| arg == "resume").expect("缺少 resume");
+        assert!(model < resume, "-m 必须在 resume 子命令之前: {args:?}");
+        assert_eq!(args.last().map(String::as_str), Some("-"));
+        // 空模型字符串表示跟随本机配置，不追加参数。
+        assert!(!exec_args(None, Some("  ")).iter().any(|arg| arg == "-m"));
     }
 
     // Opt in with: cargo test --lib codex::tests::local_cli_round_trip -- --ignored
