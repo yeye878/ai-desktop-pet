@@ -35,7 +35,7 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
 
 export const name = 'pet-runner'
-export const inject = ['agentDefaultModel', 'agents', 'sessions', 'cmdlineArgs', 'appExit']
+export const inject = ['agentDefaultModel', 'agents', 'sessions', 'cmdlineArgs', 'appExit', 'llm']
 
 /** 单个字段写进协议前的上限，避免一次工具输出把整行撑爆。 */
 const FIELD_LIMIT = 4000
@@ -50,14 +50,18 @@ const pendingApprovals = new Map()
 const sessionAllows = new Set()
 
 const USAGE = [
-  'dsh --profile dsh-pet --prompt-file <path> [--resume <session-id>] [--model <model>]',
+  'dsh --profile dsh-pet --prompt-file <path> [--resume <session-id>] [--model <model>] [--provider <id>] [--effort <id>]',
+  'dsh --profile dsh-pet --list-models [--provider <id>]',
   '',
   '桌宠专用 runner：读取提示词文件，流式输出推理/正文/工具事件，转发授权请求，可选续接已有会话。',
   '',
   'Options:',
-  '  --prompt-file <path>    UTF-8 提示词文件（必需）',
+  '  --prompt-file <path>    UTF-8 提示词文件（--list-models 模式下可省略）',
   '  --resume <session-id>   续接该会话，失败时自动新建',
-  '  --model <model>         本回合模型覆盖（provider 不变；默认跟随本机配置）',
+  '  --model <model>         本回合模型覆盖（默认跟随本机配置）',
+  '  --provider <id>         本回合渠道（provider）覆盖（默认跟随本机配置）',
+  '  --effort <id>           本回合思考强度覆盖（模型不支持的档位会记录日志并忽略）',
+  '  --list-models           输出本机全部渠道的模型目录（===AGENT_MODELS=== + JSON）后退出',
   '  -h, --help              显示本帮助',
   ''
 ].join('\n')
@@ -74,15 +78,181 @@ function clip(value, limit) {
 }
 
 function parseArgs(argv) {
-  const options = { promptFile: undefined, resume: undefined, model: undefined, help: false }
+  const options = {
+    promptFile: undefined,
+    resume: undefined,
+    model: undefined,
+    provider: undefined,
+    effort: undefined,
+    listModels: false,
+    help: false
+  }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
     if (arg === '--prompt-file') options.promptFile = argv[index += 1]
     else if (arg === '--resume') options.resume = argv[index += 1]
     else if (arg === '--model') options.model = argv[index += 1]
+    else if (arg === '--provider') options.provider = argv[index += 1]
+    else if (arg === '--effort') options.effort = argv[index += 1]
+    else if (arg === '--list-models') options.listModels = true
     else if (arg === '-h' || arg === '--help') options.help = true
   }
   return options
+}
+
+/** 模型目录协议行前缀：桌宠 Rust 侧按这个前缀找 JSON。 */
+const MODEL_LINE_PREFIX = '===AGENT_MODELS==='
+
+function optionalText(value) {
+  if (value === undefined || value === null) return undefined
+  const text = typeof value === 'string' ? value : String(value)
+  return text === '' ? undefined : text
+}
+
+/** 模型展示名：llm 包在 config 未给 name 时会回退成包名，这种值不能直接进 UI。 */
+function modelDisplayName(rawName, id) {
+  const text = typeof rawName === 'string' ? rawName.trim() : ''
+  if (text === '' || text.startsWith('@')) return id
+  return text
+}
+
+/** 本机 provider 列表统一成 { id, label }；id 必须非空。 */
+function normalizeProviders(rawProviders) {
+  const list = []
+  for (const provider of Array.isArray(rawProviders) ? rawProviders : []) {
+    if (!provider || typeof provider.id !== 'string' || provider.id === '') continue
+    const label = typeof provider.name === 'string' && provider.name !== '' ? provider.name : provider.id
+    list.push({ id: provider.id, label })
+  }
+  return list
+}
+
+/** 读取单个 provider 的全部模型；provider 级失败只记录并继续。 */
+async function collectProviderModels(llm, provider, models, errors) {
+  let rawModels
+  try {
+    rawModels = await llm.listModels(provider.id)
+  } catch (error) {
+    const message = '渠道 ' + provider.id + ' 读取失败：' + (error?.message ?? String(error))
+    errors.push(message)
+    emit({ type: 'log', text: message })
+    return
+  }
+  for (const model of Array.isArray(rawModels) ? rawModels : []) {
+    const id = typeof model?.id === 'string' ? model.id : ''
+    if (id === '') continue
+    const entry = {
+      provider: provider.id,
+      provider_label: provider.label,
+      id,
+      name: modelDisplayName(model?.name, id),
+      default_effort: '',
+      efforts: []
+    }
+    const description = optionalText(model?.description)
+    if (description !== undefined) entry.description = description
+    try {
+      const info = await llm.resolveModelInfo(provider.id, id)
+      const reasoning = info?.reasoning
+      if (reasoning && typeof reasoning.defaultEffort === 'string') entry.default_effort = reasoning.defaultEffort
+      if (reasoning && Array.isArray(reasoning.efforts)) {
+        entry.efforts = reasoning.efforts
+          .map((effort) => {
+            const effortId = typeof effort?.id === 'string' ? effort.id : typeof effort?.effort === 'string' ? effort.effort : ''
+            if (effortId === '') return undefined
+            const option = { id: effortId, name: typeof effort?.name === 'string' && effort.name !== '' ? effort.name : effortId }
+            const effortDescription = optionalText(effort?.description)
+            if (effortDescription !== undefined) option.description = effortDescription
+            return option
+          })
+          .filter((effort) => effort !== undefined)
+      }
+      const contextWindow = info?.context?.contextWindow
+      if (typeof contextWindow === 'number' && Number.isFinite(contextWindow) && contextWindow > 0) {
+        entry.context_window = contextWindow
+      }
+    } catch (error) {
+      emit({ type: 'log', text: '读取模型 ' + provider.id + '/' + id + ' 的能力信息失败：' + (error?.message ?? String(error)) })
+    }
+    models.push(entry)
+  }
+}
+
+/**
+ * 读取本机全部 provider 的模型目录（v2 协议）。
+ * 只在 --list-models 模式使用：不启动 stdin/授权通道，输出一行协议后退出。
+ */
+async function collectModelCatalog(ctx, overrideProvider) {
+  const defaultModel = ctx.get('agentDefaultModel')
+  const llm = ctx.get('llm')
+  if (llm === undefined || llm === null || typeof llm.listModels !== 'function') {
+    throw new Error('当前 dsh 版本没有可用的模型目录服务（llm.listModels）')
+  }
+  const selection = defaultModel?.currentSelection?.() ?? {}
+  const providers = typeof llm.listProviders === 'function' ? normalizeProviders(await llm.listProviders()) : []
+  if (providers.length === 0) throw new Error('当前 dsh 版本没有返回任何模型渠道（llm.listProviders 为空）')
+  const errors = []
+  const models = []
+  for (const provider of providers) {
+    await collectProviderModels(llm, provider, models, errors)
+  }
+  let localProvider = typeof selection.provider === 'string' ? selection.provider : ''
+  const wanted = typeof overrideProvider === 'string' ? overrideProvider.trim() : ''
+  if (wanted !== '') {
+    if (providers.some((provider) => provider.id === wanted)) localProvider = wanted
+    else emit({ type: 'log', text: '渠道 ' + wanted + ' 不在本机配置中，忽略 --provider' })
+  }
+  return {
+    local: {
+      provider: localProvider,
+      model: typeof selection.model === 'string' ? selection.model : '',
+      effort: typeof selection.reasoningEffort === 'string' ? selection.reasoningEffort : ''
+    },
+    providers,
+    models,
+    error: errors.join('；')
+  }
+}
+
+/** 本回合模型 / provider 覆盖：空值跟随本机；未知 provider 记录日志并忽略。 */
+async function applyRequestedSelection(ctx, selection, options) {
+  const requestedModel = typeof options.model === 'string' ? options.model.trim() : ''
+  if (requestedModel !== '') selection.model = requestedModel
+  const requestedProvider = typeof options.provider === 'string' ? options.provider.trim() : ''
+  if (requestedProvider === '') return
+  const llm = ctx.get('llm')
+  let providers = []
+  try {
+    providers = typeof llm?.listProviders === 'function' ? normalizeProviders(await llm.listProviders()) : []
+  } catch (error) {
+    emit({ type: 'log', text: '读取渠道列表失败，忽略 --provider：' + (error?.message ?? String(error)) })
+    return
+  }
+  if (providers.some((provider) => provider.id === requestedProvider)) selection.provider = requestedProvider
+  else emit({ type: 'log', text: '渠道 ' + requestedProvider + ' 不在本机配置中，忽略 --provider' })
+}
+
+/** 输出一行模型目录协议（异常也保持同一结构，error 字段说明原因）。 */
+function writeModelCatalog(payload) {
+  process.stdout.write(MODEL_LINE_PREFIX + JSON.stringify(payload) + '\n')
+}
+
+/** --effort 只覆盖模型真实支持的档位；不支持时记录日志并保持跟随本机。 */
+async function applyRequestedEffort(ctx, selection, requestedEffort) {
+  const llm = ctx.get('llm')
+  const provider = typeof selection.provider === 'string' ? selection.provider : ''
+  const model = typeof selection.model === 'string' ? selection.model : ''
+  try {
+    const info = await llm?.resolveModelInfo?.(provider, model)
+    const efforts = Array.isArray(info?.reasoning?.efforts) ? info.reasoning.efforts : []
+    const supported = efforts.some(
+      (effort) => effort && (effort.id === requestedEffort || effort.effort === requestedEffort)
+    )
+    if (supported) selection.reasoningEffort = requestedEffort
+    else emit({ type: 'log', text: '模型 ' + model + ' 不支持思考强度 ' + requestedEffort + '，本回合忽略 --effort' })
+  } catch (error) {
+    emit({ type: 'log', text: '校验思考强度失败，忽略 --effort ' + requestedEffort + '：' + (error?.message ?? String(error)) })
+  }
 }
 
 function blocksToText(blocks) {
@@ -155,6 +325,24 @@ async function run(ctx) {
     exit(0)
     return
   }
+  // 目录模式：只读本机模型目录，不读提示词、不启动 stdin/授权通道。
+  if (options.listModels) {
+    let catalog
+    try {
+      await ctx.get('loader')?.await()
+      catalog = await collectModelCatalog(ctx, options.provider)
+    } catch (error) {
+      catalog = {
+        local: { provider: '', model: '', effort: '' },
+        providers: [],
+        models: [],
+        error: String(error?.message ?? error)
+      }
+    }
+    writeModelCatalog(catalog)
+    exit(0)
+    return
+  }
   if (!options.promptFile) throw new Error('缺少 --prompt-file 参数')
 
   const task = await readFile(options.promptFile, 'utf8')
@@ -164,10 +352,12 @@ async function run(ctx) {
   await ctx.get('loader')?.await()
 
   const defaultModel = ctx.get('agentDefaultModel')
-  // --model 只覆盖模型 id，provider 仍跟随本机配置。
+  // 本回合先应用 --model / --provider（空值跟随本机配置），再按最终模型校验 --effort。
   const selection = { ...defaultModel.currentSelection() }
-  const requestedModel = typeof options.model === 'string' ? options.model.trim() : ''
-  if (requestedModel !== '') selection.model = requestedModel
+  await applyRequestedSelection(ctx, selection, options)
+  // 思考强度按「本回合最终 provider+模型」校验：支持才覆盖，否则保持本机默认。
+  const requestedEffort = typeof options.effort === 'string' ? options.effort.trim() : ''
+  if (requestedEffort !== '') await applyRequestedEffort(ctx, selection, requestedEffort)
   const agentOptions = { provider: selection.provider, model: selection.model }
   const setup = (agentCtx) => {
     installModelSelection(agentCtx, { current: selection, assembled: undefined })

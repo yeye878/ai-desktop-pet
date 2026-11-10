@@ -872,6 +872,7 @@ async function toggleVoiceInput() {
 }
 
 async function abortAi() {
+  const targetSessionId = sessions.activeMainId || undefined;
   clearLoadingTimeout();
   if (chat.isLoading) appendAssistantOnce("已中止", thinkingContent.value || undefined, undefined, "aborted");
   chat.isLoading = false;
@@ -880,7 +881,7 @@ async function abortAi() {
   pendingConfirm.value = null;  // Clear pending tool confirmation on abort
   pendingQuestion.value = null;
   try {
-    await invoke("abort_ai");
+    await invoke("abort_ai", { sessionId: targetSessionId });
   } catch {
     // Ignore abort failures.
   }
@@ -955,7 +956,7 @@ async function refreshChatState() {
   const historyArgs = sessionId ? { sessionId } : {};
   const [history, active] = await Promise.all([
     invoke<ChatHistoryItem[]>("get_chat_history", historyArgs),
-    invoke<ActiveChat | null>("get_active_chat"),
+    invoke<ActiveChat | null>("get_active_chat", historyArgs),
   ]);
 
   // 会话列表刷新会重建消息数组；把仍在内存里的工具轨迹/展示片段按内容合并回去，

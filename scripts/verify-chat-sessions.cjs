@@ -263,7 +263,7 @@ test("create(main) 更新活跃主会话，create(agent) 不影响活跃主会�
   assert.equal(store.sessions.length, 2);
   assert.deepEqual(plain(backend.calls.at(-1)), {
     command: "create_chat_session",
-    args: { slot: "main", agentId: "", model: "", title: "" },
+    args: { slot: "main", agentId: "", model: "", provider: "", reasoningEffort: "", title: "" },
   });
 
   const activeBefore = store.activeMainId;
@@ -483,20 +483,54 @@ test("dev mock：多会话命令、session 化事件与 agent 回显", async () 
   const sessionMessages = await mock.invoke("get_chat_session_messages", { sessionId: active.id });
   assert.deepEqual(plain(sessionMessages.map((message) => message.id)), plain(history.map((message) => message.id)));
 
-  // agent 窗口回合：targetAgentId 用该 agent 名字回显
+  // agent 窗口回合 + 多智能体/多主对话并行：codex 在回答时 dsh 与新主对话可以同时发起回合
   const dshSession = (await mock.invoke("list_chat_sessions", { slot: "dsh" }))[0];
+  const codexParallel = await mock.invoke("create_chat_session", {
+    slot: "codex", agentId: "builtin-codex", model: "gpt-5-codex", title: "Codex并行",
+  });
+  const secondMain = await mock.invoke("create_chat_session", { slot: "main", title: "并行主对话" });
+
   await mock.invoke("send_to_ai", {
+    message: "codex 任务", sessionId: codexParallel.id, targetAgentId: "builtin-codex", model: "gpt-5-codex",
+  });
+  // 同一会话重复发送仍被拦截
+  await assert.rejects(
+    () => mock.invoke("send_to_ai", { message: "codex 重复发送", sessionId: codexParallel.id, targetAgentId: "builtin-codex" }),
+    /AI 正在思考中/,
+  );
+  // 但 dsh 智能体窗口与另一个主对话会话可以并行启动！
+  const dshStarted = await mock.invoke("send_to_ai", {
     message: "agent 测试", sessionId: dshSession.id, targetAgentId: "builtin-dsh", model: "deepseek-chat",
   });
+  assert.equal(dshStarted.started, true);
+  const secondMainStarted = await mock.invoke("send_to_ai", {
+    message: "并行主对话提问", sessionId: secondMain.id,
+  });
+  assert.equal(secondMainStarted.started, true);
+
+  assert.equal((await mock.invoke("get_active_chat", { sessionId: codexParallel.id })).session_id, codexParallel.id);
+  assert.equal((await mock.invoke("get_active_chat", { sessionId: dshSession.id })).session_id, dshSession.id);
+  assert.equal((await mock.invoke("get_active_chat", { sessionId: secondMain.id })).session_id, secondMain.id);
+
   await delay(2200);
-  const agentFinished = mock.eventsOf("ai-finished").at(-1);
-  assert.equal(agentFinished.payload.session_id, dshSession.id);
-  assert.equal(agentFinished.payload.agent_name, "dsh");
-  assert.match(agentFinished.payload.text, /dsh/);
+  const finishedEvents = mock.eventsOf("ai-finished");
+  const dshFinished = finishedEvents.find((event) => event.payload.session_id === dshSession.id);
+  assert.ok(dshFinished, "dsh 并行回合应正常收到 ai-finished");
+  assert.equal(dshFinished.payload.agent_name, "dsh");
+  assert.match(dshFinished.payload.text, /dsh/);
+  const codexFinished = finishedEvents.find((event) => event.payload.session_id === codexParallel.id);
+  assert.ok(codexFinished, "codex 并行回合应正常收到 ai-finished");
+  assert.equal(codexFinished.payload.agent_name, "codex");
+  const secondMainFinished = finishedEvents.find((event) => event.payload.session_id === secondMain.id);
+  assert.ok(secondMainFinished, "并行主对话应正常收到 ai-finished");
+
   const agentHistory = await mock.invoke("get_chat_history", { sessionId: dshSession.id });
   assert.equal(agentHistory.at(-1).agent_name, "dsh");
   const mainHistory = await mock.invoke("get_chat_history", { sessionId: active.id });
   assert.ok(!mainHistory.some((message) => message.content === "agent 测试"), "agent 窗口消息不能混进主会话");
+  const secondMainHistory = await mock.invoke("get_chat_history", { sessionId: secondMain.id });
+  assert.ok(secondMainHistory.some((message) => message.role === "user" && message.content === "并行主对话提问"));
+  assert.ok(secondMainHistory.some((message) => message.role === "assistant" && message.content.includes("预览模式收到")));
 
   // rename / delete / clear
   const renamed = await mock.invoke("rename_chat_session", { id: active.id, title: "主会话改名" });

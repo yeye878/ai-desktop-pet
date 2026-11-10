@@ -76,8 +76,18 @@ impl UiPermission {
 
     async fn current_cancel(&self) -> CancellationToken {
         let state = self.app.state::<crate::AppState>();
-        let token = state.abort_token.lock().await.clone();
-        token.unwrap_or_default()
+        let session_id = crate::current_turn_session(&state);
+        state
+            .abort_tokens
+            .lock()
+            .ok()
+            .and_then(|tokens| {
+                tokens
+                    .get(&session_id)
+                    .cloned()
+                    .or_else(|| tokens.values().next().cloned())
+            })
+            .unwrap_or_default()
     }
 }
 

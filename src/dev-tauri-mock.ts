@@ -81,6 +81,10 @@ type MockChatSession = {
   agent_name: string;
   agent_avatar: string;
   model: string;
+  /** 模型所属渠道 provider id；空串 = 跟随本机渠道（与后端 chat_sessions.model_provider 一致）。 */
+  provider: string;
+  /** 思考强度 id；空串 = 跟随本机默认（与后端 chat_sessions.reasoning_effort 一致）。 */
+  reasoning_effort: string;
   created_at: number;
   updated_at: number;
 };
@@ -415,6 +419,8 @@ function createMockChatSession(options: {
   title?: string;
   agentId?: string;
   model?: string;
+  provider?: string;
+  reasoningEffort?: string;
   createdAt?: number;
   updatedAt?: number;
 }): MockChatSession {
@@ -432,6 +438,8 @@ function createMockChatSession(options: {
     agent_name: isMain ? "" : (boundAgent?.name || fallbackAgent?.name || ""),
     agent_avatar: isMain ? "" : (boundAgent?.avatar || fallbackAgent?.avatar || ""),
     model: options.model || "",
+    provider: options.provider || "",
+    reasoning_effort: options.reasoningEffort || "",
     created_at: createdAt,
     updated_at: options.updatedAt ?? createdAt,
   };
@@ -614,6 +622,273 @@ function scheduleMockChatTurn(
   });
 }
 
+// === agent 模型目录夹具（浏览器 dev 模式）：形状严格对齐 docs/agent-model-catalog-contract.md 第 2 节 ===
+type MockAgentEffortOption = { id: string; name: string; description?: string };
+type MockAgentModelOption = {
+  id: string;
+  name: string;
+  description?: string;
+  /** 仅 dsh：provider 路由 id / 展示名。 */
+  provider?: string;
+  provider_label?: string;
+  default_effort: string;
+  efforts: MockAgentEffortOption[];
+};
+type MockAgentModelCatalog = {
+  slot: string;
+  backend: string;
+  local_provider: string;
+  local_model: string;
+  local_model_label: string;
+  local_effort: string;
+  models: MockAgentModelOption[];
+  error: string;
+  fetched_at: number;
+};
+
+/**
+ * 返回某个 agent 窗口的模型目录夹具（保持自包含，verify 脚本可直接抽取该函数做断言）：
+ * - dsh：多渠道（opendesgin/deepseek-official/together/qwen），local_provider=opendesgin，
+ *   同一 model id 出现在多个渠道（deepseek-v4.1-flash），模型总数 > 12 以覆盖搜索框；
+ * - codex：6 个模型，efforts low..ultra；
+ * - claude：opus/sonnet/haiku 别名 + low/medium/high/xhigh/max 五档。
+ */
+function mockAgentModelCatalog(slot: string): MockAgentModelCatalog {
+  const fetchedAt = Date.now();
+  if (slot === "dsh") {
+    const opendesginEfforts: MockAgentEffortOption[] = [
+      { id: "off", name: "Off", description: "关闭思考" },
+      { id: "low", name: "Low", description: "轻量思考" },
+      { id: "medium", name: "Medium", description: "标准思考" },
+      { id: "high", name: "High", description: "深度思考" },
+      { id: "xhigh", name: "XHigh", description: "极高思考预算" },
+      { id: "max", name: "Max", description: "最大思考预算" },
+    ];
+    const deepseekEfforts: MockAgentEffortOption[] = [
+      { id: "off", name: "Off", description: "关闭思考" },
+      { id: "low", name: "Low", description: "轻量思考" },
+      { id: "high", name: "High", description: "深度思考" },
+      { id: "max", name: "Max", description: "最大思考预算" },
+    ];
+    const togetherEfforts: MockAgentEffortOption[] = [
+      { id: "low", name: "Low" },
+      { id: "medium", name: "Medium" },
+      { id: "high", name: "High" },
+      { id: "xhigh", name: "XHigh" },
+      { id: "max", name: "Max" },
+    ];
+    return {
+      slot: "dsh",
+      backend: "dsh",
+      // 本机默认渠道是聚合渠道 opendesgin；同一个 model id 会出现在多个渠道，靠 (provider,id) 区分。
+      local_provider: "opendesgin",
+      local_model: "deepseek-v4.1-flash",
+      local_model_label: "opendesgin / deepseek-v4.1-flash",
+      local_effort: "high",
+      models: [
+        {
+          id: "claude-opus-5",
+          name: "Claude Opus 5",
+          description: "Anthropic 旗舰，长上下文推理",
+          provider: "opendesgin",
+          provider_label: "opendesgin",
+          default_effort: "high",
+          efforts: opendesginEfforts,
+        },
+        {
+          id: "claude-sonnet-5.5",
+          name: "Claude Sonnet 5.5",
+          description: "速度与质量平衡",
+          provider: "opendesgin",
+          provider_label: "opendesgin",
+          default_effort: "high",
+          efforts: opendesginEfforts,
+        },
+        {
+          id: "deepseek-v4.1-flash",
+          name: "DeepSeek V4.1 Flash",
+          description: "本机默认模型",
+          provider: "opendesgin",
+          provider_label: "opendesgin",
+          default_effort: "high",
+          efforts: opendesginEfforts,
+        },
+        {
+          id: "gemini-3.7-flash",
+          name: "Gemini 3.7 Flash",
+          description: "多模态快速模型",
+          provider: "opendesgin",
+          provider_label: "opendesgin",
+          default_effort: "medium",
+          efforts: opendesginEfforts,
+        },
+        {
+          id: "glm-5.2",
+          name: "GLM 5.2",
+          description: "中文对话与工具调用",
+          provider: "opendesgin",
+          provider_label: "opendesgin",
+          default_effort: "medium",
+          efforts: opendesginEfforts,
+        },
+        {
+          id: "gpt-6.1",
+          name: "GPT-6.1",
+          description: "OpenAI 通用模型",
+          provider: "opendesgin",
+          provider_label: "opendesgin",
+          default_effort: "medium",
+          efforts: opendesginEfforts,
+        },
+        {
+          id: "kimi-k3",
+          name: "Kimi K3",
+          description: "超长上下文",
+          provider: "opendesgin",
+          provider_label: "opendesgin",
+          default_effort: "medium",
+          efforts: opendesginEfforts,
+        },
+        {
+          id: "qwen3.7-max",
+          name: "Qwen 3.7 Max",
+          description: "阿里旗舰模型",
+          provider: "opendesgin",
+          provider_label: "opendesgin",
+          default_effort: "medium",
+          efforts: opendesginEfforts,
+        },
+        {
+          id: "deepseek-v4-flash",
+          name: "DeepSeek-V4-Flash",
+          description: "低延迟日常对话",
+          provider: "deepseek-official",
+          provider_label: "DeepSeek",
+          default_effort: "high",
+          efforts: deepseekEfforts,
+        },
+        {
+          id: "deepseek-v4-pro",
+          name: "DeepSeek-V4-Pro",
+          description: "复杂推理与长任务",
+          provider: "deepseek-official",
+          provider_label: "DeepSeek",
+          default_effort: "high",
+          efforts: deepseekEfforts,
+        },
+        {
+          id: "deepseek-v4-flash-vision-exp",
+          name: "DeepSeek-V4-Flash-Vision-Exp",
+          description: "多模态实验模型",
+          provider: "deepseek-official",
+          provider_label: "DeepSeek",
+          default_effort: "medium",
+          efforts: deepseekEfforts,
+        },
+        {
+          id: "deepseek-v4.1-flash",
+          name: "DeepSeek V4.1 Flash",
+          description: "Together 渠道托管",
+          provider: "together",
+          provider_label: "Together",
+          default_effort: "medium",
+          efforts: togetherEfforts,
+        },
+        {
+          id: "deepseek-v4.1-flash",
+          name: "DeepSeek V4.1 Flash",
+          description: "Qwen 渠道托管",
+          provider: "qwen",
+          provider_label: "Qwen",
+          default_effort: "max",
+          efforts: togetherEfforts,
+        },
+        {
+          id: "qwen3.7-max",
+          name: "Qwen 3.7 Max",
+          description: "Qwen 官方渠道",
+          provider: "qwen",
+          provider_label: "Qwen",
+          default_effort: "medium",
+          efforts: togetherEfforts,
+        },
+      ],
+      error: "",
+      fetched_at: fetchedAt,
+    };
+  }
+  if (slot === "codex") {
+    const codexEfforts: MockAgentEffortOption[] = [
+      { id: "low", name: "Low" },
+      { id: "medium", name: "Medium" },
+      { id: "high", name: "High" },
+      { id: "xhigh", name: "XHigh" },
+      { id: "max", name: "Max" },
+      { id: "ultra", name: "Ultra" },
+    ];
+    return {
+      slot: "codex",
+      backend: "codex",
+      local_provider: "",
+      local_model: "gpt-6.1-terra",
+      local_model_label: "GPT-6.1 Terra",
+      local_effort: "high",
+      models: [
+        { id: "gpt-6.1-terra", name: "GPT-6.1 Terra", description: "默认编码模型", default_effort: "high", efforts: codexEfforts },
+        { id: "gpt-6.1-pro", name: "GPT-6.1 Pro", description: "高难度推理", default_effort: "high", efforts: codexEfforts },
+        { id: "gpt-6.1", name: "GPT-6.1", description: "通用模型", default_effort: "medium", efforts: codexEfforts },
+        { id: "gpt-5.4-codex", name: "GPT-5.4 Codex", description: "上一代编码模型", default_effort: "high", efforts: codexEfforts },
+        { id: "gpt-5.4", name: "GPT-5.4", description: "上一代通用模型", default_effort: "medium", efforts: codexEfforts },
+        { id: "gpt-5-codex-mini", name: "GPT-5 Codex Mini", description: "轻量快速", default_effort: "low", efforts: codexEfforts },
+      ],
+      error: "",
+      fetched_at: fetchedAt,
+    };
+  }
+  if (slot === "claude") {
+    const claudeEfforts: MockAgentEffortOption[] = [
+      { id: "low", name: "低", description: "更快、更省 token" },
+      { id: "medium", name: "中", description: "平衡速度与质量" },
+      { id: "high", name: "高", description: "默认深度" },
+      { id: "xhigh", name: "极高", description: "复杂任务" },
+      { id: "max", name: "最高", description: "最大思考预算" },
+    ];
+    const alias = (id: string, name: string, mapped: string): MockAgentModelOption => ({
+      id,
+      name,
+      description: "本机映射到 " + mapped,
+      default_effort: "high",
+      efforts: claudeEfforts,
+    });
+    return {
+      slot: "claude",
+      backend: "claude_code",
+      local_provider: "",
+      local_model: "sonnet",
+      local_model_label: "Sonnet",
+      local_effort: "high",
+      models: [
+        alias("opus", "Opus", "claude-opus-5"),
+        alias("sonnet", "Sonnet", "claude-sonnet-5"),
+        alias("haiku", "Haiku", "claude-haiku-5"),
+      ],
+      error: "",
+      fetched_at: fetchedAt,
+    };
+  }
+  return {
+    slot: slot || "unknown",
+    backend: "",
+    local_provider: "",
+    local_model: "",
+    local_model_label: "",
+    local_effort: "",
+    models: [],
+    error: "未知的 agent slot：" + (slot || "(空)"),
+    fetched_at: fetchedAt,
+  };
+}
+
 function handleMockCommand(cmd: string, args: MockPayload) {
   if (cmd.startsWith("plugin:")) {
     if (cmd === "plugin:window|get_all_windows") return ["main"];
@@ -626,6 +901,11 @@ function handleMockCommand(cmd: string, args: MockPayload) {
   }
 
   switch (cmd) {
+    case "get_agent_model_catalog": {
+      // 浏览器 dev 模式没有真实后端探测，直接返回三 slot 夹具；force 刷新同样返回夹具。
+      const slot = readArg(args, "slot", "slot", "dsh").trim() || "dsh";
+      return mockAgentModelCatalog(slot);
+    }
     case "get_pet_state":
     case "tick":
       return { ...mockPetState };
@@ -653,6 +933,8 @@ function handleMockCommand(cmd: string, args: MockPayload) {
         title: readArg(args, "title", "title", "").trim() || (slot === "main" ? nextMockConversationTitle() : undefined),
         agentId: readArg(args, "agentId", "agent_id", "").trim() || undefined,
         model: readArg(args, "model", "model", "").trim(),
+        provider: readArg(args, "provider", "model_provider", "").trim(),
+        reasoningEffort: readArg(args, "reasoningEffort", "reasoning_effort", "").trim(),
       });
       if (slot === "main") {
         mockActiveMainSessionId = session.id;
@@ -711,10 +993,14 @@ function handleMockCommand(cmd: string, args: MockPayload) {
       const agentName = args?.agentName ?? args?.agent_name;
       const agentAvatar = args?.agentAvatar ?? args?.agent_avatar;
       const model = args?.model;
+      const provider = args?.provider ?? args?.model_provider;
+      const reasoningEffort = args?.reasoningEffort ?? args?.reasoning_effort;
       if (agentId !== undefined) session.agent_id = String(agentId);
       if (agentName !== undefined) session.agent_name = String(agentName);
       if (agentAvatar !== undefined) session.agent_avatar = String(agentAvatar);
       if (model !== undefined) session.model = String(model);
+      if (provider !== undefined) session.provider = String(provider);
+      if (reasoningEffort !== undefined) session.reasoning_effort = String(reasoningEffort);
       touchMockChatSession(session);
       emitMockSessionsChanged();
       return publicMockChatSession(session);
@@ -752,8 +1038,26 @@ function handleMockCommand(cmd: string, args: MockPayload) {
       return selected.map((message) => ({ ...message }));
     }
     case "get_active_chat": {
+      const requested = readArg(args, "sessionId", "session_id", "");
+      if (requested) {
+        const hit = mockActiveChats.get(requested);
+        return hit ? { ...hit } : null;
+      }
+      const mainActive = mockActiveMainSessionId ? mockActiveChats.get(mockActiveMainSessionId) : undefined;
+      if (mainActive) return { ...mainActive };
       const activeChats = [...mockActiveChats.values()];
       return activeChats.length > 0 ? { ...activeChats[activeChats.length - 1] } : null;
+    }
+    case "abort_ai": {
+      const requested = readArg(args, "sessionId", "session_id", "");
+      if (requested) {
+        mockActiveChats.delete(requested);
+      } else if (mockActiveMainSessionId && mockActiveChats.has(mockActiveMainSessionId)) {
+        mockActiveChats.delete(mockActiveMainSessionId);
+      } else {
+        mockActiveChats.clear();
+      }
+      return null;
     }
     case "clear_chat_history": {
       resetMockChatState();
@@ -767,9 +1071,9 @@ function handleMockCommand(cmd: string, args: MockPayload) {
       seedMockChatState();
       const message = readArg(args, "message", "message", "").trim();
       if (!message) throw new Error("消息不能为空");
-      if (mockActiveChats.size > 0) throw new Error("AI 正在思考中，请稍等当前回复完成后");
       const requestedSessionId = readArg(args, "sessionId", "session_id", "");
       const session = (requestedSessionId && findMockChatSession(requestedSessionId)) || resolveMockActiveMainSession();
+      if (mockActiveChats.has(session.id)) throw new Error("AI 正在思考中，请稍等当前回复完成后");
       const targetAgentId = readArg(args, "targetAgentId", "target_agent_id", "").trim();
       const targetAgent = targetAgentId ? mockAgents.find((agent) => agent.id === targetAgentId) : undefined;
       const agentInfo: MockAgentIdentity | null = targetAgentId

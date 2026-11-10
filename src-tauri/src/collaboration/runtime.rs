@@ -70,7 +70,7 @@ pub async fn run(
         }
         state.approved_tool_types.lock().await.clear();
         if let Ok(mut active) = state.active_chat.lock() {
-            if let Some(active) = active.active.as_mut() {
+            if let Some(active) = active.by_session.get_mut(&session_id) {
                 active.thinking.clear();
             }
         }
@@ -186,18 +186,16 @@ pub(crate) async fn finish(
     if !owns_run(&state, run_id) {
         return;
     }
+    let session_id = crate::current_turn_session(&state);
     state.pending_confirms.lock().await.clear();
     state.pending_questions.lock().await.clear();
     state.approved_tool_types.lock().await.clear();
-    if let Some(pid) = state.active_ai_pid.lock().await.take() {
-        crate::kill_process_tree(pid);
+    if let Ok(mut pids) = state.active_ai_pids.lock() {
+        if let Some(pid) = pids.remove(&session_id) {
+            crate::kill_process_tree(pid);
+        }
     }
-    *state.abort_token.lock().await = None;
-    state
-        .behavior
-        .lock()
-        .await
-        .set_state(crate::behavior::PetState::Idle);
+    crate::unregister_turn_cancel(&state, &session_id);
     publish(
         app,
         CollaborationState {
@@ -211,9 +209,14 @@ pub(crate) async fn finish(
         },
     );
     // Release the request gate last, after all async cleanup and final events.
-    if let Ok(mut active) = state.active_chat.lock() {
-        active.active = None;
-    };
+    crate::clear_active_chat_for(&state, &session_id);
+    if !crate::has_any_active_chat(&state) {
+        state
+            .behavior
+            .lock()
+            .await
+            .set_state(crate::behavior::PetState::Idle);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -313,18 +316,18 @@ async fn execute_cli(
     let mut child = match backend {
         "claude_code" => {
             crate::openclaw::ClaudeAdapter::new()
-                .spawn_streaming_with(app, message, system, None, model)
+                .spawn_streaming_with(app, message, system, None, model, None)
                 .await
         }
         "codex" => {
             crate::codex::CodexAdapter::default()
-                .spawn_streaming_with(app, message, system, None, model)
+                .spawn_streaming_with(app, message, system, None, model, None)
                 .await
         }
         "dsh" => {
             // 角色调用不复用桌宠的 dsh 会话：上下文由完整共享记录重建。
             crate::dsh::DshAdapter::default()
-                .spawn_streaming_with(app, message, &[], system, None, model)
+                .spawn_streaming_with(app, message, &[], system, None, model, None, None)
                 .await
         }
         _ => {
@@ -336,27 +339,23 @@ async fn execute_cli(
     }
     .map_err(|error| TurnError::failed(format!("启动 {backend} 失败：{error}"), ""))?;
     let state = app.state::<AppState>();
+    let session_id = crate::current_turn_session(&state);
     let pid = child.id();
-    {
-        let mut active_pid = state.active_ai_pid.lock().await;
-        if cancel.is_cancelled() {
-            if let Some(pid) = pid {
-                crate::kill_process_tree(pid);
-            }
-            let _ = child.wait().await;
-            return Err(TurnError::aborted("", ""));
+    if cancel.is_cancelled() {
+        if let Some(pid) = pid {
+            crate::kill_process_tree(pid);
         }
-        *active_pid = pid;
+        let _ = child.wait().await;
+        return Err(TurnError::aborted("", ""));
+    }
+    if let Some(pid) = pid {
+        crate::register_turn_pid(&state, &session_id, pid);
     }
     let on_thinking = |delta: &str| {
         if cancel.is_cancelled() {
             return;
         }
-        if let Ok(mut active) = state.active_chat.lock() {
-            if let Some(active) = active.active.as_mut() {
-                active.thinking.push_str(delta);
-            }
-        }
+        crate::append_session_thinking(&state, delta);
         let _ = app.emit("ai-thinking", delta);
     };
     let read = async {
@@ -425,11 +424,8 @@ async fn execute_cli(
         }
     }
     let exit = child.wait().await;
-    {
-        let mut active_pid = state.active_ai_pid.lock().await;
-        if *active_pid == pid {
-            *active_pid = None;
-        }
+    if let Some(pid) = pid {
+        crate::unregister_turn_pid(&state, &session_id, pid);
     }
     if cancel.is_cancelled() {
         return Err(TurnError::aborted("", ""));

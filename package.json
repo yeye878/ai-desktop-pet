@@ -11,6 +11,7 @@
     "tauri": "tauri",
     "verify:custom-pixel-bg": "node scripts/verify-custom-pixel-background.cjs",
     "verify:multi-agent": "node --test scripts/verify-multi-agent.cjs",
+    "verify:agent-model-catalog": "node --test scripts/verify-agent-model-catalog.cjs",
     "verify:chat-sessions": "node --test scripts/verify-chat-sessions.cjs",
     "verify:agent-activity": "node --test scripts/verify-agent-activity.cjs",
     "verify:codex-trajectory": "node --test scripts/verify-codex-trajectory.cjs",

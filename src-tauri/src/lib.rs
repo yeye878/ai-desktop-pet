@@ -1,3 +1,4 @@
+mod agent_models;
 mod agent_turn;
 mod ai_events;
 mod collaboration;
@@ -43,7 +44,8 @@ pub struct ActiveChatSnapshot {
 
 #[derive(Default)]
 pub struct ActiveChatState {
-    pub active: Option<ActiveChatSnapshot>,
+    /// 按 session_id 记录正在生成回复的会话，支持多智能体 / 多主对话并行运行。
+    pub by_session: std::collections::HashMap<String, ActiveChatSnapshot>,
 }
 
 #[derive(Clone, Serialize)]
@@ -124,7 +126,7 @@ pub struct AppState {
     pub font_color: tokio::sync::Mutex<String>,
     pub personality: tokio::sync::Mutex<String>,
     pub profession: tokio::sync::Mutex<String>,
-    pub active_ai_pid: tokio::sync::Mutex<Option<u32>>,
+    pub active_ai_pids: StdMutex<std::collections::HashMap<String, u32>>,
     pub active_chat: StdMutex<ActiveChatState>,
     pub tts: tts::TtsManager,
     pub tts_playback: tts::playback::NativeAudioPlayer,
@@ -135,12 +137,12 @@ pub struct AppState {
     pub pending_questions:
         tokio::sync::Mutex<std::collections::HashMap<String, interactions::PendingRequest<String, direct_api::AskUserPayload>>>,
     pub approved_tool_types: tokio::sync::Mutex<std::collections::HashSet<String>>,
-    pub abort_token: tokio::sync::Mutex<Option<tokio_util::sync::CancellationToken>>,
+    pub abort_tokens: StdMutex<std::collections::HashMap<String, tokio_util::sync::CancellationToken>>,
     /// 保留字段：多会话后历史按 chat_history.session_id 隔离，新逻辑不再读它。
     pub chat_start_id: StdMutex<i64>,
     /// 当前活跃主会话 id（启动时从 DB 载入）。
     pub active_main_session_id: StdMutex<String>,
-    /// 当前 AI 回合归属的会话 id；所有 ai-* 事件靠它带上 session_id。
+    /// 最近一次发起回合的会话 id（兜底）；并发回合优先走 task-local TURN_SESSION_ID。
     pub current_turn_session: StdRwLock<String>,
     pub http_client: reqwest::Client,
     pub weather_cache: tokio::sync::Mutex<Option<system::WeatherInfo>>,
@@ -172,8 +174,26 @@ fn set_active_main_session_id(state: &AppState, id: &str) {
     }
 }
 
-/// 本轮 AI 回合归属的会话 id：所有 ai-* 事件都靠它路由到对应窗口。
-fn current_turn_session(state: &AppState) -> String {
+tokio::task_local! {
+    /// 当前异步任务绑定的 AI 回合会话 id（支持多会话并行时不串台）。
+    static TURN_SESSION_ID: String;
+}
+
+pub(crate) async fn with_turn_session<F: std::future::Future>(
+    session_id: String,
+    fut: F,
+) -> F::Output {
+    TURN_SESSION_ID.scope(session_id, fut).await
+}
+
+/// 本轮 AI 回合归属的会话 id：优先读取当前异步任务的 TURN_SESSION_ID，
+/// 保证多个智能体 / 主对话并发执行时各自的 ai-* 事件与消息落库互不串台。
+pub(crate) fn current_turn_session(state: &AppState) -> String {
+    if let Ok(id) = TURN_SESSION_ID.try_with(|id| id.clone()) {
+        if !id.trim().is_empty() {
+            return id;
+        }
+    }
     state
         .current_turn_session
         .read()
@@ -184,6 +204,65 @@ fn current_turn_session(state: &AppState) -> String {
 fn set_current_turn_session(state: &AppState, id: &str) {
     if let Ok(mut current) = state.current_turn_session.write() {
         *current = id.to_string();
+    }
+}
+
+pub(crate) fn append_session_thinking(state: &AppState, delta: &str) {
+    let session_id = current_turn_session(state);
+    if let Ok(mut active) = state.active_chat.lock() {
+        if let Some(snapshot) = active.by_session.get_mut(&session_id) {
+            snapshot.thinking.push_str(delta);
+        }
+    }
+}
+
+pub(crate) fn clear_active_chat_for(state: &AppState, session_id: &str) {
+    if let Ok(mut active) = state.active_chat.lock() {
+        active.by_session.remove(session_id);
+    }
+}
+
+pub(crate) fn clear_active_chat(state: &AppState) {
+    let session_id = current_turn_session(state);
+    clear_active_chat_for(state, &session_id);
+}
+
+pub(crate) fn has_any_active_chat(state: &AppState) -> bool {
+    state
+        .active_chat
+        .lock()
+        .map(|active| !active.by_session.is_empty())
+        .unwrap_or(false)
+}
+
+pub(crate) fn register_turn_cancel(
+    state: &AppState,
+    session_id: &str,
+) -> tokio_util::sync::CancellationToken {
+    let token = tokio_util::sync::CancellationToken::new();
+    if let Ok(mut tokens) = state.abort_tokens.lock() {
+        tokens.insert(session_id.to_string(), token.clone());
+    }
+    token
+}
+
+pub(crate) fn unregister_turn_cancel(state: &AppState, session_id: &str) {
+    if let Ok(mut tokens) = state.abort_tokens.lock() {
+        tokens.remove(session_id);
+    }
+}
+
+pub(crate) fn register_turn_pid(state: &AppState, session_id: &str, pid: u32) {
+    if let Ok(mut pids) = state.active_ai_pids.lock() {
+        pids.insert(session_id.to_string(), pid);
+    }
+}
+
+pub(crate) fn unregister_turn_pid(state: &AppState, session_id: &str, pid: u32) {
+    if let Ok(mut pids) = state.active_ai_pids.lock() {
+        if pids.get(session_id).copied() == Some(pid) {
+            pids.remove(session_id);
+        }
     }
 }
 
@@ -292,6 +371,18 @@ fn resolve_turn_model(
         .map(str::to_string)
 }
 
+/// 模型或渠道变化后，旧 CLI 续接 id 不再适用；仅思考强度变化不清。
+fn session_binding_clears_cli(
+    next_model: Option<&str>,
+    current_model: &str,
+    next_provider: Option<&str>,
+    current_provider: &str,
+) -> bool {
+    let model_changed = next_model.is_some_and(|model| model != current_model);
+    let provider_changed = next_provider.is_some_and(|provider| provider != current_provider);
+    model_changed || provider_changed
+}
+
 /// 会话解析：显式 sessionId 优先，否则用活跃主会话。
 async fn resolve_chat_session(
     state: &tauri::State<'_, AppState>,
@@ -374,7 +465,7 @@ fn persist_cli_session(
         return;
     }
     cli_sessions.insert(backend.to_string(), cli_session_id.to_string());
-    let _ = db.update_chat_session(&session.id, None, None, None, Some(&cli_sessions));
+    let _ = db.update_chat_session(&session.id, None, None, None, Some(&cli_sessions), None, None);
 }
 
 /// 保存助手消息（按当前回合会话），并刷新会话预览。
@@ -2082,6 +2173,70 @@ mod tests {
     }
 
     #[test]
+    fn session_binding_clears_cli_ids_on_model_or_provider_change() {
+        assert!(
+            session_binding_clears_cli(Some("m2"), "m1", None, "p1"),
+            "模型变化要清空 CLI 续接 id"
+        );
+        assert!(
+            session_binding_clears_cli(None, "m1", Some("p2"), "p1"),
+            "渠道变化要清空 CLI 续接 id"
+        );
+        assert!(
+            !session_binding_clears_cli(Some("m1"), "m1", Some("p1"), "p1"),
+            "模型 / 渠道都没变时保留续接 id"
+        );
+        assert!(
+            !session_binding_clears_cli(None, "m1", None, "p1"),
+            "只改 effort（这里不传 model/provider）时不能清续接 id"
+        );
+        assert!(
+            session_binding_clears_cli(Some(""), "m1", None, "p1"),
+            "从绑定模型清回空串也算变化"
+        );
+    }
+
+    #[test]
+    fn session_provider_and_effort_round_trip_through_storage() {
+        // create / bind 命令的载荷最终落到 storage 层，这里按命令语义验证。
+        let db = storage::Database::open_in_memory().unwrap();
+        let mut new = storage::NewChatSession::for_slot("dsh");
+        new.model = "deepseek-v4.1-flash".into();
+        new.provider = "opendesgin".into();
+        new.reasoning_effort = "max".into();
+        let session = db.create_chat_session(new).unwrap();
+        assert_eq!(session.provider, "opendesgin");
+        assert_eq!(session.reasoning_effort, "max");
+
+        // 只改 model / provider，不改 effort：三者都按传入值落库。
+        let updated = db
+            .update_chat_session(
+                &session.id,
+                None,
+                None,
+                Some("claude-opus-5"),
+                None,
+                None,
+                Some("opendesgin"),
+            )
+            .unwrap();
+        assert_eq!(updated.model, "claude-opus-5");
+        assert_eq!(updated.provider, "opendesgin");
+        assert_eq!(updated.reasoning_effort, "max");
+        let wire = serde_json::to_value(&updated).unwrap();
+        assert_eq!(wire["provider"], "opendesgin");
+        assert_eq!(wire["reasoning_effort"], "max");
+        assert!(wire.get("cli_sessions").is_none());
+
+        // bind 传空串 = 清回跟随本机。
+        let cleared = db
+            .update_chat_session(&session.id, None, None, None, None, None, Some(""))
+            .unwrap();
+        assert_eq!(cleared.provider, "");
+        assert_eq!(cleared.reasoning_effort, "max");
+    }
+
+    #[test]
     fn conversation_titles_collapse_whitespace_and_truncate() {
         assert_eq!(
             conversation_title_from("  第一行\n第二行\t第三行 "),
@@ -2146,6 +2301,21 @@ mod tests {
         let reloaded = db.get_chat_session(&session.id).unwrap().unwrap();
         assert_eq!(reloaded.cli_session("codex"), None);
     }
+
+    #[tokio::test]
+    async fn turn_session_task_local_isolates_concurrent_turns() {
+        let task_codex = tokio::spawn(with_turn_session("session-codex".into(), async {
+            tokio::task::yield_now().await;
+            TURN_SESSION_ID.try_with(|id| id.clone()).unwrap()
+        }));
+        let task_dsh = tokio::spawn(with_turn_session("session-dsh".into(), async {
+            tokio::task::yield_now().await;
+            TURN_SESSION_ID.try_with(|id| id.clone()).unwrap()
+        }));
+        let (codex_id, dsh_id) = tokio::join!(task_codex, task_dsh);
+        assert_eq!(codex_id.unwrap(), "session-codex");
+        assert_eq!(dsh_id.unwrap(), "session-dsh");
+    }
 }
 
 fn kill_process_tree(pid: u32) {
@@ -2165,25 +2335,58 @@ fn kill_process_tree(pid: u32) {
     }
 }
 
-async fn stop_active_response(state: &tauri::State<'_, AppState>) {
-    {
-        let abort = state.abort_token.lock().await;
-        if let Some(ref token) = *abort {
+pub(crate) fn stop_session_response(state: &AppState, session_id: &str) {
+    if let Ok(mut tokens) = state.abort_tokens.lock() {
+        if let Some(token) = tokens.remove(session_id) {
             token.cancel();
         }
     }
-
-    let pid = {
-        let mut active = state.active_ai_pid.lock().await;
-        active.take()
-    };
+    let pid = state
+        .active_ai_pids
+        .lock()
+        .ok()
+        .and_then(|mut pids| pids.remove(session_id));
     if let Some(pid) = pid {
         kill_process_tree(pid);
     }
 
-    let team_running = state.collaboration_state.lock().ok().is_some_and(|value| value.as_ref().is_some_and(|value| value.status == "running"));
+    let team_running = state
+        .collaboration_state
+        .lock()
+        .ok()
+        .is_some_and(|value| value.as_ref().is_some_and(|value| value.status == "running"));
     if !team_running {
-        if let Ok(mut active) = state.active_chat.lock() { active.active = None; }
+        clear_active_chat_for(state, session_id);
+    }
+}
+
+pub(crate) fn stop_all_active_responses(state: &AppState) {
+    let tokens: Vec<tokio_util::sync::CancellationToken> = state
+        .abort_tokens
+        .lock()
+        .map(|mut map| map.drain().map(|(_, token)| token).collect())
+        .unwrap_or_default();
+    for token in tokens {
+        token.cancel();
+    }
+    let pids: Vec<u32> = state
+        .active_ai_pids
+        .lock()
+        .map(|mut map| map.drain().map(|(_, pid)| pid).collect())
+        .unwrap_or_default();
+    for pid in pids {
+        kill_process_tree(pid);
+    }
+
+    let team_running = state
+        .collaboration_state
+        .lock()
+        .ok()
+        .is_some_and(|value| value.as_ref().is_some_and(|value| value.status == "running"));
+    if !team_running {
+        if let Ok(mut active) = state.active_chat.lock() {
+            active.by_session.clear();
+        }
     }
 }
 
@@ -2191,7 +2394,7 @@ async fn stop_active_response(state: &tauri::State<'_, AppState>) {
 /// 返回重建后的活跃主会话。
 async fn reset_conversation(app: &tauri::AppHandle) -> Result<storage::ChatSession, String> {
     let state = app.state::<AppState>();
-    stop_active_response(&state).await;
+    stop_all_active_responses(&state);
 
     {
         let db = state.db.lock().await;
@@ -2279,47 +2482,50 @@ async fn send_to_ai(
             .active_chat
             .lock()
             .map_err(|_| "active chat state poisoned".to_string())?;
-        if active.active.is_some() {
+        // 仅阻止同一会话并发重复发送；不同会话（如 codex / dsh / 另一个主对话）允许并行执行。
+        if active.by_session.contains_key(&session.id) {
             return Err("AI 正在思考中，请稍等当前回复完成后".to_string());
         }
-        active.active = Some(ActiveChatSnapshot {
-            message: message.clone(),
-            thinking: String::new(),
-            started_at: unix_now(),
-            session_id: session.id.clone(),
-        });
+        active.by_session.insert(
+            session.id.clone(),
+            ActiveChatSnapshot {
+                message: message.clone(),
+                thinking: String::new(),
+                started_at: unix_now(),
+                session_id: session.id.clone(),
+            },
+        );
     }
     set_current_turn_session(&state, &session.id);
 
     // 2) 用户消息写入该会话（不同窗口 / 会话互相隔离）。
     {
         let db = state.db.lock().await;
-        db.save_message_with_quote_in(
+        if let Err(e) = db.save_message_with_quote_in(
             &session.id,
             "user",
             &message,
             None,
             quoted_role.as_deref(),
             quoted_content.as_deref(),
-        )
-        .map_err(|e| e.to_string())?;
+        ) {
+            clear_active_chat_for(&state, &session.id);
+            return Err(e.to_string());
+        }
         touch_session_after_message(&app_handle, &db, &session.id, &message);
     }
 
     // 3) agent 窗口：直接跑单 agent 回合，不进入协同 / @ 菜单。
     if let Some(agent) = target_agent {
-        *state
-            .collaboration_state
-            .lock()
-            .map_err(|_| "协同状态不可用")? = None;
         {
             let mut behavior = state.behavior.lock().await;
             behavior.on_user_interaction();
             behavior.set_state(behavior::PetState::Thinking);
         }
-        emit_ai(&app_handle, "ai-started", serde_json::json!({ "message": message }));
+        emit_ai_for(&app_handle, &session.id, "ai-started", serde_json::json!({ "message": message }));
         let app_clone = app_handle.clone();
         let session_clone = session.clone();
+        let turn_session_id = session.id.clone();
         let msg_clone = message.clone();
         let att_clone = attachments.unwrap_or_default();
         let quote_clone = quoted_role
@@ -2327,30 +2533,32 @@ async fn send_to_ai(
             .zip(quoted_content.as_deref())
             .map(|(role, content)| (role.to_string(), content.to_string()));
         tauri::async_runtime::spawn(async move {
-            let task = std::panic::AssertUnwindSafe(run_agent_session_turn(
-                app_clone.clone(),
-                session_clone,
-                agent,
-                msg_clone,
-                att_clone,
-                quote_clone,
-                model_override,
-            ));
-            if let Err(panic) = task.catch_unwind().await {
-                let state = app_clone.state::<AppState>();
-                if let Ok(mut active) = state.active_chat.lock() {
-                    active.active = None;
+            with_turn_session(turn_session_id.clone(), async move {
+                let task = std::panic::AssertUnwindSafe(run_agent_session_turn(
+                    app_clone.clone(),
+                    session_clone,
+                    agent,
+                    msg_clone,
+                    att_clone,
+                    quote_clone,
+                    model_override,
+                ));
+                if let Err(panic) = task.catch_unwind().await {
+                    let state = app_clone.state::<AppState>();
+                    clear_active_chat_for(&state, &turn_session_id);
+                    unregister_turn_cancel(&state, &turn_session_id);
+                    emit_ai(
+                        &app_clone,
+                        "ai-error",
+                        serde_json::json!({
+                            "message": format!("内部错误: {}", panic_message(panic.as_ref())),
+                            "thinking": null,
+                            "aborted": false
+                        }),
+                    );
                 }
-                emit_ai(
-                    &app_clone,
-                    "ai-error",
-                    serde_json::json!({
-                        "message": format!("内部错误: {}", panic_message(panic.as_ref())),
-                        "thinking": null,
-                        "aborted": false
-                    }),
-                );
-            }
+            })
+            .await;
         });
         return Ok(serde_json::json!({ "started": true }));
     }
@@ -2380,9 +2588,7 @@ async fn send_to_ai(
         };
         notify_sessions_changed(&app_handle);
 
-        if let Ok(mut active) = state.active_chat.lock() {
-            active.active = None;
-        }
+        clear_active_chat_for(&state, &session.id);
         {
             let mut behavior = state.behavior.lock().await;
             behavior.set_state(behavior::PetState::Speaking);
@@ -2390,8 +2596,9 @@ async fn send_to_ai(
         }
 
         let _ = app_handle.emit("scheduled-tasks-changed", serde_json::json!({}));
-        emit_ai(
+        emit_ai_for(
             &app_handle,
+            &session.id,
             "ai-finished",
             AiFinishedPayload {
                 text: saved_task.1,
@@ -2409,18 +2616,21 @@ async fn send_to_ai(
 
     let collaboration_run = if !mentioned_agents.is_empty() {
         let run_id = uuid::Uuid::new_v4().to_string();
-        let cancel = tokio_util::sync::CancellationToken::new();
-        *state.abort_token.lock().await = Some(cancel.clone());
+        let cancel = register_turn_cancel(&state, &session.id);
         let initial = collaboration::CollaborationState {
             run_id: run_id.clone(), status: "running".into(), active_agent: None,
             queued: mentioned_agents.iter().map(collaboration::Identity::from).collect(),
             turn: 0, max_turns: collaboration::MAX_TURNS, message: "准备协同任务".into(),
         };
         *state.collaboration_state.lock().map_err(|_| "协同状态不可用")? = Some(initial.clone());
-        emit_ai(&app_handle, "collaboration-state", initial);
+        emit_ai_for(&app_handle, &session.id, "collaboration-state", initial);
         Some((run_id, cancel))
     } else {
-        *state.collaboration_state.lock().map_err(|_| "协同状态不可用")? = None;
+        if let Ok(mut collab) = state.collaboration_state.lock() {
+            if collab.as_ref().is_none_or(|c| c.status != "running") {
+                *collab = None;
+            }
+        }
         None
     };
 
@@ -2431,7 +2641,7 @@ async fn send_to_ai(
         behavior.set_state(behavior::PetState::Thinking);
     }
 
-    emit_ai(&app_handle, "ai-started", serde_json::json!({ "message": message }));
+    emit_ai_for(&app_handle, &session.id, "ai-started", serde_json::json!({ "message": message }));
     let app_handle_clone = app_handle.clone();
     let msg_clone = message.clone();
     let att_clone = attachments.unwrap_or_default();
@@ -2440,40 +2650,43 @@ async fn send_to_ai(
         .zip(quoted_content.as_deref())
         .map(|(role, content)| (role.to_string(), content.to_string()));
     let session_clone = session.clone();
+    let turn_session_id = session.id.clone();
     tauri::async_runtime::spawn(async move {
-        let task = async {
-            if let Some((run_id, cancel)) = collaboration_run {
-                collaboration::run(app_handle_clone.clone(), msg_clone, att_clone, mentioned_agents,
-                    collaboration_enabled.unwrap_or(true), run_id, cancel, session_clone.id).await;
-            } else {
-                run_ai_message(app_handle_clone.clone(), session_clone, msg_clone, att_clone, quote_clone, vec![], model_override).await;
+        with_turn_session(turn_session_id.clone(), async move {
+            let task = async {
+                if let Some((run_id, cancel)) = collaboration_run {
+                    collaboration::run(app_handle_clone.clone(), msg_clone, att_clone, mentioned_agents,
+                        collaboration_enabled.unwrap_or(true), run_id, cancel, session_clone.id).await;
+                } else {
+                    run_ai_message(app_handle_clone.clone(), session_clone, msg_clone, att_clone, quote_clone, vec![], model_override).await;
+                }
+            };
+            let result = std::panic::AssertUnwindSafe(task)
+            .catch_unwind()
+            .await;
+            if let Err(panic) = result {
+                let panic_msg = panic_message(panic.as_ref());
+                let team = app_handle_clone.state::<AppState>().collaboration_state.lock().ok().and_then(|team| team.clone());
+                if let Some(team) = team.filter(|team| team.status == "running") {
+                    collaboration::finish(&app_handle_clone, &team.run_id, "failed", team.turn, format!("协同执行异常：{panic_msg}")).await;
+                    return;
+                }
+                // panic 后清空该会话的 active_chat 状态，防止宠物卡在思考状态
+                let state = app_handle_clone.state::<AppState>();
+                clear_active_chat_for(&state, &turn_session_id);
+                unregister_turn_cancel(&state, &turn_session_id);
+                emit_ai(
+                    &app_handle_clone,
+                    "ai-error",
+                    serde_json::json!({
+                        "message": format!("内部错误: {}", panic_msg),
+                        "thinking": null,
+                        "aborted": false
+                    }),
+                );
             }
-        };
-        let result = std::panic::AssertUnwindSafe(task)
-        .catch_unwind()
+        })
         .await;
-        if let Err(panic) = result {
-            let panic_msg = panic_message(panic.as_ref());
-            let team = app_handle_clone.state::<AppState>().collaboration_state.lock().ok().and_then(|team| team.clone());
-            if let Some(team) = team.filter(|team| team.status == "running") {
-                collaboration::finish(&app_handle_clone, &team.run_id, "failed", team.turn, format!("协同执行异常：{panic_msg}")).await;
-                return;
-            }
-            // panic 后清空 active_chat 状态，防止宠物卡在"思考 状态
-            let state = app_handle_clone.state::<AppState>();
-            if let Ok(mut active) = state.active_chat.lock() {
-                active.active = None;
-            }
-            emit_ai(
-                &app_handle_clone,
-                "ai-error",
-                serde_json::json!({
-                    "message": format!("内部错误: {}", panic_msg),
-                    "thinking": null,
-                    "aborted": false
-                }),
-            );
-        }
     });
 
     Ok(serde_json::json!({ "started": true }))
@@ -2508,9 +2721,7 @@ async fn run_ai_message(
         let config_opt = state.direct_api_config.lock().await.clone();
         let Some(mut config) = config_opt else {
             {
-                if let Ok(mut active) = state.active_chat.lock() {
-                    active.active = None;
-                }
+                clear_active_chat_for(&state, &session.id);
                 let mut behavior = state.behavior.lock().await;
                 behavior.set_state(behavior::PetState::Confused);
             }
@@ -2608,12 +2819,8 @@ async fn run_ai_message(
 
         let agent_ctx = AgentContext { agents };
 
-        // 创建新的 CancellationToken
-        let token = tokio_util::sync::CancellationToken::new();
-        {
-            let mut abort = state.abort_token.lock().await;
-            *abort = Some(token);
-        }
+        // 创建按会话隔离的 CancellationToken
+        let token = register_turn_cancel(&state, &session.id);
 
         direct_api::run_direct_api_agent(
             app_handle.clone(),
@@ -2625,14 +2832,12 @@ async fn run_ai_message(
             quote,
             Some(agent_ctx),
             turn_tool_grants,
+            token,
         )
         .await;
 
-        // 执行结束，清空 abort_token
-        {
-            let mut abort = state.abort_token.lock().await;
-            *abort = None;
-        }
+        // 执行结束，清空当前会话的 abort_token
+        unregister_turn_cancel(&state, &session.id);
         return;
     }
 
@@ -2718,11 +2923,16 @@ async fn run_cli_turn(
     } else {
         "Claude Code"
     };
-    let cancel_token = tokio_util::sync::CancellationToken::new();
-    *state.abort_token.lock().await = Some(cancel_token.clone());
+    let cancel_token = register_turn_cancel(&state, &session.id);
 
     // 该后端在本会话里的续接 id；为空表示该后端首轮，需要带上会话记录。
     let resumed_session = session.cli_session(&backend).map(str::to_string);
+    // 会话绑定的思考强度：空串 = 跟随本机默认（不传参数）。
+    let reasoning_effort = session.reasoning_effort.trim().to_string();
+    let effort = (!reasoning_effort.is_empty()).then_some(reasoning_effort.as_str());
+    // 会话绑定的渠道（provider）：只有 dsh 支持，claude / codex 忽略。
+    let model_provider = session.provider.trim().to_string();
+    let provider = (!model_provider.is_empty()).then_some(model_provider.as_str());
     let inherited_model = agents
         .first()
         .map(|agent| agent.model.as_str())
@@ -2758,10 +2968,11 @@ async fn run_cli_turn(
                     &system_prompt,
                     resumed_session.as_deref(),
                     model,
+                    effort,
                 )
                 .await
         } else if is_dsh {
-            // dsh 自己会用 history 组装首轮任务文本。
+            // dsh 自己会用 history 组装首轮任务文本；provider 与 model 一起生效。
             state
                 .dsh
                 .spawn_streaming_with(
@@ -2771,31 +2982,34 @@ async fn run_cli_turn(
                     &system_prompt,
                     resumed_session.as_deref(),
                     model,
+                    provider,
+                    effort,
                 )
                 .await
         } else {
-            let ai = state.ai.lock().await;
-            ai.spawn_streaming_with(
-                &app_handle,
-                &prompt,
-                &system_prompt,
-                resumed_session.as_deref(),
-                model,
-            )
-            .await
+            openclaw::ClaudeAdapter::new()
+                .spawn_streaming_with(
+                    &app_handle,
+                    &prompt,
+                    &system_prompt,
+                    resumed_session.as_deref(),
+                    model,
+                    effort,
+                )
+                .await
         }
     };
     let mut child = match child_result {
         Ok(child) => child,
         Err(err) => {
+            unregister_turn_cancel(&state, &session.id);
             if cancel_token.is_cancelled() {
+                clear_active_chat_for(&state, &session.id);
                 return;
             }
             {
                 let state = app_handle.state::<AppState>();
-                if let Ok(mut active) = state.active_chat.lock() {
-                    active.active = None;
-                }
+                clear_active_chat_for(&state, &session.id);
                 let mut behavior = state.behavior.lock().await;
                 behavior.set_state(behavior::PetState::Confused);
             }
@@ -2813,16 +3027,17 @@ async fn run_cli_turn(
     };
     let child_pid = child.id();
 
-    // 只把 PID 存入 AppState，避免读取流时长期持有锁导致 abort_ai 卡住。
+    // 只把 PID 按 session_id 存入 AppState，避免读取流时长期持有锁导致 abort_ai 卡住。
     if let Some(pid) = child_pid {
         let state = app_handle.state::<AppState>();
-        let mut active = state.active_ai_pid.lock().await;
         if cancel_token.is_cancelled() {
             kill_process_tree(pid);
             let _ = child.wait().await;
+            unregister_turn_cancel(&state, &session.id);
+            clear_active_chat_for(&state, &session.id);
             return;
         }
-        *active = Some(pid);
+        register_turn_pid(&state, &session.id, pid);
     }
 
     // 从 child 读取流式输出
@@ -2833,11 +3048,7 @@ async fn run_cli_turn(
         }
         {
             let state = app_for_stream.state::<AppState>();
-            if let Ok(mut active) = state.active_chat.lock() {
-                if let Some(active) = active.active.as_mut() {
-                    active.thinking.push_str(delta);
-                }
-            };
+            append_session_thinking(&state, delta);
         }
         emit_ai(&app_for_stream, "ai-thinking", delta);
     };
@@ -2884,15 +3095,14 @@ async fn run_cli_turn(
     let _ = child.wait().await;
     if let Some(pid) = child_pid {
         let state = app_handle.state::<AppState>();
-        let mut active = state.active_ai_pid.lock().await;
-        if *active == Some(pid) {
-            *active = None;
-        }
+        unregister_turn_pid(&state, &session.id, pid);
     }
+    unregister_turn_cancel(&state, &session.id);
 
     // A reset/backend switch can start a newer turn while this process exits.
     // Do not restore its old session or overwrite the newer UI/history.
     if cancel_token.is_cancelled() {
+        clear_active_chat_for(&state, &session.id);
         return;
     }
 
@@ -2911,9 +3121,7 @@ async fn run_cli_turn(
                 let msg = parsed
                     .error_msg
                     .unwrap_or_else(|| "unknown error".to_string());
-                if let Ok(mut active) = state.active_chat.lock() {
-                    active.active = None;
-                }
+                clear_active_chat_for(&state, &session.id);
                 emit_ai(
                     &app_handle,
                     "ai-error",
@@ -2933,10 +3141,10 @@ async fn run_cli_turn(
             if parsed.full_text.is_empty() {
                 // 可能是被中止了
                 let state = app_handle.state::<AppState>();
-                let mut behavior = state.behavior.lock().await;
-                behavior.set_state(behavior::PetState::Idle);
-                if let Ok(mut active) = state.active_chat.lock() {
-                    active.active = None;
+                clear_active_chat_for(&state, &session.id);
+                if !has_any_active_chat(&state) {
+                    let mut behavior = state.behavior.lock().await;
+                    behavior.set_state(behavior::PetState::Idle);
                 }
                 emit_ai(
                     &app_handle,
@@ -2986,9 +3194,7 @@ async fn run_cli_turn(
                 Some(parsed.full_thinking)
             };
 
-            if let Ok(mut active) = state.active_chat.lock() {
-                active.active = None;
-            }
+            clear_active_chat_for(&state, &session.id);
 
             emit_ai(
                 &app_handle,
@@ -3009,13 +3215,13 @@ async fn run_cli_turn(
                 .active_chat
                 .lock()
                 .ok()
-                .and_then(|active| active.active.as_ref().map(|active| active.thinking.clone()))
+                .and_then(|active| active.by_session.get(&session.id).map(|active| active.thinking.clone()))
                 .filter(|thinking| !thinking.is_empty());
-            if let Ok(mut active) = state.active_chat.lock() {
-                active.active = None;
+            clear_active_chat_for(&state, &session.id);
+            if !has_any_active_chat(&state) {
+                let mut behavior = state.behavior.lock().await;
+                behavior.set_state(behavior::PetState::Idle);
             }
-            let mut behavior = state.behavior.lock().await;
-            behavior.set_state(behavior::PetState::Idle);
             emit_ai(
                 &app_handle,
                 "ai-error",
@@ -3087,9 +3293,7 @@ async fn run_agent_session_turn(
             }
         };
         let Some(mut config) = config_opt else {
-            if let Ok(mut active) = state.active_chat.lock() {
-                active.active = None;
-            }
+            clear_active_chat_for(&state, &session.id);
             {
                 let mut behavior = state.behavior.lock().await;
                 behavior.set_state(behavior::PetState::Confused);
@@ -3132,8 +3336,7 @@ async fn run_agent_session_turn(
             history
         };
         let grants = collect_turn_tool_grants(std::slice::from_ref(&agent), active_skill.as_ref());
-        let cancel = tokio_util::sync::CancellationToken::new();
-        *state.abort_token.lock().await = Some(cancel.clone());
+        let cancel = register_turn_cancel(&state, &session.id);
         let task = direct_api::execute_direct_api_turn(
             app_handle.clone(),
             message,
@@ -3153,10 +3356,8 @@ async fn run_agent_session_turn(
             _ = cancel.cancelled() => Err(agent_turn::TurnError::aborted("", "")),
             result = task => result,
         };
-        *state.abort_token.lock().await = None;
-        if let Ok(mut active) = state.active_chat.lock() {
-            active.active = None;
-        }
+        unregister_turn_cancel(&state, &session.id);
+        clear_active_chat_for(&state, &session.id);
         match result {
             Ok(output) => {
                 save_assistant_message(
@@ -3211,7 +3412,7 @@ async fn run_agent_session_turn(
                         )
                         .await;
                     }
-                    {
+                    if !has_any_active_chat(&state) {
                         let mut behavior = state.behavior.lock().await;
                         behavior.set_state(behavior::PetState::Idle);
                     }
@@ -3279,10 +3480,32 @@ async fn run_agent_session_turn(
 }
 
 #[tauri::command]
-async fn abort_ai(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    stop_active_response(&state).await;
-    let mut behavior = state.behavior.lock().await;
-    behavior.set_state(behavior::PetState::Idle);
+async fn abort_ai(
+    session_id: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let target = session_id
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty());
+    if let Some(id) = target {
+        stop_session_response(&state, &id);
+    } else {
+        let main_id = active_main_session_id(&state);
+        let main_is_active = state
+            .active_chat
+            .lock()
+            .ok()
+            .is_some_and(|active| active.by_session.contains_key(&main_id));
+        if main_is_active {
+            stop_session_response(&state, &main_id);
+        } else {
+            stop_all_active_responses(&state);
+        }
+    }
+    if !has_any_active_chat(&state) {
+        let mut behavior = state.behavior.lock().await;
+        behavior.set_state(behavior::PetState::Idle);
+    }
     Ok(())
 }
 
@@ -3294,7 +3517,8 @@ async fn set_backend_type(
     if !matches!(backend.as_str(), "claude_code" | "codex" | "dsh" | "direct_api") {
         return Err(format!("不支持的 AI 后端：{backend}"));
     }
-    stop_active_response(&state).await;
+    let main_id = active_main_session_id(&state);
+    stop_session_response(&state, &main_id);
 
     state.ai.lock().await.reset_session();
     state.codex.reset_session();
@@ -4120,6 +4344,8 @@ async fn create_chat_session(
     slot: String,
     agent_id: Option<String>,
     model: Option<String>,
+    provider: Option<String>,
+    reasoning_effort: Option<String>,
     title: Option<String>,
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
@@ -4132,6 +4358,12 @@ async fn create_chat_session(
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
     let requested_model = model
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default();
+    let requested_provider = provider
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default();
+    let requested_effort = reasoning_effort
         .map(|value| value.trim().to_string())
         .unwrap_or_default();
     let requested_title = title
@@ -4154,6 +4386,8 @@ async fn create_chat_session(
             new = new.with_agent(agent);
         }
         new.model = requested_model;
+        new.provider = requested_provider;
+        new.reasoning_effort = requested_effort;
         new.title = if requested_title.is_empty() {
             default_session_title(
                 &db,
@@ -4204,7 +4438,7 @@ async fn rename_chat_session(
     }
     let session = {
         let db = state.db.lock().await;
-        db.update_chat_session(id.trim(), Some(&title), None, None, None)
+        db.update_chat_session(id.trim(), Some(&title), None, None, None, None, None)
             .map_err(|e| e.to_string())?
     };
     notify_sessions_changed(&app_handle);
@@ -4218,6 +4452,7 @@ async fn delete_chat_session(
     state: tauri::State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
     let id = id.trim().to_string();
+    stop_session_response(&state, &id);
     let previous_active = active_main_session_id(&state);
     let (active_id, active_session) = {
         let db = state.db.lock().await;
@@ -4245,6 +4480,8 @@ async fn set_chat_session_binding(
     agent_name: Option<String>,
     agent_avatar: Option<String>,
     model: Option<String>,
+    provider: Option<String>,
+    reasoning_effort: Option<String>,
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<storage::ChatSession, String> {
@@ -4296,11 +4533,18 @@ async fn set_chat_session_binding(
 
         let mut cli_sessions_cleared: Option<std::collections::HashMap<String, String>> = None;
         let next_model = model.map(|value| value.trim().to_string());
-        if let Some(next_model) = next_model.as_deref() {
-            if next_model != existing.model {
-                // 模型换了：旧的 CLI 续接 id 不再适用，清空后重新建立上下文。
-                cli_sessions_cleared = Some(std::collections::HashMap::new());
-            }
+        // 渠道变化等同换模型（provider + model 一起决定本机 dsh 的实际模型）。
+        let next_provider = provider.map(|value| value.trim().to_string());
+        // 思考强度只影响每回合 CLI 参数，变化时不需要清空续接 id。
+        let next_effort = reasoning_effort.map(|value| value.trim().to_string());
+        if session_binding_clears_cli(
+            next_model.as_deref(),
+            &existing.model,
+            next_provider.as_deref(),
+            &existing.provider,
+        ) {
+            // 模型 / 渠道换了：旧的 CLI 续接 id 不再适用，清空后重新建立上下文。
+            cli_sessions_cleared = Some(std::collections::HashMap::new());
         }
         let binding = (
             next_agent_id.as_str(),
@@ -4313,11 +4557,23 @@ async fn set_chat_session_binding(
             Some(binding),
             next_model.as_deref(),
             cli_sessions_cleared.as_ref(),
+            next_effort.as_deref(),
+            next_provider.as_deref(),
         )
         .map_err(|e| e.to_string())?
     };
     notify_sessions_changed(&app_handle);
     Ok(session)
+}
+
+/// 三个 agent 窗口的模型目录（含思考强度）：60 秒缓存，force 强制刷新。
+/// slot 只接受 claude / codex / dsh；探测失败返回正常结构（error 非空）。
+#[tauri::command]
+async fn get_agent_model_catalog(
+    slot: String,
+    force: Option<bool>,
+) -> Result<agent_models::AgentModelCatalog, String> {
+    agent_models::get_catalog(slot.trim(), force.unwrap_or(false)).await
 }
 
 #[tauri::command]
@@ -4368,13 +4624,25 @@ async fn get_chat_history(
 
 #[tauri::command]
 async fn get_active_chat(
+    session_id: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<Option<ActiveChatSnapshot>, String> {
+    let requested = session_id
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty());
     let active = state
         .active_chat
         .lock()
         .map_err(|_| "active chat state poisoned".to_string())?;
-    Ok(active.active.clone())
+    if let Some(id) = requested {
+        return Ok(active.by_session.get(&id).cloned());
+    }
+    let main_id = active_main_session_id(&state);
+    Ok(active
+        .by_session
+        .get(&main_id)
+        .cloned()
+        .or_else(|| active.by_session.values().next().cloned()))
 }
 
 #[tauri::command]
@@ -4392,8 +4660,7 @@ async fn start_new_conversation(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<storage::ChatSession, String> {
-    stop_active_response(&state).await;
-
+    // 新建对话不再强行中断已有会话的生成：旧会话可在后台继续完成，新会话立即可用。
     {
         let db = state.db.lock().await;
         let _ = save_chat_summary_if_needed(&db);
@@ -4401,7 +4668,7 @@ async fn start_new_conversation(
 
     state.approved_tool_types.lock().await.clear();
 
-    {
+    if !has_any_active_chat(&state) {
         let mut behavior = state.behavior.lock().await;
         behavior.set_state(behavior::PetState::Idle);
     }
@@ -4861,7 +5128,8 @@ async fn switch_model(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    stop_active_response(&state).await;
+    let main_id = active_main_session_id(&state);
+    stop_session_response(&state, &main_id);
     {
         let db = state.db.lock().await;
         let session_id = db
@@ -6136,7 +6404,7 @@ pub fn run() {
                 font_color: tokio::sync::Mutex::new(font_color),
                 personality: tokio::sync::Mutex::new(personality),
                 profession: tokio::sync::Mutex::new(profession),
-                active_ai_pid: tokio::sync::Mutex::new(None),
+                active_ai_pids: StdMutex::new(std::collections::HashMap::new()),
                 active_chat: StdMutex::new(ActiveChatState::default()),
                 tts: tts::TtsManager::new(tts_cache_dir(app)),
                 tts_playback: tts::playback::NativeAudioPlayer::new(),
@@ -6145,7 +6413,7 @@ pub fn run() {
                 pending_confirms: tokio::sync::Mutex::new(std::collections::HashMap::new()),
                 pending_questions: tokio::sync::Mutex::new(std::collections::HashMap::new()),
                 approved_tool_types: tokio::sync::Mutex::new(std::collections::HashSet::new()),
-                abort_token: tokio::sync::Mutex::new(None),
+                abort_tokens: StdMutex::new(std::collections::HashMap::new()),
                 chat_start_id: StdMutex::new(chat_start_id),
                 active_main_session_id: StdMutex::new(active_main_session),
                 current_turn_session: StdRwLock::new(String::new()),
@@ -6215,6 +6483,7 @@ pub fn run() {
             rename_chat_session,
             delete_chat_session,
             set_chat_session_binding,
+            get_agent_model_catalog,
             set_active_chat_session,
             get_active_chat_session,
             save_memory,

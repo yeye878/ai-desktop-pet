@@ -91,6 +91,25 @@ pub fn build_system_prompt(personality: &str, profession: &str) -> String {
     )
 }
 
+/// 本回合的模型 / 思考强度 / 续接参数；空串表示跟随本机配置（不追加）。
+pub(crate) fn claude_flags(
+    model: Option<&str>,
+    effort: Option<&str>,
+    session: Option<&str>,
+) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
+        args.extend(["--model".to_string(), model.to_string()]);
+    }
+    if let Some(effort) = effort.map(str::trim).filter(|effort| !effort.is_empty()) {
+        args.extend(["--effort".to_string(), effort.to_string()]);
+    }
+    if let Some(id) = session.map(str::trim).filter(|id| !id.is_empty()) {
+        args.extend(["--resume".to_string(), id.to_string()]);
+    }
+    args
+}
+
 pub struct ClaudeAdapter {
     session_id: Mutex<Option<String>>,
 }
@@ -111,12 +130,20 @@ impl ClaudeAdapter {
         system_prompt: &str,
     ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
         let session = self.session_id.lock().ok().and_then(|id| id.clone());
-        self.spawn_streaming_with(app_handle, message, system_prompt, session.as_deref(), None)
-            .await
+        self.spawn_streaming_with(
+            app_handle,
+            message,
+            system_prompt,
+            session.as_deref(),
+            None,
+            None,
+        )
+        .await
     }
 
-    /// 显式会话 / 模型版本：不依赖适配器内部状态，供多会话与协作调用。
-    /// session 为 Some 时追加 `--resume`，model 为 Some 时追加 `--model`。
+    /// 显式会话 / 模型 / 思考强度版本：不依赖适配器内部状态，供多会话与协作调用。
+    /// session 为 Some 时追加 `--resume`，model 为 Some 时追加 `--model`，
+    /// effort 为 Some 时追加 `--effort`。
     pub async fn spawn_streaming_with(
         &self,
         app_handle: &tauri::AppHandle,
@@ -124,6 +151,7 @@ impl ClaudeAdapter {
         system_prompt: &str,
         session: Option<&str>,
         model: Option<&str>,
+        effort: Option<&str>,
     ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
         let mut cmd_path = PathBuf::from("claude.cmd");
         let mut extra_path = None;
@@ -188,15 +216,8 @@ impl ClaudeAdapter {
             }
         }
 
-        // 本回合模型覆盖（空 = 跟随本机配置）。
-        if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
-            cmd.args(["--model", model]);
-        }
-
-        // 多轮对话：已有会话 id 时续接。
-        if let Some(id) = session.map(str::trim).filter(|id| !id.is_empty()) {
-            cmd.args(["--resume", id]);
-        }
+        // 本回合模型 / 思考强度覆盖（空 = 跟随本机配置）与多轮续接。
+        cmd.args(claude_flags(model, effort, session));
 
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
@@ -411,4 +432,35 @@ where
     }
 
     Ok(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claude_flags_carry_model_effort_and_resume() {
+        let flags = claude_flags(Some("opus"), Some("high"), Some("session-1"));
+        assert!(flags.windows(2).any(|pair| pair == ["--model", "opus"]));
+        assert!(
+            flags.windows(2).any(|pair| pair == ["--effort", "high"]),
+            "思考强度必须作为 --effort 传给 claude: {flags:?}"
+        );
+        assert!(flags.windows(2).any(|pair| pair == ["--resume", "session-1"]));
+
+        // 空值表示跟随本机配置，一个参数都不追加。
+        assert!(claude_flags(None, None, None).is_empty());
+        assert!(claude_flags(Some("  "), Some(""), Some(" ")).is_empty());
+
+        // effort 与 --model 属于同一组本回合参数，顺序稳定。
+        assert_eq!(
+            claude_flags(Some("sonnet"), Some("max"), None),
+            vec!["--model", "sonnet", "--effort", "max"]
+        );
+        // 只改 effort 时不影响续接参数。
+        assert_eq!(
+            claude_flags(None, Some("low"), Some("s")),
+            vec!["--effort", "low", "--resume", "s"]
+        );
+    }
 }

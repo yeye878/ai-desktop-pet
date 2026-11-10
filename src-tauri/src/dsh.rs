@@ -14,6 +14,7 @@
 //! 的 $DSH_HOME/cordis.patch.yml 仍然来自用户的 DSH 配置，没有任何凭据被复制到
 //! 桌宠里。
 
+use crate::agent_models::{AgentEffortOption, AgentModelCatalog, AgentModelOption};
 use crate::cli_activity::ToolEvent;
 use crate::direct_api::ToolConfirmPayload;
 use crate::interactions::WaitResult;
@@ -214,6 +215,169 @@ fn patch_is_ours(content: &str) -> bool {
         || content.contains("桌宠专用 profile")
 }
 
+/// 需要从本机 DSH profile 同步的渠道配置行（id → CLI 可加载的 base 包名）。
+///
+/// 桌面 app 的 profile 里 llm-deepseek 用的是 app runtime 专用包名
+/// （dsh-llm-deepseek-api-key），CLI 的 profiles/node_modules 里没有，照抄会加载失败，
+/// 所以同步时统一改写成 base 包名；config 缩进原样保留。
+const CHANNEL_ENTRIES: [(&str, &str); 3] = [
+    ("llm-pi-ai", "@deepseek-ai/dsh-llm-pi-ai"),
+    ("llm-deepseek", "@deepseek-ai/dsh-llm-deepseek"),
+    ("agent-default-model", "@deepseek-ai/dsh-agent-default-model"),
+];
+
+/// $DSH_HOME/settings.yaml 是否已经配置了渠道段（顶层、非注释）。
+/// 已配置时 dsh-base 的 settings 插件会自己生效，桌宠不能再复制一份（避免双份）。
+fn settings_define_channels(home: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(home.join("settings.yaml")) else {
+        return false;
+    };
+    text.lines().any(|line| {
+        if line.starts_with(' ') || line.starts_with('\t') {
+            return false;
+        }
+        let line = line.trim_start();
+        if line.is_empty() || line.starts_with('#') {
+            return false;
+        }
+        CHANNEL_ENTRIES.iter().any(|(id, _)| {
+            line.strip_prefix(id)
+                .is_some_and(|rest| rest.starts_with(':'))
+        })
+    })
+}
+
+/// profile 目录的同步优先级：desktop → web → headless → open-design → 其余字典序。
+fn profile_rank(name: &str) -> usize {
+    match name {
+        "desktop" => 0,
+        "web" => 1,
+        "headless" => 2,
+        "open-design" => 3,
+        _ => 4,
+    }
+}
+
+/// 顶层条目行（行首 "- id:"）的 id。
+fn entry_id(line: &str) -> Option<&str> {
+    line.strip_prefix("- id:").map(str::trim)
+}
+
+/// 是否是一个条目的起始行（顶层 "- " 开头）。
+fn is_entry_line(line: &str) -> bool {
+    line.starts_with("- ") || line == "-"
+}
+
+/// 把条目块里的插件 name 改写成 CLI 可加载的 base 包名（缩进保留）。
+///
+/// 只改条目自身的 name（config: 之前那一行）；config 里的模型 name 是用户配置的
+/// 展示名，必须原样保留。
+fn rewrite_entry_name(block: &[String], base_name: &str) -> Vec<String> {
+    let mut rewritten = Vec::with_capacity(block.len());
+    let mut in_config = false;
+    let mut replaced = false;
+    for line in block {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("config:") {
+            in_config = true;
+        }
+        if !in_config && !replaced && trimmed.starts_with("name:") {
+            let indent = &line[..line.len() - trimmed.len()];
+            rewritten.push(format!("{indent}name: '{base_name}'"));
+            replaced = true;
+        } else {
+            rewritten.push(line.clone());
+        }
+    }
+    rewritten
+}
+
+/// 找到本机第一个配置了渠道行的 DSH profile（返回 profile 名与 patch 内容）。
+fn find_channel_source(home: &Path) -> Option<(String, String)> {
+    let profiles = home.join("profiles");
+    let mut names: Vec<String> = std::fs::read_dir(&profiles)
+        .ok()?
+        .flatten()
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name != PROFILE_NAME && name != "node_modules")
+        .collect();
+    names.sort_by(|left, right| {
+        profile_rank(left)
+            .cmp(&profile_rank(right))
+            .then_with(|| left.cmp(right))
+    });
+    for name in names {
+        let patch = profiles.join(&name).join(PATCH_FILENAME);
+        let Ok(content) = std::fs::read_to_string(&patch) else {
+            continue;
+        };
+        if CHANNEL_ENTRIES
+            .iter()
+            .any(|(id, _)| content.lines().any(|line| entry_id(line) == Some(*id)))
+        {
+            return Some((name, content));
+        }
+    }
+    None
+}
+
+/// 生成从本机 DSH profile 同步来的渠道配置段（无源 / settings 已配置时返回 None）。
+/// 只提取 llm-pi-ai / llm-deepseek / agent-default-model 三个顶层条目，顺序沿用源文件。
+fn channel_sync_section(home: &Path) -> Option<String> {
+    if settings_define_channels(home) {
+        return None;
+    }
+    let (source_name, content) = find_channel_source(home)?;
+    let lines: Vec<&str> = content.lines().collect();
+    let mut blocks: Vec<String> = Vec::new();
+    let mut emitted: Vec<String> = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        let Some(id) = entry_id(lines[index]) else {
+            index += 1;
+            continue;
+        };
+        let mut end = index + 1;
+        while end < lines.len() && !is_entry_line(lines[end]) {
+            end += 1;
+        }
+        if let Some((_, base_name)) = CHANNEL_ENTRIES
+            .iter()
+            .find(|(channel_id, _)| *channel_id == id)
+        {
+            if !emitted.iter().any(|entry| entry == id) {
+                let mut block: Vec<String> = lines[index..end]
+                    .iter()
+                    .map(|line| (*line).to_string())
+                    .collect();
+                while block.last().is_some_and(|line| line.trim().is_empty()) {
+                    block.pop();
+                }
+                blocks.push(rewrite_entry_name(&block, base_name).join("\n"));
+                emitted.push(id.to_string());
+            }
+        }
+        index = end;
+    }
+    if blocks.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "# 自动同步自本机 DSH profile: {source_name}（源文件变化自动重建，勿手改）\n{}\n",
+        blocks.join("\n")
+    ))
+}
+
+/// 桌宠 profile 的完整托管补丁：静态层 + 从本机 DSH profile 同步的渠道配置。
+fn managed_patch(home: &Path) -> String {
+    let mut patch = patch_layer();
+    if let Some(section) = channel_sync_section(home) {
+        patch.push_str(&section);
+    }
+    patch
+}
+
 /// 幂等地准备桌宠 profile：清单、runner 插件与补丁层。
 /// 用户自己写进补丁层的内容不会被覆盖，只会在其后追加桌宠需要的条目。
 fn ensure_profile_in(home: &Path) -> Result<PathBuf, String> {
@@ -246,10 +410,12 @@ fn ensure_profile_in(home: &Path) -> Result<PathBuf, String> {
     }
 
     let patch = dir.join(PATCH_FILENAME);
+    // 每轮重建托管段：本机渠道配置变化后下一次 ensure_profile 就能生效。
+    let target = managed_patch(home);
     let existing = std::fs::read_to_string(&patch).unwrap_or_default();
     if patch_is_ours(&existing) {
-        if existing != patch_layer() {
-            std::fs::write(&patch, patch_layer())
+        if existing != target {
+            std::fs::write(&patch, &target)
                 .map_err(|error| format!("无法写入 {}：{error}", patch.display()))?;
         }
     } else if !existing.contains(PATCH_MARKER) {
@@ -258,7 +424,7 @@ fn ensure_profile_in(home: &Path) -> Result<PathBuf, String> {
         if !merged.ends_with('\n') {
             merged.push('\n');
         }
-        merged.push_str(&patch_layer());
+        merged.push_str(&target);
         std::fs::write(&patch, merged)
             .map_err(|error| format!("无法写入 {}：{error}", patch.display()))?;
     }
@@ -388,7 +554,13 @@ fn sweep_stale_prompts(dir: &Path) {
     }
 }
 
-fn runner_args(prompt_file: &Path, session: Option<&str>, model: Option<&str>) -> Vec<String> {
+fn runner_args(
+    prompt_file: &Path,
+    session: Option<&str>,
+    model: Option<&str>,
+    provider: Option<&str>,
+    effort: Option<&str>,
+) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "--profile".into(),
         PROFILE_NAME.into(),
@@ -399,6 +571,16 @@ fn runner_args(prompt_file: &Path, session: Option<&str>, model: Option<&str>) -
     if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
         args.push("--model".into());
         args.push(model.to_string());
+    }
+    // 本回合渠道覆盖：provider 与 model 一起决定最终模型（仅本机已配置的渠道有效）。
+    if let Some(provider) = provider.map(str::trim).filter(|provider| !provider.is_empty()) {
+        args.push("--provider".into());
+        args.push(provider.to_string());
+    }
+    // 本回合思考强度覆盖：runner 会用最终 provider+model 校验 efforts，不支持时忽略。
+    if let Some(effort) = effort.map(str::trim).filter(|effort| !effort.is_empty()) {
+        args.push("--effort".into());
+        args.push(effort.to_string());
     }
     if let Some(id) = session.filter(|id| !id.trim().is_empty()) {
         args.push("--resume".into());
@@ -470,11 +652,13 @@ impl DshAdapter {
             system_prompt,
             session.as_deref(),
             None,
+            None,
+            None,
         )
         .await
     }
 
-    /// 显式会话 / 模型版本：不依赖适配器内部状态，供多会话与协作调用。
+    /// 显式会话 / 模型 / 渠道 / 思考强度版本：不依赖适配器内部状态，供多会话与协作调用。
     #[allow(clippy::too_many_arguments)]
     pub async fn spawn_streaming_with(
         &self,
@@ -484,6 +668,8 @@ impl DshAdapter {
         system_prompt: &str,
         session: Option<&str>,
         model: Option<&str>,
+        provider: Option<&str>,
+        effort: Option<&str>,
     ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
         let workspace = workspace_dir(app)?;
         let prompts = prompt_dir(app)?;
@@ -495,6 +681,8 @@ impl DshAdapter {
             system_prompt,
             session,
             model,
+            provider,
+            effort,
         )
         .await
     }
@@ -517,11 +705,13 @@ impl DshAdapter {
             system_prompt,
             session.as_deref(),
             None,
+            None,
+            None,
         )
         .await
     }
 
-    /// 显式会话 / 模型 / 目录版本。
+    /// 显式会话 / 模型 / 渠道 / 思考强度 / 目录版本。
     #[allow(clippy::too_many_arguments)]
     pub async fn spawn_in_workspace_with(
         &self,
@@ -532,6 +722,8 @@ impl DshAdapter {
         system_prompt: &str,
         session: Option<&str>,
         model: Option<&str>,
+        provider: Option<&str>,
+        effort: Option<&str>,
     ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
         let session = session.map(str::to_string);
         let task = if session.is_some() {
@@ -553,8 +745,10 @@ impl DshAdapter {
                 return Err(error.into());
             }
         };
-        let mut command =
-            launcher_command(&launcher, &runner_args(&prompt_file, session.as_deref(), model));
+        let mut command = launcher_command(
+            &launcher,
+            &runner_args(&prompt_file, session.as_deref(), model, provider, effort),
+        );
         command
             .current_dir(workspace)
             // stdin 是授权往返的回程通道：runner 把请求写在 stdout，桌宠把决定写回来。
@@ -1139,6 +1333,256 @@ async fn probe_shim_version(shim: &Path) -> Option<String> {
     }
 }
 
+
+// ===== 模型目录（agent 窗口模型选择器的数据源）=====
+
+/// pet-runner `--list-models` 的协议行前缀。
+const MODEL_LINE_PREFIX: &str = "===AGENT_MODELS===";
+
+/// 本机 dsh 的模型目录：用桌宠 profile 跑 `--profile dsh-pet --list-models`。
+///
+/// runner 是桌宠资产，ensure_profile() 会先把它同步到当前版本，因此即使旧 profile
+/// 里的 runner 还不支持 --list-models，也会在第一次探测时被升级。
+pub async fn model_catalog() -> Result<AgentModelCatalog, String> {
+    ensure_profile()?;
+    let launcher = resolve_launcher()?;
+    let args = vec![
+        "--profile".to_string(),
+        PROFILE_NAME.to_string(),
+        "--list-models".to_string(),
+    ];
+    let mut command = launcher_command(&launcher, &args);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let output = tokio::time::timeout(Duration::from_secs(20), command.output())
+        .await
+        .map_err(|_| "读取 dsh 模型目录超时（20 秒）。".to_string())?
+        .map_err(|error| format!("无法运行 dsh --list-models：{error}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    match parse_models_output(&stdout) {
+        Ok(catalog) => Ok(catalog),
+        Err(error) if !output.status.success() => {
+            // 协议行缺失时用 stderr 最后一条非空行做诊断（登录 / profile 报错都在这）。
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let tail = stderr
+                .lines()
+                .rev()
+                .find(|line| !line.trim().is_empty())
+                .map(|line| line.trim().chars().take(300).collect::<String>())
+                .unwrap_or_default();
+            Err(if tail.is_empty() { error } else { format!("{error}（runner 诊断：{tail}）") })
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// 取 JSON 字段的 trim 后文本（非字符串 / 空串 → ""）。
+fn text_field(value: &Value, key: &str) -> String {
+    value[key].as_str().unwrap_or_default().trim().to_string()
+}
+
+/// 解析 runner 的 `--list-models` 协议：前缀行 + JSON。
+pub(crate) fn parse_models_output(stdout: &str) -> Result<AgentModelCatalog, String> {
+    let line = stdout
+        .lines()
+        .rev()
+        .find_map(|line| line.trim().strip_prefix(MODEL_LINE_PREFIX))
+        .ok_or_else(|| {
+            "pet-runner 没有输出 ===AGENT_MODELS=== 协议行，请确认桌宠 profile 已更新。".to_string()
+        })?;
+    let value: Value = serde_json::from_str(line.trim())
+        .map_err(|error| format!("无法解析 pet-runner 模型目录 JSON：{error}"))?;
+    if let Some(error) = value["error"]
+        .as_str()
+        .map(str::trim)
+        .filter(|error| !error.is_empty())
+    {
+        return Err(format!("dsh 模型目录探测失败：{error}"));
+    }
+    // v2 协议：local { provider, model, effort } + providers 列表；
+    // v1 协议兼容：顶层 provider / provider_label / model / effort。
+    let local = &value["local"];
+    let (local_provider, local_model, local_effort) = if local.is_object() {
+        (
+            text_field(local, "provider"),
+            text_field(local, "model"),
+            text_field(local, "effort"),
+        )
+    } else {
+        (
+            text_field(&value, "provider"),
+            text_field(&value, "model"),
+            text_field(&value, "effort"),
+        )
+    };
+    let legacy_provider_label = text_field(&value, "provider_label");
+    // provider id → 展示名（v2 providers 列表；旧协议没有时退回 id）。
+    let provider_labels: Vec<(String, String)> = value["providers"]
+        .as_array()
+        .map(|providers| {
+            providers
+                .iter()
+                .filter_map(|entry| {
+                    let id = text_field(entry, "id");
+                    if id.is_empty() {
+                        return None;
+                    }
+                    let label = text_field(entry, "label");
+                    Some((id.clone(), if label.is_empty() { id } else { label }))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let provider = local_provider.clone();
+    let mut catalog = AgentModelCatalog::empty("dsh");
+    catalog.models = value["models"]
+        .as_array()
+        .map(|models| {
+            models
+                .iter()
+                .filter_map(|entry| {
+                    let id = entry["id"]
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|id| !id.is_empty())?
+                        .to_string();
+                    let name = {
+                        let name = text_field(entry, "name");
+                        // llm 包在 config 未给 name 时会回退成包名，不能直接当展示名。
+                        if name.is_empty() || name.starts_with('@') {
+                            id.clone()
+                        } else {
+                            name
+                        }
+                    };
+                    let description = entry["description"]
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|description| !description.is_empty())
+                        .map(str::to_string);
+                    let entry_provider = {
+                        let id = text_field(entry, "provider");
+                        if id.is_empty() {
+                            (!provider.is_empty()).then(|| provider.clone())
+                        } else {
+                            Some(id)
+                        }
+                    };
+                    let entry_provider_label = {
+                        let label = text_field(entry, "provider_label");
+                        if !label.is_empty() {
+                            Some(label)
+                        } else {
+                            entry_provider.as_deref().map(|id| {
+                                provider_labels
+                                    .iter()
+                                    .find(|(key, _)| key == id)
+                                    .map(|(_, label)| label.clone())
+                                    .or_else(|| {
+                                        (!legacy_provider_label.is_empty()
+                                            && legacy_provider_label != *id)
+                                            .then(|| legacy_provider_label.clone())
+                                    })
+                                    .unwrap_or_else(|| id.to_string())
+                            })
+                        }
+                    };
+                    let default_effort = entry["default_effort"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string();
+                    let efforts = entry["efforts"]
+                        .as_array()
+                        .map(|efforts| {
+                            efforts
+                                .iter()
+                                .filter_map(|effort| {
+                                    let id = effort["id"]
+                                        .as_str()
+                                        .map(str::trim)
+                                        .filter(|id| !id.is_empty())?
+                                        .to_string();
+                                    let name = effort["name"]
+                                        .as_str()
+                                        .map(str::trim)
+                                        .filter(|name| !name.is_empty())
+                                        .map(str::to_string)
+                                        .unwrap_or_else(|| id.clone());
+                                    let description = effort["description"]
+                                        .as_str()
+                                        .map(str::trim)
+                                        .filter(|description| !description.is_empty())
+                                        .map(str::to_string);
+                                    Some(AgentEffortOption {
+                                        id,
+                                        name,
+                                        description,
+                                    })
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    Some(AgentModelOption {
+                        id,
+                        name,
+                        description,
+                        provider: entry_provider,
+                        provider_label: entry_provider_label,
+                        default_effort,
+                        efforts,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    // v2：本机默认模型展示名为「渠道 / 模型」；旧协议只有单 provider 时退回模型名。
+    let local_model_label = if local_model.is_empty() {
+        String::new()
+    } else {
+        let matched = catalog
+            .models
+            .iter()
+            .find(|option| {
+                option.id == local_model
+                    && (local_provider.is_empty()
+                        || option.provider.as_deref() == Some(local_provider.as_str()))
+            })
+            .or_else(|| catalog.models.iter().find(|option| option.id == local_model));
+        let model_name = matched
+            .map(|option| option.name.clone())
+            .unwrap_or_else(|| local_model.clone());
+        let provider_label = if local_provider.is_empty() {
+            String::new()
+        } else {
+            matched
+                .and_then(|option| option.provider_label.clone())
+                .filter(|label| !label.is_empty())
+                .or_else(|| {
+                    provider_labels
+                        .iter()
+                        .find(|(key, _)| *key == local_provider)
+                        .map(|(_, label)| label.clone())
+                })
+                .unwrap_or_else(|| local_provider.clone())
+        };
+        if provider_label.is_empty() {
+            model_name
+        } else {
+            format!("{provider_label} / {model_name}")
+        }
+    };
+    catalog.local_provider = local_provider;
+    catalog.local_model = local_model;
+    catalog.local_model_label = local_model_label;
+    catalog.local_effort = local_effort;
+    Ok(catalog)
+}
+
 /// 打开 DSH 主目录（settings.yaml / .credentials.yaml 都在这里）。
 pub fn open_config() -> Result<(), String> {
     let home = resolve_home()?;
@@ -1422,24 +1866,229 @@ mod tests {
 
     #[test]
     fn builds_resume_arguments_without_a_positional_task() {
-        let args = runner_args(Path::new("C:\\tmp\\p.txt"), Some("session-1"), None);
+        let args = runner_args(Path::new("C:\\tmp\\p.txt"), Some("session-1"), None, None, None);
         assert_eq!(
             args,
             ["--profile", "dsh-pet", "--prompt-file", "C:\\tmp\\p.txt", "--resume", "session-1"]
         );
-        let args = runner_args(Path::new("/tmp/p.txt"), None, None);
+        let args = runner_args(Path::new("/tmp/p.txt"), None, None, None, None);
         assert_eq!(args.len(), 4);
         assert!(!args.iter().any(|arg| arg == "--resume"));
     }
 
     #[test]
     fn passes_an_explicit_model_override_to_the_runner() {
-        let args = runner_args(Path::new("/tmp/p.txt"), None, Some("deepseek-reasoner"));
+        let args = runner_args(Path::new("/tmp/p.txt"), None, Some("deepseek-reasoner"), None, None);
         assert!(args.windows(2).any(|pair| pair == ["--model", "deepseek-reasoner"]));
         // 空模型字符串表示跟随本机配置。
-        let args = runner_args(Path::new("/tmp/p.txt"), Some("session-1"), Some("  "));
+        let args = runner_args(Path::new("/tmp/p.txt"), Some("session-1"), Some("  "), None, None);
         assert!(!args.iter().any(|arg| arg == "--model"));
         assert!(args.windows(2).any(|pair| pair == ["--resume", "session-1"]));
+    }
+
+    #[test]
+    fn passes_an_explicit_reasoning_effort_to_the_runner() {
+        let args = runner_args(Path::new("/tmp/p.txt"), None, None, None, Some("high"));
+        assert!(args.windows(2).any(|pair| pair == ["--effort", "high"]));
+        let args = runner_args(Path::new("/tmp/p.txt"), Some("session-1"), Some("m"), None, Some("max"));
+        let effort = args.iter().position(|arg| arg == "--effort").expect("缺少 --effort");
+        assert_eq!(args[effort + 1], "max");
+        let resume = args.iter().position(|arg| arg == "--resume").expect("缺少 --resume");
+        assert!(effort < resume, "effort 必须在 resume 之前");
+        // 空 effort 表示跟随本机默认，不追加参数。
+        for empty in [None, Some(""), Some("   ")] {
+            assert!(
+                !runner_args(Path::new("/tmp/p.txt"), None, None, None, empty)
+                    .iter()
+                    .any(|arg| arg == "--effort"),
+                "空 effort 不应出现: {empty:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn passes_an_explicit_provider_before_effort_and_resume() {
+        let args = runner_args(
+            Path::new("/tmp/p.txt"),
+            Some("session-1"),
+            Some("deepseek-v4.1-flash"),
+            Some("opendesgin"),
+            Some("max"),
+        );
+        let position = |needle: &str| {
+            args.iter()
+                .position(|arg| arg == needle)
+                .unwrap_or_else(|| panic!("缺少 {needle}: {args:?}"))
+        };
+        let model = position("--model");
+        let provider = position("--provider");
+        let effort = position("--effort");
+        let resume = position("--resume");
+        assert_eq!(args[provider + 1], "opendesgin");
+        assert!(
+            model < provider && provider < effort && effort < resume,
+            "参数顺序必须是 --model → --provider → --effort → --resume: {args:?}"
+        );
+        // 空 provider 表示跟随本机渠道，不追加参数。
+        for empty in [None, Some(""), Some("   ")] {
+            assert!(
+                !runner_args(Path::new("/tmp/p.txt"), None, None, empty, None)
+                    .iter()
+                    .any(|arg| arg == "--provider"),
+                "空 provider 不应出现: {empty:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_the_runner_model_catalog_protocol_line() {
+        let payload = serde_json::json!({
+            "provider": "deepseek-official",
+            "provider_label": "DeepSeek",
+            "model": "deepseek-v4-pro",
+            "effort": "high",
+            "models": [
+                {
+                    "provider": "deepseek-official",
+                    "provider_label": "DeepSeek",
+                    "id": "deepseek-v4-flash",
+                    "name": "DeepSeek V4 Flash",
+                    "description": "快速模型",
+                    "default_effort": "high",
+                    "efforts": [
+                        { "id": "off", "name": "关闭" },
+                        { "id": "low", "name": "低" },
+                        { "id": "high", "name": "高" },
+                        { "id": "max", "name": "最高" }
+                    ],
+                    "context_window": 1000000
+                },
+                {
+                    "provider": "deepseek-official",
+                    "provider_label": "DeepSeek",
+                    "id": "deepseek-v4-pro",
+                    "name": "DeepSeek V4 Pro",
+                    "default_effort": "",
+                    "efforts": []
+                }
+            ]
+        });
+        let stdout = format!("plugin boot log\n===AGENT_MODELS==={}\n", payload);
+        let catalog = parse_models_output(&stdout).expect("parse catalog");
+        assert_eq!(catalog.slot, "dsh");
+        assert_eq!(catalog.backend, "dsh");
+        assert_eq!(catalog.local_provider, "deepseek-official");
+        assert_eq!(catalog.local_model, "deepseek-v4-pro");
+        assert_eq!(
+            catalog.local_model_label, "DeepSeek / DeepSeek V4 Pro",
+            "v1 协议兼容：展示名 = provider 展示名 / 模型名"
+        );
+        assert_eq!(catalog.local_effort, "high");
+        assert_eq!(catalog.models.len(), 2);
+        let flash = &catalog.models[0];
+        assert_eq!(flash.id, "deepseek-v4-flash");
+        assert_eq!(flash.provider.as_deref(), Some("deepseek-official"));
+        assert_eq!(flash.provider_label.as_deref(), Some("DeepSeek"));
+        assert_eq!(flash.description.as_deref(), Some("快速模型"));
+        assert_eq!(flash.default_effort, "high");
+        assert_eq!(
+            flash.efforts.iter().map(|effort| effort.id.as_str()).collect::<Vec<_>>(),
+            vec!["off", "low", "high", "max"]
+        );
+        assert_eq!(flash.efforts[3].name, "最高");
+        assert!(catalog.models[1].efforts.is_empty());
+
+        // 缺协议行 / JSON 坏 / runner 报错都是明确错误。
+        assert!(parse_models_output("no catalog here").is_err());
+        assert!(parse_models_output("===AGENT_MODELS==={oops").is_err());
+        let error_line = r#"===AGENT_MODELS==={"error":"llm service missing"}"#;
+        assert!(parse_models_output(error_line).unwrap_err().contains("llm service missing"));
+        // 空模型列表是合法目录（不是错误）。
+        let empty = r#"===AGENT_MODELS==={"provider":"p","provider_label":"P","model":"","effort":"","models":[]}"#;
+        assert!(parse_models_output(empty).unwrap().models.is_empty());
+    }
+
+    #[test]
+    fn parses_the_v2_all_provider_catalog_protocol() {
+        let payload = serde_json::json!({
+            "local": { "provider": "opendesgin", "model": "deepseek-v4.1-flash", "effort": "" },
+            "providers": [
+                { "id": "deepseek-official", "label": "DeepSeek" },
+                { "id": "together", "label": "together" },
+                { "id": "qwen", "label": "qwen" },
+                { "id": "opendesgin", "label": "opendesgin" }
+            ],
+            "models": [
+                {
+                    "provider": "opendesgin",
+                    "provider_label": "opendesgin",
+                    "id": "claude-opus-5",
+                    "name": "Claude Opus 5",
+                    "default_effort": "high",
+                    "efforts": [
+                        { "id": "off", "name": "Off" },
+                        { "id": "low", "name": "Low" },
+                        { "id": "medium", "name": "Medium" },
+                        { "id": "high", "name": "High" },
+                        { "id": "xhigh", "name": "XHigh" },
+                        { "id": "max", "name": "Max" }
+                    ],
+                    "context_window": 1000000
+                },
+                {
+                    "provider": "opendesgin",
+                    "provider_label": "opendesgin",
+                    "id": "deepseek-v4.1-flash",
+                    "name": "DeepSeek-V4.1-Flash",
+                    "default_effort": "max",
+                    "efforts": []
+                },
+                {
+                    "provider": "deepseek-official",
+                    "provider_label": "DeepSeek",
+                    "id": "deepseek-v4-pro",
+                    "name": "DeepSeek-V4-Pro",
+                    "default_effort": "high",
+                    "efforts": [{ "id": "high", "name": "High" }]
+                }
+            ],
+            "error": ""
+        });
+        let stdout = format!("===AGENT_MODELS==={}
+", payload);
+        let catalog = parse_models_output(&stdout).expect("parse v2 catalog");
+        assert_eq!(catalog.slot, "dsh");
+        assert_eq!(catalog.local_provider, "opendesgin");
+        assert_eq!(catalog.local_model, "deepseek-v4.1-flash");
+        assert_eq!(
+            catalog.local_model_label, "opendesgin / DeepSeek-V4.1-Flash",
+            "v2 展示名 = 渠道 / 模型"
+        );
+        assert_eq!(catalog.local_effort, "");
+        assert_eq!(catalog.error, "");
+        assert_eq!(catalog.models.len(), 3);
+        let opus = &catalog.models[0];
+        assert_eq!(opus.provider.as_deref(), Some("opendesgin"));
+        assert_eq!(opus.provider_label.as_deref(), Some("opendesgin"));
+        assert_eq!(
+            opus.efforts.iter().map(|effort| effort.id.as_str()).collect::<Vec<_>>(),
+            vec!["off", "low", "medium", "high", "xhigh", "max"]
+        );
+        // (provider, id) 唯一键：同名模型在不同渠道是不同条目。
+        let deepseek_official = &catalog.models[2];
+        assert_eq!(deepseek_official.provider.as_deref(), Some("deepseek-official"));
+        assert_eq!(deepseek_official.provider_label.as_deref(), Some("DeepSeek"));
+
+        // 模型条目缺 provider 时回退到 local.provider（防御旧 runner）。
+        let fallback = serde_json::json!({
+            "local": { "provider": "opendesgin", "model": "m1", "effort": "low" },
+            "models": [{ "id": "m1", "name": "M1" }]
+        });
+        let catalog = parse_models_output(&format!("===AGENT_MODELS==={fallback}"))
+            .expect("parse fallback catalog");
+        assert_eq!(catalog.models[0].provider.as_deref(), Some("opendesgin"));
+        assert_eq!(catalog.models[0].provider_label.as_deref(), Some("opendesgin"));
+        assert_eq!(catalog.local_model_label, "opendesgin / M1");
     }
 
     #[test]
@@ -1476,6 +2125,7 @@ mod tests {
         assert!(patch.contains(PATCH_MARKER));
         assert!(patch.contains("./plugins/pet-runner.mjs"));
         assert!(patch.contains("disabled: true"));
+        assert!(!patch.contains("自动同步自本机"), "没有源 profile 时不能追加同步段");
 
         // 旧版本桌宠写的空补丁层会被升级成 v2。
         std::fs::write(dir.join(PATCH_FILENAME), "# 桌宠专用 profile 补丁层：默认空。\n[]\n").unwrap();
@@ -1491,6 +2141,169 @@ mod tests {
         assert!(merged.contains("我的补丁"));
         assert!(merged.contains("id: mine"));
         assert!(merged.contains("pet-runner"));
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+
+    /// 渠道配置同步 fixture：desktop profile 的三个托管行 + 无关行。
+    const CHANNEL_PATCH_FIXTURE: &str = r#"- id: ui-settings-general
+  name: '@deepseek-ai/dsh-client-ui-settings-general'
+  config:
+    welcomeNoticeVersion: 2026-08-13.1
+- id: agent-default-model
+  name: '@deepseek-ai/dsh-agent-default-model'
+  config:
+    provider: opendesgin
+    model: deepseek-v4.1-flash
+    reasoningEffort: max
+- id: llm-deepseek
+  name: '@deepseek-ai/dsh-llm-deepseek-api-key'
+  config:
+    models:
+      - id: deepseek-flash
+        name: DeepSeek Flash
+      - id: deepseek-v4-pro
+        name: deepseek-v4-pro
+- id: llm-pi-ai
+  name: '@deepseek-ai/dsh-llm-pi-ai'
+  config:
+    providers:
+      qwen:
+        models:
+          - id: qwen3.8-flash
+            name: Qwen3.8 Flash
+            reasoningEfforts:
+              high: high
+- id: ui-chat
+  name: '@deepseek-ai/dsh-client-ui-chat'
+"#;
+
+    fn write_profile_patch(home: &Path, name: &str, content: &str) {
+        let dir = home.join("profiles").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(PATCH_FILENAME), content).unwrap();
+    }
+
+    #[test]
+    fn syncs_only_the_three_channel_entries_and_rewrites_package_names() {
+        let home = std::env::temp_dir().join(format!("dsh-sync-{}", uuid::Uuid::new_v4()));
+        write_profile_patch(&home, "desktop", CHANNEL_PATCH_FIXTURE);
+        let section = channel_sync_section(&home).expect("必须生成渠道同步段");
+        assert!(section.contains("自动同步自本机 DSH profile: desktop"), "{section}");
+        // 只允许这三个 id，别的条目不能带进来。
+        for forbidden in ["ui-settings-general", "ui-chat", "welcomeNoticeVersion"] {
+            assert!(!section.contains(forbidden), "不该同步 {forbidden}：{section}");
+        }
+        for expected in ["llm-pi-ai", "llm-deepseek", "agent-default-model"] {
+            assert!(section.contains(expected), "缺少渠道行 {expected}: {section}");
+        }
+        // name 改写成 CLI 可加载的 base 包名。
+        assert!(section.contains("name: '@deepseek-ai/dsh-llm-deepseek'"));
+        assert!(!section.contains("dsh-llm-deepseek-api-key"), "app 专用包名必须改写");
+        assert!(section.contains("name: '@deepseek-ai/dsh-llm-pi-ai'"));
+        assert!(section.contains("name: '@deepseek-ai/dsh-agent-default-model'"));
+        // config 原文与多行缩进原样保留，config 里的模型 name 不能被插件包名覆盖。
+        assert!(section.contains("    provider: opendesgin"));
+        assert!(section.contains("              high: high"));
+        assert!(section.contains("        name: DeepSeek Flash"), "{section}");
+        assert!(section.contains("            name: Qwen3.8 Flash"), "{section}");
+        assert_eq!(
+            section.matches("name: '@deepseek-ai/dsh-llm-pi-ai'").count(),
+            1,
+            "只改写插件行 name，不能改模型 name: {section}"
+        );
+        assert_eq!(
+            section.matches("name: '@deepseek-ai/dsh-llm-deepseek'").count(),
+            1,
+            "只改写插件行 name: {section}"
+        );
+        // 顺序沿用源文件：agent-default-model → llm-deepseek → llm-pi-ai。
+        let index_of = |needle: &str| section.find(needle).unwrap_or_else(|| panic!("缺少 {needle}"));
+        assert!(index_of("agent-default-model") < index_of("llm-deepseek"));
+        assert!(index_of("llm-deepseek") < index_of("llm-pi-ai"));
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn channel_sync_respects_settings_yaml_source_priority_and_comments() {
+        let home = std::env::temp_dir().join(format!("dsh-sync-{}", uuid::Uuid::new_v4()));
+        // desktop 没有渠道行 → 跳过，按优先级选 web（headless 虽也有但优先级更低）。
+        write_profile_patch(
+            &home,
+            "desktop",
+            "- id: ui-chat\n  name: '@deepseek-ai/dsh-client-ui-chat'\n",
+        );
+        write_profile_patch(&home, "web", CHANNEL_PATCH_FIXTURE);
+        write_profile_patch(&home, "headless", CHANNEL_PATCH_FIXTURE);
+        let section = channel_sync_section(&home).expect("web 应作为同步源");
+        assert!(section.contains("profile: web"), "{section}");
+        // settings.yaml 顶层已有渠道段 → 不同步（避免双份）。
+        std::fs::write(
+            home.join("settings.yaml"),
+            "# llm-pi-ai:\nllm-deepseek:\n  models: []\n",
+        )
+        .unwrap();
+        assert!(
+            channel_sync_section(&home).is_none(),
+            "settings.yaml 已配置渠道时不能再复制"
+        );
+        // 注释掉的段、缩进行、同前缀的其它 key 都不算渠道段。
+        std::fs::write(
+            home.join("settings.yaml"),
+            "# 只是注释\nllm-pi-ai-extra: true\n  llm-pi-ai: nested\n",
+        )
+        .unwrap();
+        let section = channel_sync_section(&home).expect("非顶层 / 注释行不算渠道段");
+        assert!(section.contains("profile: web"));
+        // 无源 profile 时不生成同步段。
+        let empty_home = std::env::temp_dir().join(format!("dsh-sync-empty-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(empty_home.join("profiles")).unwrap();
+        assert!(channel_sync_section(&empty_home).is_none());
+        let _ = std::fs::remove_dir_all(home);
+        let _ = std::fs::remove_dir_all(empty_home);
+    }
+
+    #[test]
+    fn ensure_profile_in_merges_and_refreshes_synced_channels() {
+        let home = std::env::temp_dir().join(format!("dsh-sync-profile-{}", uuid::Uuid::new_v4()));
+        write_profile_patch(&home, "desktop", CHANNEL_PATCH_FIXTURE);
+        let dir = ensure_profile_in(&home).unwrap();
+        let patch = std::fs::read_to_string(dir.join(PATCH_FILENAME)).unwrap();
+        assert!(patch.contains(PATCH_MARKER), "静态层必须保留");
+        assert!(patch.contains("自动同步自本机 DSH profile: desktop"));
+        assert!(patch.contains("id: llm-pi-ai"));
+        assert!(patch.contains("name: '@deepseek-ai/dsh-llm-deepseek'"));
+        assert!(!patch.contains("dsh-llm-deepseek-api-key"));
+        // 幂等：再跑一次内容不变。
+        ensure_profile_in(&home).unwrap();
+        let again = std::fs::read_to_string(dir.join(PATCH_FILENAME)).unwrap();
+        assert_eq!(patch, again);
+        // 源文件变化后下一次 ensure_profile 自动重建。
+        let updated = CHANNEL_PATCH_FIXTURE.replace("reasoningEffort: max", "reasoningEffort: high");
+        write_profile_patch(&home, "desktop", &updated);
+        ensure_profile_in(&home).unwrap();
+        let refreshed = std::fs::read_to_string(dir.join(PATCH_FILENAME)).unwrap();
+        assert!(refreshed.contains("reasoningEffort: high"));
+        // settings.yaml 出现渠道段后托管段移除同步内容。
+        std::fs::write(home.join("settings.yaml"), "llm-pi-ai:\n  providers: {}\n").unwrap();
+        ensure_profile_in(&home).unwrap();
+        let without = std::fs::read_to_string(dir.join(PATCH_FILENAME)).unwrap();
+        assert!(
+            !without.contains("自动同步自本机"),
+            "settings.yaml 生效后不应再同步渠道配置: {without}"
+        );
+        assert!(without.contains(PATCH_MARKER));
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn ensure_profile_in_without_a_channel_source_keeps_the_static_patch() {
+        let home = std::env::temp_dir().join(format!("dsh-profile-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(home.join("profiles")).unwrap();
+        let dir = ensure_profile_in(&home).unwrap();
+        let patch = std::fs::read_to_string(dir.join(PATCH_FILENAME)).unwrap();
+        assert!(patch.contains(PATCH_MARKER));
+        assert!(!patch.contains("自动同步自本机"), "没有源 profile 时不能追加同步段");
         let _ = std::fs::remove_dir_all(home);
     }
 
@@ -1841,6 +2654,90 @@ mod tests {
         println!("思考增量 {} 字", third.full_thinking.chars().count());
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+
+    // 需要本机安装并登录 dsh，且本机已配置多渠道（desktop profile 的渠道行会被同步）：
+    // cargo test --lib dsh::tests::local_model_catalog_lists_real_models -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore = "requires a locally installed DeepSeek Harness CLI"]
+    async fn local_model_catalog_lists_real_models() {
+        let catalog = model_catalog().await.expect("读取本机 dsh 模型目录");
+        assert_eq!(catalog.slot, "dsh");
+        assert_eq!(catalog.backend, "dsh");
+        assert!(catalog.error.is_empty(), "目录错误：{}", catalog.error);
+        assert!(!catalog.models.is_empty(), "本机 dsh 目录不能为空");
+
+        // v2：本机已配置的全部渠道都要出现在目录里，且每个模型都带 provider。
+        let providers: Vec<&str> = catalog
+            .models
+            .iter()
+            .filter_map(|model| model.provider.as_deref())
+            .collect();
+        for provider in ["deepseek-official", "together", "qwen", "opendesgin"] {
+            assert!(
+                providers.contains(&provider),
+                "目录缺少渠道 {provider}: {providers:?}"
+            );
+        }
+        assert!(
+            catalog.models.iter().all(|model| model.provider.is_some()
+                && model.provider_label.as_deref().is_some_and(|label| !label.is_empty())),
+            "dsh 的每个模型都必须带 provider / provider_label"
+        );
+
+        // 本机默认渠道 / 模型来自 agent-default-model 配置。
+        assert_eq!(catalog.local_provider, "opendesgin", "本机默认渠道");
+        assert_eq!(catalog.local_model, "deepseek-v4.1-flash", "本机默认模型");
+        assert!(
+            catalog.local_model_label.contains("opendesgin"),
+            "本机展示名要带渠道：{}",
+            catalog.local_model_label
+        );
+
+        // opendesgin 渠道的 claude-opus-5 及完整思考强度。
+        let opus = catalog
+            .models
+            .iter()
+            .find(|model| {
+                model.provider.as_deref() == Some("opendesgin") && model.id == "claude-opus-5"
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "opendesgin 渠道缺少 claude-opus-5：{:?}",
+                    catalog
+                        .models
+                        .iter()
+                        .filter(|model| model.provider.as_deref() == Some("opendesgin"))
+                        .map(|model| model.id.clone())
+                        .collect::<Vec<_>>()
+                )
+            });
+        let efforts: Vec<&str> = opus.efforts.iter().map(|effort| effort.id.as_str()).collect();
+        for effort in ["off", "low", "medium", "high", "xhigh", "max"] {
+            assert!(
+                efforts.contains(&effort),
+                "claude-opus-5 缺少思考强度 {effort}: {efforts:?}"
+            );
+        }
+
+        println!(
+            "dsh 目录：local={}@{} ({}) effort={:?}，渠道 {:?}，模型 {} 个",
+            catalog.local_model,
+            catalog.local_provider,
+            catalog.local_model_label,
+            catalog.local_effort,
+            catalog
+                .models
+                .iter()
+                .filter_map(|model| model.provider.clone())
+                .collect::<std::collections::BTreeSet<_>>(),
+            catalog.models.len()
+        );
+        println!(
+            "opendesgin claude-opus-5 efforts={:?} default={:?}",
+            efforts, opus.default_effort
+        );
     }
 
     // 需要本机安装并登录 dsh：cargo test --lib dsh::tests::local_cli_round_trip -- --ignored

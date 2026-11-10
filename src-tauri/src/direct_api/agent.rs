@@ -71,6 +71,7 @@ struct AnswerDeltaPayload {
     text: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_direct_api_agent(
     app_handle: tauri::AppHandle,
     message: String,
@@ -81,9 +82,9 @@ pub async fn run_direct_api_agent(
     quote: Option<(String, String)>,
     agent: Option<crate::AgentContext>,
     turn_tool_grants: HashSet<String>,
+    cancel: tokio_util::sync::CancellationToken,
 ) {
     let state = app_handle.state::<AppState>();
-    let cancel = state.abort_token.lock().await.clone().unwrap_or_default();
     let result = tokio::select! {
         _ = cancel.cancelled() => Err(crate::agent_turn::TurnError::aborted("", "")),
         result = execute_direct_api_turn(app_handle.clone(), message, config, system_prompt, chat_history, attachments, quote, agent.clone(), turn_tool_grants, cancel.clone(), true) => result,
@@ -120,9 +121,7 @@ pub async fn run_direct_api_agent(
         behavior.mood.update(Some(0.05), None);
     }
 
-    if let Ok(mut active) = state.active_chat.lock() {
-        active.active = None;
-    }
+    crate::clear_active_chat(&state);
 
     let _ = app_handle.emit(
         "ai-finished",
@@ -1208,11 +1207,7 @@ fn is_recoverable_stream_error(message: &str) -> bool {
 }
 
 fn append_active_thinking(state: &tauri::State<'_, AppState>, text: &str) {
-    if let Ok(mut active) = state.active_chat.lock() {
-        if let Some(active) = active.active.as_mut() {
-            active.thinking.push_str(text);
-        }
-    }
+    crate::append_session_thinking(state, text);
 }
 
 async fn request_tool_confirmation(
@@ -1897,9 +1892,7 @@ fn tool_summary(tool_name: &str, args: &serde_json::Value) -> String {
 
 async fn send_error(app_handle: &tauri::AppHandle, err_msg: String, full_thinking: &str) {
     let state = app_handle.state::<AppState>();
-    if let Ok(mut active) = state.active_chat.lock() {
-        active.active = None;
-    }
+    crate::clear_active_chat(&state);
     let mut behavior = state.behavior.lock().await;
     behavior.set_state(crate::behavior::PetState::Confused);
     drop(behavior);
@@ -1932,12 +1925,11 @@ async fn send_error(app_handle: &tauri::AppHandle, err_msg: String, full_thinkin
 
 async fn send_aborted(app_handle: &tauri::AppHandle, full_text: &str, full_thinking: &str) {
     let state = app_handle.state::<AppState>();
-    if let Ok(mut active) = state.active_chat.lock() {
-        active.active = None;
+    crate::clear_active_chat(&state);
+    if !crate::has_any_active_chat(&state) {
+        let mut behavior = state.behavior.lock().await;
+        behavior.set_state(crate::behavior::PetState::Idle);
     }
-    let mut behavior = state.behavior.lock().await;
-    behavior.set_state(crate::behavior::PetState::Idle);
-    drop(behavior);
 
     // 有部分内容时保存到数据库，使"继续"时 AI 能接续
     if !full_text.trim().is_empty() || !full_thinking.trim().is_empty() {

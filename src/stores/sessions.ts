@@ -16,6 +16,10 @@ export interface ChatSession {
   agent_name: string;
   agent_avatar: string;
   model: string;
+  /** 模型所属渠道 provider id；空串 = 跟随本机渠道（v2 多渠道模型）。 */
+  provider: string;
+  /** 思考强度 id；空串 = 跟随本机默认。 */
+  reasoning_effort: string;
   created_at: number;
   updated_at: number;
   message_count: number;
@@ -25,6 +29,8 @@ export interface ChatSession {
 export interface CreateSessionOptions {
   agentId?: string;
   model?: string;
+  provider?: string;
+  reasoningEffort?: string;
   title?: string;
 }
 
@@ -33,6 +39,8 @@ export interface BindSessionPatch {
   agentName?: string;
   agentAvatar?: string;
   model?: string;
+  provider?: string;
+  reasoningEffort?: string;
 }
 
 /** 三个 agent 窗口的默认内置角色 id（与后端 builtin_agents 对齐）。 */
@@ -105,6 +113,8 @@ export const useSessionsStore = defineStore("sessions", () => {
       slot,
       agentId: options.agentId ?? "",
       model: options.model ?? "",
+      provider: options.provider ?? "",
+      reasoningEffort: options.reasoningEffort ?? "",
       title: options.title ?? "",
     });
     upsert(session);
@@ -138,6 +148,8 @@ export const useSessionsStore = defineStore("sessions", () => {
       agentName: patch.agentName,
       agentAvatar: patch.agentAvatar,
       model: patch.model,
+      provider: patch.provider,
+      reasoningEffort: patch.reasoningEffort,
     });
     upsert(session);
     return session;

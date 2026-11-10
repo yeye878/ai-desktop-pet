@@ -22,6 +22,9 @@ __diff_*.txt
 __review_*.tmp
 docs/*.md
 _lab3_review/
+review/
+review-note.txt
 .idea/
 OpenCompanion/
+.ws-probe/
 scripts/_*

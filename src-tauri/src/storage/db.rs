@@ -141,6 +141,12 @@ pub struct ChatSession {
     pub agent_name: String,
     pub agent_avatar: String,
     pub model: String,
+    /// 模型所在渠道（provider）；空串 = 跟随本机默认 / 不适用（claude/codex）。
+    #[serde(default)]
+    pub provider: String,
+    /// 思考强度 id；空串 = 跟随本机默认（不传 effort 参数）。
+    #[serde(default)]
+    pub reasoning_effort: String,
     /// 各 CLI 后端的续接会话 id：{ "claude_code": "...", "codex": "...", "dsh": "..." }。
     /// 只给后端用，不返回给前端。
     #[serde(default, skip_serializing)]
@@ -172,6 +178,8 @@ pub struct NewChatSession {
     pub agent_name: String,
     pub agent_avatar: String,
     pub model: String,
+    pub provider: String,
+    pub reasoning_effort: String,
 }
 
 impl NewChatSession {
@@ -436,6 +444,8 @@ impl Database {
                 agent_name TEXT NOT NULL DEFAULT '',
                 agent_avatar TEXT NOT NULL DEFAULT '',
                 model TEXT NOT NULL DEFAULT '',
+                model_provider TEXT NOT NULL DEFAULT '',
+                reasoning_effort TEXT NOT NULL DEFAULT '',
                 cli_sessions_json TEXT NOT NULL DEFAULT '{}',
                 created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
                 updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
@@ -445,6 +455,8 @@ impl Database {
         self.ensure_chat_quote_columns()?;
         self.ensure_chat_agent_columns()?;
         self.ensure_chat_session_column()?;
+        self.ensure_chat_session_reasoning_effort_column()?;
+        self.ensure_chat_session_provider_column()?;
         self.ensure_clipboard_pinned_column()?;
         self.ensure_scheduled_tasks_columns()?;
         self.init_chat_sessions()?;
@@ -521,6 +533,38 @@ impl Database {
         if !columns.iter().any(|column| column == "session_id") {
             self.conn.execute(
                 "ALTER TABLE chat_history ADD COLUMN session_id TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// 旧库的 chat_sessions 没有 reasoning_effort 列：幂等补上（默认空串）。
+    fn ensure_chat_session_reasoning_effort_column(&self) -> Result<()> {
+        let columns = self
+            .conn
+            .prepare("PRAGMA table_info(chat_sessions)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>>>()?;
+        if !columns.iter().any(|column| column == "reasoning_effort") {
+            self.conn.execute(
+                "ALTER TABLE chat_sessions ADD COLUMN reasoning_effort TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// 旧库的 chat_sessions 没有 model_provider 列：幂等补上（默认空串 = 跟随本机）。
+    fn ensure_chat_session_provider_column(&self) -> Result<()> {
+        let columns = self
+            .conn
+            .prepare("PRAGMA table_info(chat_sessions)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>>>()?;
+        if !columns.iter().any(|column| column == "model_provider") {
+            self.conn.execute(
+                "ALTER TABLE chat_sessions ADD COLUMN model_provider TEXT NOT NULL DEFAULT ''",
                 [],
             )?;
         }
@@ -955,9 +999,9 @@ impl Database {
         self.conn.execute(
             "INSERT INTO chat_sessions (
                 id, title, kind, slot, agent_id, agent_name, agent_avatar, model,
-                cli_sessions_json, created_at, updated_at
+                model_provider, reasoning_effort, cli_sessions_json, created_at, updated_at
              ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, '{}',
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, '{}',
                 strftime('%s', 'now'), strftime('%s', 'now')
              )",
             (
@@ -969,6 +1013,8 @@ impl Database {
                 new.agent_name.trim(),
                 new.agent_avatar.trim(),
                 new.model.trim(),
+                new.provider.trim(),
+                new.reasoning_effort.trim(),
             ),
         )?;
         self.get_chat_session(&id)?
@@ -1009,8 +1055,8 @@ impl Database {
         }
     }
 
-    /// 更新会话的标题 / 绑定 / 模型 / CLI 续接 id；同时刷新 updated_at。
-    /// 每个 Option 为 None 表示不动该字段。
+    /// 更新会话的标题 / 绑定 / 模型 / CLI 续接 id / 思考强度 / 渠道；同时刷新 updated_at。
+    /// 每个 Option 为 None 表示不动该字段；effort / provider 的 Some("") = 清回跟随本机。
     pub fn update_chat_session(
         &self,
         id: &str,
@@ -1018,6 +1064,8 @@ impl Database {
         agent: Option<(&str, &str, &str)>,
         model: Option<&str>,
         cli_sessions: Option<&HashMap<String, String>>,
+        effort: Option<&str>,
+        provider: Option<&str>,
     ) -> Result<ChatSession> {
         if let Some(title) = title.map(str::trim).filter(|title| !title.is_empty()) {
             self.conn.execute(
@@ -1037,6 +1085,18 @@ impl Database {
             self.conn.execute(
                 "UPDATE chat_sessions SET model = ?1 WHERE id = ?2",
                 (model.trim(), id),
+            )?;
+        }
+        if let Some(effort) = effort {
+            self.conn.execute(
+                "UPDATE chat_sessions SET reasoning_effort = ?1 WHERE id = ?2",
+                (effort.trim(), id),
+            )?;
+        }
+        if let Some(provider) = provider {
+            self.conn.execute(
+                "UPDATE chat_sessions SET model_provider = ?1 WHERE id = ?2",
+                (provider.trim(), id),
             )?;
         }
         if let Some(cli_sessions) = cli_sessions {
@@ -1760,13 +1820,14 @@ impl Database {
 
 /// 会话查询列：末尾两个子查询给出消息数与最后一条消息（预览）。
 const CHAT_SESSION_SELECT: &str = "SELECT s.id, s.title, s.kind, s.slot, s.agent_id, s.agent_name, \
-     s.agent_avatar, s.model, s.cli_sessions_json, s.created_at, s.updated_at, \
+     s.agent_avatar, s.model, s.model_provider, s.reasoning_effort, s.cli_sessions_json, \
+     s.created_at, s.updated_at, \
      (SELECT COUNT(*) FROM chat_history h WHERE h.session_id = s.id) AS message_count, \
      (SELECT h.content FROM chat_history h WHERE h.session_id = s.id ORDER BY h.id DESC LIMIT 1) AS preview \
      FROM chat_sessions s";
 
 fn chat_session_from_row(row: &rusqlite::Row<'_>) -> Result<ChatSession> {
-    let cli_sessions_json: String = row.get(8)?;
+    let cli_sessions_json: String = row.get(10)?;
     Ok(ChatSession {
         id: row.get(0)?,
         title: row.get(1)?,
@@ -1776,11 +1837,13 @@ fn chat_session_from_row(row: &rusqlite::Row<'_>) -> Result<ChatSession> {
         agent_name: row.get(5)?,
         agent_avatar: row.get(6)?,
         model: row.get(7)?,
+        provider: row.get(8)?,
+        reasoning_effort: row.get(9)?,
         cli_sessions: serde_json::from_str(&cli_sessions_json).unwrap_or_default(),
-        created_at: row.get(9)?,
-        updated_at: row.get(10)?,
-        message_count: row.get(11)?,
-        preview: compact_preview(row.get::<_, Option<String>>(12)?),
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+        message_count: row.get(13)?,
+        preview: compact_preview(row.get::<_, Option<String>>(14)?),
     })
 }
 
@@ -1999,6 +2062,45 @@ mod tests {
     }
 
     #[test]
+    fn legacy_chat_sessions_gain_empty_effort_and_provider_columns() {
+        // 旧库的 chat_sessions 没有 reasoning_effort / model_provider 列，迁移后旧会话读出空串。
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE chat_sessions (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL DEFAULT '',
+                kind TEXT NOT NULL DEFAULT 'main',
+                slot TEXT NOT NULL DEFAULT 'main',
+                agent_id TEXT NOT NULL DEFAULT '',
+                agent_name TEXT NOT NULL DEFAULT '',
+                agent_avatar TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                cli_sessions_json TEXT NOT NULL DEFAULT '{}',
+                created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+                updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+            );
+            INSERT INTO chat_sessions (id, title) VALUES ('session-legacy', '旧会话');",
+        )
+        .unwrap();
+        let db = Database { conn };
+        db.init_tables().unwrap();
+        db.ensure_indexes().unwrap();
+
+        let legacy = db.get_chat_session("session-legacy").unwrap().unwrap();
+        assert_eq!(legacy.reasoning_effort, "", "旧会话迁移后思考强度默认空串");
+        assert_eq!(legacy.provider, "", "旧会话迁移后渠道默认空串（跟随本机）");
+        assert_eq!(legacy.title, "旧会话");
+        let listed = &db.list_chat_sessions(None).unwrap()[0];
+        assert_eq!(listed.reasoning_effort, "");
+        assert_eq!(listed.provider, "");
+        // 迁移是幂等的：再跑一遍不会报列已存在。
+        db.init_tables().unwrap();
+        let legacy = db.get_chat_session("session-legacy").unwrap().unwrap();
+        assert_eq!(legacy.reasoning_effort, "");
+        assert_eq!(legacy.provider, "");
+    }
+
+    #[test]
     fn chat_sessions_keep_messages_isolated_with_title_and_preview() {
         let db = Database::open_in_memory().unwrap();
         let main = db.ensure_default_session().unwrap();
@@ -2082,7 +2184,7 @@ mod tests {
         );
 
         // 手动重命名后的标题必须保留。
-        db.update_chat_session(&auto.id, Some("手动命名"), None, None, None)
+        db.update_chat_session(&auto.id, Some("手动命名"), None, None, None, None, None)
             .unwrap();
         db.touch_chat_session(&auto.id, Some("不应覆盖"), None)
             .unwrap();
@@ -2095,7 +2197,7 @@ mod tests {
         let numbered = db
             .create_chat_session(NewChatSession::for_slot("main"))
             .unwrap();
-        db.update_chat_session(&numbered.id, Some("新对话 3"), None, None, None)
+        db.update_chat_session(&numbered.id, Some("新对话 3"), None, None, None, None, None)
             .unwrap();
         db.touch_chat_session(&numbered.id, Some("第三条消息"), None)
             .unwrap();
@@ -2147,37 +2249,54 @@ mod tests {
     #[test]
     fn updating_a_session_writes_binding_model_and_cli_ids() {
         let db = Database::open_in_memory().unwrap();
-        let mut new_session = NewChatSession::for_slot("codex");
+        let mut new_session = NewChatSession::for_slot("dsh");
+        new_session.reasoning_effort = "high".into();
+        new_session.provider = "opendesgin".into();
         let session = db.create_chat_session(new_session.clone()).unwrap();
         assert_eq!(session.kind, "agent");
+        assert_eq!(session.reasoning_effort, "high", "新建会话要落库思考强度");
+        assert_eq!(session.provider, "opendesgin", "新建会话要落库渠道");
 
         let mut cli_sessions = HashMap::new();
-        cli_sessions.insert("codex".to_string(), "0199a213-thread".to_string());
+        cli_sessions.insert("dsh".to_string(), "session-abc".to_string());
         let updated = db
             .update_chat_session(
                 &session.id,
                 Some("重命名后的标题"),
-                Some(("builtin-codex", "codex", "⌘")),
-                Some("gpt-5-codex"),
+                Some(("builtin-dsh", "dsh", "⌘")),
+                Some("deepseek-v4.1-flash"),
                 Some(&cli_sessions),
+                Some("xhigh"),
+                Some("together"),
             )
             .unwrap();
         assert_eq!(updated.title, "重命名后的标题");
-        assert_eq!(updated.agent_id, "builtin-codex");
-        assert_eq!(updated.agent_name, "codex");
-        assert_eq!(updated.model, "gpt-5-codex");
-        assert_eq!(updated.cli_session("codex"), Some("0199a213-thread"));
+        assert_eq!(updated.agent_id, "builtin-dsh");
+        assert_eq!(updated.agent_name, "dsh");
+        assert_eq!(updated.model, "deepseek-v4.1-flash");
+        assert_eq!(updated.reasoning_effort, "xhigh");
+        assert_eq!(updated.provider, "together");
+        assert_eq!(updated.cli_session("dsh"), Some("session-abc"));
 
-        // cli_sessions 只给后端用，不能通过 IPC 泄漏到前端。
+        // effort / provider 原样透传给前端（JSON 字段名 reasoning_effort / provider）。
         let wire = serde_json::to_value(&updated).unwrap();
         assert!(wire.get("cli_sessions").is_none());
+        assert_eq!(wire["reasoning_effort"], "xhigh");
+        assert_eq!(wire["provider"], "together");
 
-        // 空标题 / None 字段不覆盖既有值。
+        // 空标题 / None 字段不覆盖既有值；effort / provider 的 Some("") 清回跟随本机。
         let unchanged = db
-            .update_chat_session(&session.id, Some("   "), None, None, None)
+            .update_chat_session(&session.id, Some("   "), None, None, None, None, None)
             .unwrap();
         assert_eq!(unchanged.title, "重命名后的标题");
-        assert_eq!(unchanged.model, "gpt-5-codex");
+        assert_eq!(unchanged.model, "deepseek-v4.1-flash");
+        assert_eq!(unchanged.reasoning_effort, "xhigh", "effort=None 不改");
+        assert_eq!(unchanged.provider, "together", "provider=None 不改");
+        let cleared = db
+            .update_chat_session(&session.id, None, None, None, None, Some(""), Some(""))
+            .unwrap();
+        assert_eq!(cleared.reasoning_effort, "", "effort=Some('') 清回跟随本机");
+        assert_eq!(cleared.provider, "", "provider=Some('') 清回跟随本机");
 
         new_session.title.clear();
         assert_eq!(NewChatSession::for_slot("main").kind, "main");

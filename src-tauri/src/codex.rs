@@ -1,4 +1,5 @@
 //! Local Codex CLI integration. Authentication and model selection stay in Codex.
+use crate::agent_models::{AgentEffortOption, AgentModelCatalog, AgentModelOption};
 use crate::openclaw::StreamParseState;
 use serde::Serialize;
 use std::{
@@ -65,7 +66,7 @@ pub struct CodexAdapter {
     session_id: Mutex<Option<String>>,
 }
 
-fn exec_args(session_id: Option<&str>, model: Option<&str>) -> Vec<String> {
+fn exec_args(session_id: Option<&str>, model: Option<&str>, effort: Option<&str>) -> Vec<String> {
     // exec cannot ask for approval in the desktop chat. Keep a bounded writable
     // workspace and fail commands that would need additional permission.
     let mut args: Vec<String> = [
@@ -81,6 +82,12 @@ fn exec_args(session_id: Option<&str>, model: Option<&str>) -> Vec<String> {
     .iter()
     .map(|arg| (*arg).to_string())
     .collect();
+    // 思考强度与模型覆盖一样属于本回合配置，必须放在子命令（resume）之前。
+    if let Some(effort) = effort.map(str::trim).filter(|effort| !effort.is_empty()) {
+        // -c 的值是 TOML 片段：去掉引号/换行，避免本机配置被目录数据破坏。
+        let effort = effort.replace(['"', '\n', '\r'], "");
+        args.extend(["-c".into(), format!("model_reasoning_effort=\"{effort}\"")]);
+    }
     // 本回合模型覆盖必须放在子命令（resume）之前。
     if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
         args.extend(["-m".into(), model.to_string()]);
@@ -101,11 +108,11 @@ impl CodexAdapter {
         system_prompt: &str,
     ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
         let session = self.session_id.lock().unwrap().clone();
-        self.spawn_streaming_with(app, message, system_prompt, session.as_deref(), None)
+        self.spawn_streaming_with(app, message, system_prompt, session.as_deref(), None, None)
             .await
     }
 
-    /// 显式会话 / 模型版本：不依赖适配器内部状态，供多会话与协作调用。
+    /// 显式会话 / 模型 / 思考强度版本：不依赖适配器内部状态，供多会话与协作调用。
     pub async fn spawn_streaming_with(
         &self,
         app: &tauri::AppHandle,
@@ -113,9 +120,10 @@ impl CodexAdapter {
         system_prompt: &str,
         session: Option<&str>,
         model: Option<&str>,
+        effort: Option<&str>,
     ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
         let workspace = workspace_dir(app)?;
-        self.spawn_in_workspace_with(&workspace, message, system_prompt, session, model)
+        self.spawn_in_workspace_with(&workspace, message, system_prompt, session, model, effort)
             .await
     }
 
@@ -127,7 +135,7 @@ impl CodexAdapter {
         system_prompt: &str,
     ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
         let session = self.session_id.lock().unwrap().clone();
-        self.spawn_in_workspace_with(workspace, message, system_prompt, session.as_deref(), None)
+        self.spawn_in_workspace_with(workspace, message, system_prompt, session.as_deref(), None, None)
             .await
     }
 
@@ -138,10 +146,11 @@ impl CodexAdapter {
         system_prompt: &str,
         session: Option<&str>,
         model: Option<&str>,
+        effort: Option<&str>,
     ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
         std::fs::create_dir_all(&workspace)?;
         let mut child = cli_command(&find_cli()?)
-            .args(exec_args(session, model))
+            .args(exec_args(session, model, effort))
             .current_dir(workspace)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -529,6 +538,183 @@ pub fn open_login() -> Result<(), String> {
     }
 }
 
+
+// ===== 模型目录（agent 窗口模型选择器的数据源）=====
+
+/// 本机 Codex 的模型目录：`codex debug models` 的 JSON，
+/// 本机默认模型 / 思考强度读 `~/.codex/config.toml` 顶层字段。
+pub async fn model_catalog() -> Result<AgentModelCatalog, String> {
+    let path = find_cli()?;
+    let mut command = cli_command(&path);
+    command.args(["debug", "models"]).stdin(Stdio::null());
+    let output = tokio::time::timeout(Duration::from_secs(20), command.output())
+        .await
+        .map_err(|_| "读取 Codex 模型目录超时（20 秒）。".to_string())?
+        .map_err(|error| format!("无法运行 codex debug models：{error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let message = stderr.trim().chars().take(300).collect::<String>();
+        return Err(if message.is_empty() {
+            "codex debug models 失败，请检查本机 Codex 安装与登录状态。".to_string()
+        } else {
+            format!("codex debug models 失败：{message}")
+        });
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut catalog = parse_models_json(&stdout)?;
+    let (local_model, local_effort) = parse_config_values(&read_config_toml());
+    catalog.local_model_label = if local_model.is_empty() {
+        String::new()
+    } else {
+        catalog.label_for(&local_model)
+    };
+    catalog.local_model = local_model;
+    catalog.local_effort = local_effort;
+    Ok(catalog)
+}
+
+/// 去掉命令输出前后可能混入的日志行，只保留 JSON 主体。
+fn json_body(text: &str) -> &str {
+    let trimmed = text.trim();
+    if trimmed.starts_with('{') {
+        return trimmed;
+    }
+    match (text.find('{'), text.rfind('}')) {
+        (Some(start), Some(end)) if end > start => &text[start..=end],
+        _ => trimmed,
+    }
+}
+
+/// 解析 `codex debug models` 的 JSON：过滤 visibility=list，按 priority 升序。
+pub(crate) fn parse_models_json(text: &str) -> Result<AgentModelCatalog, String> {
+    let value: serde_json::Value = serde_json::from_str(json_body(text))
+        .map_err(|error| format!("无法解析 codex debug models 输出：{error}"))?;
+    let entries = value["models"]
+        .as_array()
+        .ok_or_else(|| "codex debug models 输出缺少 models 数组".to_string())?;
+    let mut rows: Vec<(i64, AgentModelOption)> = entries
+        .iter()
+        .filter(|entry| entry["visibility"].as_str() == Some("list"))
+        .filter_map(|entry| {
+            let id = entry["slug"]
+                .as_str()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())?
+                .to_string();
+            let name = entry["display_name"]
+                .as_str()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| id.clone());
+            let description = entry["description"]
+                .as_str()
+                .map(str::trim)
+                .filter(|description| !description.is_empty())
+                .map(str::to_string);
+            let default_effort = entry["default_reasoning_level"]
+                .as_str()
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            let efforts = entry["supported_reasoning_levels"]
+                .as_array()
+                .map(|levels| {
+                    levels
+                        .iter()
+                        .filter_map(|level| {
+                            let effort = level["effort"]
+                                .as_str()
+                                .map(str::trim)
+                                .filter(|effort| !effort.is_empty())?
+                                .to_string();
+                            let description = level["description"]
+                                .as_str()
+                                .map(str::trim)
+                                .filter(|description| !description.is_empty())
+                                .map(str::to_string);
+                            Some(AgentEffortOption {
+                                name: effort.clone(),
+                                id: effort,
+                                description,
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let priority = entry["priority"].as_i64().unwrap_or(i64::MAX);
+            Some((
+                priority,
+                AgentModelOption {
+                    id,
+                    name,
+                    description,
+                    provider: None,
+                    provider_label: None,
+                    default_effort,
+                    efforts,
+                },
+            ))
+        })
+        .collect();
+    rows.sort_by_key(|(priority, _)| *priority);
+    let mut catalog = AgentModelCatalog::empty("codex");
+    catalog.models = rows.into_iter().map(|(_, option)| option).collect();
+    Ok(catalog)
+}
+
+/// `CODEX_HOME`（绝对路径时）优先，否则 `~/.codex`。
+fn codex_home() -> Option<PathBuf> {
+    std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| dirs::home_dir().map(|home| home.join(".codex")))
+}
+
+fn read_config_toml() -> String {
+    codex_home()
+        .and_then(|home| std::fs::read_to_string(home.join("config.toml")).ok())
+        .unwrap_or_default()
+}
+
+/// 只解析第一个 [section] 之前的顶层 model / model_reasoning_effort。
+/// 不引入 toml 依赖：本机配置的顶层写法稳定，按行取值足够。
+pub(crate) fn parse_config_values(text: &str) -> (String, String) {
+    let mut model = String::new();
+    let mut effort = String::new();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') {
+            break;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        if key == "model" && model.is_empty() {
+            model = toml_value(value);
+        } else if key == "model_reasoning_effort" && effort.is_empty() {
+            effort = toml_value(value);
+        }
+    }
+    (model, effort)
+}
+
+fn toml_value(value: &str) -> String {
+    let value = value.trim();
+    for quote in ['"', '\''] {
+        if let Some(rest) = value.strip_prefix(quote) {
+            if let Some(end) = rest.find(quote) {
+                return rest[..end].trim().to_string();
+            }
+        }
+    }
+    value.split('#').next().unwrap_or_default().trim().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -712,7 +898,7 @@ mod tests {
 
     #[test]
     fn exec_args_ask_for_detailed_reasoning_summaries() {
-        let args = exec_args(None, None);
+        let args = exec_args(None, None, None);
         assert!(
             args.windows(2)
                 .any(|pair| pair == ["-c", "model_reasoning_summary=\"detailed\""]),
@@ -766,9 +952,9 @@ mod tests {
     #[test]
     fn resumes_only_its_own_session_and_resets_it() {
         let adapter = CodexAdapter::default();
-        assert!(!exec_args(None, None).iter().any(|arg| arg == "resume"));
+        assert!(!exec_args(None, None, None).iter().any(|arg| arg == "resume"));
         adapter.update_session("0199a213-81c0-7800-8aa1-bbab2a035a53");
-        let args = exec_args(adapter.session_id.lock().unwrap().as_deref(), None);
+        let args = exec_args(adapter.session_id.lock().unwrap().as_deref(), None, None);
         assert!(args
             .windows(2)
             .any(|args| args == ["resume", "0199a213-81c0-7800-8aa1-bbab2a035a53"]));
@@ -783,14 +969,147 @@ mod tests {
 
     #[test]
     fn explicit_model_is_passed_before_the_resume_subcommand() {
-        let args = exec_args(Some("0199a213-81c0-7800-8aa1-bbab2a035a53"), Some("gpt-5-codex"));
+        let args = exec_args(Some("0199a213-81c0-7800-8aa1-bbab2a035a53"), Some("gpt-5-codex"), None);
         let model = args.iter().position(|arg| arg == "-m").expect("缺少 -m");
         assert_eq!(args[model + 1], "gpt-5-codex");
         let resume = args.iter().position(|arg| arg == "resume").expect("缺少 resume");
         assert!(model < resume, "-m 必须在 resume 子命令之前: {args:?}");
         assert_eq!(args.last().map(String::as_str), Some("-"));
         // 空模型字符串表示跟随本机配置，不追加参数。
-        assert!(!exec_args(None, Some("  ")).iter().any(|arg| arg == "-m"));
+        assert!(!exec_args(None, Some("  "), None).iter().any(|arg| arg == "-m"));
+    }
+
+    #[test]
+    fn reasoning_effort_is_passed_as_a_codex_config_override() {
+        let args = exec_args(None, None, Some("high"));
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["-c", "model_reasoning_effort=\"high\""]),
+            "思考强度必须走 -c 配置覆盖：{args:?}"
+        );
+        // 放在子命令（resume）之前，否则会被当成 resume 的参数。
+        let resume_args = exec_args(Some("0199a213-81c0-7800-8aa1-bbab2a035a53"), None, Some("low"));
+        let resume = resume_args.iter().position(|arg| arg == "resume").unwrap();
+        let effort_index = resume_args
+            .iter()
+            .position(|arg| arg == "model_reasoning_effort=\"low\"")
+            .unwrap();
+        assert!(effort_index < resume, "-c 覆盖必须在 resume 之前");
+        // 空 effort 表示跟随本机默认，不追加参数。
+        for empty in [None, Some(""), Some("   ")] {
+            assert!(
+                !exec_args(None, None, empty)
+                    .iter()
+                    .any(|arg| arg.contains("model_reasoning_effort")),
+                "空 effort 不应出现: {empty:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_codex_model_catalog_json_filtering_and_sorting() {
+        // 结构取自真实 codex debug models 输出（字段裁剪）。
+        let json = r#"{
+            "models": [
+                {"slug": "gpt-6.1-terra", "display_name": "GPT-6.1 Terra", "description": "通用主力模型",
+                 "default_reasoning_level": "high", "visibility": "list", "priority": 2,
+                 "supported_reasoning_levels": [
+                    {"effort": "low", "description": "低"},
+                    {"effort": "high", "description": "高"},
+                    {"effort": "xhigh", "description": "极高"}
+                 ]},
+                {"slug": "gpt-6.1-mini", "display_name": "GPT-6.1 Mini", "visibility": "list", "priority": 1,
+                 "supported_reasoning_levels": [{"effort": "low"}]},
+                {"slug": "internal-hidden", "display_name": "Hidden", "visibility": "hidden", "priority": 0},
+                {"slug": "no-display-name", "visibility": "list", "priority": 3,
+                 "supported_reasoning_levels": []}
+            ]
+        }"#;
+        let catalog = parse_models_json(json).expect("parse catalog");
+        assert_eq!(catalog.slot, "codex");
+        assert_eq!(catalog.backend, "codex");
+        assert_eq!(
+            catalog.models.iter().map(|model| model.id.as_str()).collect::<Vec<_>>(),
+            vec!["gpt-6.1-mini", "gpt-6.1-terra", "no-display-name"],
+            "过滤 visibility=list 并按 priority 升序"
+        );
+        let terra = &catalog.models[1];
+        assert_eq!(terra.name, "GPT-6.1 Terra");
+        assert_eq!(terra.description.as_deref(), Some("通用主力模型"));
+        assert_eq!(terra.default_effort, "high");
+        assert_eq!(
+            terra.efforts.iter().map(|effort| effort.id.as_str()).collect::<Vec<_>>(),
+            vec!["low", "high", "xhigh"]
+        );
+        assert_eq!(terra.efforts[2].description.as_deref(), Some("极高"));
+        assert_eq!(catalog.models[2].name, "no-display-name", "缺展示名回退 slug");
+        assert!(catalog.models[2].efforts.is_empty());
+        assert!(catalog.error.is_empty());
+
+        // 前面混入日志行时仍能取出 JSON 主体。
+        let noisy = format!("warning: something\n{json}\ntrailing");
+        assert_eq!(parse_models_json(&noisy).unwrap().models.len(), 3);
+        // 缺 models 数组是明确错误。
+        assert!(parse_models_json("{}").is_err());
+        assert!(parse_models_json("not json").is_err());
+    }
+
+    #[test]
+    fn parses_top_level_codex_model_and_effort_from_config_toml() {
+        let config = r#"
+# 顶层配置
+model_provider = "custom"
+model = "gpt-6.1-terra"
+model_reasoning_effort = "xhigh"
+approval_policy = "never"
+
+[model_providers.custom]
+model = "must-not-be-read"
+"#;
+        assert_eq!(
+            parse_config_values(config),
+            ("gpt-6.1-terra".to_string(), "xhigh".to_string()),
+            "model_provider 不能被当成 model；解析到第一个 section 即停止"
+        );
+        assert_eq!(
+            parse_config_values("model = 'gpt-5' # 注释\nmodel_reasoning_effort='low'"),
+            ("gpt-5".to_string(), "low".to_string())
+        );
+        assert_eq!(parse_config_values(""), (String::new(), String::new()));
+        assert_eq!(
+            parse_config_values("[tui]\nmodel = \"nested\""),
+            (String::new(), String::new()),
+            "section 之后的不算顶层配置"
+        );
+    }
+
+    // Opt in with: cargo test --lib codex::tests::local_model_catalog_lists_real_models -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore = "requires a locally installed Codex CLI"]
+    async fn local_model_catalog_lists_real_models() {
+        let catalog = model_catalog().await.expect("读取本机 Codex 模型目录");
+        assert_eq!(catalog.slot, "codex");
+        assert_eq!(catalog.backend, "codex");
+        assert!(catalog.error.is_empty(), "目录错误：{}", catalog.error);
+        assert!(!catalog.models.is_empty(), "本机目录不能为空");
+        assert!(!catalog.local_model.is_empty(), "config.toml 顶层应有 model");
+        assert!(catalog.models.iter().all(|model| !model.id.is_empty()));
+        assert!(
+            catalog.models.iter().any(|model| !model.efforts.is_empty()),
+            "至少一个模型应带思考强度档位"
+        );
+        println!(
+            "codex 目录：local={} ({}) effort={:?}，模型 {} 个：{:?}",
+            catalog.local_model,
+            catalog.local_model_label,
+            catalog.local_effort,
+            catalog.models.len(),
+            catalog
+                .models
+                .iter()
+                .map(|model| format!("{}@{}", model.id, model.default_effort))
+                .collect::<Vec<_>>()
+        );
     }
 
     // Opt in with: cargo test --lib codex::tests::local_cli_round_trip -- --ignored

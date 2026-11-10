@@ -114,11 +114,7 @@ pub async fn confirm_with_ui(
     let waiting = format!("[等待授权] {}\n", payload.summary);
     {
         let state = app.state::<crate::AppState>();
-        if let Ok(mut active) = state.active_chat.lock() {
-            if let Some(active) = active.active.as_mut() {
-                active.thinking.push_str(&waiting);
-            }
-        }
+        crate::append_session_thinking(&state, &waiting);
         crate::emit_ai(app, "ai-thinking", &waiting);
     }
     let _ = app.emit("ai-tool-confirm", payload);
