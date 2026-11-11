@@ -125,6 +125,50 @@ test("localStorage 配额抛错时界面状态仍然生效", () => {
   assert.equal(events[0].detail.id, "cute");
 });
 
+test("所有预设都收敛到纸面友好基调，不再有深色底", () => {
+  const { api } = createHarness();
+  for (const preset of api.CHAT_BACKGROUNDS) {
+    assert.equal(preset.tone, "paper", `${preset.id} 必须与米白控制台同基调`);
+    assert.ok(preset.accent, `${preset.id} 需要主题色`);
+    // 缩略色板里不允许出现接近纯黑的底色（会与浅色 UI 撞出断层）
+    assert.ok(!/#0[0-9a-f]{5}/i.test(preset.swatch), `${preset.id} 的色板不应含深色底`);
+  }
+});
+
+test("浓度档位单调递增，默认值落在中间档", () => {
+  const { api } = createHarness();
+  const values = Array.from(api.CHAT_BG_INTENSITIES, (level) => level.value);
+  assert.equal(values.length, 3);
+  assert.ok(values[0] < values[1] && values[1] < values[2], "浓度必须单调递增");
+  assert.equal(api.DEFAULT_CHAT_BG_INTENSITY, values[1], "默认取中间档");
+  for (const level of api.CHAT_BG_INTENSITIES) {
+    assert.ok(level.name && level.description, "每档都要有名称与说明");
+  }
+});
+
+test("浓度读写：越界值收敛、非法值回落默认、写入后广播", () => {
+  const { api, store, events } = createHarness();
+  assert.equal(api.normalizeChatBgIntensity(5), 1.2, "上限 1.2");
+  assert.equal(api.normalizeChatBgIntensity(-1), 0.15, "下限 0.15");
+  assert.equal(api.normalizeChatBgIntensity("abc"), api.DEFAULT_CHAT_BG_INTENSITY);
+  assert.equal(api.readChatBgIntensity(), api.DEFAULT_CHAT_BG_INTENSITY, "读不到时用默认");
+  api.applyChatBgIntensity(0.32);
+  assert.equal(store.get(api.CHAT_BG_INTENSITY_STORAGE_KEY), "0.32");
+  assert.equal(events.length, 1);
+  assert.equal(events[0].detail.intensity, 0.32);
+  assert.equal(api.readChatBgIntensity(), 0.32);
+});
+
+test("换背景时广播也带上当前浓度，两个窗口不会各用一套", () => {
+  const { api, events } = createHarness();
+  api.applyChatBgIntensity(0.9);
+  events.length = 0;
+  api.applyChatBackground("scifi");
+  assert.equal(events.length, 1);
+  assert.equal(events[0].detail.id, "scifi");
+  assert.equal(events[0].detail.intensity, 0.9);
+});
+
 test("三个窗口共用同一组 storage key（兼容老版本设置）", () => {
   const { api } = createHarness();
   assert.equal(api.CHAT_BG_STORAGE_KEY, "ai-desktop-pet.chat-bg");

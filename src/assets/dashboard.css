@@ -7117,73 +7117,55 @@ button {
 
 /* 有背景时给舞台一层淡边框，让「这里是背景区」一眼可辨 */
 .dash-chat-stage.has-bg {
-  box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.28),
-    0 10px 30px rgba(24, 42, 72, 0.1);
+  /* 不再描边/投影：背景是纸面上的光，一描边就变成「贴上去的一块板」，
+     这正是之前看起来突兀的根因。 */
+  box-shadow: none;
 }
 
+/* 背景画布四边羽化：让颜色从中部自然淡出到面板底色，而不是被裁一刀 */
+.dash-chat-stage.has-bg > .bg-canvas {
+  -webkit-mask-image: radial-gradient(126% 120% at 50% 46%, #000 62%, rgba(0, 0, 0, 0.72) 86%, rgba(0, 0, 0, 0.36) 100%);
+  mask-image: radial-gradient(126% 120% at 50% 46%, #000 62%, rgba(0, 0, 0, 0.72) 86%, rgba(0, 0, 0, 0.36) 100%);
+}
+
+/* 蒙版只做极轻的顶部提亮，不再压暗 */
 .dash-chat-bg-scrim {
   position: absolute;
   inset: 0;
   z-index: 1;
   pointer-events: none;
   background:
-    radial-gradient(120% 90% at 50% 0%, rgba(255, 255, 255, 0.16), transparent 62%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.10), rgba(255, 255, 255, 0.04));
+    radial-gradient(130% 100% at 50% 0%, rgba(255, 255, 255, 0.12), transparent 58%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 32%, transparent 76%, rgba(255, 255, 255, 0.05));
+  -webkit-mask-image: radial-gradient(124% 116% at 50% 46%, #000 58%, rgba(0, 0, 0, 0.7) 84%, transparent 100%);
+  mask-image: radial-gradient(124% 116% at 50% 46%, #000 58%, rgba(0, 0, 0, 0.7) 84%, transparent 100%);
 }
 
-/* 深色系背景压暗一点，气泡与文字才有对比度 */
-.dash-chat-stage[data-chat-bg="scifi"] .dash-chat-bg-scrim,
-.dash-chat-stage[data-chat-bg="aurora"] .dash-chat-bg-scrim {
-  background:
-    radial-gradient(120% 90% at 50% 0%, rgba(255, 255, 255, 0.10), transparent 58%),
-    linear-gradient(180deg, rgba(4, 8, 20, 0.16), rgba(4, 8, 20, 0.32));
-}
-
-.dash-chat-stage[data-chat-bg="ink"] .dash-chat-bg-scrim {
-  background:
-    radial-gradient(120% 80% at 50% 0%, rgba(255, 255, 255, 0.4), transparent 62%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0.12));
-}
-
-/* 背景舞台里，消息区不再有自己那层白底，否则背景被盖掉 — 这就是之前换背景看不出来的原因 */
+/* 消息区彻底让开，让背景透上来 */
 .dash-chat-stage > .dash-chat-messages {
   position: relative;
   z-index: 2;
   background: transparent;
-  border-color: rgba(255, 255, 255, 0.26);
+  border-color: transparent;
   box-shadow: none;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
 
-/* 深色背景上，消息气泡改成带毛玻璃的浅色块，保证可读性 */
-.dash-chat-stage[data-chat-bg="scifi"] .dash-msg-bubble,
-.dash-chat-stage[data-chat-bg="aurora"] .dash-msg-bubble {
-  background: rgba(12, 20, 38, 0.52);
-  border-color: rgba(255, 255, 255, 0.14);
-  box-shadow: 0 6px 18px rgba(3, 8, 20, 0.32);
-  backdrop-filter: blur(6px) saturate(1.1);
-  -webkit-backdrop-filter: blur(6px) saturate(1.1);
+/* 背景已收敛为浅色调，气泡保持纸感即可：只铺一层很薄的白，
+   让气泡与背景之间有空气感，但不挡背景 */
+.dash-chat-stage.has-bg .dash-msg-bubble {
+  background: rgba(255, 255, 255, 0.7);
+  border-color: rgba(33, 48, 74, 0.05);
+  box-shadow: 0 3px 12px rgba(24, 42, 72, 0.045);
 }
 
-.dash-chat-stage[data-chat-bg="scifi"] .dash-msg-wrapper.assistant .dash-msg-body,
-.dash-chat-stage[data-chat-bg="aurora"] .dash-msg-wrapper.assistant .dash-msg-body,
-.dash-chat-stage[data-chat-bg="scifi"] .dash-msg-bubble,
-.dash-chat-stage[data-chat-bg="aurora"] .dash-msg-bubble {
-  color: rgba(233, 242, 255, 0.94);
+.dash-chat-stage.has-bg .dash-msg-wrapper.user .dash-msg-bubble {
+  background: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.88);
+  border-color: transparent;
+  color: #fffaf4;
 }
 
-.dash-chat-stage[data-chat-bg="scifi"] .dash-msg-wrapper.user .dash-msg-bubble {
-  background: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.62);
-}
-
-.dash-chat-stage[data-chat-bg="ink"] .dash-msg-bubble {
-  background: rgba(255, 253, 247, 0.82);
-  border-color: rgba(46, 54, 66, 0.1);
-}
-
-/* 切换反馈提示 */
 .dash-chat-bg-hint {
   position: absolute;
   top: 12px;
@@ -7516,4 +7498,150 @@ button {
   .dash-chat-bgbar-import {
     margin-left: 0;
   }
+}
+
+/* ============================================================
+   背景浓度控件（外观页 + 对话页快捷条共用）
+   ============================================================ */
+.dash-chat-bgbar-intensity {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 999px;
+  background: rgba(33, 48, 74, 0.05);
+}
+
+.dash-chat-bgbar-level {
+  padding: 3px 9px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--dash-text-muted);
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 660;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease;
+}
+
+.dash-chat-bgbar-level:hover {
+  color: var(--dash-text-primary);
+}
+
+.dash-chat-bgbar-level.active {
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--dash-text-primary);
+  box-shadow: 0 1px 4px rgba(24, 42, 72, 0.1);
+}
+
+.dash-bg-intensity {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed rgba(33, 48, 74, 0.1);
+}
+
+.dash-bg-intensity-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dash-bg-intensity-title {
+  color: var(--dash-text-primary);
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.dash-bg-intensity-note {
+  color: var(--dash-text-muted);
+  font-size: 10.5px;
+}
+
+.dash-bg-intensity-options {
+  display: flex;
+  gap: 8px;
+}
+
+.dash-bg-intensity-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 13px 6px 9px;
+  border: 1px solid rgba(33, 48, 74, 0.09);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.6);
+  color: var(--dash-text-secondary);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: border-color 150ms ease, background 150ms ease, transform 150ms ease;
+}
+
+.dash-bg-intensity-opt:hover {
+  transform: translateY(-1px);
+  border-color: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.3);
+}
+
+.dash-bg-intensity-opt.active {
+  border-color: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.55);
+  background: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.1);
+  color: var(--dash-text-primary);
+}
+
+.dash-bg-intensity-bar {
+  width: 22px;
+  height: 8px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(140, 200, 190, 0.9), rgba(170, 165, 235, 0.9));
+}
+
+/* 外观页预览框：同样四边羽化，让预览看起来也是「纸面上的光」 */
+.dash-bg-stage-frame > .bg-canvas {
+  -webkit-mask-image: radial-gradient(128% 122% at 50% 46%, #000 60%, rgba(0, 0, 0, 0.7) 86%, rgba(0, 0, 0, 0.32) 100%);
+  mask-image: radial-gradient(128% 122% at 50% 46%, #000 60%, rgba(0, 0, 0, 0.7) 86%, rgba(0, 0, 0, 0.32) 100%);
+}
+
+/* 预览框不再给强描边，用极淡的纸色边界 */
+.dash-bg-stage-frame {
+  border-color: rgba(33, 48, 74, 0.06);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+/* 预览里的示意气泡：浅色背景上保持纸感，不再分深色/浅色两套 */
+.dash-bg-stage-bubble {
+  color: #2b3542;
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 4px 12px rgba(24, 42, 72, 0.09);
+}
+
+.dash-bg-stage-frame[data-bg="scifi"] .dash-bg-stage-bubble,
+.dash-bg-stage-frame[data-bg="aurora"] .dash-bg-stage-bubble {
+  color: #2b3542;
+  background: rgba(255, 255, 255, 0.86);
+  border: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.dash-bg-stage-scrim,
+.dash-bg-stage-frame[data-bg="scifi"] .dash-bg-stage-scrim,
+.dash-bg-stage-frame[data-bg="aurora"] .dash-bg-stage-scrim {
+  background: none;
+}
+
+/* 背景切换时的闪动也收敛一点，避免突然一亮 */
+.dash-chat-stage.bg-switching {
+  animation: dash-bg-swap 520ms ease;
+}
+
+@keyframes dash-bg-swap {
+  0% { filter: saturate(1.02); }
+  100% { filter: none; }
 }

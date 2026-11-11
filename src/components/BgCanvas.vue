@@ -2,7 +2,7 @@
 import { ref, onMounted, onBeforeUnmount, watch } from 'vue';
 import { usePetStore } from '../stores/pet';
 
-const props = defineProps<{ mode: string; customImage?: string }>();
+const props = defineProps<{ mode: string; customImage?: string; intensity?: number }>();
 const petStore = usePetStore();
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 let ctx: CanvasRenderingContext2D | null = null;
@@ -13,6 +13,16 @@ let ripples: any[] = [];
 let trail: { x: number; y: number; t: number }[] = [];
 let customImg: HTMLImageElement | null = null;
 let ro: ResizeObserver | null = null;
+
+/**
+ * 背景强度系数（0.15 ~ 1.2）。
+ * 控制台是米白纸面，背景一旦太实就会像在纸上贴了一块色板；
+ * 默认 0.72 接近「纸面透出的一点光」，所有绘制都乘这个系数。
+ */
+const strength = () => {
+  const raw = Number(props.intensity);
+  return Number.isFinite(raw) ? Math.min(1.2, Math.max(0.15, raw)) : 0.72;
+};
 
 // Scifi state
 let sfNodes: any[] = [];
@@ -107,33 +117,35 @@ function initMinimal() {
  */
 function initAurora() {
   auCurtains = []; auStars = [];
+  // 浅色纸面上用「极淡的冷色」做 multiply 叠色：饱和度压到很低，
+  // 否则在米白底色上会立刻变成一块彩色板。
   const palette = [
-    { core: [56, 214, 186], edge: [56, 189, 248] },   // 青绿 → 天蓝
-    { core: [129, 140, 248], edge: [167, 139, 250] }, // 靛蓝 → 紫
-    { core: [45, 212, 191], edge: [94, 234, 212] },   // 薄荷
+    { core: [176, 226, 214], edge: [186, 220, 240] },   // 淡青绿 → 淡天蓝
+    { core: [196, 196, 240], edge: [208, 200, 244] },   // 淡靛蓝 → 淡紫
+    { core: [180, 232, 226], edge: [196, 238, 232] },   // 淡薄荷
   ];
-  const count = Math.max(3, Math.min(6, Math.round(W / 260)));
+  const count = Math.max(2, Math.min(4, Math.round(W / 320)));
   for (let i = 0; i < count; i++) {
     const base = palette[i % palette.length];
     auCurtains.push({
       x: (i + 0.5) / count * W + rnd(-W * 0.06, W * 0.06),
-      width: rnd(W * 0.12, W * 0.26),
-      sway: rnd(W * 0.02, W * 0.07),
-      swaySpeed: rnd(0.18, 0.4),
+      width: rnd(W * 0.24, W * 0.44),
+      sway: rnd(W * 0.02, W * 0.06),
+      swaySpeed: rnd(0.1, 0.24),
       phase: rnd(0, 6.28),
-      drift: rnd(-0.05, 0.05),
-      top: rnd(-H * 0.15, H * 0.18),
-      bottom: rnd(H * 0.5, H * 0.95),
+      drift: rnd(-0.035, 0.035),
+      top: rnd(-H * 0.2, H * 0.1),
+      bottom: rnd(H * 0.55, H * 0.95),
       core: base.core,
       edge: base.edge,
-      alpha: rnd(0.16, 0.3),
+      alpha: rnd(0.22, 0.34),
     });
   }
-  for (let i = 0; i < 90; i++) {
+  for (let i = 0; i < 70; i++) {
     auStars.push({
       x: rnd(0, W), y: rnd(0, H),
-      r: rnd(0.4, 1.4), base: rnd(0.15, 0.6),
-      twinkle: rnd(0.6, 2.2), phase: rnd(0, 6.28),
+      r: rnd(0.4, 1.2), base: rnd(0.15, 0.5),
+      twinkle: rnd(0.6, 1.8), phase: rnd(0, 6.28),
     });
   }
 }
@@ -161,8 +173,9 @@ function initInk() {
     }
     ikRidges.push({
       points,
-      alpha: 0.1 - layer * 0.022,
-      tint: layer === 0 ? "60,70,84" : layer === 1 ? "44,52,64" : "30,36,46",
+      // 远山用淡墨，alpha 比原先再压低一档，让纸色主导
+      alpha: 0.075 - layer * 0.017,
+      tint: layer === 0 ? "120,128,140" : layer === 1 ? "104,112,126" : "92,100,114",
     });
   }
   for (let i = 0; i < 5; i++) {
@@ -200,11 +213,11 @@ function initScifi() {
       sfHexes.push({ x: hx, y: hy, s: hs, glow: 0, glowDecay: rnd(0.005, 0.015) });
     }
   }
-  // Floating space nebulas
+  // Floating space nebulas：浅色纸面上用极淡的冷色雾，靠 multiply 压出层次
   sfNebulae = [
-    { x: W * 0.25, y: H * 0.25, vx: rnd(0.04, 0.12), vy: rnd(0.03, 0.08), r: Math.max(140, W * 0.35), color1: 'rgba(56, 189, 248, 0.075)', color2: 'rgba(56, 189, 248, 0)' },
-    { x: W * 0.75, y: H * 0.7, vx: rnd(-0.12, -0.04), vy: rnd(-0.08, -0.03), r: Math.max(160, W * 0.42), color1: 'rgba(167, 139, 250, 0.07)', color2: 'rgba(167, 139, 250, 0)' },
-    { x: W * 0.5, y: H * 0.45, vx: rnd(0.02, 0.08), vy: rnd(-0.06, -0.02), r: Math.max(110, W * 0.3), color1: 'rgba(45, 212, 191, 0.06)', color2: 'rgba(45, 212, 191, 0)' }
+    { x: W * 0.25, y: H * 0.25, vx: rnd(0.04, 0.12), vy: rnd(0.03, 0.08), r: Math.max(140, W * 0.35), color1: 'rgba(196, 224, 248, 0.30)', color2: 'rgba(196, 224, 248, 0)' },
+    { x: W * 0.75, y: H * 0.7, vx: rnd(-0.12, -0.04), vy: rnd(-0.08, -0.03), r: Math.max(160, W * 0.42), color1: 'rgba(216, 214, 250, 0.26)', color2: 'rgba(216, 214, 250, 0)' },
+    { x: W * 0.5, y: H * 0.45, vx: rnd(0.02, 0.08), vy: rnd(-0.06, -0.02), r: Math.max(110, W * 0.3), color1: 'rgba(202, 236, 232, 0.24)', color2: 'rgba(202, 236, 232, 0)' }
   ];
 }
 
@@ -470,73 +483,65 @@ function update() {
 }
 
 function drawAurora(ctx: CanvasRenderingContext2D) {
-  // 1. 夜空底色（比科幻更蓝更浅一点，保证浅色气泡文字仍然清晰）
-  const bg = ctx.createLinearGradient(0, 0, W * 0.35, H);
-  bg.addColorStop(0, '#061b26');
-  bg.addColorStop(0.5, '#081a2c');
-  bg.addColorStop(1, '#0a1226');
+  const k = strength();
+  // 1. 纸面底色：不再是夜空，而是比控制台纸面略偏冷的浅色，边界自然消失
+  const bg = ctx.createLinearGradient(0, 0, W * 0.4, H);
+  bg.addColorStop(0, '#f6fbfa');
+  bg.addColorStop(0.5, '#f3f6fb');
+  bg.addColorStop(1, '#f8f5fb');
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, W, H);
 
-  // 2. 极光带：每条光带按列画一条竖向渐变，横向亮度按 sin 收边
+  // 2. 极光光晕：用柔和的径向光斑代替硬边光带，边缘到 0 收尾，避免出现“色块边”
   ctx.save();
-  ctx.globalCompositeOperation = 'screen';
+  ctx.globalCompositeOperation = 'multiply';
   for (const c of auCurtains) {
     const sway = Math.sin(c.phase) * c.sway;
     const topY = c.top + Math.sin(c.phase * 0.7) * H * 0.06;
     const botY = c.bottom + Math.cos(c.phase * 0.6) * H * 0.05;
     const css = `${c.core[0]},${c.core[1]},${c.core[2]}`;
     const cssEdge = `${c.edge[0]},${c.edge[1]},${c.edge[2]}`;
-    const steps = 14;
+    // 一条竖向的柔光柱：横向用三段径向叠出中轴亮、两侧散开
+    const steps = 7;
     for (let i = 0; i < steps; i++) {
       const t = i / (steps - 1);
-      // 中心的带最亮，两侧衰减
       const lateral = 1 - Math.abs(t - 0.5) * 2;
       const curvature = Math.sin(t * Math.PI) * sway;
       const x = c.x + (t - 0.5) * c.width + curvature;
-      const w = c.width / steps + 2;
-      const grad = ctx.createLinearGradient(x, topY, x + sway * 0.5, botY);
-      const peak = c.alpha * lateral * lateral;
-      grad.addColorStop(0, `rgba(${cssEdge},0)`);
-      grad.addColorStop(0.22, `rgba(${cssEdge},${(peak * 0.55).toFixed(3)})`);
-      grad.addColorStop(0.55, `rgba(${css},${peak.toFixed(3)})`);
+      const rx = c.width / steps * 1.8;
+      const peak = c.alpha * lateral * lateral * k * 1.05;
+      if (peak <= 0.002) continue;
+      const grad = ctx.createRadialGradient(x, (topY + botY) / 2, 0, x, (topY + botY) / 2, Math.max(rx, (botY - topY) * 0.7));
+      grad.addColorStop(0, `rgba(${css},${peak.toFixed(3)})`);
+      grad.addColorStop(0.55, `rgba(${cssEdge},${(peak * 0.42).toFixed(3)})`);
       grad.addColorStop(1, `rgba(${cssEdge},0)`);
       ctx.fillStyle = grad;
-      ctx.fillRect(x - w / 2, topY, w, botY - topY);
+      ctx.beginPath();
+      ctx.ellipse(x, (topY + botY) / 2, rx, (botY - topY) * 0.62, 0, 0, Math.PI * 2);
+      ctx.fill();
     }
-    // 底部反光，让光带落地
-    const glow = ctx.createRadialGradient(
-      c.x + sway, botY, 0,
-      c.x + sway, botY, Math.max(60, c.width * 0.9),
-    );
-    glow.addColorStop(0, `rgba(${css},${(c.alpha * 0.28).toFixed(3)})`);
-    glow.addColorStop(1, `rgba(${css},0)`);
-    ctx.fillStyle = glow;
-    ctx.beginPath();
-    ctx.ellipse(c.x + sway, botY, Math.max(60, c.width * 0.9), Math.max(24, H * 0.06), 0, 0, Math.PI * 2);
-    ctx.fill();
   }
   ctx.restore();
 
-  // 3. 星点
+  // 3. 星点：改成纸面上的细闪，亮度很低，不抢文字
   for (const s of auStars) {
     const twinkle = 0.55 + Math.sin(s.phase) * 0.45;
     ctx.save();
-    ctx.globalAlpha = Math.max(0.06, s.base * twinkle);
-    ctx.fillStyle = '#dff6ff';
+    ctx.globalAlpha = Math.min(0.32, Math.max(0.02, s.base * twinkle * k * 0.5));
+    ctx.fillStyle = '#8fb8c9';
     ctx.beginPath();
-    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+    ctx.arc(s.x, s.y, s.r * 0.9, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
   }
 
-  // 4. 点击产生的上升光点
+  // 4. 点击产生的光点
   for (const p of particles) {
     ctx.save();
-    ctx.globalAlpha = p.alpha * Math.max(0, p.life);
+    ctx.globalAlpha = p.alpha * Math.max(0, p.life) * k;
     ctx.fillStyle = p.color;
     ctx.shadowColor = p.color;
-    ctx.shadowBlur = 8;
+    ctx.shadowBlur = 6;
     ctx.beginPath();
     ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
     ctx.fill();
@@ -545,11 +550,12 @@ function drawAurora(ctx: CanvasRenderingContext2D) {
 }
 
 function drawInk(ctx: CanvasRenderingContext2D) {
-  // 1. 宣纸底：米色 + 极淡的竖向纤维
+  const k = strength();
+  // 1. 宣纸底：与聊天区原本的纸色一致，衔接不突兀
   const paper = ctx.createLinearGradient(0, 0, W * 0.2, H);
-  paper.addColorStop(0, '#f7f3ea');
-  paper.addColorStop(0.55, '#efe9dd');
-  paper.addColorStop(1, '#e6dfd1');
+  paper.addColorStop(0, '#faf7f0');
+  paper.addColorStop(0.55, '#f6f2e9');
+  paper.addColorStop(1, '#f1ece2');
   ctx.fillStyle = paper;
   ctx.fillRect(0, 0, W, H);
 
@@ -558,8 +564,8 @@ function drawInk(ctx: CanvasRenderingContext2D) {
   for (const m of ikMist) {
     const y = m.y + Math.sin(m.phase) * H * 0.012;
     const grad = ctx.createRadialGradient(m.x, y, 0, m.x, y, m.w * 0.55);
-    grad.addColorStop(0, `rgba(255,255,255,${(m.alpha * 1.6).toFixed(3)})`);
-    grad.addColorStop(0.6, `rgba(250,247,240,${(m.alpha * 0.7).toFixed(3)})`);
+    grad.addColorStop(0, `rgba(255,255,255,${(m.alpha * 1.5 * k).toFixed(3)})`);
+    grad.addColorStop(0.6, `rgba(252,249,242,${(m.alpha * 0.65 * k).toFixed(3)})`);
     grad.addColorStop(1, 'rgba(255,255,255,0)');
     ctx.fillStyle = grad;
     ctx.beginPath();
@@ -568,25 +574,25 @@ function drawInk(ctx: CanvasRenderingContext2D) {
   }
   ctx.restore();
 
-  // 3. 远山：三层折线，越远越淡，山脚用渐变收进纸色
+  // 3. 远山：三层折线，越远越淡，山脚用渐变收进纸色（浅墨，不压文字）
   for (let i = ikRidges.length - 1; i >= 0; i--) {
     const ridge = ikRidges[i];
     const pts = ridge.points;
     if (!pts.length) continue;
     ctx.beginPath();
     ctx.moveTo(pts[0].x, pts[0].y);
-    for (let k = 1; k < pts.length - 1; k++) {
-      const midX = (pts[k].x + pts[k + 1].x) / 2;
-      const midY = (pts[k].y + pts[k + 1].y) / 2;
-      ctx.quadraticCurveTo(pts[k].x, pts[k].y, midX, midY);
+    for (let k2 = 1; k2 < pts.length - 1; k2++) {
+      const midX = (pts[k2].x + pts[k2 + 1].x) / 2;
+      const midY = (pts[k2].y + pts[k2 + 1].y) / 2;
+      ctx.quadraticCurveTo(pts[k2].x, pts[k2].y, midX, midY);
     }
     ctx.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
     ctx.lineTo(pts[pts.length - 1].x, H);
     ctx.lineTo(pts[0].x, H);
     ctx.closePath();
     const fill = ctx.createLinearGradient(0, H * 0.4, 0, H);
-    fill.addColorStop(0, `rgba(${ridge.tint},${(ridge.alpha * 1.5).toFixed(3)})`);
-    fill.addColorStop(0.7, `rgba(${ridge.tint},${(ridge.alpha * 0.9).toFixed(3)})`);
+    fill.addColorStop(0, `rgba(${ridge.tint},${(ridge.alpha * k * 1.1).toFixed(3)})`);
+    fill.addColorStop(0.7, `rgba(${ridge.tint},${(ridge.alpha * k * 0.62).toFixed(3)})`);
     fill.addColorStop(1, `rgba(${ridge.tint},0)`);
     ctx.fillStyle = fill;
     ctx.fill();
@@ -595,9 +601,9 @@ function drawInk(ctx: CanvasRenderingContext2D) {
   // 4. 墨晕（点击）
   for (const r of ikRipples) {
     ctx.save();
-    ctx.globalAlpha = r.alpha;
-    ctx.strokeStyle = `rgba(48,56,68,${r.alpha.toFixed(2)})`;
-    ctx.lineWidth = 1.1;
+    ctx.globalAlpha = r.alpha * k;
+    ctx.strokeStyle = `rgba(96,104,116,${(r.alpha * 0.7).toFixed(2)})`;
+    ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.arc(r.x, r.y, r.r, 0, Math.PI * 2);
     ctx.stroke();
@@ -607,10 +613,10 @@ function drawInk(ctx: CanvasRenderingContext2D) {
   // 5. 墨点飞溅
   for (const p of particles) {
     ctx.save();
-    ctx.globalAlpha = p.alpha * Math.max(0, p.life);
-    ctx.fillStyle = 'rgba(44,52,64,0.75)';
+    ctx.globalAlpha = p.alpha * Math.max(0, p.life) * k * 0.8;
+    ctx.fillStyle = 'rgba(84,92,104,0.7)';
     ctx.beginPath();
-    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+    ctx.arc(p.x, p.y, p.size * 0.85, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
   }
@@ -721,15 +727,18 @@ function draw() {
   } else if (props.mode === 'scifi') {
     const t = performance.now() / 1000;
     const petState = petStore.state;
+    const k = strength();
 
-    // 1. Deep space backdrop
-    const g = ctx.createLinearGradient(0, 0, 0, H);
-    g.addColorStop(0, '#040618'); g.addColorStop(0.5, '#070a24'); g.addColorStop(1, '#030514');
+    // 1. 纸面底色：浅冷灰蓝，紧贴控制台纸色，避免深色块与浅色 UI 撞边
+    const g = ctx.createLinearGradient(0, 0, W * 0.3, H);
+    g.addColorStop(0, '#f7fafd');
+    g.addColorStop(0.5, '#f4f7fc');
+    g.addColorStop(1, '#f7f5fd');
     ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
-    
-    // 2. Glowing Dynamic space nebulas
+
+    // 2. 星云：浅色纸上用 multiply 叠一层极淡的冷色雾
     ctx.save();
-    ctx.globalCompositeOperation = 'screen';
+    ctx.globalCompositeOperation = 'multiply';
     for (const neb of sfNebulae) {
       const ng = ctx.createRadialGradient(neb.x, neb.y, 0, neb.x, neb.y, neb.r);
       ng.addColorStop(0, neb.color1);
@@ -739,11 +748,11 @@ function draw() {
     }
     ctx.restore();
 
-    // 3. Hex Grid
+    // 3. Hex Grid：纸面上的淡网格，只在鼠标附近浮现
     ctx.lineWidth = 1;
     for (const h of sfHexes) {
       if (h.glow > 0.01) {
-        ctx.strokeStyle = `rgba(56,189,248,${h.glow * 0.16})`;
+        ctx.strokeStyle = `rgba(120,168,214,${(h.glow * 0.22 * k).toFixed(3)})`;
         ctx.beginPath();
         for (let i = 0; i < 6; i++) {
           const a = i * Math.PI / 3;
@@ -769,21 +778,22 @@ function draw() {
       }
     }
     
-    // 4. Scanline
-    const sg = ctx.createLinearGradient(0, sfScanY - 50, 0, sfScanY);
-    sg.addColorStop(0, 'rgba(56,189,248,0)'); sg.addColorStop(1, 'rgba(56,189,248,0.065)');
-    ctx.fillStyle = sg; ctx.fillRect(0, sfScanY - 50, W, 50);
-    ctx.fillStyle = 'rgba(56,189,248,0.22)'; ctx.fillRect(0, sfScanY, W, 1);
+    // 4. Scanline：改成纸面上缓慢掠过的一道极淡光带
+    const sg = ctx.createLinearGradient(0, sfScanY - 60, 0, sfScanY);
+    sg.addColorStop(0, 'rgba(150,190,230,0)');
+    sg.addColorStop(1, `rgba(150,190,230,${(0.055 * k).toFixed(3)})`);
+    ctx.fillStyle = sg; ctx.fillRect(0, sfScanY - 60, W, 60);
+    ctx.fillStyle = `rgba(150,190,230,${(0.10 * k).toFixed(3)})`; ctx.fillRect(0, sfScanY, W, 1);
 
     // 5. Neural Connections (glitchy/pulsing when thinking)
-    ctx.lineWidth = 1.2;
+    ctx.lineWidth = 1;
     for (let i = 0; i < sfNodes.length; i++) {
       for (let j = i + 1; j < sfNodes.length; j++) {
         const a = sfNodes[i], b = sfNodes[j], dx = a.x - b.x, dy = a.y - b.y, d = Math.sqrt(dx*dx+dy*dy);
         if (d < 240) {
           const e = Math.max(a.energy, b.energy);
-          let alpha = (1 - d/240) * (0.12 + e * 0.45);
-          
+          let alpha = (1 - d/240) * (0.08 + e * 0.30) * k;
+
           if (petState === 'thinking') {
             // High-frequency transmission pulse
             alpha *= (0.68 + Math.sin(t * 15.0 + d * 0.05) * 0.32);
@@ -791,8 +801,8 @@ function draw() {
             // Wave propagation pulse
             alpha *= (0.8 + Math.cos(t * 6.0 - d * 0.02) * 0.2);
           }
-          
-          ctx.strokeStyle = `rgba(167,139,250,${alpha})`;
+
+          ctx.strokeStyle = `rgba(140,150,220,${alpha.toFixed(3)})`;
           ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
         }
       }
@@ -803,17 +813,17 @@ function draw() {
       for (const n of sfNodes) {
         const dx = n.x - mx, dy = n.y - my, dist = Math.sqrt(dx*dx+dy*dy);
         if (dist < 110) {
-          const strength = (110 - dist) / 110;
-          ctx.strokeStyle = `rgba(56, 189, 248, ${strength * 0.45})`;
-          ctx.lineWidth = 0.6 + strength * 0.8;
+          const near = (110 - dist) / 110;
+          ctx.strokeStyle = `rgba(120,168,220,${(near * 0.34 * k).toFixed(3)})`;
+          ctx.lineWidth = 0.6 + near * 0.7;
           ctx.beginPath();
           ctx.moveTo(mx, my);
           ctx.lineTo(n.x, n.y);
           ctx.stroke();
 
           // Technical micro-distance tag at midpoint of thread
-          if (strength > 0.6) {
-            ctx.fillStyle = `rgba(56, 189, 248, ${strength * 0.6})`;
+          if (near > 0.6) {
+            ctx.fillStyle = `rgba(120,168,220,${(near * 0.5 * k).toFixed(3)})`;
             ctx.font = '6px monospace';
             const midX = mx + dx * 0.5;
             const midY = my + dy * 0.5;
@@ -823,74 +833,65 @@ function draw() {
       }
     }
 
-    // 6. Nodes (Hubs & standard nodes)
+    // 6. Nodes：小球改成纸面上的彩色圆点，去掉大范围光晕
     for (const n of sfNodes) {
+      ctx.save();
+      ctx.globalAlpha = (0.5 + n.energy * 0.5) * k;
       ctx.fillStyle = n.color;
-      ctx.shadowColor = n.color; 
-      ctx.shadowBlur = 8 + n.energy * 18;
-      ctx.beginPath(); ctx.arc(n.x, n.y, n.r + n.energy * 2.2, 0, Math.PI*2); ctx.fill();
-      ctx.shadowBlur = 0;
-      
+      ctx.shadowColor = n.color;
+      ctx.shadowBlur = 4 + n.energy * 8;
+      ctx.beginPath(); ctx.arc(n.x, n.y, n.r * 0.7 + n.energy * 1.4, 0, Math.PI*2); ctx.fill();
+      ctx.restore();
+
       if (n.type === 'hub') {
-        ctx.strokeStyle = n.color; ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.arc(n.x, n.y, n.r + 6.5 + Math.sin(n.pulse)*2.5, 0, Math.PI*2); ctx.stroke();
+        ctx.save();
+        ctx.globalAlpha = 0.32 * k;
+        ctx.strokeStyle = n.color; ctx.lineWidth = 0.9;
+        ctx.beginPath(); ctx.arc(n.x, n.y, n.r + 5.5 + Math.sin(n.pulse)*2, 0, Math.PI*2); ctx.stroke();
+        ctx.restore();
       }
     }
 
     // 7. Packets
     for (const p of sfPackets) {
-      ctx.fillStyle = p.color; ctx.shadowColor = p.color; ctx.shadowBlur = 8;
-      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI*2); ctx.fill();
-      ctx.shadowBlur = 0;
+      ctx.save();
+      ctx.globalAlpha = 0.75 * k;
+      ctx.fillStyle = p.color; ctx.shadowColor = p.color; ctx.shadowBlur = 4;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r * 0.8, 0, Math.PI*2); ctx.fill();
+      ctx.restore();
     }
 
     // 8. EMPs
     for (const e of sfEMPs) {
-      ctx.strokeStyle = e.color; ctx.lineWidth = 1.5 + e.alpha * 3;
-      ctx.globalAlpha = e.alpha;
+      ctx.save();
+      ctx.strokeStyle = e.color; ctx.lineWidth = 1 + e.alpha * 2;
+      ctx.globalAlpha = e.alpha * k;
       ctx.beginPath(); ctx.arc(e.x, e.y, e.r, 0, Math.PI*2); ctx.stroke();
-      ctx.globalAlpha = 1.0;
+      ctx.restore();
     }
 
-    // 9. Holographic reticle at cursor
+    // 9. Holographic reticle at cursor（弱化：只留淡环，不铺满文字区）
     if (mx > -900) {
       ctx.save(); ctx.translate(mx, my);
-      
+      ctx.globalAlpha = 0.34 * k;
+
       // Outer rotating tick ring
       ctx.rotate(t * 0.7);
-      ctx.strokeStyle = 'rgba(56,189,248,0.55)'; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.arc(0, 0, 22, 0, Math.PI * 2); ctx.stroke();
+      ctx.strokeStyle = 'rgba(120,168,220,0.55)'; ctx.lineWidth = 0.9;
+      ctx.beginPath(); ctx.arc(0, 0, 20, 0, Math.PI * 2); ctx.stroke();
       for (let i = 0; i < 12; i++) {
         const a = (i / 12) * Math.PI * 2;
-        const len = i % 3 === 0 ? 5.5 : 2.5;
+        const len = i % 3 === 0 ? 4.5 : 2;
         ctx.beginPath();
-        ctx.moveTo(Math.cos(a) * 17, Math.sin(a) * 17);
-        ctx.lineTo(Math.cos(a) * (17 + len), Math.sin(a) * (17 + len));
+        ctx.moveTo(Math.cos(a) * 15, Math.sin(a) * 15);
+        ctx.lineTo(Math.cos(a) * (15 + len), Math.sin(a) * (15 + len));
         ctx.stroke();
       }
-      
+
       // Inner rotating dashed ring
-      ctx.rotate(-t * 1.5); 
-      ctx.strokeStyle = 'rgba(167,139,250,0.45)'; ctx.lineWidth = 0.8;
-      ctx.beginPath(); ctx.arc(0, 0, 14, 0.4, Math.PI * 2 - 0.4); ctx.stroke();
-      
-      ctx.restore();
-      
-      // Crosshair lines
-      ctx.save(); ctx.translate(mx, my);
-      ctx.strokeStyle = 'rgba(56,189,248,0.38)'; ctx.lineWidth = 0.8;
-      ctx.beginPath(); ctx.moveTo(-28, 0); ctx.lineTo(-6, 0); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(6, 0); ctx.lineTo(28, 0); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(0, -28); ctx.lineTo(0, -6); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(0, 6); ctx.lineTo(0, 28); ctx.stroke();
-      
-      // Cyberpunk Tech Data Labels
-      ctx.fillStyle = 'rgba(56,189,248,0.6)';
-      ctx.font = '8px monospace';
-      const stateStr = petState.toUpperCase();
-      ctx.fillText(`SYS_STATE: ${stateStr}`, 32, -12);
-      ctx.fillText(`LOC: [${Math.round(mx)},${Math.round(my)}]`, 32, -2);
-      ctx.fillText(`NET_ACTIVE: TRUE`, 32, 8);
+      ctx.rotate(-t * 1.5);
+      ctx.strokeStyle = 'rgba(150,150,220,0.45)'; ctx.lineWidth = 0.7;
+      ctx.beginPath(); ctx.arc(0, 0, 12, 0.4, Math.PI * 2 - 0.4); ctx.stroke();
       ctx.restore();
     }
 
@@ -898,11 +899,11 @@ function draw() {
     for (const p of particles) {
       if (p.shape === 'scifi-spark') {
         ctx.save();
-        ctx.globalAlpha = p.alpha * p.life;
+        ctx.globalAlpha = p.alpha * p.life * k;
         ctx.fillStyle = p.color;
         ctx.shadowColor = p.color;
-        ctx.shadowBlur = 6;
-        
+        ctx.shadowBlur = 4;
+
         ctx.translate(p.x, p.y);
         ctx.rotate(t * 2.0);
         ctx.fillRect(-p.size/2, -p.size/2, p.size, p.size);

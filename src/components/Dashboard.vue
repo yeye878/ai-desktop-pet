@@ -29,15 +29,20 @@ import BgCanvas from "./BgCanvas.vue";
 import {
   CHAT_BACKGROUNDS,
   CHAT_BG_CHANGED_EVENT,
+  CHAT_BG_INTENSITIES,
+  CHAT_BG_INTENSITY_STORAGE_KEY,
   CHAT_BG_STORAGE_KEY,
   CHAT_BG_CUSTOM_STORAGE_KEY,
   SELECTABLE_CHAT_BACKGROUNDS,
   applyChatBackground,
+  applyChatBgIntensity,
   applyCustomChatBackground,
   chatBackgroundPreset,
   clearCustomChatBackground,
+  normalizeChatBgIntensity,
   normalizeChatBackgroundId,
   readChatBackground,
+  readChatBgIntensity,
   readCustomChatBackground,
   type ChatBackgroundId,
 } from "../services/chatBackgrounds";
@@ -435,6 +440,9 @@ const TTS_SETTINGS_KEY = "tts_settings";
 const COMPUTER_USE_ENABLED_KEY = "computer_use_enabled";
 const chatBg = ref<ChatBackgroundId>(readChatBackground());
 const customBgImage = ref(readCustomChatBackground());
+/** 背景浓度：控制台是米白纸面，默认取「适中」，避免像贴了一块色板 */
+const chatBgIntensity = ref(readChatBgIntensity());
+const chatBgIntensityOptions = CHAT_BG_INTENSITIES;
 const bgInputRef = ref<HTMLInputElement | null>(null);
 const dashBgCanvasRef = ref<InstanceType<typeof BgCanvas> | null>(null);
 const chatBgSwitching = ref(false);
@@ -1620,6 +1628,14 @@ function flashBgSwitched() {
 
 function chooseBgImage() { bgInputRef.value?.click(); }
 
+/** 调背景浓度：只影响绘制强度，不改底色，所以过渡永远是连续的 */
+function selectBgIntensity(value: number) {
+  const normalized = normalizeChatBgIntensity(value);
+  chatBgIntensity.value = normalized;
+  applyChatBgIntensity(normalized);
+  flashBgSwitched();
+}
+
 function onBgImageSelected(event: Event) {
   const el = event.target as HTMLInputElement;
   const file = el.files?.[0];
@@ -1661,10 +1677,15 @@ function onChatBgStorageChange(event: StorageEvent) {
     applyIncomingChatBg(event.newValue, null);
   } else if (event.key === CHAT_BG_CUSTOM_STORAGE_KEY) {
     customBgImage.value = event.newValue || "";
+  } else if (event.key === CHAT_BG_INTENSITY_STORAGE_KEY) {
+    chatBgIntensity.value = normalizeChatBgIntensity(event.newValue);
   }
 }
 
-function onChatBgLocalChange(event: CustomEvent<{ id?: string }>) {
+function onChatBgLocalChange(event: CustomEvent<{ id?: string; intensity?: number }>) {
+  if (typeof event.detail?.intensity === "number") {
+    chatBgIntensity.value = normalizeChatBgIntensity(event.detail.intensity);
+  }
   const next = event.detail?.id ?? readChatBackground();
   if (next === chatBg.value) return;
   applyIncomingChatBg(next, readCustomChatBackground());
@@ -4316,6 +4337,16 @@ ttsPlayer.stop();
                 </button>
               </div>
               <button type="button" class="dash-chat-bgbar-import" title="从本地选择背景图片" @click="chooseBgImage">导入图片</button>
+              <div class="dash-chat-bgbar-intensity" title="背景浓度：越淡越像纸面上的光晕">
+                <button
+                  v-for="level in chatBgIntensityOptions"
+                  :key="level.id"
+                  type="button"
+                  :class="['dash-chat-bgbar-level', { active: Math.abs(chatBgIntensity - level.value) < 0.01 }]"
+                  :title="level.description"
+                  @click="selectBgIntensity(level.value)"
+                >{{ level.name }}</button>
+              </div>
               <input ref="bgInputRef" class="hidden-input" type="file" accept="image/*" @change="onBgImageSelected" />
             </div>
             <!-- 对话背景舞台：canvas 固定在消息区背后，不随滚动一起走 -->
@@ -4331,6 +4362,7 @@ ttsPlayer.stop();
                 ref="dashBgCanvasRef"
                 :mode="chatBg"
                 :custom-image="customBgImage"
+                :intensity="chatBgIntensity"
               />
               <!-- 背景层蒙版：深色背景要压一点，保证气泡文字对比度 -->
               <div v-if="chatBg !== 'none'" class="dash-chat-bg-scrim" aria-hidden="true"></div>
@@ -5144,6 +5176,7 @@ ttsPlayer.stop();
                     v-if="chatBg !== 'none'"
                     :mode="chatBg"
                     :custom-image="customBgImage"
+                    :intensity="chatBgIntensity"
                   />
                   <div v-if="chatBg === 'none'" class="dash-bg-stage-empty">
                     当前未启用动态背景
@@ -5192,9 +5225,30 @@ ttsPlayer.stop();
                     <span v-else class="dash-bg-card-thumb-icon">{{ preset.icon }}</span>
                     <span v-if="chatBg === preset.id" class="dash-bg-card-check">✓</span>
                   </span>
-                  <span class="dash-bg-card-name">{{ preset.name }}</span>
-                  <span class="dash-bg-card-desc">{{ preset.description }}</span>
+                  <div class="dash-bg-card-name">{{ preset.name }}</div>
+                  <div class="dash-bg-card-desc">{{ preset.description }}</div>
                 </button>
+              </div>
+
+              <!-- 浓度：同一套图案，只是强弱不同，切换时不会突然跳色 -->
+              <div class="dash-bg-intensity">
+                <div class="dash-bg-intensity-head">
+                  <span class="dash-bg-intensity-title">背景浓度</span>
+                  <span class="dash-bg-intensity-note">越淡越像纸面上的光晕，越明显纹理越清楚</span>
+                </div>
+                <div class="dash-bg-intensity-options">
+                  <button
+                    v-for="level in chatBgIntensityOptions"
+                    :key="level.id"
+                    type="button"
+                    :class="['dash-bg-intensity-opt', { active: Math.abs(chatBgIntensity - level.value) < 0.01 }]"
+                    :title="level.description"
+                    @click="selectBgIntensity(level.value)"
+                  >
+                    <span class="dash-bg-intensity-bar" :style="{ opacity: 0.25 + level.value * 0.75 }"></span>
+                    <span>{{ level.name }}</span>
+                  </button>
+                </div>
               </div>
               <input ref="bgInputRef" class="hidden-input" type="file" accept="image/*" @change="onBgImageSelected" />
             </div>

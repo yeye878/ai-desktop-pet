@@ -30,46 +30,108 @@ export interface ChatBackgroundPreset {
   swatch: string;
   /** 背景层整体不透明度，深色背景要更实一点才看得出效果 */
   opacity: number;
+  /**
+   * 底色基调。整个控制台是米白纸面（约 #f0f2ef），
+   * 深色背景会在面板边缘形成 200+ 的色阶断层，看起来像贴了一块黑方块。
+   * 因此所有预设都收敛到「纸面友好」的浅色基调，靠色调而不是亮度做区分。
+   */
+  tone: "paper";
+  /** 该预设的主要色调，用于切换提示与卡片描边取色 */
+  accent: string;
 }
 
 export const CHAT_BG_STORAGE_KEY = "ai-desktop-pet.chat-bg";
 export const CHAT_BG_CUSTOM_STORAGE_KEY = "ai-desktop-pet.chat-bg-custom";
+/** 背景浓度：淡雅 / 适中 / 明显，三个窗口共用 */
+export const CHAT_BG_INTENSITY_STORAGE_KEY = "ai-desktop-pet.chat-bg-intensity";
 /** 同一窗口内的即时同步（跨 webview 由 storage 事件负责） */
 export const CHAT_BG_CHANGED_EVENT = "chat-background-changed";
+
+export interface ChatBgIntensityLevel {
+  id: string;
+  name: string;
+  description: string;
+  /** 传给 BgCanvas 的 0~1 强度系数 */
+  value: number;
+}
+
+export const CHAT_BG_INTENSITIES: ChatBgIntensityLevel[] = [
+  { id: "soft", name: "淡雅", description: "几乎只是纸面上的一层光晕，最不打扰阅读", value: 0.32 },
+  { id: "medium", name: "适中", description: "能看出纹理与流动，但仍然安静", value: 0.72 },
+  { id: "rich", name: "明显", description: "纹理与动效都更清楚，适合想有点氛围的时候", value: 1.15 },
+];
+
+export const DEFAULT_CHAT_BG_INTENSITY = 0.72;
+
+export function normalizeChatBgIntensity(value: unknown): number {
+  // 空值/空串要回落到默认档，不能走 Number(null)=0 那条路被夹成下限
+  if (value === null || value === undefined || value === "") return DEFAULT_CHAT_BG_INTENSITY;
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric)) return DEFAULT_CHAT_BG_INTENSITY;
+  return Math.min(1.2, Math.max(0.15, numeric));
+}
+
+export function readChatBgIntensity(): number {
+  try {
+    return normalizeChatBgIntensity(localStorage.getItem(CHAT_BG_INTENSITY_STORAGE_KEY));
+  } catch {
+    return DEFAULT_CHAT_BG_INTENSITY;
+  }
+}
+
+export function applyChatBgIntensity(value: number) {
+  const normalized = normalizeChatBgIntensity(value);
+  try {
+    localStorage.setItem(CHAT_BG_INTENSITY_STORAGE_KEY, String(normalized));
+  } catch {
+    /* 隐私模式下写入会抛错，界面仍应即时生效 */
+  }
+  window.dispatchEvent(
+    new CustomEvent(CHAT_BG_CHANGED_EVENT, {
+      detail: { id: readChatBackground(), intensity: normalized },
+    }),
+  );
+}
 
 export const CHAT_BACKGROUNDS: ChatBackgroundPreset[] = [
   {
     id: "none",
     name: "无",
-    description: "保留原本的纸张质感，不叠加动态背景",
+    description: "保留原本的纸张质感，不叠加任何背景",
     icon: "∅",
     swatch:
       "linear-gradient(150deg, rgba(255,255,255,0.92), rgba(244,240,232,0.88))",
     opacity: 1,
+    tone: "paper",
+    accent: "#e8e2d6",
   },
   {
     id: "aurora",
     name: "极光",
-    description: "青绿与紫罗兰的光带缓慢漂移，安静但有呼吸感",
+    description: "青绿与淡紫的光晕在纸面上缓缓流动，像清晨窗外的天光",
     icon: "☾",
     swatch:
-      "radial-gradient(120% 90% at 18% 12%, rgba(56,214,186,0.55), transparent 60%)," +
-      "radial-gradient(110% 85% at 82% 22%, rgba(129,140,248,0.5), transparent 62%)," +
-      "radial-gradient(120% 100% at 55% 95%, rgba(45,212,191,0.35), transparent 68%)," +
-      "linear-gradient(160deg, #06202b, #071a2b 48%, #0a1226)",
-    opacity: 0.92,
+      "radial-gradient(110% 80% at 16% 10%, rgba(148,236,224,0.55), transparent 62%)," +
+      "radial-gradient(100% 75% at 84% 18%, rgba(186,182,255,0.42), transparent 64%)," +
+      "radial-gradient(120% 90% at 52% 100%, rgba(178,240,226,0.4), transparent 70%)," +
+      "linear-gradient(165deg, #f4fbf9, #f2f5fb 55%, #f7f4fa)",
+    opacity: 0.95,
+    tone: "paper",
+    accent: "#8ed8cc",
   },
   {
     id: "ink",
     name: "水墨",
-    description: "米色宣纸上的淡墨远山与流动雾霭，最不打扰阅读",
+    description: "米色宣纸上的淡墨远山与流动雾霭，最安静的一个",
     icon: "墨",
     swatch:
-      "radial-gradient(90% 70% at 22% 88%, rgba(38,44,54,0.42), transparent 62%)," +
-      "radial-gradient(80% 60% at 74% 96%, rgba(58,66,78,0.3), transparent 66%)," +
-      "radial-gradient(120% 90% at 60% 8%, rgba(255,255,255,0.7), transparent 70%)," +
-      "linear-gradient(168deg, #f6f2e8, #eee8dc 52%, #e4dccd)",
+      "radial-gradient(90% 70% at 22% 88%, rgba(120,128,140,0.22), transparent 64%)," +
+      "radial-gradient(80% 60% at 74% 96%, rgba(140,148,160,0.16), transparent 66%)," +
+      "radial-gradient(120% 90% at 60% 8%, rgba(255,255,255,0.75), transparent 70%)," +
+      "linear-gradient(168deg, #fbf8f1, #f6f2e9 52%, #f1ece1)",
     opacity: 0.95,
+    tone: "paper",
+    accent: "#b09a7e",
   },
   {
     id: "cute",
@@ -77,23 +139,27 @@ export const CHAT_BACKGROUNDS: ChatBackgroundPreset[] = [
     description: "樱花飘落与糖果色气泡，点击还会撒出爱心",
     icon: "🐾",
     swatch:
-      "radial-gradient(100% 80% at 20% 20%, rgba(255,183,197,0.75), transparent 62%)," +
-      "radial-gradient(90% 70% at 80% 30%, rgba(255,214,232,0.7), transparent 60%)," +
-      "radial-gradient(120% 90% at 50% 100%, rgba(192,132,252,0.32), transparent 66%)," +
-      "linear-gradient(165deg, #fff2f6, #ffe6f0 55%, #f7e9ff)",
+      "radial-gradient(100% 80% at 20% 20%, rgba(255,196,208,0.6), transparent 62%)," +
+      "radial-gradient(90% 70% at 80% 30%, rgba(255,222,238,0.6), transparent 60%)," +
+      "radial-gradient(120% 90% at 50% 100%, rgba(206,182,255,0.28), transparent 66%)," +
+      "linear-gradient(165deg, #fff7fa, #fff0f5 55%, #faf3ff)",
     opacity: 0.95,
+    tone: "paper",
+    accent: "#f7a8bf",
   },
   {
     id: "scifi",
     name: "科幻",
-    description: "星云、六边形网格与数据包脉冲，会跟随桌宠状态变化",
+    description: "淡蓝星图与六边形网格，会跟随桌宠状态呼吸",
     icon: "🚀",
     swatch:
-      "radial-gradient(90% 70% at 26% 26%, rgba(56,189,248,0.5), transparent 62%)," +
-      "radial-gradient(85% 65% at 76% 72%, rgba(167,139,250,0.45), transparent 64%)," +
-      "repeating-linear-gradient(0deg, rgba(56,189,248,0.10) 0 1px, transparent 1px 9px)," +
-      "linear-gradient(160deg, #040618, #070a24 55%, #030514)",
-    opacity: 0.98,
+      "radial-gradient(90% 70% at 26% 26%, rgba(140,205,255,0.45), transparent 64%)," +
+      "radial-gradient(85% 65% at 76% 72%, rgba(178,172,255,0.38), transparent 66%)," +
+      "repeating-linear-gradient(0deg, rgba(120,170,220,0.10) 0 1px, transparent 1px 9px)," +
+      "linear-gradient(160deg, #f2f8fd, #eef3fb 55%, #f3f1fc)",
+    opacity: 0.95,
+    tone: "paper",
+    accent: "#8fc4f0",
   },
   {
     id: "minimal",
@@ -101,11 +167,13 @@ export const CHAT_BACKGROUNDS: ChatBackgroundPreset[] = [
     description: "会跟随鼠标亮起的点阵星图，克制又灵巧",
     icon: "○",
     swatch:
-      "radial-gradient(80% 60% at 30% 30%, rgba(129,140,248,0.22), transparent 62%)," +
-      "repeating-linear-gradient(90deg, rgba(100,116,139,0.16) 0 1px, transparent 1px 12px)," +
-      "repeating-linear-gradient(0deg, rgba(100,116,139,0.16) 0 1px, transparent 1px 12px)," +
-      "linear-gradient(160deg, #f7f9fc, #eef2f7)",
+      "radial-gradient(80% 60% at 30% 30%, rgba(160,170,255,0.20), transparent 64%)," +
+      "repeating-linear-gradient(90deg, rgba(120,132,150,0.13) 0 1px, transparent 1px 12px)," +
+      "repeating-linear-gradient(0deg, rgba(120,132,150,0.13) 0 1px, transparent 1px 12px)," +
+      "linear-gradient(160deg, #fafbfd, #f3f6fa)",
     opacity: 0.9,
+    tone: "paper",
+    accent: "#b7bfd4",
   },
   {
     id: "custom",
@@ -115,6 +183,8 @@ export const CHAT_BACKGROUNDS: ChatBackgroundPreset[] = [
     swatch:
       "repeating-linear-gradient(45deg, rgba(148,163,184,0.22) 0 8px, rgba(203,213,225,0.18) 8px 16px)",
     opacity: 1,
+    tone: "paper",
+    accent: "#c7cbd6",
   },
 ];
 
@@ -165,7 +235,9 @@ export function applyChatBackground(id: ChatBackgroundId) {
     /* 隐私模式下写入会抛错，界面仍应即时生效 */
   }
   window.dispatchEvent(
-    new CustomEvent(CHAT_BG_CHANGED_EVENT, { detail: { id } }),
+    new CustomEvent(CHAT_BG_CHANGED_EVENT, {
+      detail: { id, intensity: readChatBgIntensity() },
+    }),
   );
 }
 
