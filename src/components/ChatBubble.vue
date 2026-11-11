@@ -1945,8 +1945,8 @@ function formatClipboardTime(value: string | number): string {
   box-sizing: border-box;
   pointer-events: auto;
   background:
-    url("../assets/art/paper-grain.webp"),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.94), rgba(255, 249, 238, 0.88)),
+    url("../assets/art/paper-grain-cool.webp"),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.94), rgba(240, 248, 246, 0.88)),
     repeating-linear-gradient(0deg, rgba(24, 42, 72, 0.024) 0 1px, transparent 1px 24px),
     var(--pet-bg-glass, rgba(255,255,255,0.92));
   background-size: 480px 480px, auto, auto, auto;
@@ -2003,8 +2003,8 @@ function formatClipboardTime(value: string | number): string {
   z-index: 2;
   height: 4px;
   background:
-    linear-gradient(90deg, rgba(255, 216, 92, 0.9), rgba(102, 200, 255, 0.82), rgba(255, 147, 199, 0.82)),
-    var(--pet-header-gradient, linear-gradient(135deg, #ff6b6b, #ff8e53));
+    linear-gradient(90deg, rgba(151, 200, 202, 0.9), rgba(96, 148, 151, 0.82), rgba(194, 156, 173, 0.82)),
+    var(--pet-header-gradient, linear-gradient(135deg, #609497, #79b1b3));
   background-size: 240% 240%;
   animation: softGradientShift 10s ease-in-out infinite;
   flex-shrink: 0;
@@ -2018,8 +2018,8 @@ function formatClipboardTime(value: string | number): string {
   align-items: center;
   padding: 10px 12px 9px;
   background:
-    url("../assets/art/paper-grain.webp"),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(255, 249, 238, 0.72)),
+    url("../assets/art/paper-grain-cool.webp"),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(240, 248, 246, 0.72)),
     linear-gradient(90deg, rgba(var(--pet-primary-rgb, 255, 107, 107), 0.10), rgba(var(--pet-accent-rgb, 255, 160, 122), 0.06));
   background-size: 420px 420px, auto, auto;
   color: #334155;
@@ -2070,7 +2070,7 @@ function formatClipboardTime(value: string | number): string {
   background:
     linear-gradient(135deg, rgba(var(--pet-primary-rgb, 255, 107, 107), 0.16), rgba(var(--pet-accent-rgb, 255, 160, 122), 0.12)),
     rgba(255, 255, 255, 0.96);
-  color: var(--pet-primary, #ff6b6b);
+  color: var(--pet-primary, #609497);
   font-weight: 760;
   box-shadow:
     0 2px 0 rgba(var(--pet-primary-rgb, 255, 107, 107), 0.08),
@@ -2093,7 +2093,7 @@ function formatClipboardTime(value: string | number): string {
   padding: 0;
   font-size: 13px;
   cursor: pointer;
-  color: var(--pet-primary, #ff6b6b);
+  color: var(--pet-primary, #609497);
   transition: background 0.2s, color 0.2s, transform 0.2s, box-shadow 0.2s;
   line-height: 1;
   box-shadow: 0 3px 8px rgba(24, 42, 72, 0.04);
@@ -2101,7 +2101,7 @@ function formatClipboardTime(value: string | number): string {
 
 .header-action-btn:hover {
   background: white;
-  color: var(--pet-primary-dark, #e55a5a);
+  color: var(--pet-primary-dark, #4a7577);
   transform: translateY(-1px);
   box-shadow: 0 6px 14px rgba(var(--pet-primary-rgb, 255, 107, 107), 0.12);
 }
@@ -2115,16 +2115,16 @@ function formatClipboardTime(value: string | number): string {
   border-radius: 9px;
   width: 26px;
   height: 26px;
-  color: #94a3b8;
+  color: #adb2bb;
   cursor: pointer;
   transition: all 0.2s;
   box-shadow: 0 3px 8px rgba(24, 42, 72, 0.04);
 }
 
 .close-btn:hover {
-  background: rgba(239, 68, 68, 0.10);
-  border-color: rgba(239, 68, 68, 0.18);
-  color: #ef4444;
+  background: rgba(159, 104, 79, 0.10);
+  border-color: rgba(159, 104, 79, 0.18);
+  color: #9f684f;
   transform: rotate(90deg);
 }
 
@@ -2134,9 +2134,9 @@ function formatClipboardTime(value: string | number): string {
   overflow: hidden;
   min-height: 0;
   background:
-    url("../assets/art/paper-grain.webp"),
-    linear-gradient(135deg, rgba(102, 200, 255, 0.08), transparent 42%),
-    linear-gradient(225deg, rgba(255, 216, 92, 0.10), transparent 44%);
+    url("../assets/art/paper-grain-cool.webp"),
+    linear-gradient(135deg, rgba(96, 148, 151, 0.08), transparent 42%),
+    linear-gradient(225deg, rgba(151, 200, 202, 0.10), transparent 44%);
   background-size: 520px 520px, auto, auto;
 }
 
@@ -2185,7 +2185,7 @@ function formatClipboardTime(value: string | number): string {
   border-radius: 14px;
   background:
     url("../assets/art/chat-empty.png") center 12px / min(82%, 238px) auto no-repeat,
-    linear-gradient(145deg, rgba(255, 255, 255, 0.62), rgba(255, 249, 238, 0.50));
+    linear-gradient(145deg, rgba(255, 255, 255, 0.62), rgba(240, 248, 246, 0.50));
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.58),
     0 5px 14px rgba(24, 42, 72, 0.05);
@@ -2228,7 +2228,7 @@ function formatClipboardTime(value: string | number): string {
 
 .system-divider-text {
   font-size: 11px;
-  color: #94a3b8;
+  color: #adb2bb;
   white-space: nowrap;
   flex-shrink: 0;
 }
@@ -2269,13 +2269,13 @@ function formatClipboardTime(value: string | number): string {
 .bot-avatar {
   background:
     radial-gradient(circle at 35% 25%, rgba(255, 255, 255, 0.58), transparent 34%),
-    var(--pet-header-gradient, linear-gradient(135deg, #ff6b6b, #ff8e53));
+    var(--pet-header-gradient, linear-gradient(135deg, #609497, #79b1b3));
   background-size: 180% 180%;
   animation: softGradientShift 8s ease-in-out infinite;
 }
 
 .user-avatar {
-  background: linear-gradient(135deg, #66c8ff, #a7a2ff);
+  background: linear-gradient(135deg, #79b1b3, #b6b0c2);
   color: white;
 }
 
@@ -2313,7 +2313,7 @@ function formatClipboardTime(value: string | number): string {
 .message.user .bubble {
   background:
     linear-gradient(145deg, rgba(255, 255, 255, 0.16), transparent 36%),
-    var(--pet-bubble-user, linear-gradient(135deg, #ff6b6b, #ff8e8e));
+    var(--pet-bubble-user, linear-gradient(135deg, #609497, #97c8ca));
   color: white;
   border-bottom-right-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.28);
@@ -2335,7 +2335,7 @@ function formatClipboardTime(value: string | number): string {
 .message.assistant .bubble {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.90), rgba(255, 251, 244, 0.78)),
-    var(--pet-bubble-bot, rgba(255, 107, 107, 0.08));
+    var(--pet-bubble-bot, rgba(187, 129, 102, 0.08));
   color: var(--pet-font-color, var(--pet-bubble-bot-text, #4a4a4a));
   text-shadow: 0 1px 0 rgba(255, 255, 255, 0.64);
   border-bottom-left-radius: 6px;
@@ -2386,7 +2386,7 @@ function formatClipboardTime(value: string | number): string {
 
 .msg-time {
   font-size: 10px;
-  color: #94a3b8;
+  color: #adb2bb;
   padding: 0 4px;
 }
 
@@ -2428,7 +2428,7 @@ function formatClipboardTime(value: string | number): string {
 
 .message-action-menu button:hover:not(:disabled) {
   border-color: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.30);
-  color: var(--pet-primary, #ff6b6b);
+  color: var(--pet-primary, #609497);
   background: #ffffff;
 }
 
@@ -2459,7 +2459,7 @@ function formatClipboardTime(value: string | number): string {
 }
 
 .thinking-header:hover {
-  color: var(--pet-primary, #ff6b6b);
+  color: var(--pet-primary, #609497);
 }
 
 .thinking-toggle {
@@ -2474,7 +2474,7 @@ function formatClipboardTime(value: string | number): string {
 }
 
 .thinking-loading {
-  color: var(--pet-primary, #ff6b6b);
+  color: var(--pet-primary, #609497);
   font-weight: 600;
 }
 
@@ -2486,7 +2486,7 @@ function formatClipboardTime(value: string | number): string {
 .thinking-dots span {
   animation: dotBounce 1.4s ease-in-out infinite;
   font-weight: bold;
-  color: var(--pet-primary, #ff6b6b);
+  color: var(--pet-primary, #609497);
 }
 
 .thinking-dots span:nth-child(2) {
@@ -2507,7 +2507,7 @@ function formatClipboardTime(value: string | number): string {
   display: flex;
   align-items: center;
   gap: 3px;
-  background: var(--pet-primary, #ff6b6b);
+  background: var(--pet-primary, #609497);
   color: white;
   border: none;
   border-radius: 6px;
@@ -2519,7 +2519,7 @@ function formatClipboardTime(value: string | number): string {
 }
 
 .stop-btn:hover {
-  background: var(--pet-primary-dark, #e55a5a);
+  background: var(--pet-primary-dark, #4a7577);
   transform: scale(1.05);
 }
 
@@ -2539,7 +2539,7 @@ function formatClipboardTime(value: string | number): string {
 }
 
 .thinking-streaming {
-  border-left: 2px solid var(--pet-primary, #ff6b6b);
+  border-left: 2px solid var(--pet-primary, #609497);
   background: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.045);
 }
 
@@ -2579,7 +2579,7 @@ function formatClipboardTime(value: string | number): string {
 }
 
 .clipboard-search-icon {
-  color: #94a3b8;
+  color: #adb2bb;
   font-size: 12px;
 }
 
@@ -2617,7 +2617,7 @@ function formatClipboardTime(value: string | number): string {
   align-items: center;
   gap: 6px;
   min-height: 14px;
-  color: #94a3b8;
+  color: #adb2bb;
   font-size: 10px;
 }
 
@@ -2631,7 +2631,7 @@ function formatClipboardTime(value: string | number): string {
 }
 
 .pin-label {
-  color: var(--pet-primary, #ff6b6b);
+  color: var(--pet-primary, #609497);
   font-weight: 600;
 }
 
@@ -2640,12 +2640,12 @@ function formatClipboardTime(value: string | number): string {
     linear-gradient(145deg, rgba(255, 255, 255, 0.76), rgba(255, 249, 230, 0.78)),
     linear-gradient(135deg, #fff9e6, #fff3cd) !important;
   color: var(--pet-font-color, #6b5a2e) !important;
-  border-left: 3px solid var(--pet-accent, #fbbf24);
+  border-left: 3px solid var(--pet-accent, #cf9e89);
   border-bottom-left-radius: 6px;
 }
 
 .clipboard-item.pinned .clipboard-bubble {
-  border-left-color: var(--pet-primary, #ff6b6b);
+  border-left-color: var(--pet-primary, #609497);
 }
 
 .clipboard-actions {
@@ -2696,7 +2696,7 @@ function formatClipboardTime(value: string | number): string {
 
 .clipboard-action-btn:hover {
   border-color: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.28);
-  color: var(--pet-primary, #ff6b6b);
+  color: var(--pet-primary, #609497);
   background: white;
   transform: translateY(-1px);
   box-shadow: 0 6px 12px rgba(var(--pet-primary-rgb, 255, 107, 107), 0.12);
@@ -2709,7 +2709,7 @@ function formatClipboardTime(value: string | number): string {
 .clipboard-action-btn.active {
   border-color: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.3);
   background: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.12);
-  color: var(--pet-primary, #ff6b6b);
+  color: var(--pet-primary, #609497);
 }
 
 .clipboard-action-btn.active:hover {
@@ -2717,10 +2717,10 @@ function formatClipboardTime(value: string | number): string {
 }
 
 .clipboard-action-btn.danger:hover {
-  border-color: rgba(239, 68, 68, 0.28);
-  color: #ef4444;
-  background: rgba(239, 68, 68, 0.08);
-  box-shadow: 0 6px 12px rgba(239, 68, 68, 0.1);
+  border-color: rgba(159, 104, 79, 0.28);
+  color: #9f684f;
+  background: rgba(159, 104, 79, 0.08);
+  box-shadow: 0 6px 12px rgba(159, 104, 79, 0.1);
 }
 
 .slash-menu {
@@ -2736,8 +2736,8 @@ function formatClipboardTime(value: string | number): string {
   border: 1px solid rgba(24, 42, 72, 0.10);
   border-radius: 14px;
   background:
-    url("../assets/art/paper-grain.webp"),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(255, 249, 238, 0.90));
+    url("../assets/art/paper-grain-cool.webp"),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(240, 248, 246, 0.90));
   background-size: 420px 420px, auto;
   box-shadow:
     0 12px 24px rgba(24, 42, 72, 0.12),
@@ -2767,7 +2767,7 @@ function formatClipboardTime(value: string | number): string {
 
 .slash-item.skill.active {
   background:
-    linear-gradient(90deg, rgba(102, 200, 255, 0.16), rgba(var(--pet-primary-rgb, 255, 107, 107), 0.08));
+    linear-gradient(90deg, rgba(96, 148, 151, 0.16), rgba(var(--pet-primary-rgb, 255, 107, 107), 0.08));
 }
 
 .slash-item-mark {
@@ -2778,7 +2778,7 @@ function formatClipboardTime(value: string | number): string {
   height: 24px;
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.82);
-  color: var(--pet-primary, #ff6b6b);
+  color: var(--pet-primary, #609497);
   font-size: 13px;
   font-weight: 800;
   box-shadow: inset 0 0 0 1px rgba(24, 42, 72, 0.06);
@@ -2808,7 +2808,7 @@ function formatClipboardTime(value: string | number): string {
 }
 
 .slash-item-hint {
-  color: #94a3b8;
+  color: #adb2bb;
   font-size: 10px;
   white-space: nowrap;
 }
@@ -2822,8 +2822,8 @@ function formatClipboardTime(value: string | number): string {
   gap: 8px;
   border-top: 1px solid rgba(24, 42, 72, 0.07);
   background:
-    url("../assets/art/paper-grain.webp"),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.54), rgba(255, 249, 238, 0.78));
+    url("../assets/art/paper-grain-cool.webp"),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.54), rgba(240, 248, 246, 0.78));
   background-size: 420px 420px, auto;
 }
 
@@ -2842,7 +2842,7 @@ function formatClipboardTime(value: string | number): string {
 }
 
 .chat-input input:focus {
-  border-color: var(--pet-primary, #ff6b6b);
+  border-color: var(--pet-primary, #609497);
   box-shadow: 0 0 0 3px rgba(var(--pet-primary-rgb, 255, 107, 107), 0.1);
   background: white;
 }
@@ -2861,7 +2861,7 @@ function formatClipboardTime(value: string | number): string {
   border: 1px solid rgba(var(--pet-primary-rgb, 255, 107, 107), 0.22);
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.86);
-  color: var(--pet-primary, #ff6b6b);
+  color: var(--pet-primary, #609497);
   cursor: pointer;
   transition: all 0.2s;
   box-shadow: 0 5px 12px rgba(15, 23, 42, 0.08);
@@ -2874,14 +2874,14 @@ function formatClipboardTime(value: string | number): string {
 }
 
 .voice-btn.active {
-  background: var(--pet-header-gradient, linear-gradient(135deg, #ff6b6b, #ff8e53));
+  background: var(--pet-header-gradient, linear-gradient(135deg, #609497, #79b1b3));
   color: white;
   animation: voicePulse 1.1s ease-in-out infinite;
 }
 
 .voice-btn.speaking {
   color: white;
-  background: linear-gradient(135deg, #38bdf8, #8b5cf6);
+  background: linear-gradient(135deg, #79b1b3, #7b849f);
 }
 
 .voice-btn:disabled {
@@ -2904,12 +2904,12 @@ function formatClipboardTime(value: string | number): string {
   padding: 0 14px 9px 52px;
   margin-top: 0;
   min-height: 14px;
-  color: var(--pet-primary, #ff6b6b);
+  color: var(--pet-primary, #609497);
   font-size: 11px;
   line-height: 1.4;
   background:
-    url("../assets/art/paper-grain.webp"),
-    rgba(255, 249, 238, 0.78);
+    url("../assets/art/paper-grain-cool.webp"),
+    rgba(240, 248, 246, 0.78);
   background-size: 420px 420px, auto;
   word-break: break-word;
 }
@@ -2920,7 +2920,7 @@ function formatClipboardTime(value: string | number): string {
   justify-content: center;
   width: 37px;
   height: 37px;
-  background: var(--pet-header-gradient, linear-gradient(135deg, #ff6b6b, #ff8e53));
+  background: var(--pet-header-gradient, linear-gradient(135deg, #609497, #79b1b3));
   background-size: 220% 220%;
   color: white;
   border: none;
@@ -2953,9 +2953,9 @@ function formatClipboardTime(value: string | number): string {
   justify-content: center;
   gap: 8px;
   background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(255, 249, 238, 0.88));
+    linear-gradient(135deg, rgba(255, 255, 255, 0.92), rgba(240, 248, 246, 0.88));
   backdrop-filter: blur(8px);
-  color: var(--pet-primary, #ff6b6b);
+  color: var(--pet-primary, #609497);
   font-size: 14px;
   font-weight: 600;
   pointer-events: none;
@@ -2992,13 +2992,13 @@ function formatClipboardTime(value: string | number): string {
 
 .tool-confirm-card {
   background:
-    linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(255, 249, 238, 0.90));
+    linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(240, 248, 246, 0.90));
   backdrop-filter: blur(12px);
-  border: 1px solid rgba(245, 158, 11, 0.38);
+  border: 1px solid rgba(187, 129, 102, 0.38);
   border-radius: 16px;
   padding: 12px;
   box-shadow:
-    0 4px 12px rgba(245, 158, 11, 0.12),
+    0 4px 12px rgba(187, 129, 102, 0.12),
     0 14px 30px rgba(24, 42, 72, 0.12),
     inset 0 1px 0 rgba(255, 255, 255, 0.8);
   display: flex;
@@ -3010,7 +3010,7 @@ function formatClipboardTime(value: string | number): string {
   display: flex;
   align-items: center;
   gap: 8px;
-  border-bottom: 1px solid rgba(245, 158, 11, 0.12);
+  border-bottom: 1px solid rgba(187, 129, 102, 0.12);
   padding-bottom: 6px;
 }
 
@@ -3022,7 +3022,7 @@ function formatClipboardTime(value: string | number): string {
 .confirm-card-title {
   font-size: 13px;
   font-weight: 700;
-  color: #b45309;
+  color: #8b8370;
 }
 
 .confirm-card-body {
@@ -3093,25 +3093,25 @@ function formatClipboardTime(value: string | number): string {
 }
 
 .confirm-btn.deny {
-  background: rgba(239, 68, 68, 0.08);
-  color: #dc2626;
-  border: 1px solid rgba(239, 68, 68, 0.15);
+  background: rgba(159, 104, 79, 0.08);
+  color: #7b4e3a;
+  border: 1px solid rgba(159, 104, 79, 0.15);
 }
 
 .confirm-btn.deny:hover {
-  background: #ef4444;
+  background: #9f684f;
   color: white;
-  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.2);
+  box-shadow: 0 4px 12px rgba(159, 104, 79, 0.2);
 }
 
 .confirm-btn.approve {
   background: rgba(34, 197, 94, 0.08);
-  color: #16a34a;
+  color: #57735c;
   border: 1px solid rgba(34, 197, 94, 0.15);
 }
 
 .confirm-btn.approve:hover {
-  background: #22c55e;
+  background: #6f8f74;
   color: white;
   box-shadow: 0 4px 12px rgba(34, 197, 94, 0.2);
 }
@@ -3132,7 +3132,7 @@ function formatClipboardTime(value: string | number): string {
   z-index: 2;
   padding: 8px 10px 0;
   border-top: 1px solid rgba(24, 42, 72, 0.07);
-  background: rgba(255, 249, 238, 0.58);
+  background: rgba(240, 248, 246, 0.58);
 }
 
 .file-preview-header {
@@ -3147,7 +3147,7 @@ function formatClipboardTime(value: string | number): string {
 .clear-all-btn {
   background: none;
   border: none;
-  color: #94a3b8;
+  color: #adb2bb;
   font-size: 11px;
   cursor: pointer;
   padding: 2px 6px;
@@ -3156,8 +3156,8 @@ function formatClipboardTime(value: string | number): string {
 }
 
 .clear-all-btn:hover {
-  color: #ef4444;
-  background: rgba(239, 68, 68, 0.08);
+  color: #9f684f;
+  background: rgba(159, 104, 79, 0.08);
 }
 
 .file-preview-list {
@@ -3223,7 +3223,7 @@ function formatClipboardTime(value: string | number): string {
 
 .fallback-text {
   font-size: 9px;
-  color: #94a3b8;
+  color: #adb2bb;
 }
 
 .file-name {
@@ -3238,7 +3238,7 @@ function formatClipboardTime(value: string | number): string {
 
 .file-size {
   font-size: 9px;
-  color: #94a3b8;
+  color: #adb2bb;
 }
 
 .remove-file-btn {
@@ -3267,16 +3267,16 @@ function formatClipboardTime(value: string | number): string {
 }
 
 .remove-file-btn:hover {
-  background: rgba(239, 68, 68, 0.85);
+  background: rgba(159, 104, 79, 0.85);
 }
 
 /* 验证错误提示 */
 .file-validation-error {
   padding: 5px 12px;
   font-size: 11px;
-  color: #ef4444;
-  background: rgba(239, 68, 68, 0.06);
-  border-top: 1px solid rgba(239, 68, 68, 0.1);
+  color: #9f684f;
+  background: rgba(159, 104, 79, 0.06);
+  border-top: 1px solid rgba(159, 104, 79, 0.1);
 }
 
 /* 消息气泡中的文件标签 */
@@ -3344,7 +3344,7 @@ function formatClipboardTime(value: string | number): string {
   border-color: rgba(33, 48, 74, 0.11);
   border-radius: 18px;
   background:
-    url("../assets/art/paper-grain.webp"),
+    url("../assets/art/paper-grain-cool.webp"),
     linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(245, 251, 255, 0.78)),
     var(--pet-bg-glass, rgba(255, 255, 255, 0.94));
   background-size: 420px 420px, auto, auto;
@@ -3417,7 +3417,7 @@ function formatClipboardTime(value: string | number): string {
 }
 
 .messages-area {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(247, 251, 255, 0.36));
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(243, 251, 251, 0.36));
 }
 
 /* 有动态背景时，把这层半透明白底彻底让开，否则 BgCanvas 被自己盖住 */
@@ -3506,7 +3506,7 @@ function formatClipboardTime(value: string | number): string {
 .message.assistant .bubble {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(255, 253, 248, 0.82)),
-    var(--pet-bubble-bot, rgba(255, 107, 107, 0.08));
+    var(--pet-bubble-bot, rgba(187, 129, 102, 0.08));
 }
 
 .message.user .bubble {
@@ -3531,8 +3531,8 @@ function formatClipboardTime(value: string | number): string {
 .file-preview-area {
   border-color: rgba(33, 48, 74, 0.09);
   background:
-    url("../assets/art/paper-grain.webp"),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.60), rgba(255, 249, 238, 0.70));
+    url("../assets/art/paper-grain-cool.webp"),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.60), rgba(240, 248, 246, 0.70));
   background-size: 420px 420px, auto;
 }
 
@@ -3608,8 +3608,8 @@ function formatClipboardTime(value: string | number): string {
   border: 1px solid rgba(24, 42, 72, 0.10);
   border-radius: 14px;
   background:
-    url("../assets/art/paper-grain.webp"),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 249, 238, 0.8));
+    url("../assets/art/paper-grain-cool.webp"),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(240, 248, 246, 0.8));
   background-size: 420px 420px, auto;
   box-shadow: 0 12px 24px rgba(24, 42, 72, 0.10);
 }
@@ -3632,8 +3632,8 @@ function formatClipboardTime(value: string | number): string {
 }
 
 .mention-item.active {
-  border-color: rgba(204, 112, 82, 0.32);
-  background: rgba(204, 112, 82, 0.1);
+  border-color: rgba(96, 148, 151, 0.32);
+  background: rgba(96, 148, 151, 0.1);
 }
 
 .mention-avatar {
@@ -3643,7 +3643,7 @@ function formatClipboardTime(value: string | number): string {
   width: 32px;
   height: 32px;
   border-radius: 9px;
-  background: linear-gradient(145deg, rgba(204, 112, 82, 0.18), rgba(255, 255, 255, 0.7));
+  background: linear-gradient(145deg, rgba(96, 148, 151, 0.18), rgba(255, 255, 255, 0.7));
   font-size: 17px;
 }
 
@@ -3682,8 +3682,8 @@ function formatClipboardTime(value: string | number): string {
   padding: 0 5px;
   margin: 0 1px;
   border-radius: 6px;
-  background: rgba(204, 112, 82, 0.12);
-  color: #c95e3c;
+  background: rgba(96, 148, 151, 0.12);
+  color: #bb8166;
   font-weight: 600;
 }
 

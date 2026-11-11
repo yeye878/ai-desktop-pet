@@ -159,7 +159,7 @@ export const CHAT_BACKGROUNDS: ChatBackgroundPreset[] = [
       "linear-gradient(160deg, #f2f8fd, #eef3fb 55%, #f3f1fc)",
     opacity: 0.95,
     tone: "paper",
-    accent: "#8fc4f0",
+    accent: "#79b1b3",
   },
   {
     id: "minimal",

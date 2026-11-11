@@ -54,21 +54,21 @@ h2 { font-size: 15px; line-height: 1.5; margin: 4px 0 0; overflow-wrap: anywhere
 fieldset { border: 0; padding: 0; margin: 0 0 12px; }
 legend { padding: 0 0 5px; }
 .question-option { display: flex; align-items: flex-start; gap: 8px; padding: 7px 8px; cursor: pointer; border: 1px solid #e0e4e9; border-radius: 4px; margin-bottom: 5px; }
-.question-option.selected { border-color: #4b8fb1; background: #f0f8fb; }
-.question-option input { margin: 3px 0 0; flex-shrink: 0; accent-color: #267ea4; }
+.question-option.selected { border-color: #79b1b3; background: #f0f8fb; }
+.question-option input { margin: 3px 0 0; flex-shrink: 0; accent-color: #4a7577; }
 .question-option span { min-width: 0; overflow-wrap: anywhere; }
 .question-option strong { font-size: 12px; font-weight: 500; }
 .question-option small { display: block; font-size: 11px; color: #697581; }
 .question-answer { display: grid; gap: 4px; }
 textarea { resize: vertical; min-height: 48px; width: 100%; box-sizing: border-box; font: inherit; padding: 7px 8px; color: inherit; border: 1px solid #d7dde4; border-radius: 4px; }
-.question-error { color: #b84040; margin: 7px 0 0; overflow-wrap: anywhere; }
+.question-error { color: #9f684f; margin: 7px 0 0; overflow-wrap: anywhere; }
 footer { padding: 10px 16px 12px; border-top: 1px solid #e5e8ec; display: flex; gap: 8px; justify-content: flex-end; flex-shrink: 0; }
 button { height: 34px; border: 1px solid #d5dbe1; border-radius: 4px; padding: 0 14px; cursor: pointer; background: #fff; color: inherit; font: inherit; }
-.question-submit { background: #247f9f; border-color: #247f9f; color: #fff; }
+.question-submit { background: #4a7577; border-color: #4a7577; color: #fff; }
 button:disabled { opacity: .5; cursor: default; }
 .compact header { padding: 10px 12px 7px; }
 .compact .question-body { padding: 0 12px 8px; }
 .compact footer { padding: 8px 12px; }
 .compact h2 { font-size: 13px; }
-input:focus-visible, textarea:focus-visible, button:focus-visible { outline: 2px solid #338fb9; outline-offset: 2px; }
+input:focus-visible, textarea:focus-visible, button:focus-visible { outline: 2px solid #609497; outline-offset: 2px; }
 </style>

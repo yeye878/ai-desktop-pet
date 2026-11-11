@@ -139,7 +139,7 @@ async function action(name: string) {
 }
 
 .menu-item:hover {
-  background: var(--pet-header-gradient, linear-gradient(135deg, #ff6b6b, #ff8e53));
+  background: var(--pet-header-gradient, linear-gradient(135deg, #609497, #79b1b3));
   background-size: 180% 180%;
   color: white;
   transform: translateX(3px);
@@ -147,7 +147,7 @@ async function action(name: string) {
 }
 
 .exit-item:hover {
-  background: linear-gradient(135deg, #f59e0b, #d97706);
+  background: linear-gradient(135deg, #bb8166, #9f684f);
   box-shadow: 0 8px 18px rgba(217, 119, 6, 0.3);
 }
 
@@ -168,7 +168,7 @@ async function action(name: string) {
   border-radius: 14px;
   border-color: rgba(33, 48, 74, 0.11);
   background:
-    url("../assets/art/paper-grain.webp"),
+    url("../assets/art/paper-grain-cool.webp"),
     linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(246, 252, 255, 0.92)),
     var(--pet-bg-glass, rgba(255, 255, 255, 0.95));
   background-size: 380px 380px, auto, auto;
@@ -200,7 +200,7 @@ async function action(name: string) {
 }
 
 .exit-item:hover {
-  background: linear-gradient(135deg, #f59e0b, #ef7f47);
+  background: linear-gradient(135deg, #bb8166, #bb8166);
 }
 
 .menu-icon {

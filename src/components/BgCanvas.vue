@@ -45,8 +45,8 @@ let ikRidges: any[] = [];
 let ikMist: any[] = [];
 let ikRipples: any[] = [];
 
-const CUTE_C = ['#ff6b9d','#ff85b1','#ffaed7','#ffd700','#c084fc','#f9a8d4','#fdba74','#fb7185'];
-const SF_COLS = { cyan:'#38bdf8', purple:'#a78bfa', green:'#34d399', blue:'#60a5fa', teal:'#2dd4bf' };
+const CUTE_C = ['#bb8fa2','#c99eb0','#dcc0cc','#d6ceba','#8aa6b8','#d9bcc8','#cf9e89','#a97f92'];
+const SF_COLS = { cyan:'#79b1b3', purple:'#8aa6b8', green:'#8aa98f', blue:'#7e93a8', teal:'#97c8ca' };
 
 function drawHeart(c: CanvasRenderingContext2D, x: number, y: number, s: number) {
   c.beginPath();
@@ -91,7 +91,7 @@ function initCute() {
     vx: rnd(-0.5, 0.5), vy: rnd(0.4, 1.2),
     size: rnd(3, 8), angle: rnd(0, 6.28), spin: rnd(-0.04, 0.04),
     sway: rnd(0.5, 1.5), swayOff: rnd(0, 6.28),
-    color: pick(['#ffc0cb','#ffb7c5','#ff90a0','#ffd9e8','#ffc5d6','#ffe4e1']),
+    color: pick(['#d9bcc8','#d9bcc8','#c29cad','#eddfe5','#e6d2da','#f2e8e6']),
     alpha: rnd(0.3, 0.65), temp: false, life: 1, decay: 0,
   });
   // Floating pastel bubbles
@@ -668,7 +668,7 @@ function draw() {
     }
     // Trail
     for (const t of trail) {
-      ctx.save(); ctx.globalAlpha = t.t * 0.5; ctx.fillStyle = '#ffd700';
+      ctx.save(); ctx.globalAlpha = t.t * 0.5; ctx.fillStyle = '#d6ceba';
       drawSparkle(ctx, t.x, t.y, 2.5 + t.t * 5); ctx.restore();
     }
     // Burst particles
@@ -703,7 +703,7 @@ function draw() {
     // Constellation rays (click)
     for (const ray of mnRays) {
       ctx.save(); ctx.globalAlpha = ray.alpha;
-      ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 0.8;
+      ctx.strokeStyle = '#adb2bb'; ctx.lineWidth = 0.8;
       ctx.beginPath(); ctx.moveTo(ray.x, ray.y); ctx.lineTo(ray.tx, ray.ty); ctx.stroke();
       ctx.restore();
     }
@@ -712,15 +712,15 @@ function draw() {
       const alpha = 0.12 + d.glow * 0.7;
       const size = 1.5 + d.glow * 3;
       ctx.save(); ctx.globalAlpha = alpha;
-      ctx.fillStyle = d.glow > 0.3 ? '#818cf8' : '#94a3b8';
-      if (d.glow > 0.2) { ctx.shadowColor = '#818cf8'; ctx.shadowBlur = 6 * d.glow; }
+      ctx.fillStyle = d.glow > 0.3 ? '#8aa6b8' : '#adb2bb';
+      if (d.glow > 0.2) { ctx.shadowColor = '#8aa6b8'; ctx.shadowBlur = 6 * d.glow; }
       ctx.beginPath(); ctx.arc(d.x, d.y, size, 0, Math.PI*2); ctx.fill();
       ctx.shadowBlur = 0; ctx.restore();
     }
     // Burst particles (click)
     for (const p of particles) {
       ctx.save(); ctx.globalAlpha = p.alpha * p.life;
-      ctx.strokeStyle = '#94a3b8'; ctx.lineWidth = 0.8;
+      ctx.strokeStyle = '#adb2bb'; ctx.lineWidth = 0.8;
       ctx.beginPath(); ctx.arc(p.x, p.y, 1.5, 0, Math.PI*2); ctx.fill();
       ctx.restore();
     }
@@ -982,7 +982,7 @@ function onClick(x: number, y: number) {
       x, y, vx: rnd(-3, 3), vy: rnd(-4, -0.5),
       size: rnd(4, 10), angle: rnd(0, 6.28), spin: rnd(-0.08, 0.08),
       sway: 1, swayOff: rnd(0, 6.28),
-      color: pick(['#ffc0cb','#ff90a0','#ffb7c5','#ffd9e8']),
+      color: pick(['#d9bcc8','#c29cad','#d9bcc8','#eddfe5']),
       alpha: rnd(0.5, 0.8), temp: true, life: 1, decay: rnd(0.01, 0.02),
     });
     for (let i = 0; i < 12; i++) particles.push({

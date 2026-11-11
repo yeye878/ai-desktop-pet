@@ -1985,15 +1985,15 @@ async function closeWindow() { await currentWindow.hide(); }
 async function exitApp() { await invoke("exit_app"); }
 
 function cpuBarColor(cpu: number): string {
-  if (cpu > 80) return "#ef4444";
-  if (cpu > 50) return "#f59e0b";
-  return "var(--pet-primary, #ff6b6b)";
+  if (cpu > 80) return "#9f684f";
+  if (cpu > 50) return "#bb8166";
+  return "var(--pet-primary, #609497)";
 }
 
 function memBarColor(mem: number): string {
-  if (mem > 85) return "#ef4444";
-  if (mem > 60) return "#f59e0b";
-  return "var(--pet-accent, #ffa07a)";
+  if (mem > 85) return "#9f684f";
+  if (mem > 60) return "#bb8166";
+  return "var(--pet-accent, #97c8ca)";
 }
 
 // === 窗口最大化/还原控制 ===

@@ -107,7 +107,7 @@ onUnmounted(() => window.removeEventListener("focus", refreshStatus));
 .dsh-connection { color: var(--dash-text, #334155); font-size: 13px; }
 .dsh-status { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .dsh-status strong { color: #64748b; font-size: 12px; }
-.dsh-status strong.connected { color: #15803d; }
+.dsh-status strong.connected { color: #57735c; }
 .dsh-hint { margin: 10px 0; color: var(--dash-text-secondary, #64748b); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
 .dsh-details { display: grid; gap: 10px; padding: 14px; margin: 12px 0; border: 1px solid rgba(24, 42, 72, 0.08); border-radius: 10px; background: rgba(255, 255, 255, 0.4); }
 .dsh-details div { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 10px; }
@@ -115,6 +115,6 @@ onUnmounted(() => window.removeEventListener("focus", refreshStatus));
 .dsh-details dd { margin: 0; overflow-wrap: anywhere; }
 .dsh-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .dsh-actions button { padding: 8px 12px; border: 1px solid rgba(24, 42, 72, 0.12); border-radius: 8px; color: inherit; background: rgba(255, 255, 255, 0.7); font: inherit; cursor: pointer; }
-.dsh-actions button:hover:not(:disabled) { border-color: var(--pet-primary, #38bdf8); }
+.dsh-actions button:hover:not(:disabled) { border-color: var(--pet-primary, #79b1b3); }
 .dsh-actions button:disabled { cursor: default; opacity: 0.5; }
 </style>
