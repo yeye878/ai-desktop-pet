@@ -27,6 +27,13 @@ let ctBubbles: any[] = [];
 // Minimal state
 let mnDots: any[] = [];
 let mnRays: any[] = [];
+// Aurora state
+let auCurtains: any[] = [];
+let auStars: any[] = [];
+// Ink state
+let ikRidges: any[] = [];
+let ikMist: any[] = [];
+let ikRipples: any[] = [];
 
 const CUTE_C = ['#ff6b9d','#ff85b1','#ffaed7','#ffd700','#c084fc','#f9a8d4','#fdba74','#fb7185'];
 const SF_COLS = { cyan:'#38bdf8', purple:'#a78bfa', green:'#34d399', blue:'#60a5fa', teal:'#2dd4bf' };
@@ -94,6 +101,83 @@ function initMinimal() {
       mnDots.push({ x: gx, y: gy, glow: 0, r: 1.5 });
 }
 
+/**
+ * 极光：几条竖直光带在深色夜空里缓慢摆动，叠加一层极细的星点。
+ * 光带用二次曲线画出上下摆动的轮廓，按列逐像素算出亮度，避免整块渐变显得死板。
+ */
+function initAurora() {
+  auCurtains = []; auStars = [];
+  const palette = [
+    { core: [56, 214, 186], edge: [56, 189, 248] },   // 青绿 → 天蓝
+    { core: [129, 140, 248], edge: [167, 139, 250] }, // 靛蓝 → 紫
+    { core: [45, 212, 191], edge: [94, 234, 212] },   // 薄荷
+  ];
+  const count = Math.max(3, Math.min(6, Math.round(W / 260)));
+  for (let i = 0; i < count; i++) {
+    const base = palette[i % palette.length];
+    auCurtains.push({
+      x: (i + 0.5) / count * W + rnd(-W * 0.06, W * 0.06),
+      width: rnd(W * 0.12, W * 0.26),
+      sway: rnd(W * 0.02, W * 0.07),
+      swaySpeed: rnd(0.18, 0.4),
+      phase: rnd(0, 6.28),
+      drift: rnd(-0.05, 0.05),
+      top: rnd(-H * 0.15, H * 0.18),
+      bottom: rnd(H * 0.5, H * 0.95),
+      core: base.core,
+      edge: base.edge,
+      alpha: rnd(0.16, 0.3),
+    });
+  }
+  for (let i = 0; i < 90; i++) {
+    auStars.push({
+      x: rnd(0, W), y: rnd(0, H),
+      r: rnd(0.4, 1.4), base: rnd(0.15, 0.6),
+      twinkle: rnd(0.6, 2.2), phase: rnd(0, 6.28),
+    });
+  }
+}
+
+/**
+ * 水墨：远景山脊 + 缓慢流动的雾带 + 点击扩散的墨晕。
+ * 山脊用几条折线叠出层次，越远越淡，保证文字区域依然干净。
+ */
+function initInk() {
+  ikRidges = []; ikMist = []; ikRipples = [];
+  const layers = 3;
+  for (let layer = 0; layer < layers; layer++) {
+    const points: { x: number; y: number }[] = [];
+    const step = Math.max(48, W / 22);
+    const baseline = H * (0.62 + layer * 0.11);
+    const amp = H * (0.1 - layer * 0.02);
+    let seed = rnd(0, 100);
+    for (let x = -step; x <= W + step; x += step) {
+      seed += rnd(0.6, 1.8);
+      const y =
+        baseline -
+        Math.sin(seed) * amp -
+        Math.sin(seed * 0.5 + layer) * amp * 0.5;
+      points.push({ x, y });
+    }
+    ikRidges.push({
+      points,
+      alpha: 0.1 - layer * 0.022,
+      tint: layer === 0 ? "60,70,84" : layer === 1 ? "44,52,64" : "30,36,46",
+    });
+  }
+  for (let i = 0; i < 5; i++) {
+    ikMist.push({
+      x: rnd(-W * 0.1, W),
+      y: rnd(H * 0.45, H * 0.95),
+      w: rnd(W * 0.5, W * 0.95),
+      h: rnd(H * 0.06, H * 0.14),
+      drift: rnd(0.06, 0.22),
+      phase: rnd(0, 6.28),
+      alpha: rnd(0.05, 0.11),
+    });
+  }
+}
+
 function initScifi() {
   sfNodes = []; sfPackets = []; sfEMPs = []; sfHexes = []; sfScanY = 0;
   // Neural nodes
@@ -137,10 +221,17 @@ function initParticles() {
   if (props.mode === 'cute') initCute();
   else if (props.mode === 'scifi') initScifi();
   else if (props.mode === 'minimal') initMinimal();
+  else if (props.mode === 'aurora') initAurora();
+  else if (props.mode === 'ink') initInk();
 }
 
 function addRipple(x: number, y: number, big = false) {
-  const color = props.mode === 'scifi' ? 'rgba(56,189,248,' : props.mode === 'cute' ? 'rgba(255,107,157,' : 'rgba(148,163,184,';
+  const color =
+    props.mode === 'scifi' ? 'rgba(56,189,248,' :
+    props.mode === 'cute' ? 'rgba(255,107,157,' :
+    props.mode === 'aurora' ? 'rgba(94,234,212,' :
+    props.mode === 'ink' ? 'rgba(54,62,74,' :
+    'rgba(148,163,184,';
   if (big) {
     for (let i = 0; i < 3; i++)
       ripples.push({ x, y, r: i * 8, maxR: 120 + i * 30, alpha: 0.4 - i * 0.08, lw: 2.5 - i * 0.5, speed: 2.5 - i * 0.3, color });
@@ -347,8 +438,194 @@ function update() {
         const s = 1 + (55 - dist) / 55 * 3.5; p.size = p.baseSize * s; p.alpha = 0.2 + (55 - dist) / 55 * 0.6;
       } else { p.size += (p.baseSize - p.size) * 0.08; p.alpha += (0.2 - p.alpha) * 0.08; }
     }
+  } else if (props.mode === 'aurora') {
+    const petState = petStore.state;
+    // 桌宠思考/说话时极光更亮更活跃，静默时几乎不动，避免抢注意力。
+    const energy = petState === 'thinking' ? 1.55 : petState === 'speaking' ? 1.28 : 1;
+    for (const c of auCurtains) {
+      c.phase += 0.004 * c.swaySpeed * energy;
+      c.x += c.drift * energy;
+      if (c.x - c.width > W) c.x = -c.width;
+      if (c.x + c.width < 0) c.x = W + c.width;
+    }
+    for (const s of auStars) s.phase += 0.02 * s.twinkle;
+    // 鼠标附近的光带被“推开”，产生轻微的极光扰动
+    for (const p of particles) { p.life -= p.decay; p.y -= 0.35; }
+    particles = particles.filter(p => p.life > 0);
+  } else if (props.mode === 'ink') {
+    for (const m of ikMist) {
+      m.x += m.drift;
+      m.phase += 0.008;
+      if (m.x - m.w > W) m.x = -m.w;
+    }
+    for (let i = ikRipples.length - 1; i >= 0; i--) {
+      const r = ikRipples[i];
+      r.r += 1.1; r.alpha *= 0.972;
+      if (r.alpha < 0.006) ikRipples.splice(i, 1);
+    }
+    for (const p of particles) { p.life -= p.decay; p.x += p.vx; p.y += p.vy; p.vx *= 0.97; p.vy *= 0.97; }
+    particles = particles.filter(p => p.life > 0);
   }
   particles = particles.filter(p => !p.temp || p.life > 0);
+}
+
+function drawAurora(ctx: CanvasRenderingContext2D) {
+  // 1. 夜空底色（比科幻更蓝更浅一点，保证浅色气泡文字仍然清晰）
+  const bg = ctx.createLinearGradient(0, 0, W * 0.35, H);
+  bg.addColorStop(0, '#061b26');
+  bg.addColorStop(0.5, '#081a2c');
+  bg.addColorStop(1, '#0a1226');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // 2. 极光带：每条光带按列画一条竖向渐变，横向亮度按 sin 收边
+  ctx.save();
+  ctx.globalCompositeOperation = 'screen';
+  for (const c of auCurtains) {
+    const sway = Math.sin(c.phase) * c.sway;
+    const topY = c.top + Math.sin(c.phase * 0.7) * H * 0.06;
+    const botY = c.bottom + Math.cos(c.phase * 0.6) * H * 0.05;
+    const css = `${c.core[0]},${c.core[1]},${c.core[2]}`;
+    const cssEdge = `${c.edge[0]},${c.edge[1]},${c.edge[2]}`;
+    const steps = 14;
+    for (let i = 0; i < steps; i++) {
+      const t = i / (steps - 1);
+      // 中心的带最亮，两侧衰减
+      const lateral = 1 - Math.abs(t - 0.5) * 2;
+      const curvature = Math.sin(t * Math.PI) * sway;
+      const x = c.x + (t - 0.5) * c.width + curvature;
+      const w = c.width / steps + 2;
+      const grad = ctx.createLinearGradient(x, topY, x + sway * 0.5, botY);
+      const peak = c.alpha * lateral * lateral;
+      grad.addColorStop(0, `rgba(${cssEdge},0)`);
+      grad.addColorStop(0.22, `rgba(${cssEdge},${(peak * 0.55).toFixed(3)})`);
+      grad.addColorStop(0.55, `rgba(${css},${peak.toFixed(3)})`);
+      grad.addColorStop(1, `rgba(${cssEdge},0)`);
+      ctx.fillStyle = grad;
+      ctx.fillRect(x - w / 2, topY, w, botY - topY);
+    }
+    // 底部反光，让光带落地
+    const glow = ctx.createRadialGradient(
+      c.x + sway, botY, 0,
+      c.x + sway, botY, Math.max(60, c.width * 0.9),
+    );
+    glow.addColorStop(0, `rgba(${css},${(c.alpha * 0.28).toFixed(3)})`);
+    glow.addColorStop(1, `rgba(${css},0)`);
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.ellipse(c.x + sway, botY, Math.max(60, c.width * 0.9), Math.max(24, H * 0.06), 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+
+  // 3. 星点
+  for (const s of auStars) {
+    const twinkle = 0.55 + Math.sin(s.phase) * 0.45;
+    ctx.save();
+    ctx.globalAlpha = Math.max(0.06, s.base * twinkle);
+    ctx.fillStyle = '#dff6ff';
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // 4. 点击产生的上升光点
+  for (const p of particles) {
+    ctx.save();
+    ctx.globalAlpha = p.alpha * Math.max(0, p.life);
+    ctx.fillStyle = p.color;
+    ctx.shadowColor = p.color;
+    ctx.shadowBlur = 8;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+function drawInk(ctx: CanvasRenderingContext2D) {
+  // 1. 宣纸底：米色 + 极淡的竖向纤维
+  const paper = ctx.createLinearGradient(0, 0, W * 0.2, H);
+  paper.addColorStop(0, '#f7f3ea');
+  paper.addColorStop(0.55, '#efe9dd');
+  paper.addColorStop(1, '#e6dfd1');
+  ctx.fillStyle = paper;
+  ctx.fillRect(0, 0, W, H);
+
+  // 2. 雾带（先画，压在山脊下面，营造纵深）
+  ctx.save();
+  for (const m of ikMist) {
+    const y = m.y + Math.sin(m.phase) * H * 0.012;
+    const grad = ctx.createRadialGradient(m.x, y, 0, m.x, y, m.w * 0.55);
+    grad.addColorStop(0, `rgba(255,255,255,${(m.alpha * 1.6).toFixed(3)})`);
+    grad.addColorStop(0.6, `rgba(250,247,240,${(m.alpha * 0.7).toFixed(3)})`);
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.ellipse(m.x, y, m.w * 0.55, m.h, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+
+  // 3. 远山：三层折线，越远越淡，山脚用渐变收进纸色
+  for (let i = ikRidges.length - 1; i >= 0; i--) {
+    const ridge = ikRidges[i];
+    const pts = ridge.points;
+    if (!pts.length) continue;
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let k = 1; k < pts.length - 1; k++) {
+      const midX = (pts[k].x + pts[k + 1].x) / 2;
+      const midY = (pts[k].y + pts[k + 1].y) / 2;
+      ctx.quadraticCurveTo(pts[k].x, pts[k].y, midX, midY);
+    }
+    ctx.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
+    ctx.lineTo(pts[pts.length - 1].x, H);
+    ctx.lineTo(pts[0].x, H);
+    ctx.closePath();
+    const fill = ctx.createLinearGradient(0, H * 0.4, 0, H);
+    fill.addColorStop(0, `rgba(${ridge.tint},${(ridge.alpha * 1.5).toFixed(3)})`);
+    fill.addColorStop(0.7, `rgba(${ridge.tint},${(ridge.alpha * 0.9).toFixed(3)})`);
+    fill.addColorStop(1, `rgba(${ridge.tint},0)`);
+    ctx.fillStyle = fill;
+    ctx.fill();
+  }
+
+  // 4. 墨晕（点击）
+  for (const r of ikRipples) {
+    ctx.save();
+    ctx.globalAlpha = r.alpha;
+    ctx.strokeStyle = `rgba(48,56,68,${r.alpha.toFixed(2)})`;
+    ctx.lineWidth = 1.1;
+    ctx.beginPath();
+    ctx.arc(r.x, r.y, r.r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // 5. 墨点飞溅
+  for (const p of particles) {
+    ctx.save();
+    ctx.globalAlpha = p.alpha * Math.max(0, p.life);
+    ctx.fillStyle = 'rgba(44,52,64,0.75)';
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // 6. 共享涟漪（鼠标经过）
+  for (const r of ripples) {
+    ctx.save();
+    ctx.globalAlpha = r.alpha;
+    ctx.strokeStyle = r.color + r.alpha.toFixed(2) + ')';
+    ctx.lineWidth = r.lw * 0.8;
+    ctx.beginPath();
+    ctx.arc(r.x, r.y, r.r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
 }
 
 function draw() {
@@ -636,6 +913,10 @@ function draw() {
     const g = ctx.createLinearGradient(0, 0, W, H);
     g.addColorStop(0, 'rgba(241,245,249,0.12)'); g.addColorStop(1, 'rgba(226,232,240,0.08)');
     ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  } else if (props.mode === 'aurora') {
+    drawAurora(ctx);
+  } else if (props.mode === 'ink') {
+    drawInk(ctx);
   } else if (props.mode === 'custom' && customImg) {
     ctx.globalAlpha = 0.18;
     const ir = customImg.width / customImg.height, cr = W / H;
@@ -672,6 +953,16 @@ function onMouseMove(x: number, y: number) {
   mx = x; my = y;
   if (props.mode === 'cute') trail.push({ x, y, t: 1 });
   if (props.mode === 'custom') { if (Math.random() < 0.15) addRipple(x, y); }
+  if (props.mode === 'aurora' && Math.random() < 0.12) {
+    particles.push({
+      x: x + rnd(-10, 10), y: y + rnd(-6, 6),
+      vx: rnd(-0.15, 0.15), vy: rnd(-0.5, -0.15),
+      size: rnd(1.2, 2.6), alpha: rnd(0.35, 0.7),
+      life: 1, decay: rnd(0.012, 0.024), temp: true,
+      color: Math.random() < 0.5 ? 'rgba(94,234,212,0.9)' : 'rgba(167,139,250,0.85)',
+    });
+  }
+  if (props.mode === 'ink' && Math.random() < 0.08) { addRipple(x, y); }
 }
 
 function clearPointer() {
@@ -741,6 +1032,47 @@ function onClick(x: number, y: number) {
     }
   }
   else if (mode === 'custom') { addRipple(x, y, true); }
+  else if (mode === 'aurora') {
+    addRipple(x, y, true);
+    // 被点亮的光带向四周溅出光点
+    for (let i = 0; i < 16; i++) {
+      const angle = rnd(0, Math.PI * 2);
+      const speed = rnd(0.8, 3.2);
+      particles.push({
+        x, y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - 0.4,
+        size: rnd(1.2, 3),
+        alpha: rnd(0.5, 0.9),
+        life: 1, decay: rnd(0.014, 0.03), temp: true,
+        color: Math.random() < 0.5 ? 'rgba(94,234,212,0.95)' : 'rgba(167,139,250,0.9)',
+      });
+    }
+  }
+  else if (mode === 'ink') {
+    ikRipples.push({ x, y, r: 2, alpha: 0.5 });
+    ikRipples.push({ x, y, r: 0, alpha: 0.34 });
+    // 墨点飞溅
+    for (let i = 0; i < 14; i++) {
+      const angle = rnd(0, Math.PI * 2);
+      const speed = rnd(0.6, 2.6);
+      particles.push({
+        x, y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        size: rnd(0.8, 2.4),
+        alpha: rnd(0.3, 0.7),
+        life: 1, decay: rnd(0.01, 0.022), temp: true,
+      });
+    }
+    // 近处山脊被“点亮”一点墨色
+    for (const ridge of ikRidges) {
+      for (const p of ridge.points) {
+        const dx = p.x - x, dy = p.y - y;
+        if (dx * dx + dy * dy < 9000) ridge.alpha = Math.min(0.24, ridge.alpha + 0.012);
+      }
+    }
+  }
 }
 
 defineExpose({ onMouseMove, onClick, clearPointer, resize });

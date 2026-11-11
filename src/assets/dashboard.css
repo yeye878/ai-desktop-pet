@@ -7005,3 +7005,515 @@ button {
 }
 
 
+
+/* ============================================================
+   对话背景（v3 重设计）
+   - 对话页：.dash-chat-stage 把 BgCanvas 固定在消息区背后
+   - 外观页：.dash-bg-stage 实时预览 + .dash-bg-card 预设卡片
+   ============================================================ */
+
+/* --- 对话页背景舞台 --- */
+.dash-chat-bgbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px 7px 12px;
+  border: 1px solid rgba(33, 48, 74, 0.08);
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.46)),
+    rgba(255, 255, 255, 0.28);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  min-height: 0;
+  flex-wrap: wrap;
+}
+
+.dash-chat-bgbar-label {
+  flex: none;
+  color: var(--dash-text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.dash-chat-bgbar-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.dash-chat-bgbar-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px 5px 6px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.56);
+  color: var(--dash-text-secondary);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: transform 140ms ease, border-color 140ms ease,
+    background 140ms ease, box-shadow 140ms ease, color 140ms ease;
+}
+
+.dash-chat-bgbar-chip:hover {
+  transform: translateY(-1px);
+  border-color: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.24);
+  color: var(--dash-text-primary);
+}
+
+.dash-chat-bgbar-chip.active {
+  border-color: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.5);
+  background: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.12);
+  color: var(--dash-text-primary);
+  box-shadow: 0 0 0 3px rgba(var(--pet-primary-rgb, 204, 112, 82), 0.1);
+}
+
+.dash-chat-bgbar-dot {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  box-shadow: 0 1px 3px rgba(24, 42, 72, 0.16);
+}
+
+.dash-chat-bgbar-import {
+  flex: none;
+  margin-left: auto;
+  padding: 5px 11px;
+  border: 1px dashed rgba(33, 48, 74, 0.16);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--dash-text-muted);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease, background 140ms ease;
+}
+
+.dash-chat-bgbar-import:hover {
+  border-color: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.42);
+  background: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.07);
+  color: var(--dash-text-primary);
+}
+
+.dash-chat-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-radius: 18px;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+/* 有背景时给舞台一层淡边框，让「这里是背景区」一眼可辨 */
+.dash-chat-stage.has-bg {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.28),
+    0 10px 30px rgba(24, 42, 72, 0.1);
+}
+
+.dash-chat-bg-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    radial-gradient(120% 90% at 50% 0%, rgba(255, 255, 255, 0.16), transparent 62%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.10), rgba(255, 255, 255, 0.04));
+}
+
+/* 深色系背景压暗一点，气泡与文字才有对比度 */
+.dash-chat-stage[data-chat-bg="scifi"] .dash-chat-bg-scrim,
+.dash-chat-stage[data-chat-bg="aurora"] .dash-chat-bg-scrim {
+  background:
+    radial-gradient(120% 90% at 50% 0%, rgba(255, 255, 255, 0.10), transparent 58%),
+    linear-gradient(180deg, rgba(4, 8, 20, 0.16), rgba(4, 8, 20, 0.32));
+}
+
+.dash-chat-stage[data-chat-bg="ink"] .dash-chat-bg-scrim {
+  background:
+    radial-gradient(120% 80% at 50% 0%, rgba(255, 255, 255, 0.4), transparent 62%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0.12));
+}
+
+/* 背景舞台里，消息区不再有自己那层白底，否则背景被盖掉 — 这就是之前换背景看不出来的原因 */
+.dash-chat-stage > .dash-chat-messages {
+  position: relative;
+  z-index: 2;
+  background: transparent;
+  border-color: rgba(255, 255, 255, 0.26);
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* 深色背景上，消息气泡改成带毛玻璃的浅色块，保证可读性 */
+.dash-chat-stage[data-chat-bg="scifi"] .dash-msg-bubble,
+.dash-chat-stage[data-chat-bg="aurora"] .dash-msg-bubble {
+  background: rgba(12, 20, 38, 0.52);
+  border-color: rgba(255, 255, 255, 0.14);
+  box-shadow: 0 6px 18px rgba(3, 8, 20, 0.32);
+  backdrop-filter: blur(6px) saturate(1.1);
+  -webkit-backdrop-filter: blur(6px) saturate(1.1);
+}
+
+.dash-chat-stage[data-chat-bg="scifi"] .dash-msg-wrapper.assistant .dash-msg-body,
+.dash-chat-stage[data-chat-bg="aurora"] .dash-msg-wrapper.assistant .dash-msg-body,
+.dash-chat-stage[data-chat-bg="scifi"] .dash-msg-bubble,
+.dash-chat-stage[data-chat-bg="aurora"] .dash-msg-bubble {
+  color: rgba(233, 242, 255, 0.94);
+}
+
+.dash-chat-stage[data-chat-bg="scifi"] .dash-msg-wrapper.user .dash-msg-bubble {
+  background: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.62);
+}
+
+.dash-chat-stage[data-chat-bg="ink"] .dash-msg-bubble {
+  background: rgba(255, 253, 247, 0.82);
+  border-color: rgba(46, 54, 66, 0.1);
+}
+
+/* 切换反馈提示 */
+.dash-chat-bg-hint {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px 7px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  background: rgba(18, 26, 44, 0.72);
+  color: #f4f8ff;
+  font-size: 11.5px;
+  font-weight: 660;
+  letter-spacing: 0.01em;
+  box-shadow: 0 10px 26px rgba(6, 12, 26, 0.3);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  pointer-events: none;
+}
+
+.dash-chat-bg-hint-dot {
+  width: 16px;
+  height: 16px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+}
+
+.dash-chat-stage.bg-switching {
+  animation: dash-bg-swap 620ms ease;
+}
+
+@keyframes dash-bg-swap {
+  0% { filter: brightness(1.06) saturate(1.05); }
+  60% { filter: brightness(1.02); }
+  100% { filter: none; }
+}
+
+.bg-hint-enter-active,
+.bg-hint-leave-active {
+  transition: opacity 220ms ease, transform 220ms ease;
+}
+
+.bg-hint-enter-from,
+.bg-hint-leave-to {
+  opacity: 0;
+  transform: translateY(-6px) scale(0.96);
+}
+
+/* --- 外观页：实时预览 --- */
+.dash-bg-stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.dash-bg-stage-frame {
+  position: relative;
+  min-height: 150px;
+  border-radius: 16px;
+  overflow: hidden;
+  background: rgba(244, 240, 232, 0.72);
+  border: 1px solid rgba(33, 48, 74, 0.1);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  isolation: isolate;
+}
+
+.dash-bg-stage-frame > .bg-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.dash-bg-stage-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dash-text-muted);
+  font-size: 12px;
+  background: repeating-linear-gradient(
+    45deg,
+    rgba(148, 163, 184, 0.1) 0 10px,
+    rgba(203, 213, 225, 0.08) 10px 20px
+  );
+}
+
+.dash-bg-stage-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.04));
+}
+
+.dash-bg-stage-frame[data-bg="scifi"] .dash-bg-stage-scrim,
+.dash-bg-stage-frame[data-bg="aurora"] .dash-bg-stage-scrim {
+  background: linear-gradient(180deg, rgba(4, 8, 20, 0.12), rgba(4, 8, 20, 0.26));
+}
+
+.dash-bg-stage-bubbles {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px;
+  pointer-events: none;
+}
+
+.dash-bg-stage-bubble {
+  max-width: 76%;
+  padding: 7px 11px;
+  border-radius: 12px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: #26313f;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 6px 16px rgba(24, 42, 72, 0.12);
+}
+
+.dash-bg-stage-bubble.user {
+  align-self: flex-end;
+  color: #fffaf4;
+  background: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.9);
+}
+
+.dash-bg-stage-frame[data-bg="scifi"] .dash-bg-stage-bubble,
+.dash-bg-stage-frame[data-bg="aurora"] .dash-bg-stage-bubble {
+  color: rgba(233, 242, 255, 0.95);
+  background: rgba(12, 20, 38, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.dash-bg-stage-tag {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 4px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--dash-text-secondary);
+  font-size: 10.5px;
+  font-weight: 700;
+  box-shadow: 0 4px 12px rgba(24, 42, 72, 0.12);
+}
+
+.dash-bg-stage-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+}
+
+.dash-bg-stage-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dash-bg-stage-name {
+  color: var(--dash-text-primary);
+  font-size: 15px;
+  font-weight: 780;
+}
+
+.dash-bg-stage-desc {
+  color: var(--dash-text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.dash-bg-stage-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.dash-bg-stage-actions .dash-btn {
+  min-height: 32px;
+  padding: 6px 13px;
+  font-size: 12px;
+}
+
+/* --- 外观页：预设卡片 --- */
+.dash-bg-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 12px;
+}
+
+.dash-bg-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 9px;
+  border: 1px solid rgba(33, 48, 74, 0.1);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.6);
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  transition: transform 160ms ease, border-color 160ms ease,
+    box-shadow 160ms ease, background 160ms ease;
+}
+
+.dash-bg-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.32);
+  box-shadow: 0 12px 26px rgba(24, 42, 72, 0.1);
+}
+
+.dash-bg-card.active {
+  border-color: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.62);
+  background: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.08);
+  box-shadow: 0 0 0 3px rgba(var(--pet-primary-rgb, 204, 112, 82), 0.12);
+}
+
+.dash-bg-card-thumb {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 62px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  box-shadow: inset 0 0 22px rgba(255, 255, 255, 0.22);
+}
+
+.dash-bg-card-thumb-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 19px;
+  font-weight: 800;
+  text-shadow: 0 2px 8px rgba(6, 12, 26, 0.4);
+}
+
+.dash-bg-card-thumb-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.dash-bg-card.custom .dash-bg-card-thumb-icon {
+  color: var(--dash-text-muted);
+  text-shadow: none;
+  font-size: 22px;
+}
+
+.dash-bg-card-check {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.95);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  box-shadow: 0 2px 8px rgba(24, 42, 72, 0.24);
+}
+
+.dash-bg-card-name {
+  color: var(--dash-text-primary);
+  font-size: 12.5px;
+  font-weight: 740;
+}
+
+.dash-bg-card-desc {
+  color: var(--dash-text-muted);
+  font-size: 10.5px;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.dash-card-title-note {
+  margin-left: auto;
+  color: var(--dash-text-muted);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+/* 窄窗：预览改成上下排，卡片两列 */
+@media (max-width: 1180px) {
+  .dash-bg-stage {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .dash-bg-stage-frame {
+    min-height: 132px;
+  }
+}
+
+@media (max-width: 720px) {
+  .dash-bg-cards {
+    grid-template-columns: repeat(auto-fill, minmax(116px, 1fr));
+  }
+
+  .dash-chat-bgbar {
+    padding: 6px 8px;
+  }
+
+  .dash-chat-bgbar-import {
+    margin-left: 0;
+  }
+}

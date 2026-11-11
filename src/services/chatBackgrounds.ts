@@ -1,0 +1,188 @@
+/**
+ * 对话背景：单一事实来源。
+ *
+ * 背景预设以前散落在 Dashboard / ChatBubble / Settings 三个组件里各自硬编码，
+ * 于是「个性外观」里换了背景，对话界面看不出来（Dashboard 根本没有渲染 BgCanvas），
+ * 三个窗口的图标/名称也各写一份。这里把它们收敛成一份清单：
+ * - 选择存 localStorage（沿用旧 key，老用户的设置不会丢）
+ * - 卡片缩略图用同一份 swatch 渐变，保证「选中的样子」和「看到的缩略图」一致
+ * - 新增预设只要在这里加一项，三处 UI 与 BgCanvas 会自动跟上
+ */
+
+export type ChatBackgroundId =
+  | "none"
+  | "aurora"
+  | "ink"
+  | "cute"
+  | "scifi"
+  | "minimal"
+  | "custom";
+
+export interface ChatBackgroundPreset {
+  id: ChatBackgroundId;
+  /** 卡片上的中文名 */
+  name: string;
+  /** 一行说明，解释这层背景「长什么样、适合什么场景」 */
+  description: string;
+  /** 卡片角标图标 */
+  icon: string;
+  /** 卡片/弹层里的小缩略图（纯 CSS，和 BgCanvas 的调色板保持一致） */
+  swatch: string;
+  /** 背景层整体不透明度，深色背景要更实一点才看得出效果 */
+  opacity: number;
+}
+
+export const CHAT_BG_STORAGE_KEY = "ai-desktop-pet.chat-bg";
+export const CHAT_BG_CUSTOM_STORAGE_KEY = "ai-desktop-pet.chat-bg-custom";
+/** 同一窗口内的即时同步（跨 webview 由 storage 事件负责） */
+export const CHAT_BG_CHANGED_EVENT = "chat-background-changed";
+
+export const CHAT_BACKGROUNDS: ChatBackgroundPreset[] = [
+  {
+    id: "none",
+    name: "无",
+    description: "保留原本的纸张质感，不叠加动态背景",
+    icon: "∅",
+    swatch:
+      "linear-gradient(150deg, rgba(255,255,255,0.92), rgba(244,240,232,0.88))",
+    opacity: 1,
+  },
+  {
+    id: "aurora",
+    name: "极光",
+    description: "青绿与紫罗兰的光带缓慢漂移，安静但有呼吸感",
+    icon: "☾",
+    swatch:
+      "radial-gradient(120% 90% at 18% 12%, rgba(56,214,186,0.55), transparent 60%)," +
+      "radial-gradient(110% 85% at 82% 22%, rgba(129,140,248,0.5), transparent 62%)," +
+      "radial-gradient(120% 100% at 55% 95%, rgba(45,212,191,0.35), transparent 68%)," +
+      "linear-gradient(160deg, #06202b, #071a2b 48%, #0a1226)",
+    opacity: 0.92,
+  },
+  {
+    id: "ink",
+    name: "水墨",
+    description: "米色宣纸上的淡墨远山与流动雾霭，最不打扰阅读",
+    icon: "墨",
+    swatch:
+      "radial-gradient(90% 70% at 22% 88%, rgba(38,44,54,0.42), transparent 62%)," +
+      "radial-gradient(80% 60% at 74% 96%, rgba(58,66,78,0.3), transparent 66%)," +
+      "radial-gradient(120% 90% at 60% 8%, rgba(255,255,255,0.7), transparent 70%)," +
+      "linear-gradient(168deg, #f6f2e8, #eee8dc 52%, #e4dccd)",
+    opacity: 0.95,
+  },
+  {
+    id: "cute",
+    name: "可爱",
+    description: "樱花飘落与糖果色气泡，点击还会撒出爱心",
+    icon: "🐾",
+    swatch:
+      "radial-gradient(100% 80% at 20% 20%, rgba(255,183,197,0.75), transparent 62%)," +
+      "radial-gradient(90% 70% at 80% 30%, rgba(255,214,232,0.7), transparent 60%)," +
+      "radial-gradient(120% 90% at 50% 100%, rgba(192,132,252,0.32), transparent 66%)," +
+      "linear-gradient(165deg, #fff2f6, #ffe6f0 55%, #f7e9ff)",
+    opacity: 0.95,
+  },
+  {
+    id: "scifi",
+    name: "科幻",
+    description: "星云、六边形网格与数据包脉冲，会跟随桌宠状态变化",
+    icon: "🚀",
+    swatch:
+      "radial-gradient(90% 70% at 26% 26%, rgba(56,189,248,0.5), transparent 62%)," +
+      "radial-gradient(85% 65% at 76% 72%, rgba(167,139,250,0.45), transparent 64%)," +
+      "repeating-linear-gradient(0deg, rgba(56,189,248,0.10) 0 1px, transparent 1px 9px)," +
+      "linear-gradient(160deg, #040618, #070a24 55%, #030514)",
+    opacity: 0.98,
+  },
+  {
+    id: "minimal",
+    name: "简洁",
+    description: "会跟随鼠标亮起的点阵星图，克制又灵巧",
+    icon: "○",
+    swatch:
+      "radial-gradient(80% 60% at 30% 30%, rgba(129,140,248,0.22), transparent 62%)," +
+      "repeating-linear-gradient(90deg, rgba(100,116,139,0.16) 0 1px, transparent 1px 12px)," +
+      "repeating-linear-gradient(0deg, rgba(100,116,139,0.16) 0 1px, transparent 1px 12px)," +
+      "linear-gradient(160deg, #f7f9fc, #eef2f7)",
+    opacity: 0.9,
+  },
+  {
+    id: "custom",
+    name: "自定义",
+    description: "用你自己的图片做背景，会柔和地铺满整个对话区",
+    icon: "📷",
+    swatch:
+      "repeating-linear-gradient(45deg, rgba(148,163,184,0.22) 0 8px, rgba(203,213,225,0.18) 8px 16px)",
+    opacity: 1,
+  },
+];
+
+export const CHAT_BACKGROUND_MAP: Record<string, ChatBackgroundPreset> =
+  Object.fromEntries(CHAT_BACKGROUNDS.map((preset) => [preset.id, preset]));
+
+/** 在「个性外观」里展示的预设（自定义单独占一格，不做成普通预设） */
+export const SELECTABLE_CHAT_BACKGROUNDS = CHAT_BACKGROUNDS.filter(
+  (preset) => preset.id !== "custom",
+);
+
+export function isChatBackgroundId(value: string | null | undefined): value is ChatBackgroundId {
+  return Boolean(value && value in CHAT_BACKGROUND_MAP);
+}
+
+export function normalizeChatBackgroundId(value: string | null | undefined): ChatBackgroundId {
+  return isChatBackgroundId(value) ? value : "none";
+}
+
+export function chatBackgroundPreset(value: string | null | undefined): ChatBackgroundPreset {
+  return CHAT_BACKGROUND_MAP[normalizeChatBackgroundId(value)];
+}
+
+export function readChatBackground(): ChatBackgroundId {
+  try {
+    return normalizeChatBackgroundId(localStorage.getItem(CHAT_BG_STORAGE_KEY));
+  } catch {
+    return "none";
+  }
+}
+
+export function readCustomChatBackground(): string {
+  try {
+    return localStorage.getItem(CHAT_BG_CUSTOM_STORAGE_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * 写入背景选择并广播。
+ * 同一窗口靠自定义事件、跨 webview 靠 localStorage 的 storage 事件（ChatBubble 已在监听）。
+ */
+export function applyChatBackground(id: ChatBackgroundId) {
+  try {
+    localStorage.setItem(CHAT_BG_STORAGE_KEY, id);
+  } catch {
+    /* 隐私模式下写入会抛错，界面仍应即时生效 */
+  }
+  window.dispatchEvent(
+    new CustomEvent(CHAT_BG_CHANGED_EVENT, { detail: { id } }),
+  );
+}
+
+export function applyCustomChatBackground(dataUrl: string) {
+  try {
+    localStorage.setItem(CHAT_BG_CUSTOM_STORAGE_KEY, dataUrl);
+  } catch {
+    /* 图片过大时 localStorage 会超限，交给调用方提示 */
+  }
+  applyChatBackground("custom");
+}
+
+export function clearCustomChatBackground() {
+  try {
+    localStorage.removeItem(CHAT_BG_CUSTOM_STORAGE_KEY);
+  } catch {
+    /* ignore */
+  }
+  applyChatBackground("none");
+}

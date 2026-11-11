@@ -21,6 +21,17 @@ import {
   setActiveCustomPixelPetAsset,
 } from "../services/customPixelPetAssets";
 import {
+  SELECTABLE_CHAT_BACKGROUNDS,
+  applyChatBackground,
+  applyCustomChatBackground,
+  chatBackgroundPreset,
+  clearCustomChatBackground,
+  normalizeChatBackgroundId,
+  readChatBackground,
+  readCustomChatBackground,
+  type ChatBackgroundId,
+} from "../services/chatBackgrounds";
+import {
   DEFAULT_VOICE_SETTINGS,
   getAvailableVoices,
   parseVoiceSettings,
@@ -109,9 +120,12 @@ const BG_KEY = "ai-desktop-pet.chat-bg";
 const CUSTOM_BG_KEY = "ai-desktop-pet.chat-bg-custom";
 const VOICE_SETTINGS_KEY = "voice_settings";
 const TTS_SETTINGS_KEY = "tts_settings";
-const chatBg = ref(localStorage.getItem(BG_KEY) || "none");
-const customBgImage = ref(localStorage.getItem(CUSTOM_BG_KEY) || "");
+const chatBg = ref<ChatBackgroundId>(readChatBackground());
+const customBgImage = ref(readCustomChatBackground());
 const bgInputRef = ref<HTMLInputElement | null>(null);
+/** 预设清单与「个性外观」页共用，避免两处各写一份图标和名字 */
+const chatBackgroundOptions = SELECTABLE_CHAT_BACKGROUNDS;
+const currentChatBgPreset = computed(() => chatBackgroundPreset(chatBg.value));
 const voiceSettings = ref<VoiceSettings>({ ...DEFAULT_VOICE_SETTINGS });
 const availableVoices = ref<SpeechSynthesisVoice[]>([]);
 const ttsSettings = ref<TtsSettings>({ ...DEFAULT_TTS_SETTINGS });
@@ -856,9 +870,9 @@ function readAvatarFile(file: File): Promise<string> {
   });
 }
 
-function selectBg(bg: string) {
+function selectBg(bg: ChatBackgroundId) {
   chatBg.value = bg;
-  localStorage.setItem(BG_KEY, bg);
+  applyChatBackground(bg);
 }
 
 function chooseBgImage() {
@@ -874,17 +888,25 @@ function onBgImageSelected(event: Event) {
   reader.onload = () => {
     const url = String(reader.result || "");
     customBgImage.value = url;
-    localStorage.setItem(CUSTOM_BG_KEY, url);
+    applyCustomChatBackground(url);
     chatBg.value = "custom";
-    localStorage.setItem(BG_KEY, "custom");
   };
   reader.readAsDataURL(file);
 }
 
 function clearCustomBg() {
   customBgImage.value = "";
-  localStorage.removeItem(CUSTOM_BG_KEY);
-  selectBg("none");
+  clearCustomChatBackground();
+  chatBg.value = "none";
+}
+
+/** 外部（个性外观页 / 对话页快捷条）改了背景时同步过来 */
+function onChatBgStorageChange(event: StorageEvent) {
+  if (event.key === BG_KEY) {
+    chatBg.value = normalizeChatBackgroundId(event.newValue);
+  } else if (event.key === CUSTOM_BG_KEY) {
+    customBgImage.value = event.newValue || "";
+  }
 }
 
 async function selectPersonality(personality: string) {
@@ -970,6 +992,7 @@ const activeTab = ref("appearance");
 let unlistenSwitchTab: UnlistenFn | null = null;
 
 onMounted(async () => {
+  window.addEventListener("storage", onChatBgStorageChange);
   loadSystemInfo();
   loadCurrentModel();
   loadCurrentSkin();
@@ -994,6 +1017,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  window.removeEventListener("storage", onChatBgStorageChange);
   unlistenSwitchTab?.();
 });
 </script>
@@ -1105,22 +1129,19 @@ onUnmounted(() => {
         <!-- 对话背景 -->
         <div class="section">
           <h3>&#x1F5BC;&#xFE0F; 对话背景</h3>
+          <p class="setting-desc bg-section-desc">选中的背景会立刻出现在对话互动页的消息区背后</p>
           <div class="bg-grid">
-            <button :class="['bg-opt', { active: chatBg === 'none' }]" @click="selectBg('none')">
-              <div class="bg-opt-preview bg-prev-none">&#x2716;</div>
-              <span>无</span>
-            </button>
-            <button :class="['bg-opt', { active: chatBg === 'cute' }]" @click="selectBg('cute')">
-              <div class="bg-opt-preview bg-prev-cute">&#x1F43E;</div>
-              <span>可爱</span>
-            </button>
-            <button :class="['bg-opt', { active: chatBg === 'scifi' }]" @click="selectBg('scifi')">
-              <div class="bg-opt-preview bg-prev-scifi">&#x1F680;</div>
-              <span>科幻</span>
-            </button>
-            <button :class="['bg-opt', { active: chatBg === 'minimal' }]" @click="selectBg('minimal')">
-              <div class="bg-opt-preview bg-prev-minimal">&#x25CB;</div>
-              <span>简洁</span>
+            <button
+              v-for="preset in chatBackgroundOptions"
+              :key="preset.id"
+              :class="['bg-opt', { active: chatBg === preset.id }]"
+              :title="preset.description"
+              @click="selectBg(preset.id)"
+            >
+              <div class="bg-opt-preview" :style="{ background: preset.swatch }">
+                <span>{{ preset.icon }}</span>
+              </div>
+              <span>{{ preset.name }}</span>
             </button>
             <button :class="['bg-opt', { active: chatBg === 'custom' }]" @click="chooseBgImage">
               <div class="bg-opt-preview bg-prev-custom">
@@ -1134,6 +1155,7 @@ onUnmounted(() => {
               <span>清除</span>
             </button>
           </div>
+          <p class="setting-desc bg-current-desc">当前：{{ currentChatBgPreset.name }} · {{ currentChatBgPreset.description }}</p>
           <input ref="bgInputRef" class="avatar-input" type="file" accept="image/*" @change="onBgImageSelected" />
         </div>
 
@@ -2904,6 +2926,31 @@ onUnmounted(() => {
   height: 100%;
   object-fit: cover;
   border-radius: 8px;
+}
+
+.bg-section-desc,
+.bg-current-desc {
+  margin: 0 0 8px;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.bg-current-desc {
+  margin: 8px 0 0;
+  color: var(--pet-primary, #ff6b6b);
+  font-weight: 600;
+}
+
+.bg-opt-preview > span {
+  color: #fff;
+  font-size: 17px;
+  font-weight: 800;
+  text-shadow: 0 2px 8px rgba(6, 12, 26, 0.45);
+}
+
+.bg-opt.active .bg-opt-preview {
+  transform: scale(1.04);
 }
 
 .stat-value {

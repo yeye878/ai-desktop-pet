@@ -25,6 +25,22 @@ import CollaborationBar from "./CollaborationBar.vue";
 import type { CollaborationReply, CollaborationState } from "../services/collaboration";
 import PetCanvas from "./PetCanvas.vue";
 import PetStage from "./PetStage.vue";
+import BgCanvas from "./BgCanvas.vue";
+import {
+  CHAT_BACKGROUNDS,
+  CHAT_BG_CHANGED_EVENT,
+  CHAT_BG_STORAGE_KEY,
+  CHAT_BG_CUSTOM_STORAGE_KEY,
+  SELECTABLE_CHAT_BACKGROUNDS,
+  applyChatBackground,
+  applyCustomChatBackground,
+  chatBackgroundPreset,
+  clearCustomChatBackground,
+  normalizeChatBackgroundId,
+  readChatBackground,
+  readCustomChatBackground,
+  type ChatBackgroundId,
+} from "../services/chatBackgrounds";
 import { usePetStore, THEMES, FONT_COLORS, resolveSkinId, type PetState } from "../stores/pet";
 import { useSkillsStore, type Skill } from "../stores/skills";
 import { useChatStore, messageAgentFromPayload, type AiFinishedPayload, type Message, type MessageAgent, type QuotedMessage, type ToolEventItem } from "../stores/chat";
@@ -414,14 +430,19 @@ const currentFontColor = ref("");
 const avatarInputRef = ref<HTMLInputElement | null>(null);
 
 // === 对话背景 ===
-const BG_KEY = "ai-desktop-pet.chat-bg";
-const CUSTOM_BG_KEY = "ai-desktop-pet.chat-bg-custom";
 const VOICE_SETTINGS_KEY = "voice_settings";
 const TTS_SETTINGS_KEY = "tts_settings";
 const COMPUTER_USE_ENABLED_KEY = "computer_use_enabled";
-const chatBg = ref(localStorage.getItem(BG_KEY) || "none");
-const customBgImage = ref(localStorage.getItem(CUSTOM_BG_KEY) || "");
+const chatBg = ref<ChatBackgroundId>(readChatBackground());
+const customBgImage = ref(readCustomChatBackground());
 const bgInputRef = ref<HTMLInputElement | null>(null);
+const dashBgCanvasRef = ref<InstanceType<typeof BgCanvas> | null>(null);
+const chatBgSwitching = ref(false);
+/** 「个性外观」卡片 + 对话页快捷条共用这份预设清单 */
+const chatBackgroundOptions = SELECTABLE_CHAT_BACKGROUNDS;
+const chatBackgroundCards = CHAT_BACKGROUNDS;
+const currentChatBgPreset = computed(() => chatBackgroundPreset(chatBg.value));
+const hasCustomBg = computed(() => Boolean(customBgImage.value));
 const computerUseEnabled = ref(false);
 const computerUseSaved = ref(false);
 
@@ -1574,9 +1595,27 @@ function readFile(file: File): Promise<string> {
   });
 }
 
-function selectBg(bg: string) {
+/**
+ * 切换对话背景：走共享服务写入 + 广播，本窗口（外观页 + 对话页快捷条）
+ * 和其他窗口（浮动聊天窗）一起响应，同时给一个短暂的“切换中”提示条。
+ */
+function selectBg(bg: ChatBackgroundId) {
   chatBg.value = bg;
-  localStorage.setItem(BG_KEY, bg);
+  applyChatBackground(bg);
+  flashBgSwitched();
+}
+
+let bgFlashTimer: ReturnType<typeof setTimeout> | null = null;
+const bgSwitchHint = ref("");
+function flashBgSwitched() {
+  bgSwitchHint.value = chatBackgroundPreset(chatBg.value).name;
+  chatBgSwitching.value = true;
+  if (bgFlashTimer) clearTimeout(bgFlashTimer);
+  bgFlashTimer = setTimeout(() => {
+    chatBgSwitching.value = false;
+    bgSwitchHint.value = "";
+    bgFlashTimer = null;
+  }, 1600);
 }
 
 function chooseBgImage() { bgInputRef.value?.click(); }
@@ -1590,18 +1629,48 @@ function onBgImageSelected(event: Event) {
   reader.onload = () => {
     const url = String(reader.result || "");
     customBgImage.value = url;
-    localStorage.setItem(CUSTOM_BG_KEY, url);
+    applyCustomChatBackground(url);
     chatBg.value = "custom";
-    localStorage.setItem(BG_KEY, "custom");
+    flashBgSwitched();
   };
   reader.readAsDataURL(file);
 }
 
 function clearCustomBg() {
   customBgImage.value = "";
-  localStorage.removeItem(CUSTOM_BG_KEY);
-  selectBg("none");
+  clearCustomChatBackground();
+  chatBg.value = "none";
+  flashBgSwitched();
 }
+
+/**
+ * 别的窗口改了背景（storage 事件）或本窗口广播了背景变更时，
+ * 同步本地 ref，让外观页预览、对话页舞台和快捷条一起更新。
+ */
+function applyIncomingChatBg(next: string | null, custom: string | null) {
+  const normalized = normalizeChatBackgroundId(next);
+  const changed = normalized !== chatBg.value;
+  chatBg.value = normalized;
+  if (custom !== null) customBgImage.value = custom;
+  if (changed) flashBgSwitched();
+  dashBgCanvasRef.value?.clearPointer();
+}
+
+function onChatBgStorageChange(event: StorageEvent) {
+  if (event.key === CHAT_BG_STORAGE_KEY) {
+    applyIncomingChatBg(event.newValue, null);
+  } else if (event.key === CHAT_BG_CUSTOM_STORAGE_KEY) {
+    customBgImage.value = event.newValue || "";
+  }
+}
+
+function onChatBgLocalChange(event: CustomEvent<{ id?: string }>) {
+  const next = event.detail?.id ?? readChatBackground();
+  if (next === chatBg.value) return;
+  applyIncomingChatBg(next, readCustomChatBackground());
+}
+
+/** 对话页快捷条：点一下就切，切换后立刻能在消息区看到变化 */
 
 async function selectPersonality(personality: string) {
   try { await invoke("set_personality", { personality }); currentPersonality.value = personality; }
@@ -1941,6 +2010,30 @@ function trackChatScroll() {
 function jumpToLatest() {
   followingActivity.value = true;
   scrollDashChatToBottom();
+}
+
+// === 对话背景交互：指针位置交给背景 canvas，让它跟着鼠标做扰流/点亮 ===
+function dashBgPoint(event: MouseEvent) {
+  const stage = event.currentTarget as HTMLElement | null;
+  const canvas = dashBgCanvasRef.value;
+  if (!stage || !canvas) return null;
+  const rect = stage.getBoundingClientRect();
+  return {
+    canvas,
+    x: event.clientX - rect.left,
+    y: event.clientY - rect.top,
+  };
+}
+function onDashBgMouseMove(event: MouseEvent) {
+  const point = dashBgPoint(event);
+  if (point) point.canvas.onMouseMove(point.x, point.y);
+}
+function clearDashBgPointer() {
+  dashBgCanvasRef.value?.clearPointer();
+}
+function onDashBgClick(event: MouseEvent) {
+  const point = dashBgPoint(event);
+  if (point) point.canvas.onClick(point.x, point.y);
 }
 let dashChatScrollFrame: number | null = null;
 let dashChatScrollTimers: ReturnType<typeof setTimeout>[] = [];
@@ -3439,6 +3532,9 @@ function clearLoadingTimeout() {
 }
 
 onMounted(async () => {
+  // 背景在别的窗口（浮动聊天窗 / 设置窗）被改掉时，这里立刻跟上
+  window.addEventListener("storage", onChatBgStorageChange);
+  window.addEventListener(CHAT_BG_CHANGED_EVENT, onChatBgLocalChange as EventListener);
   stopToolConfirm = subscribePendingInteraction("tool", pendingConfirm);
   stopQuestion = subscribePendingInteraction("question", pendingQuestion);
   stopCollaboration = subscribeDashboardCollaboration();
@@ -3769,6 +3865,9 @@ onMounted(async () => {
 
 onUnmounted(() => {
   clearLoadingTimeout();
+  window.removeEventListener("storage", onChatBgStorageChange);
+  window.removeEventListener(CHAT_BG_CHANGED_EVENT, onChatBgLocalChange as EventListener);
+  if (bgFlashTimer) clearTimeout(bgFlashTimer);
   stopCollaboration?.();
   agentsStore.stopSync();
   sessions.stopSync();
@@ -4190,6 +4289,58 @@ ttsPlayer.stop();
                 <button type="button" class="weather-refresh-btn" title="重试" @click="refreshWeather">↻</button>
               </template>
             </div>
+            <!-- 背景快捷切换条：不用进设置就能换，切换后消息区立刻可见 -->
+            <div class="dash-chat-bgbar">
+              <span class="dash-chat-bgbar-label">对话背景</span>
+              <div class="dash-chat-bgbar-chips">
+                <button
+                  v-for="preset in chatBackgroundOptions"
+                  :key="preset.id"
+                  type="button"
+                  :class="['dash-chat-bgbar-chip', { active: chatBg === preset.id }]"
+                  :title="preset.description"
+                  @click="selectBg(preset.id)"
+                >
+                  <span class="dash-chat-bgbar-dot" :style="{ background: preset.swatch }"></span>
+                  <span>{{ preset.name }}</span>
+                </button>
+                <button
+                  v-if="hasCustomBg"
+                  type="button"
+                  :class="['dash-chat-bgbar-chip', { active: chatBg === 'custom' }]"
+                  title="使用你的自定义图片"
+                  @click="selectBg('custom')"
+                >
+                  <span class="dash-chat-bgbar-dot" :style="{ backgroundImage: `url(${customBgImage})`, backgroundSize: 'cover' }"></span>
+                  <span>自定义</span>
+                </button>
+              </div>
+              <button type="button" class="dash-chat-bgbar-import" title="从本地选择背景图片" @click="chooseBgImage">导入图片</button>
+              <input ref="bgInputRef" class="hidden-input" type="file" accept="image/*" @change="onBgImageSelected" />
+            </div>
+            <!-- 对话背景舞台：canvas 固定在消息区背后，不随滚动一起走 -->
+            <div
+              :class="['dash-chat-stage', chatBg !== 'none' ? 'has-bg' : '', chatBgSwitching ? 'bg-switching' : '']"
+              :data-chat-bg="chatBg"
+              @mousemove.passive="onDashBgMouseMove"
+              @mouseleave="clearDashBgPointer"
+              @click.self="onDashBgClick"
+            >
+              <BgCanvas
+                v-if="chatBg !== 'none'"
+                ref="dashBgCanvasRef"
+                :mode="chatBg"
+                :custom-image="customBgImage"
+              />
+              <!-- 背景层蒙版：深色背景要压一点，保证气泡文字对比度 -->
+              <div v-if="chatBg !== 'none'" class="dash-chat-bg-scrim" aria-hidden="true"></div>
+              <!-- 切换反馈：换背景时右上角浮出当前背景名 -->
+              <Transition name="bg-hint">
+                <div v-if="bgSwitchHint" class="dash-chat-bg-hint">
+                  <span class="dash-chat-bg-hint-dot" :style="{ background: currentChatBgPreset.swatch }"></span>
+                  <span>对话背景 · {{ bgSwitchHint }}</span>
+                </div>
+              </Transition>
             <div class="dash-chat-messages" ref="dashChatMessagesRef" @click="closeDashMessageMenu" @scroll.passive="trackChatScroll">
               <!-- Glassmorphism drop zone overlay -->
               <div v-if="isFileOver" class="dash-drop-overlay">
@@ -4261,6 +4412,7 @@ ttsPlayer.stop();
               <button v-if="!followingActivity" type="button" class="dash-scroll-fab" title="回到最新消息" aria-label="回到最新消息" @click="jumpToLatest">
                 <ArrowDown :size="16" />
               </button>
+            </div>
             </div>
 
             <div class="dash-chat-composer">
@@ -4979,35 +5131,69 @@ ttsPlayer.stop();
             </div>
 
             <!-- 对话背景 -->
-              <div class="dash-card film-strip-panel bg-panel">
-              <div class="dash-card-title"><span class="card-icon">▧</span> 对话背景</div>
-              <div class="dash-bg-grid">
-                <button :class="['dash-bg-opt', { active: chatBg === 'none' }]" @click="selectBg('none')">
-                  <div class="dash-bg-preview">✖</div>
-                  <span class="dash-bg-label">无</span>
-                </button>
-                <button :class="['dash-bg-opt', { active: chatBg === 'cute' }]" @click="selectBg('cute')">
-                  <div class="dash-bg-preview">🐾</div>
-                  <span class="dash-bg-label">可爱</span>
-                </button>
-                <button :class="['dash-bg-opt', { active: chatBg === 'scifi' }]" @click="selectBg('scifi')">
-                  <div class="dash-bg-preview">🚀</div>
-                  <span class="dash-bg-label">科幻</span>
-                </button>
-                <button :class="['dash-bg-opt', { active: chatBg === 'minimal' }]" @click="selectBg('minimal')">
-                  <div class="dash-bg-preview">○</div>
-                  <span class="dash-bg-label">简洁</span>
-                </button>
-                <button :class="['dash-bg-opt', { active: chatBg === 'custom' }]" @click="chooseBgImage">
-                  <div class="dash-bg-preview">
-                    <img v-if="customBgImage" :src="customBgImage" alt="" />
-                    <span v-else>📷</span>
+            <div class="dash-card film-strip-panel bg-panel">
+              <div class="dash-card-title">
+                <span class="card-icon">▧</span> 对话背景
+                <span class="dash-card-title-note">改动会立刻同步到「对话互动」页面</span>
+              </div>
+
+              <!-- 实时预览：这里跑的就是对话页同一份 BgCanvas，所见即所得 -->
+              <div class="dash-bg-stage">
+                <div class="dash-bg-stage-frame" :data-bg="chatBg">
+                  <BgCanvas
+                    v-if="chatBg !== 'none'"
+                    :mode="chatBg"
+                    :custom-image="customBgImage"
+                  />
+                  <div v-if="chatBg === 'none'" class="dash-bg-stage-empty">
+                    当前未启用动态背景
                   </div>
-                  <span class="dash-bg-label">自定义</span>
-                </button>
-                <button v-if="chatBg === 'custom' && customBgImage" class="dash-bg-opt" @click="clearCustomBg">
-                  <div class="dash-bg-preview">🗑️</div>
-                  <span class="dash-bg-label">清除</span>
+                  <div v-else class="dash-bg-stage-scrim" aria-hidden="true"></div>
+                  <div class="dash-bg-stage-bubbles" aria-hidden="true">
+                    <span class="dash-bg-stage-bubble user">晚上一起写周报？</span>
+                    <span class="dash-bg-stage-bubble bot">好呀，我先把要点列出来 ✨</span>
+                  </div>
+                  <div class="dash-bg-stage-tag">
+                    <span class="dash-bg-stage-dot" :style="{ background: currentChatBgPreset.swatch }"></span>
+                    {{ currentChatBgPreset.name }}
+                  </div>
+                </div>
+                <div class="dash-bg-stage-meta">
+                  <div class="dash-bg-stage-name">{{ currentChatBgPreset.name }}</div>
+                  <div class="dash-bg-stage-desc">{{ currentChatBgPreset.description }}</div>
+                  <div class="dash-bg-stage-actions">
+                    <button type="button" class="dash-btn primary" @click="chooseBgImage">导入图片</button>
+                    <button type="button" class="dash-btn" :disabled="chatBg === 'none'" @click="selectBg('none')">关闭背景</button>
+                    <button
+                      v-if="hasCustomBg"
+                      type="button"
+                      class="dash-btn danger"
+                      @click="clearCustomBg"
+                    >清除自定义图片</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 预设卡片：真实缩略色板 + 名称 + 一句话说明 -->
+              <div class="dash-bg-cards">
+                <button
+                  v-for="preset in chatBackgroundCards"
+                  :key="preset.id"
+                  type="button"
+                  :class="['dash-bg-card', { active: chatBg === preset.id, custom: preset.id === 'custom' }]"
+                  :title="preset.description"
+                  @click="preset.id === 'custom' ? chooseBgImage() : selectBg(preset.id)"
+                >
+                  <span class="dash-bg-card-thumb" :style="{ background: preset.swatch }">
+                    <span v-if="preset.id === 'custom'" class="dash-bg-card-thumb-icon">
+                      <img v-if="customBgImage" :src="customBgImage" alt="" />
+                      <template v-else>＋</template>
+                    </span>
+                    <span v-else class="dash-bg-card-thumb-icon">{{ preset.icon }}</span>
+                    <span v-if="chatBg === preset.id" class="dash-bg-card-check">✓</span>
+                  </span>
+                  <span class="dash-bg-card-name">{{ preset.name }}</span>
+                  <span class="dash-bg-card-desc">{{ preset.description }}</span>
                 </button>
               </div>
               <input ref="bgInputRef" class="hidden-input" type="file" accept="image/*" @change="onBgImageSelected" />

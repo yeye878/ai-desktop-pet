@@ -12,6 +12,13 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import BgCanvas from "./BgCanvas.vue";
+import {
+  chatBackgroundPreset,
+  normalizeChatBackgroundId,
+  readChatBackground,
+  readCustomChatBackground,
+  type ChatBackgroundId,
+} from "../services/chatBackgrounds";
 import AgentActivity from "./AgentActivity.vue";
 import UserQuestion from "./UserQuestion.vue";
 import { createInteractionSubmission, subscribePendingInteraction, type AskUserPayload } from "../services/pendingInteractions";
@@ -144,8 +151,9 @@ const isFileOver = ref(false);
 const BG_KEY = "ai-desktop-pet.chat-bg";
 const CUSTOM_BG_KEY = "ai-desktop-pet.chat-bg-custom";
 const VOICE_SETTINGS_KEY = "voice_settings";
-const chatBg = ref(localStorage.getItem(BG_KEY) || "none");
-const customBgImage = ref(localStorage.getItem(CUSTOM_BG_KEY) || "");
+const chatBg = ref<ChatBackgroundId>(readChatBackground());
+const customBgImage = ref(readCustomChatBackground());
+const currentChatBgPreset = computed(() => chatBackgroundPreset(chatBg.value));
 const bgCanvasRef = ref<InstanceType<typeof BgCanvas> | null>(null);
 const voiceStatus = ref<VoiceStatus>("idle");
 const voiceInterimText = ref("");
@@ -602,17 +610,35 @@ onBeforeUnmount(() => {
     clearTimeout(fileErrorTimer);
     fileErrorTimer = null;
   }
+  if (chatBgBadgeTimer) {
+    clearTimeout(chatBgBadgeTimer);
+    chatBgBadgeTimer = null;
+  }
   window.removeEventListener("storage", handleStorageChange);
   window.removeEventListener("voice-settings-changed", handleVoiceSettingsChanged);
 });
 
 watch(chatBg, () => {
   bgCanvasRef.value?.clearPointer();
+  flashChatBgBadge();
 });
+
+/** 背景变化时短暂显示当前背景名，避免「切了却不知道有没有生效」 */
+const chatBgBadge = ref("");
+let chatBgBadgeTimer: ReturnType<typeof setTimeout> | null = null;
+function flashChatBgBadge() {
+  chatBgBadge.value = currentChatBgPreset.value.name;
+  if (chatBgBadgeTimer) clearTimeout(chatBgBadgeTimer);
+  chatBgBadgeTimer = setTimeout(() => {
+    chatBgBadge.value = "";
+    chatBgBadgeTimer = null;
+  }, 1800);
+}
 
 function handleStorageChange(e: StorageEvent) {
   if (e.key === BG_KEY) {
-    chatBg.value = e.newValue || "none";
+    chatBg.value = normalizeChatBackgroundId(e.newValue);
+    bgCanvasRef.value?.clearPointer();
   } else if (e.key === CUSTOM_BG_KEY) {
     customBgImage.value = e.newValue || "";
   }
@@ -1555,7 +1581,8 @@ function formatClipboardTime(value: string | number): string {
     </div>
 
     <div
-      class="messages-area"
+      :class="['messages-area', chatBg !== 'none' ? 'has-bg' : '']"
+      :data-chat-bg="chatBg"
       @mousemove.passive="onBgMouseMove"
       @mouseleave="clearBgPointer"
       @blur.capture="clearBgPointer"
@@ -1567,6 +1594,14 @@ function formatClipboardTime(value: string | number): string {
         :mode="chatBg"
         :custom-image="customBgImage"
       />
+      <div v-if="chatBg !== 'none'" class="chat-bg-scrim" aria-hidden="true"></div>
+      <!-- 背景切换时浮出当前背景名，让「换了背景」看得出来 -->
+      <Transition name="chat-bg-badge">
+        <div v-if="chatBgBadge" class="chat-bg-badge">
+          <span class="chat-bg-badge-dot" :style="{ background: currentChatBgPreset.swatch }"></span>
+          背景 · {{ currentChatBgPreset.name }}
+        </div>
+      </Transition>
       <div ref="messagesRef" class="chat-messages" @click="onBgClick" @scroll.passive="trackChatScroll">
       <template v-if="activeTab === 'chat'">
         <div v-if="chat.messages.length === 0 && !chat.isLoading" class="empty-hint">
@@ -3383,6 +3418,84 @@ function formatClipboardTime(value: string | number): string {
 
 .messages-area {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(247, 251, 255, 0.36));
+}
+
+/* 有动态背景时，把这层半透明白底彻底让开，否则 BgCanvas 被自己盖住 */
+.messages-area.has-bg {
+  background: transparent;
+}
+
+.messages-area[data-chat-bg="scifi"],
+.messages-area[data-chat-bg="aurora"] {
+  background: linear-gradient(180deg, rgba(4, 8, 20, 0.1), rgba(4, 8, 20, 0.24));
+}
+
+.messages-area[data-chat-bg="ink"] {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0.14));
+}
+
+.chat-bg-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(120% 80% at 50% 0%, rgba(255, 255, 255, 0.14), transparent 60%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.03));
+}
+
+.messages-area[data-chat-bg="scifi"] .chat-bg-scrim,
+.messages-area[data-chat-bg="aurora"] .chat-bg-scrim {
+  background: linear-gradient(180deg, rgba(4, 8, 20, 0.12), rgba(4, 8, 20, 0.3));
+}
+
+/* 深色背景上气泡改成毛玻璃，文字才看得清 */
+.messages-area[data-chat-bg="scifi"] .message.assistant .bubble,
+.messages-area[data-chat-bg="aurora"] .message.assistant .bubble {
+  background: rgba(12, 20, 38, 0.55);
+  border-color: rgba(255, 255, 255, 0.14);
+  color: rgba(233, 242, 255, 0.94);
+  backdrop-filter: blur(6px) saturate(1.08);
+  -webkit-backdrop-filter: blur(6px) saturate(1.08);
+}
+
+.chat-bg-badge {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 12px 6px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.36);
+  background: rgba(18, 26, 44, 0.72);
+  color: #f4f8ff;
+  font-size: 11px;
+  font-weight: 660;
+  box-shadow: 0 8px 22px rgba(6, 12, 26, 0.28);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  pointer-events: none;
+}
+
+.chat-bg-badge-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+}
+
+.chat-bg-badge-enter-active,
+.chat-bg-badge-leave-active {
+  transition: opacity 200ms ease, transform 200ms ease;
+}
+
+.chat-bg-badge-enter-from,
+.chat-bg-badge-leave-to {
+  opacity: 0;
+  transform: translateY(-6px) scale(0.95);
 }
 
 .bubble {
