@@ -200,6 +200,11 @@ fn patch_layer() -> String {
          \x20\x20disabled: true\n\
          - id: headless-runner\n\
          \x20\x20disabled: true\n\
+         # headless 包里把 credentials 关了（一次性任务走启动环境变量），\n\
+         # 但桌宠是长驻会话进程，必须能从 $DSH_HOME/.credentials.yaml 读密钥，\n\
+         # 否则用户在设置里配好的模型会一直报 MISSING_CREDENTIAL。\n\
+         - id: credentials\n\
+         \x20\x20disabled: false\n\
          - insert:\n\
          \x20\x20\x20\x20- id: pet-runner\n\
          \x20\x20\x20\x20\x20\x20name: './plugins/pet-runner.mjs'\n"
