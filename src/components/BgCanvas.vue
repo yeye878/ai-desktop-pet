@@ -44,6 +44,20 @@ let auStars: any[] = [];
 let ikRidges: any[] = [];
 let ikMist: any[] = [];
 let ikRipples: any[] = [];
+// Mist state（晨雾）
+let msBands: any[] = [];
+let msMotes: any[] = [];
+// Rain state（细雨）
+let rnDrops: any[] = [];
+let rnStreaks: any[] = [];
+let rnRipples: any[] = [];
+// Dusk state（黄昏）
+let dkGlow: any[] = [];
+let dkDust: any[] = [];
+// Bloom state（花影）
+let blBranches: any[] = [];
+let blPetals: any[] = [];
+let blShadow: any[] = [];
 
 const CUTE_C = ['#bb8fa2','#c99eb0','#dcc0cc','#d6ceba','#8aa6b8','#d9bcc8','#cf9e89','#a97f92'];
 const SF_COLS = { cyan:'#79b1b3', purple:'#8aa6b8', green:'#8aa98f', blue:'#7e93a8', teal:'#97c8ca' };
@@ -191,6 +205,109 @@ function initInk() {
   }
 }
 
+/**
+ * 晨雾：几层横向雾带由下往上缓慢抬升，叠一点几乎看不见的浮尘。
+ * 不画具体形状，只做「明度层次」，所以放在任何内容后面都不抢。
+ */
+function initMist() {
+  msBands = []; msMotes = [];
+  const layers = 4;
+  for (let i = 0; i < layers; i++) {
+    msBands.push({
+      y: H * (0.42 + i * 0.14),
+      h: rnd(H * 0.16, H * 0.3),
+      drift: rnd(-0.05, 0.05),
+      rise: rnd(0.01, 0.05),
+      phase: rnd(0, 6.28),
+      alpha: rnd(0.05, 0.1) * (1 - i * 0.12),
+    });
+  }
+  for (let i = 0; i < 40; i++) {
+    msMotes.push({
+      x: rnd(0, W), y: rnd(0, H),
+      r: rnd(0.5, 1.6), vx: rnd(-0.06, 0.06), vy: rnd(-0.12, -0.02),
+      alpha: rnd(0.05, 0.16), phase: rnd(0, 6.28),
+    });
+  }
+}
+
+/**
+ * 细雨：斜向雨丝 + 玻璃上的水珠 + 落点涟漪。
+ * 雨丝用细长线段而不是点，才有「斜雨」的方向感。
+ */
+function initRain() {
+  rnDrops = []; rnStreaks = []; rnRipples = [];
+  for (let i = 0; i < 70; i++) {
+    rnStreaks.push({
+      x: rnd(-W * 0.2, W), y: rnd(-H, H),
+      len: rnd(10, 26), vx: rnd(0.5, 1.1), vy: rnd(3.2, 6),
+      alpha: rnd(0.05, 0.16),
+    });
+  }
+  for (let i = 0; i < 26; i++) {
+    rnDrops.push({
+      x: rnd(0, W), y: rnd(0, H),
+      r: rnd(1.2, 3.2), drift: rnd(0, 0.16), wiggle: rnd(0, 6.28),
+      alpha: rnd(0.06, 0.18),
+    });
+  }
+}
+
+/**
+ * 黄昏：角落的暖橙余晖 + 淡紫补光 + 空气里的浮尘。
+ * 暖色只压在底部两角，不铺满，避免整页发黄。
+ */
+function initDusk() {
+  dkGlow = []; dkDust = [];
+  dkGlow = [
+    { x: W * 0.16, y: H * 0.92, r: Math.max(180, W * 0.42), drift: 0.03, phase: 0, rgb: '232, 190, 160', alpha: 0.18 },
+    { x: W * 0.84, y: H * 0.18, r: Math.max(160, W * 0.38), drift: -0.025, phase: 2.1, rgb: '198, 186, 216', alpha: 0.15 },
+    { x: W * 0.5, y: H * 0.55, r: Math.max(140, W * 0.32), drift: 0.015, phase: 4.2, rgb: '246, 226, 210', alpha: 0.1 },
+  ];
+  for (let i = 0; i < 34; i++) {
+    dkDust.push({
+      x: rnd(0, W), y: rnd(0, H),
+      r: rnd(0.6, 2), vx: rnd(-0.08, 0.08), vy: rnd(-0.16, -0.03),
+      alpha: rnd(0.06, 0.18), phase: rnd(0, 6.28),
+    });
+  }
+}
+
+/**
+ * 花影：窗外的花枝在纸上的投影 + 缓慢飘落的花瓣。
+ * 影子用低对比的灰粉，花瓣用极淡的暖粉，整体压在 15% 以内。
+ */
+function initBloom() {
+  blBranches = []; blPetals = []; blShadow = [];
+  for (let i = 0; i < 3; i++) {
+    const points: { x: number; y: number }[] = [];
+    let x = W * (0.1 + i * 0.3) + rnd(-W * 0.06, W * 0.06);
+    let y = -20;
+    const stepY = H / 8;
+    while (y < H * (0.55 + i * 0.1)) {
+      points.push({ x, y });
+      x += rnd(-W * 0.05, W * 0.05);
+      y += stepY * rnd(0.7, 1.2);
+    }
+    blBranches.push({ points, width: rnd(1.2, 2.4), alpha: 0.05 + i * 0.012 });
+  }
+  for (let i = 0; i < 22; i++) {
+    blShadow.push({
+      x: rnd(0, W), y: rnd(0, H),
+      r: rnd(3, 9), alpha: rnd(0.03, 0.08), phase: rnd(0, 6.28), sway: rnd(0.2, 0.6),
+    });
+  }
+  for (let i = 0; i < 26; i++) {
+    blPetals.push({
+      x: rnd(0, W), y: rnd(-H, H),
+      vx: rnd(-0.24, 0.24), vy: rnd(0.3, 0.85),
+      size: rnd(2.5, 6), angle: rnd(0, 6.28), spin: rnd(-0.03, 0.03),
+      sway: rnd(0.4, 1.2), swayOff: rnd(0, 6.28),
+      alpha: rnd(0.12, 0.3),
+    });
+  }
+}
+
 function initScifi() {
   sfNodes = []; sfPackets = []; sfEMPs = []; sfHexes = []; sfScanY = 0;
   // Neural nodes
@@ -236,6 +353,10 @@ function initParticles() {
   else if (props.mode === 'minimal') initMinimal();
   else if (props.mode === 'aurora') initAurora();
   else if (props.mode === 'ink') initInk();
+  else if (props.mode === 'mist') initMist();
+  else if (props.mode === 'rain') initRain();
+  else if (props.mode === 'dusk') initDusk();
+  else if (props.mode === 'bloom') initBloom();
 }
 
 function addRipple(x: number, y: number, big = false) {
@@ -244,6 +365,9 @@ function addRipple(x: number, y: number, big = false) {
     props.mode === 'cute' ? 'rgba(255,107,157,' :
     props.mode === 'aurora' ? 'rgba(94,234,212,' :
     props.mode === 'ink' ? 'rgba(54,62,74,' :
+    props.mode === 'rain' ? 'rgba(150,180,192,' :
+    props.mode === 'bloom' ? 'rgba(211,182,189,' :
+    props.mode === 'dusk' ? 'rgba(212,178,155,' :
     'rgba(148,163,184,';
   if (big) {
     for (let i = 0; i < 3; i++)
@@ -478,6 +602,58 @@ function update() {
     }
     for (const p of particles) { p.life -= p.decay; p.x += p.vx; p.y += p.vy; p.vx *= 0.97; p.vy *= 0.97; }
     particles = particles.filter(p => p.life > 0);
+  } else if (props.mode === 'mist') {
+    for (const b of msBands) {
+      b.phase += 0.004;
+      b.y -= b.rise;
+      b.x = (b.x ?? 0) + b.drift;
+      if (b.y + b.h < 0) b.y = H + rnd(0, H * 0.1);
+    }
+    for (const m of msMotes) {
+      m.phase += 0.01;
+      m.x += m.vx; m.y += m.vy;
+      if (m.y < -4) { m.y = H + 4; m.x = rnd(0, W); }
+      if (m.x < -4) m.x = W + 4; if (m.x > W + 4) m.x = -4;
+    }
+  } else if (props.mode === 'rain') {
+    for (const s of rnStreaks) {
+      s.x += s.vx; s.y += s.vy;
+      if (s.y > H + s.len) { s.y = rnd(-H * 0.4, -10); s.x = rnd(-W * 0.2, W); }
+      if (s.x > W + 20) s.x = -20;
+    }
+    for (const d of rnDrops) {
+      d.wiggle += 0.02;
+      d.y += d.drift;
+      d.x += Math.sin(d.wiggle) * 0.06;
+      if (d.y > H + 6) { d.y = -6; d.x = rnd(0, W); }
+    }
+    for (let i = rnRipples.length - 1; i >= 0; i--) {
+      const r = rnRipples[i];
+      r.r += 0.5; r.alpha *= 0.96;
+      if (r.alpha < 0.01) rnRipples.splice(i, 1);
+    }
+  } else if (props.mode === 'dusk') {
+    for (const g of dkGlow) {
+      g.phase += 0.006;
+      g.x += Math.sin(g.phase) * g.drift;
+      // 点击产生的余晖会慢慢淡掉并回收，不然越点越亮
+      if (g.burst) g.alpha *= 0.992;
+    }
+    dkGlow = dkGlow.filter((g) => !g.burst || g.alpha > 0.01);
+    for (const d of dkDust) {
+      d.phase += 0.012;
+      d.x += d.vx; d.y += d.vy;
+      if (d.y < -4) { d.y = H + 4; d.x = rnd(0, W); }
+      if (d.x < -4) d.x = W + 4; if (d.x > W + 4) d.x = -4;
+    }
+  } else if (props.mode === 'bloom') {
+    for (const p of blPetals) {
+      p.x += p.vx + Math.sin(p.phase += 0.01) * p.sway * 0.4;
+      p.y += p.vy; p.angle += p.spin;
+      if (p.y > H + 12) { p.y = -12; p.x = rnd(0, W); }
+      if (p.x < -12) p.x = W + 12; if (p.x > W + 12) p.x = -12;
+    }
+    for (const s of blShadow) s.phase += 0.008;
   }
   particles = particles.filter(p => !p.temp || p.life > 0);
 }
@@ -630,6 +806,184 @@ function drawInk(ctx: CanvasRenderingContext2D) {
     ctx.beginPath();
     ctx.arc(r.x, r.y, r.r, 0, Math.PI * 2);
     ctx.stroke();
+    ctx.restore();
+  }
+}
+
+/** 晨雾：底部厚、顶部薄的一层层雾带，配极细浮尘 */
+function drawMist(ctx: CanvasRenderingContext2D) {
+  const k = strength();
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, '#fbfdfc');
+  bg.addColorStop(0.42, '#eef5f4');
+  bg.addColorStop(0.72, '#e3edec');
+  bg.addColorStop(1, '#d8e5e4');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  for (const b of msBands) {
+    const y = b.y + Math.sin(b.phase) * H * 0.02;
+    const grad = ctx.createLinearGradient(0, y, 0, y + b.h);
+    grad.addColorStop(0, `rgba(255,255,255,0)`);
+    grad.addColorStop(0.4, `rgba(212,228,227,${(b.alpha * k * 3.2).toFixed(3)})`);
+    grad.addColorStop(0.75, `rgba(184,206,205,${(b.alpha * k * 3.6).toFixed(3)})`);
+    grad.addColorStop(1, `rgba(166,192,192,${(b.alpha * k * 2.4).toFixed(3)})`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, y, W, b.h);
+  }
+
+  for (const m of msMotes) {
+    ctx.save();
+    ctx.globalAlpha = Math.min(0.5, m.alpha * k * 2.4 * (0.6 + Math.sin(m.phase) * 0.4));
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(m.x, m.y, m.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+/** 细雨：斜雨丝 + 玻璃水珠 + 落点涟漪 */
+function drawRain(ctx: CanvasRenderingContext2D) {
+  const k = strength();
+  const bg = ctx.createLinearGradient(0, 0, W * 0.3, H);
+  bg.addColorStop(0, '#f9fcfd');
+  bg.addColorStop(0.5, '#eaf2f5');
+  bg.addColorStop(1, '#dbe7ec');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.lineCap = 'round';
+  for (const s of rnStreaks) {
+    ctx.save();
+    ctx.globalAlpha = Math.min(0.45, s.alpha * k * 2.6);
+    ctx.strokeStyle = '#93b0bd';
+    ctx.lineWidth = 1.1;
+    ctx.beginPath();
+    ctx.moveTo(s.x, s.y);
+    ctx.lineTo(s.x - s.vx * 2.2, s.y - s.len);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  for (const d of rnDrops) {
+    ctx.save();
+    ctx.globalAlpha = d.alpha * k;
+    const g = ctx.createRadialGradient(d.x - d.r * 0.3, d.y - d.r * 0.3, 0, d.x, d.y, d.r);
+    g.addColorStop(0, 'rgba(255,255,255,0.95)');
+    g.addColorStop(0.7, 'rgba(186,210,220,0.55)');
+    g.addColorStop(1, 'rgba(150,180,196,0.45)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.ellipse(d.x, d.y, d.r, d.r * 1.25, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  for (const r of rnRipples) {
+    ctx.save();
+    ctx.globalAlpha = r.alpha * k;
+    ctx.strokeStyle = 'rgba(150,180,192,0.7)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.ellipse(r.x, r.y, r.r, r.r * 0.36, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+/** 黄昏：底部两角暖橙 + 顶部一角淡紫，中间保持纸色 */
+function drawDusk(ctx: CanvasRenderingContext2D) {
+  const k = strength();
+  const bg = ctx.createLinearGradient(0, 0, W * 0.2, H);
+  bg.addColorStop(0, '#fdf9f4');
+  bg.addColorStop(0.4, '#f9f0e8');
+  bg.addColorStop(0.72, '#f4e7dd');
+  bg.addColorStop(1, '#eee0d6');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'multiply';
+  for (const g of dkGlow) {
+    const grad = ctx.createRadialGradient(g.x, g.y, 0, g.x, g.y, g.r);
+    grad.addColorStop(0, `rgba(${g.rgb},${Math.min(0.62, g.alpha * k * 2.6).toFixed(3)})`);
+    grad.addColorStop(0.42, `rgba(${g.rgb},${Math.min(0.4, g.alpha * k * 1.5).toFixed(3)})`);
+    grad.addColorStop(0.72, `rgba(${g.rgb},${Math.min(0.18, g.alpha * k * 0.7).toFixed(3)})`);
+    grad.addColorStop(1, `rgba(${g.rgb},0)`);
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(g.x, g.y, g.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+
+  for (const d of dkDust) {
+    ctx.save();
+    ctx.globalAlpha = Math.min(0.55, d.alpha * k * 2.6 * (0.6 + Math.sin(d.phase) * 0.4));
+    ctx.fillStyle = '#fffdf8';
+    ctx.beginPath();
+    ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+/** 花影：花枝投影 + 缓慢飘落的花瓣 */
+function drawBloom(ctx: CanvasRenderingContext2D) {
+  const k = strength();
+  const bg = ctx.createLinearGradient(0, 0, W * 0.25, H);
+  bg.addColorStop(0, '#fdfaf9');
+  bg.addColorStop(0.45, '#f9f1f1');
+  bg.addColorStop(0.78, '#f4e9e9');
+  bg.addColorStop(1, '#efe2e2');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // 花枝投影
+  for (const b of blBranches) {
+    if (b.points.length < 2) continue;
+    ctx.save();
+    ctx.globalAlpha = Math.min(0.34, b.alpha * k * 3.4);
+    ctx.strokeStyle = '#7d6a68';
+    ctx.lineWidth = b.width * 1.3;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(b.points[0].x, b.points[0].y);
+    for (let i = 1; i < b.points.length - 1; i++) {
+      const mx = (b.points[i].x + b.points[i + 1].x) / 2;
+      const my = (b.points[i].y + b.points[i + 1].y) / 2;
+      ctx.quadraticCurveTo(b.points[i].x, b.points[i].y, mx, my);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // 花影
+  for (const s of blShadow) {
+    ctx.save();
+    ctx.globalAlpha = s.alpha * k * (0.7 + Math.sin(s.phase) * 0.3);
+    const grad = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, s.r);
+    grad.addColorStop(0, 'rgba(198,160,170,0.42)');
+    grad.addColorStop(0.55, 'rgba(211,182,189,0.2)');
+    grad.addColorStop(1, 'rgba(211,182,189,0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.ellipse(s.x + Math.sin(s.phase) * 6, s.y, s.r * 1.4, s.r, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // 飘落花瓣
+  for (const p of blPetals) {
+    ctx.save();
+    ctx.globalAlpha = Math.min(0.62, p.alpha * k * 2.2);
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.angle);
+    ctx.fillStyle = '#d9b3bc';
+    ctx.beginPath();
+    ctx.ellipse(0, 0, p.size, p.size * 0.52, 0, 0, Math.PI * 2);
+    ctx.fill();
     ctx.restore();
   }
 }
@@ -918,6 +1272,14 @@ function draw() {
     drawAurora(ctx);
   } else if (props.mode === 'ink') {
     drawInk(ctx);
+  } else if (props.mode === 'mist') {
+    drawMist(ctx);
+  } else if (props.mode === 'rain') {
+    drawRain(ctx);
+  } else if (props.mode === 'dusk') {
+    drawDusk(ctx);
+  } else if (props.mode === 'bloom') {
+    drawBloom(ctx);
   } else if (props.mode === 'custom' && customImg) {
     ctx.globalAlpha = 0.18;
     const ir = customImg.width / customImg.height, cr = W / H;
@@ -964,6 +1326,20 @@ function onMouseMove(x: number, y: number) {
     });
   }
   if (props.mode === 'ink' && Math.random() < 0.08) { addRipple(x, y); }
+  if (props.mode === 'dusk' && Math.random() < 0.1) {
+    particles.push({
+      x: x + rnd(-8, 8), y: y + rnd(-5, 5),
+      vx: rnd(-0.1, 0.1), vy: rnd(-0.2, -0.05),
+      size: rnd(0.8, 1.8), alpha: rnd(0.2, 0.45),
+      life: 1, decay: rnd(0.015, 0.03), temp: true,
+    });
+  }
+  if (props.mode === 'bloom' && Math.random() < 0.07) {
+    blShadow.forEach((s) => {
+      const dx = s.x - x, dy = s.y - y;
+      if (dx * dx + dy * dy < 12000) s.phase += 0.4;
+    });
+  }
 }
 
 function clearPointer() {
@@ -1073,6 +1449,55 @@ function onClick(x: number, y: number) {
         if (dx * dx + dy * dy < 9000) ridge.alpha = Math.min(0.24, ridge.alpha + 0.012);
       }
     }
+  }
+  else if (mode === 'mist') {
+    // 点击处雾被推开：把附近的浮尘往外推
+    for (const m of msMotes) {
+      const dx = m.x - x, dy = m.y - y, d = Math.sqrt(dx * dx + dy * dy);
+      if (d < 120 && d > 1) { m.vx += (dx / d) * 0.5; m.vy += (dy / d) * 0.5; }
+    }
+    addRipple(x, y, true);
+  }
+  else if (mode === 'rain') {
+    // 点击处溅起一圈水花
+    for (let i = 0; i < 3; i++) rnRipples.push({ x, y, r: i * 6, alpha: 0.5 - i * 0.12 });
+    for (let i = 0; i < 10; i++) {
+      const angle = rnd(0, Math.PI * 2);
+      const speed = rnd(0.6, 2.2);
+      particles.push({
+        x, y,
+        vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed - 0.6,
+        size: rnd(0.8, 1.8), alpha: rnd(0.3, 0.6),
+        life: 1, decay: rnd(0.02, 0.04), temp: true,
+      });
+    }
+  }
+  else if (mode === 'dusk') {
+    // 点击处余晖亮一下
+    dkGlow.push({ x, y, r: 90, drift: 0, phase: 0, rgb: '232, 190, 160', alpha: 0.26, burst: true });
+    for (let i = 0; i < 12; i++) {
+      const angle = rnd(0, Math.PI * 2);
+      const speed = rnd(0.4, 1.8);
+      particles.push({
+        x, y,
+        vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed - 0.3,
+        size: rnd(0.8, 2), alpha: rnd(0.25, 0.55),
+        life: 1, decay: rnd(0.012, 0.026), temp: true,
+      });
+    }
+  }
+  else if (mode === 'bloom') {
+    // 点击处花瓣散开
+    for (let i = 0; i < 10; i++) {
+      blPetals.push({
+        x, y,
+        vx: rnd(-1.6, 1.6), vy: rnd(-1.8, -0.2),
+        size: rnd(2.5, 5.5), angle: rnd(0, 6.28), spin: rnd(-0.06, 0.06),
+        sway: 1, swayOff: rnd(0, 6.28),
+        alpha: rnd(0.3, 0.6),
+      });
+    }
+    addRipple(x, y, true);
   }
 }
 

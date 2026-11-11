@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { ref, computed, watch } from "vue";
 import type { CustomPixelPetAsset } from "../services/customPixelPet";
 import type { PetCharacterId } from "../services/petCharacters";
+import { themeToneScale } from "../services/palette";
 
 export type PetState =
   | "idle"
@@ -124,6 +125,71 @@ export const THEMES: Record<string, Theme> = {
     bubbleBotText: "#3a3237",
     headerGradient: "linear-gradient(135deg, #a97f92, #c29cad)",
     particleColors: ["#a97f92", "#c29cad", "#d9bcc8", "#eddfe5"],
+  },
+  moon: {
+    id: "moon",
+    name: "月白",
+    primary: "#7d8aa3",
+    primaryDark: "#65708a",
+    accent: "#97a4bc",
+    bgGlass: "rgba(248, 250, 253, 0.92)",
+    bubbleUser: "linear-gradient(135deg, #7d8aa3, #97a4bc)",
+    bubbleBot: "rgba(125, 138, 163, 0.08)",
+    bubbleBotText: "#30343b",
+    headerGradient: "linear-gradient(135deg, #7d8aa3, #b3bccd)",
+    particleColors: ["#7d8aa3", "#97a4bc", "#b3bccd", "#d8dde6"],
+  },
+  tea: {
+    id: "tea",
+    name: "茶褐",
+    primary: "#8f7a63",
+    primaryDark: "#75624e",
+    accent: "#a8937b",
+    bgGlass: "rgba(251, 249, 245, 0.92)",
+    bubbleUser: "linear-gradient(135deg, #8f7a63, #a8937b)",
+    bubbleBot: "rgba(143, 122, 99, 0.08)",
+    bubbleBotText: "#37322c",
+    headerGradient: "linear-gradient(135deg, #8f7a63, #bfae99)",
+    particleColors: ["#8f7a63", "#a8937b", "#c6b7a3", "#e4dbcd"],
+  },
+  indigo: {
+    id: "indigo",
+    name: "靛青",
+    primary: "#5a6b86",
+    primaryDark: "#455569",
+    accent: "#76879f",
+    bgGlass: "rgba(247, 249, 252, 0.92)",
+    bubbleUser: "linear-gradient(135deg, #5a6b86, #76879f)",
+    bubbleBot: "rgba(90, 107, 134, 0.08)",
+    bubbleBotText: "#2c3138",
+    headerGradient: "linear-gradient(135deg, #5a6b86, #93a3b8)",
+    particleColors: ["#5a6b86", "#76879f", "#9dabbd", "#c9d3df"],
+  },
+  moss: {
+    id: "moss",
+    name: "苔痕",
+    primary: "#79875f",
+    primaryDark: "#606d4a",
+    accent: "#93a077",
+    bgGlass: "rgba(249, 250, 245, 0.92)",
+    bubbleUser: "linear-gradient(135deg, #79875f, #93a077)",
+    bubbleBot: "rgba(121, 135, 95, 0.08)",
+    bubbleBotText: "#33362c",
+    headerGradient: "linear-gradient(135deg, #79875f, #aab694)",
+    particleColors: ["#79875f", "#93a077", "#b3bf9d", "#d9dfcc"],
+  },
+  coral: {
+    id: "coral",
+    name: "柚粉",
+    primary: "#b58485",
+    primaryDark: "#976a6b",
+    accent: "#c9a0a0",
+    bgGlass: "rgba(253, 249, 249, 0.92)",
+    bubbleUser: "linear-gradient(135deg, #b58485, #c9a0a0)",
+    bubbleBot: "rgba(181, 132, 133, 0.08)",
+    bubbleBotText: "#3a3131",
+    headerGradient: "linear-gradient(135deg, #b58485, #d9bcbc)",
+    particleColors: ["#b58485", "#c9a0a0", "#dcc0c0", "#efe0e0"],
   },
   aurora: {
     id: "aurora",
@@ -325,6 +391,33 @@ export const usePetStore = defineStore("pet", () => {
     root.style.setProperty("--pet-bubble-bot-text", t.bubbleBotText);
     root.style.setProperty("--pet-header-gradient", t.headerGradient);
     root.style.setProperty("--pet-font-color", fontColor.value || t.bubbleBotText);
+
+    /*
+     * 控制台配色也要跟着皮肤走。
+     *
+     * 之前 `--dash-accent-rgb` 是写死青瓷的，而 dashboard.css 里有 141 处用它，
+     * 于是切皮肤只有按钮变了、侧栏/卡片/选中态纹丝不动——看起来就是「换皮肤没反应」。
+     * 现在整套纸面色阶都从主题主色派生，切换时整个控制台一起换色调。
+     */
+    const tone = themeToneScale(t.primary, t.primaryDark);
+    const accentScale = hexToRgb(t.primary);
+    root.style.setProperty("--dash-accent", tone.accent);
+    root.style.setProperty("--dash-accent-strong", tone.accentStrong);
+    root.style.setProperty("--dash-accent-rgb", `${accentScale.r}, ${accentScale.g}, ${accentScale.b}`);
+    const strongRgb = hexToRgb(t.primaryDark);
+    root.style.setProperty("--dash-accent-strong-rgb", `${strongRgb.r}, ${strongRgb.g}, ${strongRgb.b}`);
+
+    root.style.setProperty("--paper-tint-50", tone.tint50);
+    root.style.setProperty("--paper-tint-100", tone.tint100);
+    root.style.setProperty("--paper-tint-150", tone.tint150);
+    root.style.setProperty("--paper-tint-200", tone.tint200);
+    root.style.setProperty("--paper-tint-300", tone.tint300);
+    const tint150 = hexToRgb(tone.tint150);
+    const tint200 = hexToRgb(tone.tint200);
+    const tint300 = hexToRgb(tone.tint300);
+    root.style.setProperty("--paper-tint-150-rgb", `${tint150.r}, ${tint150.g}, ${tint150.b}`);
+    root.style.setProperty("--paper-tint-200-rgb", `${tint200.r}, ${tint200.g}, ${tint200.b}`);
+    root.style.setProperty("--paper-tint-300-rgb", `${tint300.r}, ${tint300.g}, ${tint300.b}`);
   }
 
   function syncThemeTimer() {

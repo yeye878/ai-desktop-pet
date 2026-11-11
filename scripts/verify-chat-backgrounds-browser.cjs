@@ -10,7 +10,7 @@ const BASE = process.env.BG_BASE_URL || 'http://127.0.0.1:1441';
 const OUT = path.join(process.env.TEMP || process.cwd(), 'pet-bg-qa');
 fs.mkdirSync(OUT, { recursive: true });
 
-const PRESETS = ['none', 'aurora', 'ink', 'cute', 'scifi', 'minimal', 'custom'];
+const PRESETS = ['none', 'aurora', 'ink', 'mist', 'rain', 'dusk', 'bloom', 'cute', 'scifi', 'minimal', 'custom'];
 
 (async () => {
   const browser = await chromium.launch({ headless: true, channel: 'chromium' });
@@ -37,7 +37,7 @@ const PRESETS = ['none', 'aurora', 'ink', 'cute', 'scifi', 'minimal', 'custom'];
     }
 
     // 2. 逐个点预设：卡片高亮、预览标记一致、canvas 生效、localStorage 落盘
-    for (const id of ['aurora', 'ink', 'cute', 'scifi', 'minimal']) {
+    for (const id of ['aurora', 'ink', 'mist', 'rain', 'dusk', 'bloom', 'cute', 'scifi', 'minimal']) {
       await page.locator('.dash-bg-card').nth(PRESETS.indexOf(id)).click();
       await page.waitForTimeout(420);
       const stored = await page.evaluate(() => localStorage.getItem('ai-desktop-pet.chat-bg'));
@@ -74,6 +74,10 @@ const PRESETS = ['none', 'aurora', 'ink', 'cute', 'scifi', 'minimal', 'custom'];
 
     for (const [label, file] of [
       ['水墨', 'chat-ink-stage.png'],
+      ['晨雾', 'chat-mist-stage.png'],
+      ['细雨', 'chat-rain-stage.png'],
+      ['黄昏', 'chat-dusk-stage.png'],
+      ['花影', 'chat-bloom-stage.png'],
       ['科幻', 'chat-scifi-stage.png'],
       ['简洁', 'chat-minimal-stage.png'],
       ['可爱', 'chat-cute-stage.png'],

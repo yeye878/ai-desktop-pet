@@ -103,13 +103,13 @@
   --paper-400: #c7dbd7;
 
   /* surfaces：以青纸为主，暖砂只做「暖点缀」 */
-  --dash-sidebar-bg: var(--paper-100);
+  --dash-sidebar-bg: var(--paper-tint-100);
   --dash-sidebar-bg-2: var(--celadon-100);
   --dash-shell-bg: var(--paper-50);
   --dash-content-bg: var(--paper-50);
   --dash-panel-bg: rgba(246, 251, 251, 0.84);
   --dash-panel-solid: var(--paper-50);
-  --dash-panel-soft: var(--paper-150);
+  --dash-panel-soft: var(--paper-tint-150);
   --dash-card-secondary: var(--sand-200);
   --dash-card-border: rgba(52, 56, 63, 0.10);
   --dash-divider: rgba(52, 56, 63, 0.085);
@@ -119,9 +119,14 @@
     那套颜色在低饱和的纸面上像贴纸，是"看起来不高级"的主因。
     现在统一收敛：主色走青瓷、唯一暖色走陶土、状态色复用它俩。
   */
-  --dash-accent: var(--celadon-600);
-  --dash-accent-soft: var(--celadon-200);
-  --dash-accent-strong: var(--celadon-700);
+  /*
+    语义色。
+    这一组会被 stores/pet.ts 的 applyCssVars() 覆盖成「当前皮肤派生色」；
+    下面的值是默认皮肤（青瓷）的兜底，保证没有 JS 参与时也好看。
+  */
+  --dash-accent: #609497;
+  --dash-accent-soft: #d0ebec;
+  --dash-accent-strong: #4a7577;
   --dash-warm: var(--clay-500);
   --dash-warm-strong: var(--clay-600);
   --dash-success: var(--celadon-600);
@@ -136,9 +141,19 @@
   --dash-candy-pink: var(--clay-300);
   --dash-candy-lavender: var(--celadon-300);
 
-  /* 青瓷主色的 rgb 三元组，供 rgba(var(--dash-accent-rgb), a) 使用 */
+  /* 纸面色阶：由主题主色派生（JS 会覆写），默认是青瓷版 */
+  --paper-tint-50: #f8fafa;
+  --paper-tint-100: #f1f6f6;
+  --paper-tint-150: #eaf1f1;
+  --paper-tint-200: #e0eaeb;
+  --paper-tint-300: #d3e1e2;
+
+  /* rgb 三元组，供 rgba(var(--dash-accent-rgb), a) 使用 */
   --dash-accent-rgb: 96, 148, 151;
   --dash-accent-strong-rgb: 74, 117, 119;
+  --paper-tint-150-rgb: 234, 241, 241;
+  --paper-tint-200-rgb: 224, 234, 235;
+  --paper-tint-300-rgb: 211, 225, 226;
   --dash-warm-rgb: 187, 129, 102;
   --dash-ink-rgb: 52, 56, 63;
   --dash-surface-rgb: 252, 250, 245;
@@ -227,9 +242,9 @@ button {
   flex-direction: column;
   background:
     url("./art/paper-grain-cool.webp"),
-    radial-gradient(115% 85% at 10% 0%, rgba(176, 216, 218, 0.5), transparent 56%),
-    radial-gradient(105% 80% at 90% 100%, rgba(190, 210, 222, 0.42), transparent 58%),
-    var(--paper-150);
+    radial-gradient(115% 85% at 10% 0%, rgba(var(--paper-tint-300-rgb), 0.5), transparent 56%),
+    radial-gradient(105% 80% at 90% 100%, rgba(var(--paper-tint-200-rgb), 0.42), transparent 58%),
+    var(--paper-tint-150);
   background-size: 520px 520px, auto, auto, auto;
   /* 纸面纹理本身偏暖，和青纸底色叠起来会重新偏黄，这里把纹理层压淡 */
   background-blend-mode: multiply, normal, normal, normal;
@@ -432,7 +447,7 @@ button {
   padding: 20px 14px 16px;
   background:
     url("./art/paper-grain-cool.webp"),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(240, 248, 246, 0.82)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(var(--paper-tint-150-rgb), 0.82)),
     repeating-linear-gradient(135deg, rgba(52, 56, 63, 0.035) 0 1px, transparent 1px 18px),
     linear-gradient(180deg, var(--dash-sidebar-bg), var(--dash-sidebar-bg-2) 92%);
   background-size: 460px 460px, auto, auto, auto;
@@ -602,7 +617,7 @@ button {
   flex-shrink: 0;
   border-radius: 7px;
   background:
-    linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(240, 248, 246, 0.8));
+    linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(var(--paper-tint-150-rgb), 0.8));
   color: inherit;
   font-size: 13px;
   font-weight: 700;
@@ -836,7 +851,7 @@ button {
     radial-gradient(circle at 50% 26%, rgba(151, 200, 202, 0.23), transparent 24%),
     radial-gradient(circle at 16% 74%, rgba(194, 156, 173, 0.16), transparent 28%),
     radial-gradient(circle at 88% 70%, rgba(96, 148, 151, 0.16), transparent 30%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(240, 248, 246, 0.45)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(var(--paper-tint-150-rgb), 0.45)),
     #f7fbff;
   background-size: 620px 620px, auto, auto, auto, auto, auto;
 }
@@ -982,7 +997,7 @@ button {
 .dashboard-content.page-home .dash-card {
   background:
     url("./art/paper-grain-cool.webp"),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.74), rgba(240, 248, 246, 0.48));
+    linear-gradient(145deg, rgba(255, 255, 255, 0.74), rgba(var(--paper-tint-150-rgb), 0.48));
   background-size: 480px 480px, auto;
 }
 
@@ -1037,7 +1052,7 @@ button {
 .dashboard-content.page-about .dash-card {
   background:
     url("./art/paper-grain-cool.webp"),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.62), rgba(240, 248, 246, 0.38));
+    linear-gradient(145deg, rgba(255, 255, 255, 0.62), rgba(var(--paper-tint-150-rgb), 0.38));
   background-size: 460px 460px, auto;
 }
 
@@ -1163,7 +1178,7 @@ button {
     url("./art/paper-grain-cool.webp"),
     radial-gradient(circle at 82% 76%, rgba(151, 200, 202, 0.24), transparent 34%),
     radial-gradient(circle at 18% 18%, rgba(96, 148, 151, 0.18), transparent 30%),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.10) 54%, rgba(240, 248, 246, 0.28)),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.10) 54%, rgba(var(--paper-tint-150-rgb), 0.28)),
     #f7fbff;
   background-size: 620px 620px, auto, auto, auto, auto;
 }
@@ -1211,7 +1226,7 @@ button {
   border: 1px solid rgba(255, 255, 255, 0.58);
   border-radius: 14px;
   background:
-    linear-gradient(145deg, rgba(255, 255, 255, 0.66), rgba(240, 248, 246, 0.38));
+    linear-gradient(145deg, rgba(255, 255, 255, 0.66), rgba(var(--paper-tint-150-rgb), 0.38));
   box-shadow:
     0 4px 0 rgba(52, 56, 63, 0.035),
     0 14px 28px rgba(52, 56, 63, 0.06);
@@ -1286,7 +1301,7 @@ button {
   border-radius: 14px;
   background:
     url("./art/paper-grain-cool.webp"),
-    linear-gradient(160deg, rgba(255, 255, 255, 0.72), rgba(240, 248, 246, 0.44));
+    linear-gradient(160deg, rgba(255, 255, 255, 0.72), rgba(var(--paper-tint-150-rgb), 0.44));
   background-size: 420px 420px, auto;
   box-shadow:
     0 4px 0 rgba(52, 56, 63, 0.035),
@@ -1624,7 +1639,7 @@ button {
   border: 1px dashed rgba(var(--dash-accent-rgb), 0.20);
   border-radius: 16px;
   background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.66), rgba(240, 248, 246, 0.36));
+    linear-gradient(135deg, rgba(255, 255, 255, 0.66), rgba(var(--paper-tint-150-rgb), 0.36));
   box-shadow:
     0 4px 0 rgba(52, 56, 63, 0.035),
     0 16px 28px rgba(52, 56, 63, 0.06);
@@ -1687,7 +1702,7 @@ button {
 .dash-msg-wrapper.assistant .dash-msg-bubble {
   background:
     url("./art/paper-grain-cool.webp"),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(240, 248, 246, 0.56));
+    linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(var(--paper-tint-150-rgb), 0.56));
   background-size: 420px 420px, auto;
   color: var(--dash-text-primary);
   border-bottom-left-radius: 6px;
@@ -1911,7 +1926,7 @@ button {
   border-radius: 16px;
   background:
     url("./art/paper-grain-cool.webp"),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.66), rgba(240, 248, 246, 0.40));
+    linear-gradient(145deg, rgba(255, 255, 255, 0.66), rgba(var(--paper-tint-150-rgb), 0.40));
   background-size: 420px 420px, auto;
   box-shadow:
     0 3px 0 rgba(52, 56, 63, 0.035),
@@ -2056,7 +2071,7 @@ button {
   gap: 12px;
   padding: 12px;
   background:
-    linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(240, 248, 246, 0.90));
+    linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(var(--paper-tint-150-rgb), 0.90));
   backdrop-filter: blur(12px);
   border: 1px solid rgba(187, 129, 102, 0.38);
   border-radius: 16px;
@@ -2117,7 +2132,7 @@ button {
   gap: 12px;
   padding: 14px;
   background:
-    linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(229, 245, 245, 0.92));
+    linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(var(--paper-tint-100-rgb), 0.92));
   backdrop-filter: blur(12px);
   border: 1px solid rgba(59, 130, 246, 0.35);
   border-radius: 16px;
@@ -2239,7 +2254,7 @@ button {
   border-radius: 18px;
   background:
     url("./art/paper-grain-cool.webp"),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.62), rgba(240, 248, 246, 0.42));
+    linear-gradient(145deg, rgba(255, 255, 255, 0.62), rgba(var(--paper-tint-150-rgb), 0.42));
   background-size: 420px 420px, auto;
   box-shadow:
     0 5px 0 rgba(52, 56, 63, 0.035),
@@ -2266,7 +2281,7 @@ button {
   border-radius: 14px;
   background:
     url("./art/paper-grain-cool.webp"),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(240, 248, 246, 0.72));
+    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(var(--paper-tint-150-rgb), 0.72));
   background-size: 420px 420px, auto;
   box-shadow:
     0 12px 24px rgba(52, 56, 63, 0.10),
@@ -3840,7 +3855,7 @@ button {
 
 .dashboard-content.page-appearance .dash-skin-item {
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(240, 248, 246, 0.34));
+    linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(var(--paper-tint-150-rgb), 0.34));
   border-color: rgba(194, 156, 173, 0.16);
 }
 
@@ -4441,7 +4456,7 @@ button {
   border-radius: 18px;
   background:
     url("./art/paper-grain-cool.webp"),
-    linear-gradient(135deg, rgba(255, 255, 255, 0.58), rgba(240, 248, 246, 0.28));
+    linear-gradient(135deg, rgba(255, 255, 255, 0.58), rgba(var(--paper-tint-150-rgb), 0.28));
   background-size: 420px 420px, auto;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.78),
@@ -4706,7 +4721,7 @@ button {
 .lab-module .dash-profile-item {
   border-radius: 14px;
   background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.62), rgba(240, 248, 246, 0.30));
+    linear-gradient(135deg, rgba(255, 255, 255, 0.62), rgba(var(--paper-tint-150-rgb), 0.30));
 }
 
 .lab-module .dash-mode-option,
@@ -5267,7 +5282,7 @@ button {
   flex-wrap: wrap;
   gap: 12px;
   padding: 8px 16px;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(229, 245, 245, 0.95));
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(var(--paper-tint-100-rgb), 0.95));
   border-bottom: 1px solid var(--dash-divider);
   font-size: 13px;
   color: var(--dash-text-secondary);
@@ -5357,7 +5372,7 @@ button {
 .dashboard-root {
   background:
     url("./art/paper-grain-cool.webp"),
-    radial-gradient(circle at 12% 8%, rgba(176, 220, 221, 0.34), transparent 34%),
+    radial-gradient(circle at 12% 8%, rgba(var(--paper-tint-300-rgb), 0.34), transparent 34%),
     radial-gradient(circle at 88% 12%, rgba(96, 148, 151, 0.16), transparent 32%),
     linear-gradient(180deg, var(--paper-100) 0%, var(--paper-150) 46%, var(--paper-200) 100%);
   background-size: 520px 520px, auto, auto, auto;
@@ -5381,7 +5396,7 @@ button {
   border-right-color: rgba(52, 56, 63, 0.09);
   background:
     url("./art/paper-grain-cool.webp"),
-    linear-gradient(172deg, rgba(213, 230, 226, 0.94), rgba(200, 227, 226, 0.9));
+    linear-gradient(172deg, rgba(var(--paper-tint-300-rgb), 0.94), rgba(var(--paper-tint-300-rgb), 0.86));
   background-size: 520px 520px, auto;
   background-blend-mode: multiply, normal;
 }
@@ -5394,7 +5409,7 @@ button {
 .dashboard-content {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.42), transparent 230px),
-    var(--paper-100);
+    var(--paper-tint-100);
   scrollbar-color: rgba(86, 104, 128, 0.28) transparent;
 }
 
@@ -5623,7 +5638,7 @@ button {
   border-color: rgba(52, 56, 63, 0.10);
   background:
     url("./art/paper-grain-cool.webp"),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(240, 248, 246, 0.66));
+    linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(var(--paper-tint-150-rgb), 0.66));
   background-size: 420px 420px, auto;
 }
 
@@ -5892,7 +5907,7 @@ button {
   border-radius: 14px;
   background:
     url("./art/paper-grain-cool.webp"),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(240, 248, 246, 0.72));
+    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(var(--paper-tint-150-rgb), 0.72));
   background-size: 420px 420px, auto;
   box-shadow:
     0 12px 24px rgba(52, 56, 63, 0.10),
@@ -6390,7 +6405,7 @@ button {
   display: grid;
   place-items: center;
   border-radius: 6px;
-  background: linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(240, 248, 246, 0.8));
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(var(--paper-tint-150-rgb), 0.8));
   font-size: 12px;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75);
 }

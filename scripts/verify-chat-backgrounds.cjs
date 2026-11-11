@@ -48,13 +48,26 @@ const test = (name, fn) => tests.push({ name, fn });
 test("预设清单包含重设计后的全部模式且 id 唯一", () => {
   const { api } = createHarness();
   // vm 里的数组与宿主不同 realm，deepEqual 会因原型链不同而失败，这里比字符串
-  const ids = Array.from(api.CHAT_BACKGROUNDS, (preset) => preset.id).sort().join(",");
-  assert.equal(ids, "aurora,custom,cute,ink,minimal,none,scifi");
-  assert.equal(new Set(Array.from(api.CHAT_BACKGROUNDS, (preset) => preset.id)).size, 7, "id 必须唯一");
+  const ids = Array.from(api.CHAT_BACKGROUNDS, (preset) => preset.id);
+  const sorted = ids.slice().sort().join(",");
+  assert.equal(
+    sorted,
+    ["aurora", "bloom", "custom", "cute", "dusk", "ink", "minimal", "mist", "none", "rain", "scifi"].sort().join(","),
+  );
+  assert.equal(new Set(ids).size, ids.length, "id 必须唯一");
   for (const preset of api.CHAT_BACKGROUNDS) {
     assert.ok(preset.name && preset.description, `${preset.id} 需要名称与说明`);
     assert.ok(preset.swatch.includes("gradient"), `${preset.id} 需要可渲染的缩略色板`);
   }
+});
+
+test("背景预设数量不少于 10 个（含极光/水墨/晨雾/细雨/黄昏/花影）", () => {
+  const { api } = createHarness();
+  const selectable = Array.from(api.SELECTABLE_CHAT_BACKGROUNDS, (preset) => preset.id);
+  for (const required of ["aurora", "ink", "mist", "rain", "dusk", "bloom"]) {
+    assert.ok(selectable.includes(required), `缺少预设 ${required}`);
+  }
+  assert.ok(selectable.length >= 9, `可选预设至少 9 个，实际 ${selectable.length}`);
 });
 
 test("新增的 aurora / ink 是可选预设，自定义不混进预设网格", () => {
@@ -125,13 +138,26 @@ test("localStorage 配额抛错时界面状态仍然生效", () => {
   assert.equal(events[0].detail.id, "cute");
 });
 
-test("所有预设都收敛到纸面友好基调，不再有深色底", () => {
+test("所有预设都收敛到纸面友好基调，不再有深色底或荧光色", () => {
   const { api } = createHarness();
+  const chromaOf = (hex) => {
+    const raw = hex.replace("#", "");
+    const [r, g, b] = [0, 2, 4].map((i) => parseInt(raw.slice(i, i + 2), 16));
+    return Math.max(r, g, b) - Math.min(r, g, b);
+  };
   for (const preset of api.CHAT_BACKGROUNDS) {
     assert.equal(preset.tone, "paper", `${preset.id} 必须与米白控制台同基调`);
     assert.ok(preset.accent, `${preset.id} 需要主题色`);
-    // 缩略色板里不允许出现接近纯黑的底色（会与浅色 UI 撞出断层）
-    assert.ok(!/#0[0-9a-f]{5}/i.test(preset.swatch), `${preset.id} 的色板不应含深色底`);
+
+    // 色板里所有 hex 都要低饱和（彩度 ≤ 100），不允许深底或荧光色
+    const hexes = preset.swatch.match(/#[0-9a-f]{6}/gi) || [];
+    for (const hex of hexes) {
+      assert.ok(chromaOf(hex) <= 100, `${preset.id} 的 ${hex} 彩度 ${chromaOf(hex)} 过高`);
+      const raw = hex.replace("#", "");
+      const [r, g, b] = [0, 2, 4].map((i) => parseInt(raw.slice(i, i + 2), 16));
+      const lightness = (r + g + b) / 3;
+      assert.ok(lightness >= 150, `${preset.id} 的 ${hex} 太暗（L=${lightness.toFixed(0)}）`);
+    }
   }
 });
 

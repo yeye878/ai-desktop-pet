@@ -189,6 +189,104 @@ export function hexToRgbTriplet(hex: string): string {
   return `${r}, ${g}, ${b}`;
 }
 
+// ---------- 主题联动：把任意主色摊成一套纸面色阶 ----------
+
+const srgbToLinear = (value: number) => {
+  const v = value / 255;
+  return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+};
+
+const linearToSrgb = (value: number) => {
+  const clamped = Math.min(1, Math.max(0, value));
+  const srgb = clamped <= 0.0031308 ? 12.92 * clamped : 1.055 * clamped ** (1 / 2.4) - 0.055;
+  return srgb * 255;
+};
+
+const hexToOklab = (hex: string) => {
+  const raw = hex.replace("#", "");
+  const r = srgbToLinear(parseInt(raw.slice(0, 2), 16));
+  const g = srgbToLinear(parseInt(raw.slice(2, 4), 16));
+  const b = srgbToLinear(parseInt(raw.slice(4, 6), 16));
+
+  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+  const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+  const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+
+  return [
+    0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
+    1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
+    0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s,
+  ] as const;
+};
+
+const oklabToHex = ([L, A, B]: readonly [number, number, number]) => {
+  const l_ = L + 0.3963377774 * A + 0.2158037573 * B;
+  const m_ = L - 0.1055613458 * A - 0.0638541728 * B;
+  const s_ = L - 0.0894841775 * A - 1.291485548 * B;
+
+  const l = l_ * l_ * l_;
+  const m = m_ * m_ * m_;
+  const s = s_ * s_ * s_;
+
+  const rgb = [
+    linearToSrgb(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s),
+    linearToSrgb(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s),
+    linearToSrgb(-0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s),
+  ];
+
+  return `#${rgb.map((v) => Math.round(v).toString(16).padStart(2, "0")).join("")}`;
+};
+
+/**
+ * 在 OKLab 里把 accent 混进纸面。
+ *
+ * 为什么必须走 OKLab：直接在 sRGB 里插值，混出来的浅色会发灰发脏
+ * （尤其把饱和色混进米白时），OKLab 是感知均匀的，混出来干净。
+ *
+ * @param accent 主题主色
+ * @param base 纸面基色
+ * @param weight 主色占比 0~1，越大越浓
+ */
+export function mixAccentIntoPaper(accent: string, base: string, weight: number): string {
+  const a = hexToOklab(accent);
+  const b = hexToOklab(base);
+  const t = Math.min(1, Math.max(0, weight));
+  return oklabToHex([
+    b[0] + (a[0] - b[0]) * t,
+    b[1] + (a[1] - b[1]) * t,
+    b[2] + (a[2] - b[2]) * t,
+  ]);
+}
+
+/**
+ * 由主题主色 + 暗色生成一整套界面色调。
+ *
+ * 这是修掉「换皮肤界面颜色不变」的关键：以前 `--dash-accent-rgb` 是写死的青瓷，
+ * 141 处界面用色全靠它，所以切主题只有按钮变了一点点。现在整套色阶都从主题派生。
+ *
+ * 注意打底用纯白而不是暖砂：暖砂本身带黄，混出来会变成脏绿灰
+ * （青瓷混暖砂 → #e7ece8，看着像褪色），混白才是干净的淡彩。
+ */
+export function themeToneScale(primary: string, primaryDark: string) {
+  const WHITE = "#ffffff";
+  return {
+    /** 主色本身 */
+    accent: primary,
+    /** 深一档，用于 hover / 描边 */
+    accentStrong: primaryDark,
+    /** 极浅底：卡片 hover、轻微选中 */
+    tint50: mixAccentIntoPaper(primary, WHITE, 0.045),
+    /** 浅底：内容区 */
+    tint100: mixAccentIntoPaper(primary, WHITE, 0.085),
+    /** 常规底：侧栏、分区 */
+    tint150: mixAccentIntoPaper(primary, WHITE, 0.13),
+    /** 明显一点的底：强调块 */
+    tint200: mixAccentIntoPaper(primary, WHITE, 0.19),
+    /** 最浓的底：选中态、进度条轨道 */
+    tint300: mixAccentIntoPaper(primary, WHITE, 0.27),
+  };
+}
+
 export const PALETTE_RGB = {
   accent: hexToRgbTriplet(PALETTE.accent),
   accentStrong: hexToRgbTriplet(PALETTE.accentStrong),
