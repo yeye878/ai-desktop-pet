@@ -13,10 +13,7 @@ export type ChatBackgroundId =
   | "none"
   | "aurora"
   | "ink"
-  | "mist"
   | "rain"
-  | "dusk"
-  | "bloom"
   | "cute"
   | "scifi"
   | "minimal"
@@ -138,57 +135,18 @@ export const CHAT_BACKGROUNDS: ChatBackgroundPreset[] = [
     accent: "#b09a7e",
   },
   {
-    id: "mist",
-    name: "晨雾",
-    description: "天亮前的山谷薄雾，一层层慢慢推上来，几乎不动",
-    icon: "雾",
-    swatch:
-      "radial-gradient(100% 80% at 30% 100%, rgba(198,216,214,0.55), transparent 66%)," +
-      "radial-gradient(90% 70% at 76% 88%, rgba(214,224,226,0.5), transparent 64%)," +
-      "radial-gradient(120% 80% at 50% 6%, rgba(255,255,255,0.8), transparent 68%)," +
-      "linear-gradient(170deg, #f8fbfa, #eef4f3 55%, #e6edec)",
-    opacity: 0.95,
-    tone: "paper",
-    accent: "#aebfbe",
-  },
-  {
     id: "rain",
     name: "细雨",
-    description: "斜落的细雨水痕与玻璃上的水珠，安静得像窗边",
+    description: "窗外下着雨：远中近三层雨幕、玻璃上的水珠与落地润漪，点一下会清起水花",
     icon: "雨",
     swatch:
-      "radial-gradient(80% 60% at 24% 18%, rgba(176,205,214,0.4), transparent 62%)," +
-      "repeating-linear-gradient(76deg, rgba(150,180,192,0.22) 0 1px, transparent 1px 11px)," +
-      "linear-gradient(168deg, #f4f9fa, #eaf2f4 55%, #e4edef)",
+      "radial-gradient(75% 55% at 26% 20%, rgba(186,212,222,0.45), transparent 62%)," +
+      "linear-gradient(74deg, transparent 0 46%, rgba(146,176,192,0.3) 46% 47%, transparent 47% 74%, rgba(146,176,192,0.2) 74% 75%, transparent 75%)," +
+      "radial-gradient(40% 30% at 68% 62%, rgba(255,255,255,0.9), transparent 70%)," +
+      "linear-gradient(168deg, #f8fcfd, #e7f0f4 55%, #d9e6ec)",
     opacity: 0.95,
     tone: "paper",
-    accent: "#9fb9c2",
-  },
-  {
-    id: "dusk",
-    name: "黄昏",
-    description: "夕阳落在纸面上的暖橙到淡紫过渡，只在角落最浓",
-    icon: "夕",
-    swatch:
-      "radial-gradient(90% 70% at 18% 88%, rgba(232,190,160,0.5), transparent 64%)," +
-      "radial-gradient(85% 65% at 82% 20%, rgba(198,186,216,0.42), transparent 66%)," +
-      "linear-gradient(168deg, #fdf8f3, #f8f1ec 52%, #f3ecf0)",
-    opacity: 0.95,
-    tone: "paper",
-    accent: "#d4b29b",
-  },
-  {
-    id: "bloom",
-    name: "花影",
-    description: "窗外花枝投在纸上的晃动影子，比「可爱」更克制",
-    icon: "花",
-    swatch:
-      "radial-gradient(80% 60% at 22% 24%, rgba(226,198,206,0.5), transparent 62%)," +
-      "radial-gradient(70% 55% at 78% 76%, rgba(206,216,198,0.42), transparent 64%)," +
-      "linear-gradient(166deg, #fdfaf9, #f8f2f2 54%, #f4f0ee)",
-    opacity: 0.95,
-    tone: "paper",
-    accent: "#d3b6bd",
+    accent: "#93b4c2",
   },
   {
     id: "cute",

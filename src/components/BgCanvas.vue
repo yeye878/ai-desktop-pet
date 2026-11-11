@@ -44,20 +44,11 @@ let auStars: any[] = [];
 let ikRidges: any[] = [];
 let ikMist: any[] = [];
 let ikRipples: any[] = [];
-// Mist state（晨雾）
-let msBands: any[] = [];
-let msMotes: any[] = [];
 // Rain state（细雨）
 let rnDrops: any[] = [];
 let rnStreaks: any[] = [];
 let rnRipples: any[] = [];
-// Dusk state（黄昏）
-let dkGlow: any[] = [];
-let dkDust: any[] = [];
-// Bloom state（花影）
-let blBranches: any[] = [];
-let blPetals: any[] = [];
-let blShadow: any[] = [];
+let rnSplashes: any[] = [];
 
 const CUTE_C = ['#bb8fa2','#c99eb0','#dcc0cc','#d6ceba','#8aa6b8','#d9bcc8','#cf9e89','#a97f92'];
 const SF_COLS = { cyan:'#79b1b3', purple:'#8aa6b8', green:'#8aa98f', blue:'#7e93a8', teal:'#97c8ca' };
@@ -205,109 +196,6 @@ function initInk() {
   }
 }
 
-/**
- * 晨雾：几层横向雾带由下往上缓慢抬升，叠一点几乎看不见的浮尘。
- * 不画具体形状，只做「明度层次」，所以放在任何内容后面都不抢。
- */
-function initMist() {
-  msBands = []; msMotes = [];
-  const layers = 4;
-  for (let i = 0; i < layers; i++) {
-    msBands.push({
-      y: H * (0.42 + i * 0.14),
-      h: rnd(H * 0.16, H * 0.3),
-      drift: rnd(-0.05, 0.05),
-      rise: rnd(0.01, 0.05),
-      phase: rnd(0, 6.28),
-      alpha: rnd(0.05, 0.1) * (1 - i * 0.12),
-    });
-  }
-  for (let i = 0; i < 40; i++) {
-    msMotes.push({
-      x: rnd(0, W), y: rnd(0, H),
-      r: rnd(0.5, 1.6), vx: rnd(-0.06, 0.06), vy: rnd(-0.12, -0.02),
-      alpha: rnd(0.05, 0.16), phase: rnd(0, 6.28),
-    });
-  }
-}
-
-/**
- * 细雨：斜向雨丝 + 玻璃上的水珠 + 落点涟漪。
- * 雨丝用细长线段而不是点，才有「斜雨」的方向感。
- */
-function initRain() {
-  rnDrops = []; rnStreaks = []; rnRipples = [];
-  for (let i = 0; i < 70; i++) {
-    rnStreaks.push({
-      x: rnd(-W * 0.2, W), y: rnd(-H, H),
-      len: rnd(10, 26), vx: rnd(0.5, 1.1), vy: rnd(3.2, 6),
-      alpha: rnd(0.05, 0.16),
-    });
-  }
-  for (let i = 0; i < 26; i++) {
-    rnDrops.push({
-      x: rnd(0, W), y: rnd(0, H),
-      r: rnd(1.2, 3.2), drift: rnd(0, 0.16), wiggle: rnd(0, 6.28),
-      alpha: rnd(0.06, 0.18),
-    });
-  }
-}
-
-/**
- * 黄昏：角落的暖橙余晖 + 淡紫补光 + 空气里的浮尘。
- * 暖色只压在底部两角，不铺满，避免整页发黄。
- */
-function initDusk() {
-  dkGlow = []; dkDust = [];
-  dkGlow = [
-    { x: W * 0.16, y: H * 0.92, r: Math.max(180, W * 0.42), drift: 0.03, phase: 0, rgb: '232, 190, 160', alpha: 0.18 },
-    { x: W * 0.84, y: H * 0.18, r: Math.max(160, W * 0.38), drift: -0.025, phase: 2.1, rgb: '198, 186, 216', alpha: 0.15 },
-    { x: W * 0.5, y: H * 0.55, r: Math.max(140, W * 0.32), drift: 0.015, phase: 4.2, rgb: '246, 226, 210', alpha: 0.1 },
-  ];
-  for (let i = 0; i < 34; i++) {
-    dkDust.push({
-      x: rnd(0, W), y: rnd(0, H),
-      r: rnd(0.6, 2), vx: rnd(-0.08, 0.08), vy: rnd(-0.16, -0.03),
-      alpha: rnd(0.06, 0.18), phase: rnd(0, 6.28),
-    });
-  }
-}
-
-/**
- * 花影：窗外的花枝在纸上的投影 + 缓慢飘落的花瓣。
- * 影子用低对比的灰粉，花瓣用极淡的暖粉，整体压在 15% 以内。
- */
-function initBloom() {
-  blBranches = []; blPetals = []; blShadow = [];
-  for (let i = 0; i < 3; i++) {
-    const points: { x: number; y: number }[] = [];
-    let x = W * (0.1 + i * 0.3) + rnd(-W * 0.06, W * 0.06);
-    let y = -20;
-    const stepY = H / 8;
-    while (y < H * (0.55 + i * 0.1)) {
-      points.push({ x, y });
-      x += rnd(-W * 0.05, W * 0.05);
-      y += stepY * rnd(0.7, 1.2);
-    }
-    blBranches.push({ points, width: rnd(1.2, 2.4), alpha: 0.05 + i * 0.012 });
-  }
-  for (let i = 0; i < 22; i++) {
-    blShadow.push({
-      x: rnd(0, W), y: rnd(0, H),
-      r: rnd(3, 9), alpha: rnd(0.03, 0.08), phase: rnd(0, 6.28), sway: rnd(0.2, 0.6),
-    });
-  }
-  for (let i = 0; i < 26; i++) {
-    blPetals.push({
-      x: rnd(0, W), y: rnd(-H, H),
-      vx: rnd(-0.24, 0.24), vy: rnd(0.3, 0.85),
-      size: rnd(2.5, 6), angle: rnd(0, 6.28), spin: rnd(-0.03, 0.03),
-      sway: rnd(0.4, 1.2), swayOff: rnd(0, 6.28),
-      alpha: rnd(0.12, 0.3),
-    });
-  }
-}
-
 function initScifi() {
   sfNodes = []; sfPackets = []; sfEMPs = []; sfHexes = []; sfScanY = 0;
   // Neural nodes
@@ -353,10 +241,7 @@ function initParticles() {
   else if (props.mode === 'minimal') initMinimal();
   else if (props.mode === 'aurora') initAurora();
   else if (props.mode === 'ink') initInk();
-  else if (props.mode === 'mist') initMist();
   else if (props.mode === 'rain') initRain();
-  else if (props.mode === 'dusk') initDusk();
-  else if (props.mode === 'bloom') initBloom();
 }
 
 function addRipple(x: number, y: number, big = false) {
@@ -366,8 +251,6 @@ function addRipple(x: number, y: number, big = false) {
     props.mode === 'aurora' ? 'rgba(94,234,212,' :
     props.mode === 'ink' ? 'rgba(54,62,74,' :
     props.mode === 'rain' ? 'rgba(150,180,192,' :
-    props.mode === 'bloom' ? 'rgba(211,182,189,' :
-    props.mode === 'dusk' ? 'rgba(212,178,155,' :
     'rgba(148,163,184,';
   if (big) {
     for (let i = 0; i < 3; i++)
@@ -602,58 +485,51 @@ function update() {
     }
     for (const p of particles) { p.life -= p.decay; p.x += p.vx; p.y += p.vy; p.vx *= 0.97; p.vy *= 0.97; }
     particles = particles.filter(p => p.life > 0);
-  } else if (props.mode === 'mist') {
-    for (const b of msBands) {
-      b.phase += 0.004;
-      b.y -= b.rise;
-      b.x = (b.x ?? 0) + b.drift;
-      if (b.y + b.h < 0) b.y = H + rnd(0, H * 0.1);
-    }
-    for (const m of msMotes) {
-      m.phase += 0.01;
-      m.x += m.vx; m.y += m.vy;
-      if (m.y < -4) { m.y = H + 4; m.x = rnd(0, W); }
-      if (m.x < -4) m.x = W + 4; if (m.x > W + 4) m.x = -4;
-    }
   } else if (props.mode === 'rain') {
+    // 雨丝：出屏后从顶部落回，x 也跟着重新随机，避免形成固定斜纹
     for (const s of rnStreaks) {
       s.x += s.vx; s.y += s.vy;
-      if (s.y > H + s.len) { s.y = rnd(-H * 0.4, -10); s.x = rnd(-W * 0.2, W); }
-      if (s.x > W + 20) s.x = -20;
+      if (s.y - s.len > H) { s.y = rnd(-H * 0.5, -s.len); s.x = rnd(-W * 0.25, W * 1.05); }
+      if (s.x > W + 30) { s.x = -30; s.y = rnd(-H * 0.5, H); }
     }
+    // 玻璃水珠：缓缓下滑、左右微摆，落到底部重置；同时积累拖尾长度
     for (const d of rnDrops) {
-      d.wiggle += 0.02;
+      d.wiggle += 0.022;
       d.y += d.drift;
-      d.x += Math.sin(d.wiggle) * 0.06;
-      if (d.y > H + 6) { d.y = -6; d.x = rnd(0, W); }
+      d.x += Math.sin(d.wiggle) * 0.05;
+      d.trail = Math.min(d.r * 9, d.trail + d.drift * 2.4);
+      if (d.y - d.trail > H + 8) {
+        d.y = rnd(-20, -4);
+        d.x = rnd(0, W);
+        d.trail = 0;
+      }
     }
+    // 涟漪：扩散 + 淡出
     for (let i = rnRipples.length - 1; i >= 0; i--) {
       const r = rnRipples[i];
-      r.r += 0.5; r.alpha *= 0.96;
+      r.r += 0.55; r.alpha *= 0.955;
       if (r.alpha < 0.01) rnRipples.splice(i, 1);
     }
-  } else if (props.mode === 'dusk') {
-    for (const g of dkGlow) {
-      g.phase += 0.006;
-      g.x += Math.sin(g.phase) * g.drift;
-      // 点击产生的余晖会慢慢淡掉并回收，不然越点越亮
-      if (g.burst) g.alpha *= 0.992;
+    // 水花：向上弹起后落下
+    for (let i = rnSplashes.length - 1; i >= 0; i--) {
+      const sp = rnSplashes[i];
+      sp.vy += 0.06;
+      sp.h += sp.vy;
+      sp.alpha *= 0.96;
+      if (sp.h < 0 || sp.alpha < 0.01) rnSplashes.splice(i, 1);
     }
-    dkGlow = dkGlow.filter((g) => !g.burst || g.alpha > 0.01);
-    for (const d of dkDust) {
-      d.phase += 0.012;
-      d.x += d.vx; d.y += d.vy;
-      if (d.y < -4) { d.y = H + 4; d.x = rnd(0, W); }
-      if (d.x < -4) d.x = W + 4; if (d.x > W + 4) d.x = -4;
+    // 偶尔在随机位置自动落一滴，让画面在你不动的时候也有雨
+    if (Math.random() < 0.09) {
+      const rx = rnd(W * 0.05, W * 0.95);
+      const ry = rnd(H * 0.3, H * 0.95);
+      rnRipples.push({ x: rx, y: ry, r: 0.5, alpha: 0.32 });
+      for (let i = 0; i < 3; i++) {
+        rnSplashes.push({
+          x: rx + rnd(-6, 6), y: ry,
+          r: rnd(0.8, 1.8), h: 0, vy: rnd(-1.1, -0.4), alpha: rnd(0.3, 0.5),
+        });
+      }
     }
-  } else if (props.mode === 'bloom') {
-    for (const p of blPetals) {
-      p.x += p.vx + Math.sin(p.phase += 0.01) * p.sway * 0.4;
-      p.y += p.vy; p.angle += p.spin;
-      if (p.y > H + 12) { p.y = -12; p.x = rnd(0, W); }
-      if (p.x < -12) p.x = W + 12; if (p.x > W + 12) p.x = -12;
-    }
-    for (const s of blShadow) s.phase += 0.008;
   }
   particles = particles.filter(p => !p.temp || p.life > 0);
 }
@@ -810,183 +686,210 @@ function drawInk(ctx: CanvasRenderingContext2D) {
   }
 }
 
-/** 晨雾：底部厚、顶部薄的一层层雾带，配极细浮尘 */
-function drawMist(ctx: CanvasRenderingContext2D) {
-  const k = strength();
-  const bg = ctx.createLinearGradient(0, 0, 0, H);
-  bg.addColorStop(0, '#fbfdfc');
-  bg.addColorStop(0.42, '#eef5f4');
-  bg.addColorStop(0.72, '#e3edec');
-  bg.addColorStop(1, '#d8e5e4');
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, W, H);
+/** 细雨：斜雨丝 + 玻璃水珠 + 落点涟漪 */
+/**
+ * 细雨（重写版）。
+ *
+ * 旧版只有「一排等长的斜线 + 几个圆圈」，问题在于：
+ *   1. 雨丝没有前后层次，看起来像贴了一层斜纹纸
+ *   2. 水珠是个规则椭圆，像浮在画面上的贴纸
+ *   3. 缺「雨落在某个面上」的反馈，所以没有空间感
+ *
+ * 新版按真实雨景的三层结构来做：
+ *   - 远景雨：细、慢、极淡，只提供整体的"雨幕"质感
+ *   - 中景雨：主雨丝，两端渐隐（真实雨丝不会是一根等粗的棍子）
+ *   - 近景雨：粗、快、更深，偶尔划过镜头，制造纵深
+ *   再加玻璃水珠（带高光、带拖尾、会慢慢下滑）与落地涟漪，把「雨」落到一个面上。
+ */
+function initRain() {
+  rnStreaks = []; rnDrops = []; rnRipples = []; rnSplashes = [];
 
-  for (const b of msBands) {
-    const y = b.y + Math.sin(b.phase) * H * 0.02;
-    const grad = ctx.createLinearGradient(0, y, 0, y + b.h);
-    grad.addColorStop(0, `rgba(255,255,255,0)`);
-    grad.addColorStop(0.4, `rgba(212,228,227,${(b.alpha * k * 3.2).toFixed(3)})`);
-    grad.addColorStop(0.75, `rgba(184,206,205,${(b.alpha * k * 3.6).toFixed(3)})`);
-    grad.addColorStop(1, `rgba(166,192,192,${(b.alpha * k * 2.4).toFixed(3)})`);
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, y, W, b.h);
+  // 三层雨幕：远 / 中 / 近
+  const layers = [
+    { count: 58, lenMin: 7, lenMax: 14, vxMin: 0.25, vxMax: 0.5, vyMin: 1.6, vyMax: 2.6, w: 0.55, aMin: 0.06, aMax: 0.12 },
+    { count: 44, lenMin: 14, lenMax: 28, vxMin: 0.5, vxMax: 0.95, vyMin: 3.4, vyMax: 5.4, w: 0.9, aMin: 0.1, aMax: 0.18 },
+    { count: 18, lenMin: 28, lenMax: 52, vxMin: 0.9, vxMax: 1.6, vyMin: 6.2, vyMax: 9.5, w: 1.3, aMin: 0.12, aMax: 0.22 },
+  ];
+  for (const layer of layers) {
+    for (let i = 0; i < layer.count; i++) {
+      rnStreaks.push({
+        x: rnd(-W * 0.25, W * 1.05),
+        y: rnd(-H, H),
+        len: rnd(layer.lenMin, layer.lenMax),
+        vx: rnd(layer.vxMin, layer.vxMax),
+        vy: rnd(layer.vyMin, layer.vyMax),
+        width: layer.w,
+        alpha: rnd(layer.aMin, layer.aMax),
+      });
+    }
   }
 
-  for (const m of msMotes) {
-    ctx.save();
-    ctx.globalAlpha = Math.min(0.5, m.alpha * k * 2.4 * (0.6 + Math.sin(m.phase) * 0.4));
-    ctx.fillStyle = '#ffffff';
-    ctx.beginPath();
-    ctx.arc(m.x, m.y, m.r, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
+  // 玻璃水珠：大小分两档，大的慢、小的快
+  for (let i = 0; i < 20; i++) {
+    const big = i < 7;
+    rnDrops.push({
+      x: rnd(0, W), y: rnd(0, H),
+      r: big ? rnd(2.6, 4.6) : rnd(1.1, 2.2),
+      drift: big ? rnd(0.02, 0.1) : rnd(0.05, 0.22),
+      wiggle: rnd(0, 6.28),
+      trail: 0,
+      alpha: big ? rnd(0.16, 0.3) : rnd(0.1, 0.2),
+    });
   }
 }
 
-/** 细雨：斜雨丝 + 玻璃水珠 + 落点涟漪 */
+/**
+ * 细雨绘制。
+ * 顺序很重要：底色 → 远景雨 → 中景雨 → 玻璃水珠 → 近景雨（压在珠子前，制造纵深）→ 涟漪
+ */
 function drawRain(ctx: CanvasRenderingContext2D) {
   const k = strength();
-  const bg = ctx.createLinearGradient(0, 0, W * 0.3, H);
-  bg.addColorStop(0, '#f9fcfd');
-  bg.addColorStop(0.5, '#eaf2f5');
-  bg.addColorStop(1, '#dbe7ec');
+
+  // 1. 底色：左上角亮、右下角略沉，模拟阴天窗边的光
+  const bg = ctx.createLinearGradient(0, 0, W * 0.35, H);
+  bg.addColorStop(0, '#fbfdfe');
+  bg.addColorStop(0.42, '#eef4f7');
+  bg.addColorStop(0.78, '#e2ecf1');
+  bg.addColorStop(1, '#d7e4ea');
   ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // 2. 窗玻璃上的一层薄雾：让远处的雨丝显得「在玻璃后面」
+  const haze = ctx.createLinearGradient(0, 0, 0, H);
+  haze.addColorStop(0, `rgba(255,255,255,${(0.2 * k).toFixed(3)})`);
+  haze.addColorStop(0.5, `rgba(255,255,255,${(0.06 * k).toFixed(3)})`);
+  haze.addColorStop(1, `rgba(226,238,243,${(0.14 * k).toFixed(3)})`);
+  ctx.fillStyle = haze;
   ctx.fillRect(0, 0, W, H);
 
   ctx.lineCap = 'round';
-  for (const s of rnStreaks) {
+
+  // 3. 远景 + 中景雨丝（按宽度排序，细的先画）
+  const farAndMid = rnStreaks.filter((s) => s.width < 1);
+  const near = rnStreaks.filter((s) => s.width >= 1);
+
+  for (const s of farAndMid) {
     ctx.save();
-    ctx.globalAlpha = Math.min(0.45, s.alpha * k * 2.6);
-    ctx.strokeStyle = '#93b0bd';
-    ctx.lineWidth = 1.1;
+    ctx.globalAlpha = Math.min(0.58, s.alpha * k * 3.4);
+    // 两端渐隐：雨丝不是等粗的棍子
+    const tailX = s.x - s.vx * 2.6;
+    const tailY = s.y - s.len;
+    const grad = ctx.createLinearGradient(s.x, s.y, tailX, tailY);
+    grad.addColorStop(0, 'rgba(118,152,172,1)');
+    grad.addColorStop(0.4, 'rgba(134,166,184,0.72)');
+    grad.addColorStop(0.78, 'rgba(158,186,200,0.28)');
+    grad.addColorStop(1, 'rgba(176,198,210,0)');
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = s.width;
     ctx.beginPath();
     ctx.moveTo(s.x, s.y);
-    ctx.lineTo(s.x - s.vx * 2.2, s.y - s.len);
+    ctx.lineTo(tailX, tailY);
     ctx.stroke();
     ctx.restore();
   }
 
+  // 4. 玻璃水珠：高光 + 阴影 + 拖尾
   for (const d of rnDrops) {
+    const rx = d.r;
+    const ry = d.r * rnd(1, 1.02) * 1.16;
+
+    // 拖尾：水珠下滑留下的湿痕
+    if (d.trail > 2) {
+      const trailGrad = ctx.createLinearGradient(d.x, d.y - d.trail, d.x, d.y);
+      trailGrad.addColorStop(0, 'rgba(198,220,230,0)');
+      trailGrad.addColorStop(1, `rgba(198,220,230,${(0.28 * k).toFixed(3)})`);
+      ctx.save();
+      ctx.strokeStyle = trailGrad;
+      ctx.lineWidth = rx * 0.9;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(d.x, d.y - d.trail);
+      ctx.lineTo(d.x, d.y);
+      ctx.stroke();
+      ctx.restore();
+    }
+
     ctx.save();
     ctx.globalAlpha = d.alpha * k;
-    const g = ctx.createRadialGradient(d.x - d.r * 0.3, d.y - d.r * 0.3, 0, d.x, d.y, d.r);
-    g.addColorStop(0, 'rgba(255,255,255,0.95)');
-    g.addColorStop(0.7, 'rgba(186,210,220,0.55)');
-    g.addColorStop(1, 'rgba(150,180,196,0.45)');
-    ctx.fillStyle = g;
+
+    // 珠子本体：上暗下亮，像镜头里的真实水珠
+    const body = ctx.createRadialGradient(
+      d.x - rx * 0.35, d.y - ry * 0.4, rx * 0.1,
+      d.x, d.y, ry,
+    );
+    body.addColorStop(0, 'rgba(255,255,255,0.95)');
+    body.addColorStop(0.45, 'rgba(232,244,248,0.7)');
+    body.addColorStop(0.82, 'rgba(178,204,216,0.55)');
+    body.addColorStop(1, 'rgba(150,180,196,0.28)');
+    ctx.fillStyle = body;
     ctx.beginPath();
-    ctx.ellipse(d.x, d.y, d.r, d.r * 1.25, 0, 0, Math.PI * 2);
+    ctx.ellipse(d.x, d.y, rx, ry, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 下缘的亮边（全内反射），水珠才有体积
+    ctx.strokeStyle = 'rgba(255,255,255,0.65)';
+    ctx.lineWidth = 0.7;
+    ctx.beginPath();
+    ctx.ellipse(d.x, d.y + ry * 0.12, rx * 0.82, ry * 0.8, 0, 0.15 * Math.PI, 0.85 * Math.PI);
+    ctx.stroke();
+
+    // 左上小高光点
+    ctx.globalAlpha = Math.min(0.62, d.alpha * k * 2.2);
+    const spark = ctx.createRadialGradient(
+      d.x - rx * 0.32, d.y - ry * 0.38, 0,
+      d.x - rx * 0.32, d.y - ry * 0.38, rx * 0.42,
+    );
+    spark.addColorStop(0, 'rgba(255,255,255,0.9)');
+    spark.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = spark;
+    ctx.beginPath();
+    ctx.arc(d.x - rx * 0.32, d.y - ry * 0.38, rx * 0.42, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
   }
 
+  // 5. 近景雨：压在珠子之上，制造「雨从眼前划过」的纵深
+  for (const s of near) {
+    ctx.save();
+    ctx.globalAlpha = Math.min(0.46, s.alpha * k * 2.8);
+    const tailX = s.x - s.vx * 3.4;
+    const tailY = s.y - s.len;
+    const grad = ctx.createLinearGradient(s.x, s.y, tailX, tailY);
+    grad.addColorStop(0, 'rgba(96,132,152,0.98)');
+    grad.addColorStop(0.45, 'rgba(120,152,170,0.58)');
+    grad.addColorStop(1, 'rgba(150,180,196,0)');
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = s.width;
+    ctx.beginPath();
+    ctx.moveTo(s.x, s.y);
+    ctx.lineTo(tailX, tailY);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // 6. 落地涟漪 + 溅起的水花
   for (const r of rnRipples) {
     ctx.save();
-    ctx.globalAlpha = r.alpha * k;
-    ctx.strokeStyle = 'rgba(150,180,192,0.7)';
-    ctx.lineWidth = 1;
+    ctx.globalAlpha = Math.min(0.5, r.alpha * k * 1.4);
+    ctx.strokeStyle = 'rgba(146,178,192,0.85)';
+    ctx.lineWidth = 0.9;
     ctx.beginPath();
-    ctx.ellipse(r.x, r.y, r.r, r.r * 0.36, 0, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.restore();
-  }
-}
-
-/** 黄昏：底部两角暖橙 + 顶部一角淡紫，中间保持纸色 */
-function drawDusk(ctx: CanvasRenderingContext2D) {
-  const k = strength();
-  const bg = ctx.createLinearGradient(0, 0, W * 0.2, H);
-  bg.addColorStop(0, '#fdf9f4');
-  bg.addColorStop(0.4, '#f9f0e8');
-  bg.addColorStop(0.72, '#f4e7dd');
-  bg.addColorStop(1, '#eee0d6');
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, W, H);
-
-  ctx.save();
-  ctx.globalCompositeOperation = 'multiply';
-  for (const g of dkGlow) {
-    const grad = ctx.createRadialGradient(g.x, g.y, 0, g.x, g.y, g.r);
-    grad.addColorStop(0, `rgba(${g.rgb},${Math.min(0.62, g.alpha * k * 2.6).toFixed(3)})`);
-    grad.addColorStop(0.42, `rgba(${g.rgb},${Math.min(0.4, g.alpha * k * 1.5).toFixed(3)})`);
-    grad.addColorStop(0.72, `rgba(${g.rgb},${Math.min(0.18, g.alpha * k * 0.7).toFixed(3)})`);
-    grad.addColorStop(1, `rgba(${g.rgb},0)`);
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.arc(g.x, g.y, g.r, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  ctx.restore();
-
-  for (const d of dkDust) {
-    ctx.save();
-    ctx.globalAlpha = Math.min(0.55, d.alpha * k * 2.6 * (0.6 + Math.sin(d.phase) * 0.4));
-    ctx.fillStyle = '#fffdf8';
-    ctx.beginPath();
-    ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  }
-}
-
-/** 花影：花枝投影 + 缓慢飘落的花瓣 */
-function drawBloom(ctx: CanvasRenderingContext2D) {
-  const k = strength();
-  const bg = ctx.createLinearGradient(0, 0, W * 0.25, H);
-  bg.addColorStop(0, '#fdfaf9');
-  bg.addColorStop(0.45, '#f9f1f1');
-  bg.addColorStop(0.78, '#f4e9e9');
-  bg.addColorStop(1, '#efe2e2');
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, W, H);
-
-  // 花枝投影
-  for (const b of blBranches) {
-    if (b.points.length < 2) continue;
-    ctx.save();
-    ctx.globalAlpha = Math.min(0.34, b.alpha * k * 3.4);
-    ctx.strokeStyle = '#7d6a68';
-    ctx.lineWidth = b.width * 1.3;
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.moveTo(b.points[0].x, b.points[0].y);
-    for (let i = 1; i < b.points.length - 1; i++) {
-      const mx = (b.points[i].x + b.points[i + 1].x) / 2;
-      const my = (b.points[i].y + b.points[i + 1].y) / 2;
-      ctx.quadraticCurveTo(b.points[i].x, b.points[i].y, mx, my);
-    }
+    ctx.ellipse(r.x, r.y, r.r, r.r * 0.3, 0, 0, Math.PI * 2);
     ctx.stroke();
     ctx.restore();
   }
 
-  // 花影
-  for (const s of blShadow) {
+  for (const sp of rnSplashes) {
     ctx.save();
-    ctx.globalAlpha = s.alpha * k * (0.7 + Math.sin(s.phase) * 0.3);
-    const grad = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, s.r);
-    grad.addColorStop(0, 'rgba(198,160,170,0.42)');
-    grad.addColorStop(0.55, 'rgba(211,182,189,0.2)');
-    grad.addColorStop(1, 'rgba(211,182,189,0)');
-    ctx.fillStyle = grad;
+    ctx.globalAlpha = Math.min(0.55, sp.alpha * k * 1.6);
+    ctx.fillStyle = 'rgba(198,220,230,0.9)';
     ctx.beginPath();
-    ctx.ellipse(s.x + Math.sin(s.phase) * 6, s.y, s.r * 1.4, s.r, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  }
-
-  // 飘落花瓣
-  for (const p of blPetals) {
-    ctx.save();
-    ctx.globalAlpha = Math.min(0.62, p.alpha * k * 2.2);
-    ctx.translate(p.x, p.y);
-    ctx.rotate(p.angle);
-    ctx.fillStyle = '#d9b3bc';
-    ctx.beginPath();
-    ctx.ellipse(0, 0, p.size, p.size * 0.52, 0, 0, Math.PI * 2);
+    ctx.ellipse(sp.x, sp.y - sp.h, sp.r, sp.r * 0.72, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
   }
 }
+
 
 function draw() {
   if (!ctx) return;
@@ -1272,14 +1175,8 @@ function draw() {
     drawAurora(ctx);
   } else if (props.mode === 'ink') {
     drawInk(ctx);
-  } else if (props.mode === 'mist') {
-    drawMist(ctx);
   } else if (props.mode === 'rain') {
     drawRain(ctx);
-  } else if (props.mode === 'dusk') {
-    drawDusk(ctx);
-  } else if (props.mode === 'bloom') {
-    drawBloom(ctx);
   } else if (props.mode === 'custom' && customImg) {
     ctx.globalAlpha = 0.18;
     const ir = customImg.width / customImg.height, cr = W / H;
@@ -1326,20 +1223,6 @@ function onMouseMove(x: number, y: number) {
     });
   }
   if (props.mode === 'ink' && Math.random() < 0.08) { addRipple(x, y); }
-  if (props.mode === 'dusk' && Math.random() < 0.1) {
-    particles.push({
-      x: x + rnd(-8, 8), y: y + rnd(-5, 5),
-      vx: rnd(-0.1, 0.1), vy: rnd(-0.2, -0.05),
-      size: rnd(0.8, 1.8), alpha: rnd(0.2, 0.45),
-      life: 1, decay: rnd(0.015, 0.03), temp: true,
-    });
-  }
-  if (props.mode === 'bloom' && Math.random() < 0.07) {
-    blShadow.forEach((s) => {
-      const dx = s.x - x, dy = s.y - y;
-      if (dx * dx + dy * dy < 12000) s.phase += 0.4;
-    });
-  }
 }
 
 function clearPointer() {
@@ -1450,54 +1333,21 @@ function onClick(x: number, y: number) {
       }
     }
   }
-  else if (mode === 'mist') {
-    // 点击处雾被推开：把附近的浮尘往外推
-    for (const m of msMotes) {
-      const dx = m.x - x, dy = m.y - y, d = Math.sqrt(dx * dx + dy * dy);
-      if (d < 120 && d > 1) { m.vx += (dx / d) * 0.5; m.vy += (dy / d) * 0.5; }
-    }
-    addRipple(x, y, true);
-  }
   else if (mode === 'rain') {
-    // 点击处溅起一圈水花
-    for (let i = 0; i < 3; i++) rnRipples.push({ x, y, r: i * 6, alpha: 0.5 - i * 0.12 });
-    for (let i = 0; i < 10; i++) {
-      const angle = rnd(0, Math.PI * 2);
-      const speed = rnd(0.6, 2.2);
-      particles.push({
-        x, y,
-        vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed - 0.6,
-        size: rnd(0.8, 1.8), alpha: rnd(0.3, 0.6),
-        life: 1, decay: rnd(0.02, 0.04), temp: true,
+    // 点击处溅起水花：润漪 + 向上弹起的小水珠
+    for (let i = 0; i < 3; i++) {
+      rnRipples.push({ x, y, r: i * 5, alpha: 0.46 - i * 0.1 });
+    }
+    for (let i = 0; i < 14; i++) {
+      rnSplashes.push({
+        x: x + rnd(-10, 10),
+        y,
+        r: rnd(1, 2.2),
+        h: 0,
+        vy: rnd(-2.2, -0.8),
+        alpha: rnd(0.4, 0.7),
       });
     }
-  }
-  else if (mode === 'dusk') {
-    // 点击处余晖亮一下
-    dkGlow.push({ x, y, r: 90, drift: 0, phase: 0, rgb: '232, 190, 160', alpha: 0.26, burst: true });
-    for (let i = 0; i < 12; i++) {
-      const angle = rnd(0, Math.PI * 2);
-      const speed = rnd(0.4, 1.8);
-      particles.push({
-        x, y,
-        vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed - 0.3,
-        size: rnd(0.8, 2), alpha: rnd(0.25, 0.55),
-        life: 1, decay: rnd(0.012, 0.026), temp: true,
-      });
-    }
-  }
-  else if (mode === 'bloom') {
-    // 点击处花瓣散开
-    for (let i = 0; i < 10; i++) {
-      blPetals.push({
-        x, y,
-        vx: rnd(-1.6, 1.6), vy: rnd(-1.8, -0.2),
-        size: rnd(2.5, 5.5), angle: rnd(0, 6.28), spin: rnd(-0.06, 0.06),
-        sway: 1, swayOff: rnd(0, 6.28),
-        alpha: rnd(0.3, 0.6),
-      });
-    }
-    addRipple(x, y, true);
   }
 }
 

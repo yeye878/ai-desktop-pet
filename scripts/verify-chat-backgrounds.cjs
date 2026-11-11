@@ -52,7 +52,7 @@ test("预设清单包含重设计后的全部模式且 id 唯一", () => {
   const sorted = ids.slice().sort().join(",");
   assert.equal(
     sorted,
-    ["aurora", "bloom", "custom", "cute", "dusk", "ink", "minimal", "mist", "none", "rain", "scifi"].sort().join(","),
+    ["aurora", "custom", "cute", "ink", "minimal", "none", "rain", "scifi"].sort().join(","),
   );
   assert.equal(new Set(ids).size, ids.length, "id 必须唯一");
   for (const preset of api.CHAT_BACKGROUNDS) {
@@ -64,10 +64,10 @@ test("预设清单包含重设计后的全部模式且 id 唯一", () => {
 test("背景预设数量不少于 10 个（含极光/水墨/晨雾/细雨/黄昏/花影）", () => {
   const { api } = createHarness();
   const selectable = Array.from(api.SELECTABLE_CHAT_BACKGROUNDS, (preset) => preset.id);
-  for (const required of ["aurora", "ink", "mist", "rain", "dusk", "bloom"]) {
+  for (const required of ["aurora", "ink", "rain"]) {
     assert.ok(selectable.includes(required), `缺少预设 ${required}`);
   }
-  assert.ok(selectable.length >= 9, `可选预设至少 9 个，实际 ${selectable.length}`);
+  assert.ok(selectable.length >= 5, `可选预设至少 5 个，实际 ${selectable.length}`);
 });
 
 test("新增的 aurora / ink 是可选预设，自定义不混进预设网格", () => {
