@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import type { PlaybackEventPayload } from "./ttsPlaybackState";
 
 export interface TtsVoice {
   id: string;
@@ -113,7 +115,12 @@ export class TtsPlayer {
   private systemUtterance: SpeechSynthesisUtterance | null = null;
   private playing = false;
   private activeReject: ((reason?: any) => void) | null = null;
+  private activeResolve: (() => void) | null = null;
   private playbackToken = 0;
+  /** 当前正在播的那一段对应的后端 playback_id，0 表示没有已知的活跃会话。 */
+  private activePlaybackId = 0;
+  /** 本实例自身的结束事件监听，独立于全局 UI 状态订阅。 */
+  private endedListenerPromise: Promise<void> | null = null;
 
   get isPlaying() {
     return this.playing;
@@ -123,6 +130,22 @@ export class TtsPlayer {
     // Native Edge playback no longer needs a browser media unlock.
   }
 
+  /** 确保本实例已监听后端播放结束事件（幂等）。 */
+  private ensureEndedListener() {
+    if (this.endedListenerPromise) return this.endedListenerPromise;
+    this.endedListenerPromise = listen<PlaybackEventPayload>("tts-playback-ended", (event) => {
+      this.handlePlaybackEnded(event.payload?.playback_id ?? 0);
+    }).then(() => undefined);
+    return this.endedListenerPromise;
+  }
+
+  /**
+   * 播报一段文本。
+   *
+   * `tts_play` 现在把音频真正开始播放后才返回，所以一次 speak() 的结束时刻不能靠
+   * "所有 invoke 都返回了"来判断——那样会在最后一段刚开口时就 resolve。
+   * 改为：逐段发出，最后一段的播放由后端的 `tts-playback-ended` 事件收尾。
+   */
   async speak(text: string, settings: TtsSettings): Promise<void> {
     if (!text.trim()) return;
     if (settings.engine === "system") {
@@ -136,30 +159,58 @@ export class TtsPlayer {
 
     const token = ++this.playbackToken;
     this.playing = true;
+    await this.ensureEndedListener();
+    if (this.playbackToken !== token) return;
     return new Promise<void>(async (resolve, reject) => {
       this.activeReject = reject;
+      this.activeResolve = resolve;
       try {
-        for (const chunk of splitTextForEdgeTts(text)) {
+        const chunks = splitTextForEdgeTts(text);
+        for (let index = 0; index < chunks.length; index += 1) {
           if (this.playbackToken !== token) return;
-          await invoke<void>("tts_play", {
-            text: chunk,
+          const playbackId = await invoke<number>("tts_play", {
+            text: chunks[index],
             voice: settings.voice,
             rate: settings.rate,
             pitch: settings.pitch,
             volume: settings.volume,
           });
+          if (this.playbackToken !== token) return;
+          // 记录最后一段的会话 id：它的 ended 事件才是整次播报的结束信号。
+          this.activePlaybackId = typeof playbackId === "number" ? playbackId : 0;
         }
+        // 队列已全部发出，等待最后一段真正播完；由 handlePlaybackEnded 收尾。
         if (this.playbackToken !== token) return;
-        this.playing = false;
-        this.activeReject = null;
-        resolve();
+        if (this.activePlaybackId === 0) {
+          // 后端未返回 id（旧版本/异常路径）时没有事件可等，直接结束避免悬挂。
+          this.finishPlayback();
+        }
       } catch (err) {
         if (this.playbackToken !== token) return;
-        this.playing = false;
-        this.activeReject = null;
+        this.finishPlayback();
         reject(this.toPlaybackError(err, "TTS playback failed"));
       }
     });
+  }
+
+  /**
+   * 由后端的 `tts-playback-ended` 事件驱动，把"最后一段播完"映射为 speak() 的完成。
+   * `playback_id === 0` 表示 `tts_stop` 主动打断。
+   */
+  handlePlaybackEnded(playbackId: number) {
+    if (this.activePlaybackId === 0) return;
+    // 非当前会话的结束事件（被打断、被新一句顶替）直接丢弃。
+    if (playbackId !== 0 && playbackId !== this.activePlaybackId) return;
+    this.finishPlayback();
+  }
+
+  private finishPlayback() {
+    this.playing = false;
+    this.activePlaybackId = 0;
+    this.activeReject = null;
+    const resolve = this.activeResolve;
+    this.activeResolve = null;
+    resolve?.();
   }
 
   private speakWithSystem(text: string, settings: TtsSettings): Promise<void> {
@@ -256,6 +307,9 @@ export class TtsPlayer {
     if (this.canUseSystemSpeech()) {
       window.speechSynthesis.cancel();
     }
+    // 被打断的 speak 必须 reject 掉，否则调用方会永远 await 一个不会有结果的 Promise。
+    this.activeResolve = null;
+    this.activePlaybackId = 0;
     if (this.activeReject) {
       const reject = this.activeReject;
       this.activeReject = null;

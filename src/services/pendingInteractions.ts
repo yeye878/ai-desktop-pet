@@ -9,11 +9,13 @@ export interface ToolConfirmPayload {
   summary?: string;
   command?: string | null;
   path?: string | null;
+  session_id?: string;
 }
 export interface AskUserPayload {
   id: string;
   question: string;
   options: { label: string; description?: string | null }[];
+  session_id?: string;
 }
 export interface PendingInteractions {
   tool_confirms: ToolConfirmPayload[];
@@ -25,15 +27,26 @@ type Request = ToolConfirmPayload | AskUserPayload;
 
 // Subscribe first, then recover requests missed while a window was loading.
 // A snapshot must not replace an event observed while its IPC was in flight.
+export interface PendingInteractionFilter {
+  sessionId?: string | null;
+  fallbackToLegacy?: boolean;
+}
+
 export function subscribePendingInteraction<T extends Request>(
   kind: Kind,
   pending: Ref<T | null>,
   onResolved: (id: string) => void = () => {},
+  filter: PendingInteractionFilter = {},
 ): () => void {
   const listeners: UnlistenFn[] = [];
   let stopped = false;
   let revision = 0;
-  const receive = (payload: T) => { if (!stopped) { ++revision; pending.value = payload; } };
+  const accepts = (payload: Request) => {
+    const sessionId = filter.sessionId;
+    if (!sessionId) return filter.fallbackToLegacy !== false;
+    return payload.session_id === sessionId || (!payload.session_id && filter.fallbackToLegacy === true);
+  };
+  const receive = (payload: T) => { if (!stopped && accepts(payload)) { ++revision; pending.value = payload; } };
   const event = kind === "tool" ? "ai-tool-confirm" : "ai-ask-user";
   void (async () => {
     for (const register of [
@@ -52,8 +65,11 @@ export function subscribePendingInteraction<T extends Request>(
     const before = revision;
     const snapshot = await invoke<PendingInteractions>("get_pending_interactions");
     if (stopped || revision !== before) return;
-    const items = kind === "tool" ? snapshot?.tool_confirms : snapshot?.questions;
-    pending.value = (items?.find((item) => item.id === pending.value?.id) || items?.[0] || null) as T | null;
+    const all = kind === "tool" ? snapshot?.tool_confirms : snapshot?.questions;
+    const items = (Array.isArray(all) ? all : []).filter(accepts) as T[];
+    pending.value = (filter.sessionId
+      ? items.find((item) => item.id === pending.value?.id) || items[0] || null
+      : items.find((item) => item.id === pending.value?.id) || items?.[0] || null) as T | null;
   })().catch((error) => console.error("加载待处理请求失败", error));
   return () => { stopped = true; listeners.splice(0).forEach((unlisten) => unlisten()); };
 }

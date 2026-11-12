@@ -239,6 +239,50 @@ test("AgentModelPicker 选模型时按 (provider, model) 校验 effort，不支�
   assert.equal(run("", "custom-model", ""), "");
 });
 
+test("AgentModelPicker 跟随本机时调整强度固定本机模型，显式模型保持渠道", () => {
+  const { node, source } = scriptFunction("src/components/AgentModelPicker.vue", "selectEffort");
+  const calls = [];
+  const currentModel = { value: "" };
+  const currentProvider = { value: "" };
+  const handler = evaluate("exports.run = (" + node.getText(source) + ");", {
+    props: { disabled: false },
+    currentModel, currentProvider,
+    catalog: { value: makeCatalog() },
+    compatibleEffort: (provider, model, effort) => {
+      assert.equal(provider, currentProvider.value || "local-provider");
+      assert.equal(model, currentModel.value || "model-flash");
+      return effort;
+    },
+    emit: (name, payload) => calls.push({ name, ...plain(payload) }),
+  }).run;
+  handler("high");
+  assert.deepEqual(calls[0], { name: "select", model: "model-flash", provider: "local-provider", effort: "high" });
+  currentModel.value = "model-pro";
+  currentProvider.value = "remote-provider";
+  handler("");
+  assert.deepEqual(calls[1], { name: "select", model: "model-pro", provider: "remote-provider", effort: "" });
+});
+
+test("AgentModelPicker 弹层在窄屏、矮窗及右边缘保持完整可见", () => {
+  const { node, source } = scriptFunction("src/components/AgentModelPicker.vue", "updatePopupPosition");
+  for (const [width, height] of [[1440, 960], [1024, 768], [390, 740], [340, 400]]) {
+    const popupStyle = { value: {} };
+    const handler = evaluate("exports.run = (" + node.getText(source) + ");", {
+      props: { embedded: false },
+      open: { value: true },
+      rootRef: { value: { getBoundingClientRect: () => ({ right: width - 4, bottom: height - 20 }) } },
+      popupRef: { value: { offsetHeight: 560 } },
+      popupStyle,
+      window: { innerWidth: width, innerHeight: height },
+    }).run;
+    handler();
+    const style = popupStyle.value;
+    assert.ok(parseFloat(style.left) >= 12 && parseFloat(style.top) >= 12);
+    assert.ok(parseFloat(style.left) + parseFloat(style.width) <= width - 12);
+    assert.ok(parseFloat(style.top) + parseFloat(style.maxHeight) <= height - 12);
+  }
+});
+
 test("AgentModelPicker 搜索按 name/id/provider 大小写不敏感过滤", () => {
   const { node, source } = scriptFunction("src/components/AgentModelPicker.vue", "matchesKeyword");
   const run = (keyword, model) => {
@@ -275,17 +319,381 @@ test("AgentModelPicker 组件按渠道分组、>12 个模型显示搜索、(prov
   assert.ok(source.includes("dash-agent-model-channel"), "触发器必须显示渠道");
   assert.ok(source.includes("provider_label") && source.includes("provider_label || model.provider"));
   assert.ok(source.includes("model.provider_label || model.provider ||"), "组标题取 provider_label");
-  assert.ok(source.includes("provider: currentProvider.value"), "effort 只更新 effort 时带上当前 provider");
-  assert.ok(source.includes("dash-agent-model-effort-chips"));
+  assert.ok(source.includes("compatibleEffort(provider, model, effortId)"), "强度按已解析的模型与渠道校验");
+  assert.ok(source.includes("<EffortSlider") && source.includes('@change="selectEffort"'));
+  assert.doesNotMatch(source, /dash-agent-model-effort-chips/);
   assert.ok(source.includes("跟随本机默认"));
   assert.ok(source.includes("自定义模型 ID"));
   assert.ok(source.includes("event.key === \"Escape\"") || source.includes('event.key === "Escape"'));
   assert.doesNotMatch(source, /datalist/, "选择器不应再依赖原生 datalist");
 });
 
+// ---------- EffortSlider：连续拖动、弹簧及生命周期 ----------
+
+function effortSliderHarness(t, initial = {}, reduce = false) {
+  const vue = require("vue");
+  const props = vue.reactive({ options: EFFORTS_LOW_HIGH, modelValue: "", disabled: false, ...initial });
+  const scope = vue.effectScope();
+  const mounted = [];
+  const unmount = [];
+  const frames = new Map();
+  const mediaListeners = new Set();
+  const captures = new Set();
+  const changes = [];
+  const rect = { left: 20, width: 288 };
+  let time = 0;
+  let nextFrame = 0;
+  let requests = 0;
+  let destroyed = false;
+  const media = {
+    matches: reduce,
+    addEventListener: (name, handler) => mediaListeners.add(handler),
+    removeEventListener: (name, handler) => mediaListeners.delete(handler),
+  };
+  const service = loadModule("src/services/agentModels.ts", { "@tauri-apps/api/core": { invoke: async () => null } });
+  const source = componentText("src/components/EffortSlider.vue").match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1];
+  const api = scope.run(() => evaluate(source + `
+    exports.api = { stops, selectedIndex, shownIndex, shownStop, unavailable, activePointerId,
+      isDragging, dragRatio, position, trailPosition, lag, thumbStyle, trailStyle, tint, trackRef, thumbRef,
+      particles, particleStyle, trackInset, trackPosition,
+      ratioAtIndex, ratioFromClientX, indexFromRatio, onPointerDown, onPointerMove, onPointerUp,
+      onPointerCancel, selectStop, onKeydown };
+  `, {
+    require: (name) => name === "vue" ? {
+      ...vue,
+      onMounted: (handler) => mounted.push(handler),
+      onBeforeUnmount: (handler) => unmount.push(handler),
+    } : service,
+    defineProps: () => props,
+    withDefaults: (value) => value,
+    defineEmits: () => (event, id) => {
+      assert.equal(event, "change");
+      changes.push(id);
+      props.modelValue = id;
+    },
+    performance: { now: () => time },
+    window: {
+      matchMedia: () => media,
+      requestAnimationFrame: (callback) => { requests += 1; frames.set(++nextFrame, callback); return nextFrame; },
+      cancelAnimationFrame: (id) => frames.delete(id),
+    },
+  }).api);
+  const track = {
+    getBoundingClientRect: () => rect,
+    focus: () => {},
+    setPointerCapture: (id) => captures.add(id),
+    hasPointerCapture: (id) => captures.has(id),
+    releasePointerCapture: (id) => { captures.delete(id); api.onPointerCancel({ pointerId: id }); },
+  };
+  api.trackRef.value = track;
+  api.thumbRef.value = {};
+  mounted.forEach((handler) => handler());
+  const destroy = () => {
+    if (destroyed) return;
+    destroyed = true;
+    unmount.forEach((handler) => handler());
+    scope.stop();
+  };
+  t.after(destroy);
+  const step = (ms = 1000 / 60) => {
+    time += ms;
+    const pending = [...frames.values()];
+    frames.clear();
+    pending.forEach((callback) => callback(time));
+    assert.ok(frames.size <= 1, "同一组件最多保留一个 RAF");
+  };
+  return {
+    api, props, changes, rect, track, captures, frames, mediaListeners, destroy, step,
+    get requests() { return requests; },
+    settle: () => {
+      for (let count = 0; frames.size && count < 300; count += 1) step();
+      assert.equal(frames.size, 0, "收敛后（含按住不动）必须停止 RAF");
+    },
+    pointer: (ratio, id = 1, extra = {}) => ({
+      clientX: rect.left + api.trackInset + ratio * (rect.width - api.trackInset * 2),
+      pointerId: id, button: 0, isPrimary: true, preventDefault() {}, ...extra,
+    }),
+    key: (key) => api.onKeydown({ key, preventDefault() {}, stopPropagation() {} }),
+    reduce: (matches) => { media.matches = matches; mediaListeners.forEach((handler) => handler()); },
+  };
+}
+
+test("EffortSlider 连续预览、按速度方向拖尾，松手仅提交一次并弹性收敛", (t) => {
+  const h = effortSliderHarness(t);
+  const a = h.api;
+  assert.equal(h.frames.size, 0, "初始闲时不启动动画");
+  a.onPointerDown(h.pointer(0.1));
+  h.step();
+  a.onPointerMove(h.pointer(0.67));
+  assert.equal(a.dragRatio.value, 0.67);
+  assert.equal(a.position.value, 0.67, "主体连续跟手，不吸附到 0.5");
+  assert.equal(a.shownIndex.value, 1);
+  assert.equal(a.shownStop.value.label, "低");
+  assert.deepEqual(h.changes, []);
+  assert.ok(a.lag.value > 0 && a.trailStyle.value.opacity > 0);
+  const stretched = a.thumbStyle.value.transform;
+  h.settle();
+  assert.equal(a.isDragging.value, true);
+  assert.equal(a.trailStyle.value.opacity, 0);
+  assert.notEqual(a.thumbStyle.value.transform, stretched);
+  h.step();
+  a.onPointerMove(h.pointer(0.57));
+  assert.ok(a.lag.value < 0, "反向拖动应反转尾迹方向");
+  a.onPointerUp(h.pointer(0.57));
+  assert.deepEqual(h.changes, ["low"]);
+  assert.equal(a.isDragging.value, false);
+  assert.equal(h.captures.size, 0);
+  assert.equal(a.position.value, 0.57, "松手不瞬移到档位");
+  let crossed = false;
+  for (let frame = 0; frame < 50; frame += 1) {
+    h.step();
+    if (a.position.value < 0.5) crossed = true;
+  }
+  assert.ok(crossed, "释放后弹簧应有弹性回落");
+  h.settle();
+  assert.equal(a.position.value, 0.5);
+  assert.equal(a.trailPosition.value, 0.5);
+  assert.equal(a.trailStyle.value.opacity, 0);
+  a.onPointerUp(h.pointer(1));
+  assert.deepEqual(h.changes, ["low"]);
+});
+
+test("EffortSlider 抓住内嵌滑钮边缘不跳位，慢拖与快拖有不同形变", (t) => {
+  const h = effortSliderHarness(t, { modelValue: "low" });
+  const a = h.api;
+  a.onPointerDown(h.pointer(0.55, 1, { target: a.thumbRef.value }));
+  assert.equal(a.position.value, 0.5, "保留抓取点与滑钮中心的偏移");
+  h.step();
+  a.onPointerMove(h.pointer(0.65));
+  assert.equal(a.position.value, 0.6);
+  a.onPointerCancel(h.pointer(0.65));
+  h.settle();
+  a.onPointerDown(h.pointer(0.1));
+  assert.equal(a.position.value, 0.1, "点击轨道不保留上一次抓取偏移");
+  const trailAtSpeed = (waitFrames) => {
+    const run = effortSliderHarness(t);
+    run.api.onPointerDown(run.pointer(0.1));
+    for (let index = 1; index <= 6; index += 1) {
+      for (let frame = 0; frame < waitFrames; frame += 1) run.step();
+      run.api.onPointerMove(run.pointer(0.1 + index * 0.025));
+    }
+    return run.api.lag.value;
+  };
+  assert.ok(trailAtSpeed(1) > trailAtSpeed(6), "相同路径快速移动应有更长尾迹");
+});
+
+test("EffortSlider 流体粒子沿拖动方向释放、限量衰减，停下后不空转", (t) => {
+  const h = effortSliderHarness(t);
+  const a = h.api;
+  a.onPointerDown(h.pointer(0.1));
+  h.step();
+  a.onPointerMove(h.pointer(0.8));
+  assert.ok(a.particles.value.length > 0 && a.particles.value.length <= 8);
+  assert.ok(a.particles.value.every((particle) => particle.vx > 0));
+  const initial = a.particles.value[0];
+  h.step();
+  const evolved = a.particles.value.find((particle) => particle.id === initial.id);
+  assert.ok(evolved.age > initial.age && evolved.x > initial.x);
+  assert.notEqual(evolved.y, initial.y);
+  assert.ok(a.particleStyle(evolved).opacity > 0);
+  a.onPointerMove(h.pointer(0.2));
+  assert.ok(a.particles.value.slice(-8).every((particle) => particle.vx < 0));
+  for (let index = 0; index < 12; index += 1) {
+    a.onPointerMove(h.pointer(index % 2 ? 0.1 : 0.9));
+    h.step();
+    assert.ok(a.particles.value.length <= 32);
+    assert.ok(a.particles.value.every((particle) => Math.abs(particle.y) <= 14));
+  }
+  h.settle();
+  assert.equal(a.particles.value.length, 0);
+  const requests = h.requests;
+  a.onPointerMove(h.pointer(0.1));
+  h.step();
+  assert.equal(h.requests, requests, "按住不动不再发射粒子或请求 RAF");
+  a.onPointerMove(h.pointer(0.8));
+  assert.ok(a.particles.value.length > 0);
+  h.reduce(true);
+  assert.equal(a.particles.value.length, 0);
+  assert.equal(h.frames.size, 0);
+  a.onPointerMove(h.pointer(0.2));
+  assert.equal(a.particles.value.length, 0);
+  h.reduce(false);
+  a.onPointerMove(h.pointer(0.8));
+  assert.ok(a.particles.value.length > 0);
+  h.props.disabled = true;
+  assert.equal(a.particles.value.length, 0);
+  assert.equal(h.frames.size, 0);
+});
+
+test("EffortSlider 内嵌端点与点击坐标一致，不把滑钮中心放到轨道外沿", (t) => {
+  const h = effortSliderHarness(t);
+  const a = h.api;
+  assert.equal(a.trackPosition(0), "calc(0% + 24px)");
+  assert.equal(a.trackPosition(0.5), "calc(50% + 0px)");
+  assert.equal(a.trackPosition(1), "calc(100% + -24px)");
+  for (const width of [180, 240, 360, 520]) {
+    h.rect.width = width;
+    for (const ratio of [0, 0.25, 0.5, 0.75, 1]) {
+      assert.equal(a.ratioFromClientX(h.pointer(ratio).clientX), ratio);
+    }
+    assert.equal(a.ratioFromClientX(h.rect.left), 0);
+    assert.equal(a.ratioFromClientX(h.rect.left + width), 1);
+  }
+});
+
+test("EffortSlider 只跟踪主指针，cancel/lost capture 不提交，禁用立即取消", (t) => {
+  const h = effortSliderHarness(t, { modelValue: "low" });
+  const a = h.api;
+  a.onPointerDown(h.pointer(0.2, 2, { isPrimary: false }));
+  a.onPointerDown(h.pointer(0.2, 2, { button: 2 }));
+  assert.equal(a.isDragging.value, false);
+  a.onPointerDown(h.pointer(0.2));
+  a.onPointerDown(h.pointer(1, 2));
+  a.onPointerMove(h.pointer(1, 2));
+  a.onPointerUp(h.pointer(1, 2));
+  a.onPointerCancel(h.pointer(1, 2));
+  assert.equal(a.activePointerId.value, 1);
+  assert.equal(a.dragRatio.value, 0.2);
+  a.onPointerCancel(h.pointer(0.2));
+  h.settle();
+  assert.equal(a.position.value, 0.5);
+  assert.deepEqual(h.changes, []);
+  a.onPointerDown(h.pointer(0.8));
+  h.track.releasePointerCapture(1);
+  assert.equal(a.isDragging.value, false, "意外 lostpointercapture 取消拖动");
+  h.settle();
+  a.onPointerDown(h.pointer(0.1));
+  h.step();
+  a.onPointerMove(h.pointer(0.9));
+  h.props.disabled = true;
+  assert.equal(a.isDragging.value, false);
+  assert.equal(a.position.value, 0.5);
+  assert.equal(h.captures.size, 0);
+  assert.equal(h.frames.size, 0);
+  a.onPointerUp(h.pointer(0.9));
+  a.selectStop(2);
+  h.key("End");
+  assert.deepEqual(h.changes, []);
+  h.props.disabled = false;
+  h.track.setPointerCapture = () => { throw new Error("detached"); };
+  a.onPointerDown(h.pointer(0.8));
+  assert.equal(a.isDragging.value, false, "捕获失败不能留下悬挂拖动");
+  assert.equal(h.frames.size, 0);
+});
+
+test("EffortSlider 支持九档、点击及键盘边界；选项变更和 auto-only 不产生无效位置", (t) => {
+  const ids = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+  const h = effortSliderHarness(t, { options: ids.map((id) => ({ id, name: id })) });
+  const a = h.api;
+  assert.equal(a.stops.value.length, 9);
+  for (let index = 0; index < 9; index += 1) {
+    assert.equal(a.ratioAtIndex(index), index / 8);
+    a.selectStop(index);
+    assert.equal(a.selectedIndex.value, index);
+  }
+  h.key("Home"); assert.equal(h.props.modelValue, "");
+  const count = h.changes.length;
+  h.key("ArrowLeft"); h.key("ArrowDown"); h.key("Escape");
+  assert.equal(h.changes.length, count);
+  h.key("ArrowRight"); assert.equal(h.props.modelValue, "off");
+  h.key("ArrowUp"); assert.equal(h.props.modelValue, "minimal");
+  h.key("ArrowDown"); assert.equal(h.props.modelValue, "off");
+  h.key("End"); assert.equal(h.props.modelValue, "ultra");
+  h.key("ArrowRight"); assert.equal(h.props.modelValue, "ultra");
+  a.onPointerDown(h.pointer(0.6));
+  h.props.options.reverse();
+  assert.equal(a.isDragging.value, false, "同长度重排也取消旧档位预览");
+  assert.equal(a.selectedIndex.value, 1);
+  a.onPointerDown(h.pointer(0.7));
+  h.props.modelValue = "off";
+  assert.equal(a.isDragging.value, false, "外部选值优先于旧的拖动预览");
+  a.onPointerDown(h.pointer(0.7));
+  const beforeRemoval = h.changes.length;
+  h.props.options = [];
+  assert.equal(a.isDragging.value, false);
+  assert.equal(a.unavailable.value, true);
+  assert.equal(a.position.value, 0);
+  assert.equal(a.shownIndex.value, 0);
+  assert.equal(a.shownStop.value.label, "自动");
+  assert.equal(a.ratioAtIndex(0), 0);
+  assert.equal(h.frames.size, 0);
+  a.onPointerUp(h.pointer(1)); h.key("End"); a.selectStop(0);
+  assert.equal(h.changes.length, beforeRemoval);
+  h.rect.width = 0;
+  assert.equal(a.ratioFromClientX(100), 0);
+  assert.equal(a.indexFromRatio(2), 0);
+  h.props.options = EFFORTS_LOW_HIGH;
+  assert.equal(a.unavailable.value, false);
+  h.rect.width = 240;
+  a.onPointerDown(h.pointer(2));
+  assert.equal(a.dragRatio.value, 1);
+  a.onPointerMove(h.pointer(-1));
+  assert.equal(a.dragRatio.value, 0);
+});
+
+test("EffortSlider reduced-motion 保留连续位置但零装饰 RAF，偏好切换与卸载完全清理", (t) => {
+  const h = effortSliderHarness(t, {}, true);
+  const a = h.api;
+  a.onPointerDown(h.pointer(0.1));
+  a.onPointerMove(h.pointer(0.63));
+  assert.equal(a.position.value, 0.63);
+  assert.equal(a.trailPosition.value, 0.63);
+  assert.equal(a.trailStyle.value.opacity, 0);
+  a.onPointerUp(h.pointer(0.63));
+  assert.equal(a.position.value, 0.5);
+  h.key("End");
+  assert.equal(a.position.value, 1);
+  assert.equal(h.requests, 0, "减少动态效果下不能安排装饰帧");
+  h.reduce(false);
+  a.onPointerDown(h.pointer(0.1));
+  h.step();
+  a.onPointerMove(h.pointer(0.7));
+  assert.equal(h.frames.size, 1);
+  h.reduce(true);
+  assert.equal(h.frames.size, 0);
+  assert.equal(a.position.value, 0.7);
+  assert.equal(a.isDragging.value, true);
+  a.onPointerMove(h.pointer(0.68));
+  assert.equal(a.position.value, 0.68);
+  h.reduce(false);
+  a.onPointerMove(h.pointer(0.9));
+  assert.equal(h.frames.size, 1);
+  h.destroy();
+  assert.equal(h.frames.size, 0);
+  assert.equal(h.mediaListeners.size, 0);
+  assert.equal(h.captures.size, 0);
+  assert.equal(a.isDragging.value, false);
+});
+
+test("EffortSlider 固定全长色谱裁切，刻度标签共用坐标，保留无障碍绑定", () => {
+  const source = componentText("src/components/EffortSlider.vue");
+  const fill = source.match(/\.effort-slider-fill\s*\{([^}]+)\}/)[1];
+  assert.match(fill, /inset: 0/);
+  assert.match(fill, /clip-path: inset\(0 calc\(100% - var\(--position\)\) 0 0\)/);
+  assert.doesNotMatch(fill, /width:/);
+  assert.match(source, /#80b9c5 0%, #829fce 36%, #a397c9 68%, #d79e9b 100%/);
+  assert.equal((source.match(/left: trackPosition\(ratioAtIndex\(index\)\)/g) || []).length, 2);
+  assert.match(source, /width: calc\(\(100% - var\(--track-inset\) \* 2\) \/ var\(--label-intervals\)\)/);
+  assert.match(source, /width: 40px;\s*height: 32px/);
+  const rail = source.match(/\.effort-slider-rail\s*\{([^}]+)\}/)[1];
+  const thumb = source.match(/\.effort-slider-thumb\s*\{([^}]+)\}/)[1];
+  assert.match(rail, /inset: 2px 0/);
+  assert.match(rail, /overflow: hidden/);
+  assert.match(rail, /backdrop-filter:/);
+  assert.doesNotMatch(thumb, /backdrop-filter|rgba\(255, 255, 255/);
+  assert.doesNotMatch(source, /effort-slider-desc|拖动后松手选定|hintId/);
+  assert.match(source, /:aria-disabled="unavailable"/);
+  assert.match(source, /:aria-valuenow="shownIndex"/);
+  assert.match(source, /:aria-valuetext="shownStop.label"/);
+  assert.match(source, /@lostpointercapture="onPointerCancel"/);
+  assert.match(source, /@pointercancel="onPointerCancel"/);
+  assert.match(source, /@media \(prefers-reduced-motion: reduce\)/);
+  assert.doesNotMatch(source, /@keyframes|transition:\s*left|<svg|filter:\s*url\(/);
+});
+
 // ---------- Dashboard 接线 ----------
 
-test("Dashboard 用 provider 透传：picker 传 provider、bind 只写变化字段、底部显示渠道", () => {
+test("Dashboard 用 provider 透传：picker 传 provider、bind 只写变化字段、提示保留渠道", () => {
   const source = componentText("src/components/Dashboard.vue");
   assert.ok(!source.includes("datalist"), "Dashboard 不应再出现 datalist");
   assert.ok(!source.includes("AGENT_MODEL_PRESETS"), "Dashboard 不应再出现 AGENT_MODEL_PRESETS 硬编码预设");
@@ -300,9 +708,11 @@ test("Dashboard 用 provider 透传：picker 传 provider、bind 只写变化字
   assert.ok(source.includes("provider: string"), "窗口偏好必须持久化 provider");
   assert.ok(source.includes("agentCatalogs"), "Dashboard 必须缓存目录用于展示名解析");
   assert.ok(source.includes("ensureAgentCatalog") && source.includes("fetchAgentModelCatalog"), "挂载/切 slot 预取目录");
-  assert.ok(source.includes("currentSessionChannelLabel"), "底部信息条必须显示渠道");
-  assert.ok(source.includes("currentSessionModelLabel"));
-  assert.match(source, /思考：\{\{ currentSessionEffortLabel \}\}/);
+  const hint = source.match(/<span\s+class="dash-chat-hint"[\s\S]*?<\/span>/)?.[0] || "";
+  assert.ok(hint.includes("currentSessionChannelLabel") && hint.includes("currentSessionModelLabel"));
+  assert.ok(hint.includes("currentSessionEffortLabel") && hint.includes(":title="));
+  assert.doesNotMatch(source, /class="dash-agent-meta-pill"/);
+  assert.equal((source.match(/<AgentPicker\b/g) || []).length, 1);
   assert.ok(source.includes("patch.provider = provider"), "bind 只传变化的 provider");
   assert.ok(source.includes("patch.model = model"));
   assert.ok(source.includes("patch.reasoningEffort = effort"));
@@ -326,7 +736,7 @@ test("sessions store 的 create/bind 透传播 provider 与 reasoningEffort", as
   await store.create("dsh", { agentId: "builtin-dsh", model: "deepseek-v4.1-flash", provider: "opendesgin", reasoningEffort: "max" });
   assert.deepEqual(plain(calls[0]), {
     command: "create_chat_session",
-    args: { slot: "dsh", agentId: "builtin-dsh", model: "deepseek-v4.1-flash", provider: "opendesgin", reasoningEffort: "max", title: "" },
+    args: { slot: "dsh", agentId: "builtin-dsh", model: "deepseek-v4.1-flash", provider: "opendesgin", reasoningEffort: "max", permission: "", title: "", activate: true },
   });
   await store.create("dsh", { model: "deepseek-v4-flash" });
   assert.equal(plain(calls[1].args).provider, "", "未指定 provider 时 create 必须传空串");

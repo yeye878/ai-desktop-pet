@@ -975,8 +975,8 @@ button {
   align-items: center;
   justify-content: center;
   border-radius: 8px;
-  background:
-    linear-gradient(135deg, rgba(255, 216, 92, 0.65), rgba(102, 200, 255, 0.28));
+  background: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.10);
+  border: 1px solid rgba(var(--pet-primary-rgb, 204, 112, 82), 0.16);
   color: rgb(var(--pet-primary-rgb, 204, 112, 82));
   font-size: 12px;
   font-weight: 800;
@@ -1114,7 +1114,7 @@ button {
   flex: 1;
   min-width: 0;
   min-height: 0;
-  gap: 12px;
+  gap: 0;
 }
 
 .dash-chat-head {
@@ -1123,16 +1123,9 @@ button {
   justify-content: space-between;
   gap: 12px;
   flex-shrink: 0;
-  padding: 10px 14px;
-  border: 1px solid rgba(255, 255, 255, 0.58);
-  border-radius: 14px;
-  background:
-    linear-gradient(145deg, rgba(255, 255, 255, 0.66), rgba(255, 249, 238, 0.38));
-  box-shadow:
-    0 4px 0 rgba(24, 42, 72, 0.035),
-    0 14px 28px rgba(24, 42, 72, 0.06);
-  backdrop-filter: blur(10px) saturate(1.06);
-  -webkit-backdrop-filter: blur(10px) saturate(1.06);
+  min-height: 72px;
+  padding: 10px 18px;
+  border-bottom: 1px solid rgba(33, 48, 74, 0.07);
 }
 
 .dash-chat-head-title {
@@ -1157,10 +1150,7 @@ button {
   align-items: center;
   gap: 5px;
   height: 22px;
-  padding: 0 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(24, 42, 72, 0.09);
-  background: rgba(255, 255, 255, 0.72);
+  padding: 0 4px;
   color: var(--dash-text-secondary);
   font-size: 11px;
   font-weight: 600;
@@ -1185,28 +1175,30 @@ button {
 .dash-chat-aside {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  flex: 0 0 264px;
-  width: 264px;
+  gap: 0;
+  flex: 0 0 240px;
+  width: 240px;
   min-height: 0;
   overflow-y: auto;
   scrollbar-width: thin;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: 16px;
+  /* 与主工作区一致的轻玻璃层次，文字和列表仍保持原透明度。 */
+  background: linear-gradient(160deg, rgba(248, 250, 253, 0.66), rgba(248, 250, 253, 0.42));
+  backdrop-filter: blur(14px) saturate(1.08);
+  -webkit-backdrop-filter: blur(14px) saturate(1.08);
 }
 
 .dash-aside-card {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.58);
-  border-radius: 14px;
-  background:
-    url("./art/paper-grain.webp"),
-    linear-gradient(160deg, rgba(255, 255, 255, 0.72), rgba(255, 249, 238, 0.44));
-  background-size: 420px 420px, auto;
-  box-shadow:
-    0 4px 0 rgba(24, 42, 72, 0.035),
-    0 14px 28px rgba(24, 42, 72, 0.06);
+  flex-shrink: 0;
+  gap: 12px;
+  padding: 18px 16px;
+}
+
+.dash-aside-card + .dash-aside-card {
+  border-top: 1px solid rgba(33, 48, 74, 0.07);
 }
 
 .dash-aside-title {
@@ -1280,9 +1272,9 @@ button {
 .dash-aside-btn {
   flex: 1;
   height: 30px;
-  border-radius: 9px;
-  border: 1px solid rgba(24, 42, 72, 0.10);
-  background: rgba(255, 255, 255, 0.72);
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: rgba(33, 48, 74, 0.04);
   color: var(--dash-text-secondary);
   font-size: 12px;
   font-weight: 600;
@@ -1315,19 +1307,18 @@ button {
 .dash-aside-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  border-radius: 9px;
-  background: rgba(255, 255, 255, 0.56);
-  border: 1px solid rgba(24, 42, 72, 0.06);
+  gap: 10px;
+  padding: 7px 0;
+}
+
+.dash-aside-item + .dash-aside-item {
+  border-top: 1px solid rgba(33, 48, 74, 0.05);
 }
 
 .dash-aside-date {
   flex-shrink: 0;
-  padding: 1px 6px;
-  border-radius: 6px;
-  background: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.10);
-  color: rgba(var(--pet-primary-rgb, 204, 112, 82), 1);
+  min-width: 38px;
+  color: var(--dash-text-muted);
   font-size: 10.5px;
   font-weight: 600;
 }
@@ -1414,88 +1405,6 @@ button {
 
 .dash-scroll-fab:hover { transform: translateY(-1px); }
 
-.dash-chat-page::before {
-  content: "";
-  position: absolute;
-  inset: 10px 10px 92px 10px;
-  border: 1px dashed rgba(24, 42, 72, 0.11);
-  border-radius: 18px;
-  background:
-    linear-gradient(90deg, rgba(255, 255, 255, 0.10), transparent 30%, rgba(255, 255, 255, 0.08)),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent 38%);
-  pointer-events: none;
-  z-index: 0;
-}
-
-/* 窄窗（默认 1280 宽 / 拖小后）：右侧栏改为上下排，否则
-   252 侧边栏 + 264 右栏在 960 宽窗口下只剩约 350px 给消息区，
-   头部控件和时间条会被挤成一团、背景虚线框错位。 */
-@media (max-width: 1180px) {
-  .dashboard-content.chat-page-active {
-    padding: 16px 16px 20px;
-  }
-  .dash-chat-page {
-    flex-direction: column;
-    overflow-y: auto;
-  }
-  .dash-chat-main {
-    flex: 0 0 auto;
-    min-height: 420px;
-  }
-  .dash-chat-messages {
-    min-height: 220px;
-  }
-  .dash-chat-aside {
-    flex: 0 0 auto;
-    width: 100%;
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
-    overflow: visible;
-  }
-  .dash-chat-head-agent {
-    flex-wrap: wrap;
-  }
-  .dash-agent-head-controls {
-    justify-content: flex-start;
-  }
-  .dash-chat-page::before {
-    inset: 10px 10px 92px 10px;
-  }
-  .dash-floating-confirm-overlay {
-    left: 12px;
-  }
-}
-
-@media (max-width: 760px) {
-  .dash-chat-head {
-    flex-wrap: wrap;
-  }
-  .dash-chat-meta-row {
-    align-items: stretch;
-  }
-  .dash-chat-hint {
-    min-width: 0;
-    flex-basis: 100%;
-  }
-  .dash-agent-meta-pill {
-    white-space: normal;
-    height: auto;
-    min-height: 22px;
-  }
-  .dash-aside-actions {
-    flex-wrap: wrap;
-  }
-  .dash-aside-btn {
-    flex: 1 1 96px;
-  }
-}
-
-@media (max-height: 760px) {
-  .dash-chat-aside {
-    scrollbar-width: thin;
-  }
-}
-
 .dash-chat-page > * {
   position: relative;
   z-index: 1;
@@ -1505,18 +1414,9 @@ button {
   position: relative;
   flex: 1;
   overflow-y: auto;
-  padding: 18px 18px 22px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.055)),
-    rgba(255, 255, 255, 0.035);
-  border-radius: 18px;
-  border: 1px solid rgba(255, 255, 255, 0.56);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.62),
-    0 5px 0 rgba(24, 42, 72, 0.035),
-    0 18px 36px rgba(24, 42, 72, 0.06);
-  backdrop-filter: blur(1.5px) saturate(1.04);
-  -webkit-backdrop-filter: blur(1.5px) saturate(1.04);
+  padding: 24px 22px;
+  /* 只保留工作区的一层玻璃底色，避免消息区二次刷白遮住背景插画。 */
+  background: transparent;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -2149,19 +2049,19 @@ button {
 
 /* input area */
 .dash-chat-composer {
-  margin-top: 0;
-  padding: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.58);
-  border-radius: 18px;
-  background:
-    url("./art/paper-grain.webp"),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.62), rgba(255, 249, 238, 0.42));
-  background-size: 420px 420px, auto;
-  box-shadow:
-    0 5px 0 rgba(24, 42, 72, 0.035),
-    0 16px 34px rgba(24, 42, 72, 0.08);
-  backdrop-filter: blur(14px) saturate(1.12);
-  -webkit-backdrop-filter: blur(14px) saturate(1.12);
+  flex-shrink: 0;
+  margin: 4px 16px 16px;
+  padding: 10px 12px 8px;
+  border: 1px solid rgba(33, 48, 74, 0.12);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 4px 16px rgba(33, 48, 74, 0.035), inset 0 1px 0 #fff;
+  transition: border-color .18s, box-shadow .18s;
+}
+
+.dash-chat-composer:focus-within {
+  border-color: rgba(91, 131, 183, 0.38);
+  box-shadow: 0 4px 20px rgba(33, 48, 74, 0.06), 0 0 0 2px rgba(91, 131, 183, 0.06);
 }
 
 .dash-chat-input-area {
@@ -2261,18 +2161,18 @@ button {
 
 .dash-chat-input {
   flex: 1;
-  padding: 11px 14px;
-  background: rgba(255, 255, 255, 0.66);
-  border: 1px solid rgba(24, 42, 72, 0.08);
-  border-radius: 13px;
+  min-width: 0;
+  padding: 12px 4px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
   font-size: 13.5px;
   color: var(--dash-text-primary);
-  transition: border-color var(--dash-transition), box-shadow var(--dash-transition);
 }
 
 .dash-chat-input:focus {
-  border-color: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.5);
-  box-shadow: var(--dash-shadow-glow);
+  outline: none;
+  box-shadow: none;
 }
 
 .dash-chat-send-btn {
@@ -2350,10 +2250,10 @@ button {
 
 .dash-meta-btn {
   height: 22px;
-  padding: 0 10px;
-  border: 1px solid var(--dash-card-border);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.72);
+  padding: 0 5px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
   color: var(--dash-text-secondary);
   font-size: 11px;
   font-weight: 600;
@@ -2728,10 +2628,12 @@ button {
   display: grid;
   place-items: center;
   flex-shrink: 0;
-  width: 32px;
-  height: 32px;
+  width: 34px;
+  height: 34px;
   border-radius: 10px;
-  background: var(--dash-panel-soft);
+  background: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.09);
+  border: 1px solid rgba(var(--pet-primary-rgb, 204, 112, 82), 0.14);
+  color: rgb(var(--pet-primary-rgb, 204, 112, 82));
   font-size: 15px;
 }
 
@@ -3175,7 +3077,10 @@ button {
 }
 
 .dash-backend-btn span {
-  min-width: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
   color: inherit;
   font-size: 11px;
   font-weight: 800;
@@ -4233,8 +4138,20 @@ button {
 
 .dash-preview-row {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  gap: 10px;
   margin-top: 10px;
+}
+
+/* 真实播放状态提示：由后端 tts-playback 事件驱动，不再是"点了就以为在播"。 */
+.dash-preview-hint {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dash-text-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---------- about ---------- */
@@ -4254,7 +4171,7 @@ button {
   align-items: center;
   justify-content: center;
   margin-bottom: 24px;
-  border-radius: 18px;
+  border-radius: 20px;
   background:
     linear-gradient(145deg, rgba(255, 255, 255, 0.22), transparent 36%),
     linear-gradient(135deg, rgb(var(--pet-primary-rgb, 204, 112, 82)), rgb(var(--pet-accent-rgb, 229, 154, 128)));
@@ -4263,17 +4180,6 @@ button {
     0 5px 0 rgba(var(--pet-primary-rgb, 204, 112, 82), 0.12),
     0 16px 36px rgba(var(--pet-primary-rgb, 204, 112, 82), 0.18),
     inset 0 2px 0 rgba(255, 255, 255, 0.2);
-  font-size: 0;
-}
-
-.about-logo::before {
-  content: "AP";
-  font-size: 38px;
-  font-weight: 700;
-  font-style: italic;
-  font-family: "Cinzel", "Georgia", "Times New Roman", serif;
-  letter-spacing: 0;
-  text-shadow: 0 2px 4px rgba(130, 78, 38, 0.18);
 }
 
 .about-name {
@@ -4838,7 +4744,27 @@ button {
 }
 
 /* Glassmorphism drop overlay */
+.dash-chat-attach-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 32px;
+  align-self: stretch;
+  padding: 0;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--dash-text-secondary);
+  cursor: pointer;
+}
+.dash-chat-attach-btn:hover { background: rgba(120,110,100,.08); }
+.dash-chat-attach-btn:focus-visible { outline: 2px solid var(--pet-primary); outline-offset: 2px; }
+.dash-chat-attach-btn:disabled { opacity: .45; cursor: default; }
+.dash-workspace-file-error { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0; padding: 7px 10px; border-radius: 8px; background: #fff0ed; color: #b7472f; font-size: 12px; }
+.dash-workspace-file-error button { border: 0; background: transparent; color: inherit; cursor: pointer; }
 .dash-drop-overlay {
+  pointer-events: none;
   position: absolute;
   inset: 0;
   display: flex;
@@ -5181,14 +5107,13 @@ button {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 12px;
-  padding: 8px 16px;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(240, 248, 255, 0.95));
-  border-bottom: 1px solid var(--dash-divider);
-  font-size: 13px;
+  flex-shrink: 0;
+  gap: 10px;
+  padding: 5px 22px;
+  background: rgba(235, 242, 251, 0.3);
+  border-bottom: 1px solid rgba(33, 48, 74, 0.045);
+  font-size: 11px;
   color: var(--dash-text-secondary);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
 }
 
 .weather-info-bar.error {
@@ -5227,14 +5152,14 @@ button {
 }
 
 .weather-refresh-btn {
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid rgba(35, 31, 28, 0.08);
-  border-radius: 8px;
-  background: rgba(255, 253, 248, 0.72);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
   color: var(--dash-text-primary);
   cursor: pointer;
   font-size: 16px;
@@ -5531,15 +5456,6 @@ button {
   box-shadow:
     0 8px 20px rgba(var(--pet-primary-rgb, 204, 112, 82), 0.16),
     inset 0 1px 0 rgba(255, 255, 255, 0.18);
-}
-
-.dash-chat-composer,
-.dash-chat-input-area {
-  border-color: rgba(33, 48, 74, 0.10);
-  background:
-    url("./art/paper-grain.webp"),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(255, 249, 238, 0.66));
-  background-size: 420px 420px, auto;
 }
 
 .dash-msg-bubble,
@@ -6306,8 +6222,13 @@ button {
   place-items: center;
   border-radius: 6px;
   background: linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(255, 248, 237, 0.78));
+  color: var(--dash-text-secondary);
   font-size: 12px;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75);
+}
+
+.sidebar-subitem.active .sidebar-subitem-avatar {
+  color: rgb(var(--pet-primary-rgb, 204, 112, 82));
 }
 
 .sidebar-subitem-label {
@@ -6334,10 +6255,10 @@ button {
 }
 
 .dash-session-new-btn {
-  padding: 2px 9px;
-  border: 1px solid rgba(var(--pet-primary-rgb, 204, 112, 82), 0.24);
-  border-radius: 999px;
-  background: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.08);
+  padding: 4px 0 4px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
   font-size: 11px;
   text-transform: none;
   letter-spacing: 0;
@@ -6364,25 +6285,19 @@ button {
 
 .dash-session-item {
   position: relative;
-  border: 1px solid rgba(24, 42, 72, 0.06);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.5);
-  transition:
-    border-color var(--dash-dur-fast) var(--dash-ease-out),
-    background var(--dash-dur-fast) var(--dash-ease-out);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  transition: background var(--dash-dur-fast) var(--dash-ease-out);
 }
 
 .dash-session-item:hover {
-  border-color: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.22);
-  background: rgba(255, 255, 255, 0.74);
+  background: rgba(33, 48, 74, 0.035);
 }
 
 .dash-session-item.active {
-  border-color: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.34);
-  background:
-    linear-gradient(135deg, rgba(var(--pet-primary-rgb, 204, 112, 82), 0.11), rgba(102, 200, 255, 0.10)),
-    rgba(255, 255, 255, 0.82);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  background: rgba(107, 139, 184, 0.09);
+  box-shadow: inset 2px 0 0 rgba(107, 139, 184, 0.7);
 }
 
 .dash-session-item.switching {
@@ -6526,44 +6441,18 @@ button {
   flex: 1;
 }
 
-.dash-agent-head-avatar {
-  width: 34px;
-  height: 34px;
-  flex-shrink: 0;
-  display: grid;
-  place-items: center;
-  border-radius: 10px;
-  font-size: 17px;
-  background: linear-gradient(145deg, rgba(255, 255, 255, 0.94), rgba(255, 241, 186, 0.74));
-  box-shadow: inset 0 0 0 1px rgba(24, 42, 72, 0.06);
-}
-
-.dash-agent-head-text {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.dash-agent-head-text .dash-chat-head-title {
-  font-size: 14px;
-}
-
-.dash-agent-head-sub {
-  font-size: 11px;
-  color: var(--dash-text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .dash-agent-head-controls {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 14px;
   flex-wrap: wrap;
   justify-content: flex-end;
   min-width: 0;
+}
+
+.dash-agent-head-controls > .session-access {
+  padding-left: 10px;
+  border-left: 1px solid rgba(33, 48, 74, 0.1);
 }
 
 .dash-agent-field {
@@ -6572,9 +6461,9 @@ button {
   align-items: center;
   gap: 5px;
   padding: 0 8px;
-  border: 1px solid rgba(24, 42, 72, 0.10);
-  border-radius: 9px;
-  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
 }
 
 .dash-agent-field-label {
@@ -6597,28 +6486,9 @@ button {
   cursor: pointer;
 }
 
-.dash-agent-meta-pill {
-  display: inline-flex;
-  align-items: center;
-  height: 22px;
-  padding: 0 9px;
-  border: 1px solid rgba(24, 42, 72, 0.09);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.72);
-  color: var(--dash-text-secondary);
-  font-size: 11px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
 @media (max-width: 980px) {
   .dash-agent-head-controls {
     justify-content: flex-start;
-  }
-
-  .dash-agent-model-pop {
-    right: auto;
-    left: 0;
   }
 
   .dash-session-list {
@@ -6650,8 +6520,13 @@ button {
 }
 
 .dash-agent-model-trigger.is-open {
-  border-color: var(--dash-control-border-strong);
-  box-shadow: 0 0 0 3px var(--dash-focus);
+  border-color: rgba(102, 135, 180, 0.18);
+  background: rgba(102, 135, 180, 0.065);
+}
+
+.dash-agent-model-trigger:focus-visible {
+  outline: 2px solid #7d9fc7;
+  outline-offset: 2px;
 }
 
 .dash-agent-model-trigger:disabled {
@@ -6668,7 +6543,7 @@ button {
 }
 
 .dash-agent-model-value {
-  max-width: 132px;
+  max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -6700,31 +6575,34 @@ button {
 }
 
 .dash-agent-model-pop {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  z-index: 60;
+  position: fixed;
+  z-index: 160;
   display: flex;
   flex-direction: column;
-  width: 324px;
-  max-width: min(340px, calc(100vw - 24px));
-  /* 小窗（如 340x400）时按视口收缩高度，避免弹层底部超出屏幕；桌面下仍是 420px 上限。 */
-  max-height: min(420px, calc(100vh - 72px));
-  padding: 10px;
-  border: 1px solid var(--dash-card-border);
-  border-radius: 14px;
-  background: var(--dash-panel-solid);
+  width: 370px;
+  max-width: calc(100vw - 24px);
+  max-height: min(560px, calc(100vh - 24px));
+  color: var(--dash-text-primary);
+  font-family: inherit;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.92);
+  border-radius: 20px;
+  background: linear-gradient(155deg, rgba(255, 255, 255, 0.94), rgba(241, 245, 251, 0.9));
+  backdrop-filter: blur(32px) saturate(1.45);
+  -webkit-backdrop-filter: blur(32px) saturate(1.45);
   box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.9),
-    0 18px 42px rgba(33, 48, 74, 0.16);
+    inset 0 0 0 1px rgba(33, 48, 74, 0.035),
+    0 8px 24px rgba(33, 48, 74, 0.08),
+    0 24px 64px rgba(33, 48, 74, 0.15);
   animation: float-in var(--dash-dur-base) var(--dash-ease-out);
 }
 
 .dash-agent-model-pop-head {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   justify-content: space-between;
-  padding: 2px 4px 8px;
+  padding: 0 4px 12px;
 }
 
 .dash-agent-model-pop-title {
@@ -6794,9 +6672,10 @@ button {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
+  flex-shrink: 0;
   gap: 8px;
   width: 100%;
-  padding: 6px 8px;
+  padding: 9px 10px;
   border: 0;
   border-radius: 9px;
   background: transparent;
@@ -6862,50 +6741,9 @@ button {
 
 .dash-agent-model-efforts {
   flex-shrink: 0;
-  margin-top: 6px;
-  padding-top: 8px;
-  border-top: 1px solid var(--dash-divider);
-}
-
-.dash-agent-model-efforts-title {
-  padding: 0 4px 6px;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-  color: var(--dash-text-muted);
-}
-
-.dash-agent-model-effort-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 0 2px;
-}
-
-.dash-agent-model-effort {
-  height: 22px;
-  padding: 0 9px;
-  border: 1px solid var(--dash-control-border);
-  border-radius: 999px;
-  background: var(--dash-control-bg);
-  color: var(--dash-text-secondary);
-  font-family: inherit;
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background var(--dash-dur-fast) var(--dash-ease-out),
-    border-color var(--dash-dur-fast) var(--dash-ease-out);
-}
-
-.dash-agent-model-effort:hover {
-  background: var(--dash-control-bg-hover);
-}
-
-.dash-agent-model-effort.active {
-  border-color: rgba(102, 200, 255, 0.55);
-  background: rgba(102, 200, 255, 0.2);
-  color: var(--dash-text-primary);
+  margin: 12px -4px 0;
+  padding-top: 12px;
+  border-top: 1px solid rgba(33, 48, 74, 0.07);
 }
 
 .dash-agent-model-efforts-note {
@@ -6981,9 +6819,10 @@ button {
 
 .dash-agent-model-search {
   width: 100%;
-  height: 28px;
-  margin-bottom: 8px;
-  padding: 0 9px;
+  height: 34px;
+  flex-shrink: 0;
+  margin-bottom: 10px;
+  padding: 0 10px;
   border: 1px solid var(--dash-control-border);
   border-radius: var(--dash-radius-sm);
   background: var(--dash-control-bg);
@@ -7004,4 +6843,155 @@ button {
   color: var(--dash-text-muted);
 }
 
+/* 窄窗（≤1180，也就是 minWidth 1024 拖到 1180 的区间）：右侧栏改为上下排。
+   默认 1280 宽仍是左右栏（消息列 ≈700px 够用），只有拖到 1180 以下才把
+   右侧栏降为消息区下方的多列网格；否则 252 侧边栏 + 264 右栏只剩约 350px
+   给消息区，头部控件和天气条会被挤成一团、背景虚线框错位。
+   注意：这段必须留在文件末尾——放在 1429 行附近时会被 6xxx 行的基础规则
+   （同为单类选择器、同优先级）静默覆盖，.dash-floating-confirm-overlay
+   的 left 和 .dash-agent-head-controls 的 justify-content 就是这么失效的。 */
+@media (max-width: 1180px) {
+  .dashboard-content.chat-page-active {
+    padding: 16px 16px 20px;
+  }
+  .dash-chat-page {
+    flex-direction: column;
+    overflow-y: auto;
+  }
+  .dash-chat-page .dash-workspace-wrap {
+    flex: 0 0 auto;
+    height: max(520px, calc(100vh - 130px));
+  }
+  .dash-chat-main {
+    flex: 1;
+    min-height: 0;
+  }
+  .dash-chat-messages {
+    min-height: 160px;
+  }
+  .dash-chat-aside {
+    flex: 0 0 auto;
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+    overflow: visible;
+  }
+  .dash-agent-head-controls {
+    justify-content: flex-start;
+  }
+  .dash-aside-card + .dash-aside-card {
+    border-top: 0;
+    border-left: 1px solid rgba(33, 48, 74, 0.07);
+  }
+}
 
+@media (max-width: 760px) {
+  .dash-chat-head {
+    flex-wrap: wrap;
+  }
+  .dash-chat-meta-row {
+    align-items: stretch;
+  }
+  .dash-chat-hint {
+    min-width: 0;
+    flex-basis: 100%;
+  }
+  .dash-agent-head-info { flex-basis: 100%; }
+  .dash-agent-head-controls { width: 100%; gap: 8px; }
+  .dash-agent-model-value { max-width: min(220px, 48vw); }
+  .dash-aside-card + .dash-aside-card { border-left: 0; border-top: 1px solid rgba(33, 48, 74, 0.07); }
+  .dash-aside-actions {
+    flex-wrap: wrap;
+  }
+  .dash-aside-btn {
+    flex: 1 1 96px;
+  }
+  /* ≤760 时侧栏变成顶部横条（.dashboard-body 变纵向），确认框才需要 left:12px；
+     1024–1180 侧栏还在左边，保持基础规则里的 sidebar + 12px。 */
+  .dash-floating-confirm-overlay {
+    left: 12px;
+  }
+}
+
+
+
+/* --- 同屏多窗格工作区 --- */
+.dash-workspace-wrap {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: 16px;
+  /* 上部留白保证头部清晰，右下逐渐透亮，让原有背景插画自然浮现。
+     backdrop-filter 只柔化面板后的背景，不会降低文字与控件的清晰度。 */
+  background: linear-gradient(
+    145deg,
+    rgba(250, 252, 255, 0.70) 0%,
+    rgba(250, 252, 255, 0.52) 52%,
+    rgba(250, 252, 255, 0.30) 100%
+  );
+  backdrop-filter: blur(14px) saturate(1.08);
+  -webkit-backdrop-filter: blur(14px) saturate(1.08);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.46),
+    0 8px 32px rgba(33, 48, 74, 0.045);
+}
+.dash-workspace-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 10px 20px;
+  border-bottom: 1px solid rgba(33, 48, 74, 0.065);
+}
+.dash-workspace-toolbar-label {
+  font-size: 10px;
+  letter-spacing: .08em;
+  color: var(--dash-text-muted);
+}
+.dash-workspace-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 7px;
+  background: rgba(33, 48, 74, 0.035);
+}
+.dash-workspace-seg-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 30px;
+  height: 26px;
+  font-size: 10px;
+  padding: 0 8px;
+  border-radius: 5px;
+  border: none;
+  background: transparent;
+  color: var(--dash-text-muted);
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.dash-workspace-seg-btn:hover { color: var(--dash-text-primary); background: rgba(33, 48, 74, 0.04); }
+.dash-workspace-seg-btn.active {
+  background: rgba(255, 255, 255, .95);
+  color: var(--dash-text-primary);
+  box-shadow: 0 1px 3px rgba(33, 48, 74, 0.1);
+}
+.dash-workspace-seg-btn:not(.active) .dash-workspace-seg-text { display: none; }
+.dash-workspace-seg-btn:focus-visible { outline: 2px solid #7d9fc7; outline-offset: 2px; }
+.dash-workspace-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+.dash-workspace-grid.layout-two { grid-template-columns: 1fr 1fr; }
+.dash-workspace-grid.layout-three { grid-template-columns: 1fr 1fr 1fr; }
+.dash-workspace-grid.layout-four { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+.dash-workspace-grid.layout-master { grid-template-columns: 1.5fr 1fr; grid-template-rows: 1fr 1fr; }
+.dash-workspace-grid.layout-master > :first-child { grid-row: span 2; }

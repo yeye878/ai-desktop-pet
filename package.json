@@ -13,6 +13,10 @@
     "verify:multi-agent": "node --test scripts/verify-multi-agent.cjs",
     "verify:agent-model-catalog": "node --test scripts/verify-agent-model-catalog.cjs",
     "verify:chat-sessions": "node --test scripts/verify-chat-sessions.cjs",
+    "verify:session-runtime": "node --test scripts/verify-session-runtime.cjs",
+    "verify:session-layout-browser": "node scripts/verify-session-layout-browser.cjs",
+    "verify:attachments": "node --test scripts/verify-attachments.cjs",
+    "verify:attachments-browser": "node scripts/verify-attachments-browser.cjs",
     "verify:agent-activity": "node --test scripts/verify-agent-activity.cjs",
     "verify:codex-trajectory": "node --test scripts/verify-codex-trajectory.cjs",
     "verify:markdown": "node --test scripts/verify-markdown.cjs",
@@ -25,6 +29,7 @@
   "dependencies": {
     "@lucide/vue": "^1.53.0",
     "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-dialog": "~2.7.1",
     "@tauri-apps/plugin-global-shortcut": "^2.3.1",
     "katex": "^0.19.0",
     "pinia": "^2.2.6",

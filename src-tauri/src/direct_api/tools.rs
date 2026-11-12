@@ -845,7 +845,7 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
             "type": "function",
             "function": {
                 "name": "save_memory",
-                "description": "将一条信息保存到长期记忆库中。适合保存用户的偏好、事实、习惯或任何需要跨会话记住的内容。",
+                "description": "将一条信息保存到长期记忆库中。适合保存用户的偏好、事实、习惯或任何需要跨会话记住的内容。约束：category 必填（去除首尾空白后 1-64 字符，不能包含换行等控制字符）；key 必填（1-200 字符，不能包含控制字符）；value 必填（1-4000 字符）。category 不能是 app_path——app_path 只能由应用注册流程写入。",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -4289,10 +4289,60 @@ async fn exec_search_memory(args: &serde_json::Value) -> Result<String, String> 
     }
 }
 
+/// 校验 save_memory 的输入（纯函数，便于单测；category/key 会 trim 后使用）。
+fn validate_memory_input(category: &str, key: &str, value: &str) -> Result<(), String> {
+    let category = category.trim();
+    if category.is_empty() {
+        return Err("category 不能为空".to_string());
+    }
+    if category.chars().count() > 64 {
+        return Err("category 过长（最多 64 字符）".to_string());
+    }
+    if category.chars().any(char::is_control) {
+        return Err("category 不能包含控制字符（如换行、制表符）".to_string());
+    }
+    // app_path 分类只允许应用注册流程写入，避免 AI 通过 save_memory 伪造/覆盖应用路径。
+    let normalized = category
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if normalized == "app_path" {
+        return Err("category 不能是 app_path：app_path 只能由应用注册流程写入".to_string());
+    }
+
+    let key = key.trim();
+    if key.is_empty() {
+        return Err("key 不能为空".to_string());
+    }
+    if key.chars().count() > 200 {
+        return Err("key 过长（最多 200 字符）".to_string());
+    }
+    if key.chars().any(char::is_control) {
+        return Err("key 不能包含控制字符（如换行、回车）".to_string());
+    }
+
+    if value.trim().is_empty() {
+        return Err("value 不能为空".to_string());
+    }
+    if value.trim().chars().count() > 4000 {
+        return Err("value 过长（最多 4000 字符）".to_string());
+    }
+
+    Ok(())
+}
+
 async fn exec_save_memory(args: &serde_json::Value) -> Result<String, String> {
     let category = args["category"].as_str().ok_or("缺少 'category' 参数")?;
     let key = args["key"].as_str().ok_or("缺少 'key' 参数")?;
     let value = args["value"].as_str().ok_or("缺少 'value' 参数")?;
+
+    // 打开数据库前先校验，避免非法输入写入 pet_memory（尤其 app_path 分类）。
+    validate_memory_input(category, key, value)?;
+
+    let category = category.trim();
+    let key = key.trim();
+    let value = value.trim();
 
     let db_path = get_db_path_for_tools()?;
     let conn = open_pet_db(&db_path).map_err(|e| format!("打开数据库失败: {e}"))?;
@@ -5870,5 +5920,65 @@ mod tests {
             frontend.difference(&labels).collect::<Vec<_>>(),
             labels.difference(&frontend).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn validate_memory_input_accepts_trimmed_normal_values() {
+        assert!(validate_memory_input(" preference ", " 用户喜欢的颜色 ", " 蓝色 ").is_ok());
+    }
+
+    #[test]
+    fn validate_memory_input_rejects_app_path_category() {
+        for category in ["app_path", "APP_PATH", " app_path ", "App_Path", "app_path\t"] {
+            let result = validate_memory_input(category, "notepad", "C:\\Windows\\notepad.exe");
+            assert!(result.is_err(), "应拒绝 app_path 分类: {category:?}");
+            assert!(
+                result.unwrap_err().contains("app_path"),
+                "错误文案应说明 app_path 只能由应用注册流程写入"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_memory_input_rejects_empty_and_overlong_fields() {
+        assert!(validate_memory_input("", "key", "value").is_err());
+        assert!(validate_memory_input("   ", "key", "value").is_err());
+        assert!(validate_memory_input("note", "", "value").is_err());
+        assert!(validate_memory_input("note", "   ", "value").is_err());
+        assert!(validate_memory_input("note", "key", "   ").is_err());
+        assert!(validate_memory_input(&"c".repeat(65), "key", "value").is_err());
+        assert!(validate_memory_input("note", &"k".repeat(201), "value").is_err());
+        assert!(validate_memory_input("note", "key", &"v".repeat(4001)).is_err());
+        // 边界值仍应通过
+        assert!(validate_memory_input(
+            &"c".repeat(64),
+            &"k".repeat(200),
+            &"v".repeat(4000)
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn validate_memory_input_rejects_control_chars_in_category_and_key() {
+        assert!(validate_memory_input("pre\nference", "key", "value").is_err());
+        assert!(validate_memory_input("pre\tference", "key", "value").is_err());
+        assert!(validate_memory_input("note", "key\r\nline", "value").is_err());
+        assert!(validate_memory_input("note", "key\0", "value").is_err());
+        // value 允许换行（多行记忆内容）
+        assert!(validate_memory_input("note", "key", "line1\nline2").is_ok());
+    }
+
+    #[test]
+    fn save_memory_schema_documents_validation_limits() {
+        let save_memory = tool_definitions()
+            .into_iter()
+            .find(|tool| tool["function"]["name"] == "save_memory")
+            .expect("缺少 save_memory 工具定义");
+        let description = save_memory["function"]["description"]
+            .as_str()
+            .expect("save_memory description 应为字符串");
+
+        assert!(description.contains("app_path"));
+        assert!(description.contains("4000"));
     }
 }

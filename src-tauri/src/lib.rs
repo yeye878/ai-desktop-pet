@@ -3,6 +3,7 @@ mod agent_turn;
 mod ai_events;
 mod collaboration;
 mod behavior;
+mod cli_permission;
 mod codex;
 mod cli_activity;
 mod dsh;
@@ -98,6 +99,7 @@ struct FileMetadata {
     extension: String,
     exists: bool,
     is_file: bool,
+    is_dir: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -209,8 +211,12 @@ fn set_current_turn_session(state: &AppState, id: &str) {
 
 pub(crate) fn append_session_thinking(state: &AppState, delta: &str) {
     let session_id = current_turn_session(state);
+    append_session_thinking_for(state, &session_id, delta);
+}
+
+pub(crate) fn append_session_thinking_for(state: &AppState, session_id: &str, delta: &str) {
     if let Ok(mut active) = state.active_chat.lock() {
-        if let Some(snapshot) = active.by_session.get_mut(&session_id) {
+        if let Some(snapshot) = active.by_session.get_mut(session_id) {
             snapshot.thinking.push_str(delta);
         }
     }
@@ -284,7 +290,7 @@ fn with_session_id(payload: serde_json::Value, session_id: &str) -> serde_json::
 }
 
 /// 广播带 session_id 的 AI 事件。
-fn emit_ai_for<S: Serialize>(app: &tauri::AppHandle, session_id: &str, event: &str, payload: S) {
+pub(crate) fn emit_ai_for<S: Serialize>(app: &tauri::AppHandle, session_id: &str, event: &str, payload: S) {
     let value = serde_json::to_value(payload).unwrap_or(serde_json::Value::Null);
     let _ = app.emit(event, with_session_id(value, session_id));
 }
@@ -466,6 +472,73 @@ fn persist_cli_session(
     }
     cli_sessions.insert(backend.to_string(), cli_session_id.to_string());
     let _ = db.update_chat_session(&session.id, None, None, None, Some(&cli_sessions), None, None);
+}
+
+/// 清空主会话（kind=main）在各 CLI 后端的续接 id；返回被清空的会话数。
+/// 切换后端、重置上下文时使用；direct_api 无续接 id，动作幂等。
+fn clear_main_session_cli_sessions(db: &storage::Database) -> Result<usize, String> {
+    let sessions = db.list_chat_sessions(None).map_err(|e| e.to_string())?;
+    let empty: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut cleared = 0usize;
+    for session in sessions {
+        if session.kind != "main" || session.cli_sessions.is_empty() {
+            continue;
+        }
+        db.update_chat_session(&session.id, None, None, None, Some(&empty), None, None)
+            .map_err(|e| e.to_string())?;
+        cleared += 1;
+    }
+    Ok(cleared)
+}
+
+/// 清空指定会话的全部 CLI 续接 id（"重置当前对话"用）。
+fn clear_session_cli_sessions(db: &storage::Database, session_id: &str) -> Result<(), String> {
+    let empty: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    db.update_chat_session(session_id, None, None, None, Some(&empty), None, None)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 清掉某会话在指定后端的续接 id；返回是否真的清掉了。
+fn clear_backend_cli_session(
+    db: &storage::Database,
+    session: &storage::ChatSession,
+    backend: &str,
+) -> Result<bool, String> {
+    let Some(mut current) = db.get_chat_session(&session.id).map_err(|e| e.to_string())? else {
+        return Ok(false);
+    };
+    if current.cli_sessions.remove(backend).is_none() {
+        return Ok(false);
+    }
+    db.update_chat_session(
+        &session.id,
+        None,
+        None,
+        None,
+        Some(&current.cli_sessions),
+        None,
+        None,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// 判断 CLI 报错是否属于"续接会话失效"：这种情况应清掉 resume id 并提示重发。
+fn is_resume_failure_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    [
+        "no conversation found",
+        "no such session",
+        "session not found",
+        "session does not exist",
+        "could not find session",
+        "thread not found",
+        "无效的会话",
+        "会话不存在",
+    ]
+    .iter()
+    .any(|needle| lower.contains(*needle))
 }
 
 /// 保存助手消息（按当前回合会话），并刷新会话预览。
@@ -1560,27 +1633,66 @@ fn attach_memory_prompt(system_prompt: String) -> String {
     )
 }
 
+/// 已注册应用在提示词里最多展开多少条：超过部分只提示数量，避免提示词无限膨胀。
+const REGISTERED_APPS_PROMPT_MAX_ITEMS: usize = 100;
+/// 单个应用别名在提示词里的字符上限。
+const REGISTERED_APP_ALIAS_MAX_CHARS: usize = 40;
+
+/// 把动态数据压成安全的单行文本：去控制字符/引号/反斜杠，折叠空白并限长。
+fn prompt_safe_single_line(value: &str, max_chars: usize) -> String {
+    let mut cleaned = String::new();
+    for ch in value.chars() {
+        if ch.is_control() || matches!(ch, '"' | '\\') {
+            cleaned.push(' ');
+        } else {
+            cleaned.push(ch);
+        }
+    }
+    let compact = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= max_chars {
+        return compact;
+    }
+    let mut truncated: String = compact.chars().take(max_chars.saturating_sub(1)).collect();
+    truncated.push('…');
+    truncated
+}
+
 async fn attach_registered_apps_prompt(
     system_prompt: String,
     state: &tauri::State<'_, AppState>,
 ) -> String {
     let db = state.db.lock().await;
-    if let Ok(memories) = db.get_memories_by_category("app_path") {
-        if !memories.is_empty() {
-            let mut app_notes = vec![
-                "\n\n【重要系统级信息】用户已经在系统中注册并保存了以下自定义应用程序（快捷方式路径）记忆。".to_string()
-            ];
-            for app in memories {
-                app_notes.push(format!(
-                    "- 应用别名/名称: \"{}\", 对应执行文件物理路径: \"{}\"",
-                    app.key, app.value
-                ));
-            }
-            app_notes.push("当用户要求你“打开”、“运行”、“启动”这些应用时，你拥有完整的预知记忆。请直接调用 `open_app` 工具，并以其对应的应用别名/名称（例如\"微信\"、\"Chrome\" 等）作为 `app` 参数！底层已实现了对注册键名的自动匹配和物理路径运行，你不需要向用户询问其物理路径。".to_string());
-            return format!("{}{}", system_prompt, app_notes.join("\n"));
-        }
+    let Ok(memories) = db.get_memories_by_category("app_path") else {
+        return system_prompt;
+    };
+    if memories.is_empty() {
+        return system_prompt;
     }
-    system_prompt
+    // 只注入别名，不注入物理路径：open_app 支持按别名解析，路径属于本机隐私；
+    // 只有应用注册流程能写 app_path（save_memory 工具已禁止写该分类）。
+    let mut lines = vec![
+        "【已注册应用】用户在本机注册过以下应用别名（只提供别名，不提供物理路径）。当用户要求打开、运行或启动这些应用时，直接调用 open_app，把别名作为 app 参数；系统会自动匹配路径，不要向用户索要路径。"
+            .to_string(),
+    ];
+    let mut listed = 0usize;
+    for app in memories.iter().take(REGISTERED_APPS_PROMPT_MAX_ITEMS) {
+        let alias = prompt_safe_single_line(&app.key, REGISTERED_APP_ALIAS_MAX_CHARS);
+        if alias.is_empty() {
+            continue;
+        }
+        lines.push(format!("- 别名: \"{}\"", alias));
+        listed += 1;
+    }
+    if listed == 0 {
+        return system_prompt;
+    }
+    if memories.len() > listed {
+        lines.push(format!(
+            "（另有 {} 个应用未列出，可直接用 open_app 按别名尝试。）",
+            memories.len() - listed
+        ));
+    }
+    format!("{}\n\n{}", system_prompt, lines.join("\n"))
 }
 
 fn attach_custom_prompt(system_prompt: String, custom: &str) -> String {
@@ -2515,6 +2627,21 @@ async fn send_to_ai(
         touch_session_after_message(&app_handle, &db, &session.id, &message);
     }
 
+    // 用户消息广播给所有视图（单窗格 / 多窗格 / 聊天子窗口）；
+    // 各端按「最后一条消息」去重，发送方自己的乐观插入不会重复。
+    emit_ai_for(
+        &app_handle,
+        &session.id,
+        "sync-chat-message",
+        serde_json::json!({
+            "role": "user",
+            "content": message,
+            "quote": quoted_role.as_deref().zip(quoted_content.as_deref()).map(|(role, content)| {
+                serde_json::json!({ "role": role, "content": content })
+            }),
+        }),
+    );
+
     // 3) agent 窗口：直接跑单 agent 回合，不进入协同 / @ 菜单。
     if let Some(agent) = target_agent {
         {
@@ -2856,8 +2983,8 @@ async fn run_ai_message(
         drop(db);
 
         let base = openclaw::build_system_prompt(&personality, &profession);
-        let base = attach_memory_prompt(base);
-        let base = attach_registered_apps_prompt(base, &state).await;
+        // 本地 CLI 后端（cc/codex/dsh）没有长期记忆与 open_app 工具；只给 direct_api
+        // 注入这些能力说明，避免模型调用不存在的工具（见 docs/system-prompt-audit-2026-11.md）。
         let base = attach_custom_prompt(base, &custom_prompt);
         let base = attach_skill_prompt(base, active_skill.as_ref(), &all_skills, false).await;
         let base = attach_agent_prompt(base, &agents);
@@ -2897,6 +3024,9 @@ async fn run_ai_message(
     )
     .await;
 }
+
+/// 单个 CLI 回合的最长持续时间（秒）。超时后整树回收子进程并提示下一轮可继续。
+const CLI_TURN_TIMEOUT_SECS: u64 = 30 * 60;
 
 /// 本地 CLI（Claude Code / Codex / DeepSeek Harness）的一轮对话。
 ///
@@ -2938,6 +3068,16 @@ async fn run_cli_turn(
         .map(|agent| agent.model.as_str())
         .unwrap_or("");
     let model = resolve_turn_model(model_override.as_deref(), &session.model, inherited_model);
+    // 本会话的本地 CLI 权限档位：空串 = 跟随设置页里该后端的默认值。
+    let permission_key = if is_codex {
+        cli_permission::CODEX_SANDBOX_MODE_KEY
+    } else if is_dsh {
+        cli_permission::DSH_PERMISSION_MODE_KEY
+    } else {
+        cli_permission::CLAUDE_PERMISSION_MODE_KEY
+    };
+    let global_permission = cli_permission::read_setting(&app_handle, permission_key).await;
+    let permission = cli_permission::effective_value(&session.permission, &global_permission);
     let history = if resumed_session.is_some() {
         Vec::new()
     } else {
@@ -2969,6 +3109,7 @@ async fn run_cli_turn(
                     resumed_session.as_deref(),
                     model,
                     effort,
+                    &permission,
                 )
                 .await
         } else if is_dsh {
@@ -2984,6 +3125,7 @@ async fn run_cli_turn(
                     model,
                     provider,
                     effort,
+                    &permission,
                 )
                 .await
         } else {
@@ -2995,6 +3137,7 @@ async fn run_cli_turn(
                     resumed_session.as_deref(),
                     model,
                     effort,
+                    &permission,
                 )
                 .await
         }
@@ -3052,47 +3195,88 @@ async fn run_cli_turn(
         }
         emit_ai(&app_for_stream, "ai-thinking", delta);
     };
-    let stream_result = if is_dsh {
-        // 需要授权的操作走直连 API 同一套确认弹窗，而不是直接失败。
-        let approvals: Option<Box<dyn dsh::ApprovalAnswerer>> = Some(Box::new(
-            dsh::UiApproval::new(app_for_stream.clone(), cancel_token.clone()),
-        ));
-        dsh::read_stream_with_activity(&mut child, on_thinking, |text| {
-            if !cancel_token.is_cancelled() {
-                emit_ai(&app_for_stream, "ai-answer-delta", serde_json::json!({ "text": text }));
+    // H1：整轮超时保护。CLI 卡死时不再无限挂起，到点整树回收进程。
+    let stream_result = tokio::time::timeout(
+        std::time::Duration::from_secs(CLI_TURN_TIMEOUT_SECS),
+        async {
+            if is_dsh {
+                // 需要授权的操作走直连 API 同一套确认弹窗，而不是直接失败。
+                let auto_approve = cli_permission::dsh_permission(&permission).auto_approve;
+                let approvals: Option<Box<dyn dsh::ApprovalAnswerer>> = Some(Box::new(
+                    dsh::UiApproval::for_session(
+                        app_for_stream.clone(),
+                        cancel_token.clone(),
+                        session.id.clone(),
+                        auto_approve,
+                    ),
+                ));
+                dsh::read_stream_with_activity(&mut child, on_thinking, |text| {
+                    if !cancel_token.is_cancelled() {
+                        emit_ai(&app_for_stream, "ai-answer-delta", serde_json::json!({ "text": text }));
+                    }
+                }, |tool| {
+                    if !cancel_token.is_cancelled() {
+                        crate::apply_tool_status_to_pet(&app_for_stream, &tool.status);
+                        emit_ai(&app_for_stream, "ai-tool-event", tool);
+                    }
+                }, approvals)
+                .await
+            } else if is_codex {
+                codex::read_stream_with_activity(&mut child, on_thinking, |text| {
+                    if !cancel_token.is_cancelled() {
+                        emit_ai(&app_for_stream, "ai-answer-delta", serde_json::json!({ "text": text }));
+                    }
+                }, |tool| {
+                    if !cancel_token.is_cancelled() {
+                        crate::apply_tool_status_to_pet(&app_for_stream, &tool.status);
+                        emit_ai(&app_for_stream, "ai-tool-event", tool);
+                    }
+                })
+                .await
+            } else {
+                openclaw::read_stream_with_activity(&mut child, on_thinking, |text| {
+                    if !cancel_token.is_cancelled() { emit_ai(&app_for_stream, "ai-answer-delta", serde_json::json!({ "text": text })); }
+                }, |tool| {
+                    if !cancel_token.is_cancelled() {
+                        crate::apply_tool_status_to_pet(&app_for_stream, &tool.status);
+                        emit_ai(&app_for_stream, "ai-tool-event", tool);
+                    }
+                }).await
             }
-        }, |tool| {
-            if !cancel_token.is_cancelled() {
-                crate::apply_tool_status_to_pet(&app_for_stream, &tool.status);
-                emit_ai(&app_for_stream, "ai-tool-event", tool);
+        },
+    )
+    .await;
+    let stream_result = match stream_result {
+        Ok(result) => result,
+        Err(_) => {
+            // 超时：先整树回收再按「可恢复中断」提示，下一轮可继续。
+            if let Some(pid) = child_pid {
+                kill_process_tree(pid);
             }
-        }, approvals)
-        .await
-    } else if is_codex {
-        codex::read_stream_with_activity(&mut child, on_thinking, |text| {
-            if !cancel_token.is_cancelled() {
-                emit_ai(&app_for_stream, "ai-answer-delta", serde_json::json!({ "text": text }));
+            let _ = child.wait().await;
+            if let Some(pid) = child_pid {
+                unregister_turn_pid(&state, &session.id, pid);
             }
-        }, |tool| {
-            if !cancel_token.is_cancelled() {
-                crate::apply_tool_status_to_pet(&app_for_stream, &tool.status);
-                emit_ai(&app_for_stream, "ai-tool-event", tool);
-            }
-        })
-        .await
-    } else {
-        openclaw::read_stream_with_activity(&mut child, on_thinking, |text| {
-            if !cancel_token.is_cancelled() { emit_ai(&app_for_stream, "ai-answer-delta", serde_json::json!({ "text": text })); }
-        }, |tool| {
-            if !cancel_token.is_cancelled() {
-                crate::apply_tool_status_to_pet(&app_for_stream, &tool.status);
-                emit_ai(&app_for_stream, "ai-tool-event", tool);
-            }
-        }).await
+            unregister_turn_cancel(&state, &session.id);
+            clear_active_chat_for(&state, &session.id);
+            emit_ai(
+                &app_handle,
+                "ai-error",
+                AiErrorPayload {
+                    message: format!(
+                        "{cli_name} 本轮超过 {} 分钟已自动中断（可在下一轮继续）",
+                        CLI_TURN_TIMEOUT_SECS / 60
+                    ),
+                    thinking: None,
+                    aborted: false,
+                },
+            );
+            return;
+        }
     };
 
     // 等待子进程结束 + 清理
-    let _ = child.wait().await;
+    let exit_status = child.wait().await.ok();
     if let Some(pid) = child_pid {
         let state = app_handle.state::<AppState>();
         unregister_turn_pid(&state, &session.id, pid);
@@ -3108,25 +3292,70 @@ async fn run_cli_turn(
 
     match stream_result {
         Ok(parsed) => {
-            // 把 CLI 返回的会话 id 写回会话行，下一轮据此 --resume。
-            if let Some(sid) = parsed.session_id.as_deref() {
-                let db = state.db.lock().await;
-                persist_cli_session(&db, &session, &backend, sid);
-            }
-
             if parsed.is_error {
                 let state = app_handle.state::<AppState>();
-                let mut behavior = state.behavior.lock().await;
-                behavior.set_state(behavior::PetState::Confused);
-                let msg = parsed
+                let mut msg = parsed
                     .error_msg
                     .unwrap_or_else(|| "unknown error".to_string());
+                // 续接 id 失效（换 cwd / CLI 会话被删 / 后端切换）时清掉坏 id，避免每轮都失败。
+                if resumed_session.is_some() && is_resume_failure_message(&msg) {
+                    let cleared = {
+                        let db = state.db.lock().await;
+                        clear_backend_cli_session(&db, &session, &backend)
+                    };
+                    if matches!(cleared, Ok(true)) {
+                        msg = format!(
+                            "{}（续接会话已失效，已重置该后端的上下文；请重新发送消息）",
+                            msg
+                        );
+                        notify_sessions_changed(&app_handle);
+                    }
+                }
+                {
+                    let mut behavior = state.behavior.lock().await;
+                    behavior.set_state(behavior::PetState::Confused);
+                }
                 clear_active_chat_for(&state, &session.id);
                 emit_ai(
                     &app_handle,
                     "ai-error",
                     AiErrorPayload {
                         message: format!("{cli_name} 执行失败: {msg}"),
+                        thinking: if parsed.full_thinking.is_empty() {
+                            None
+                        } else {
+                            Some(parsed.full_thinking)
+                        },
+                        aborted: false,
+                    },
+                );
+                return;
+            }
+
+            // CLI 非零退出但流里没有 error 事件：不能把半截输出当成功落库。
+            let exit_success = exit_status
+                .as_ref()
+                .map(|status| status.success())
+                .unwrap_or(false);
+            if !exit_success {
+                let code = exit_status.as_ref().and_then(|status| status.code());
+                let suffix = code
+                    .map(|code| format!("（退出码 {}）", code))
+                    .unwrap_or_default();
+                let state = app_handle.state::<AppState>();
+                {
+                    let mut behavior = state.behavior.lock().await;
+                    behavior.set_state(behavior::PetState::Confused);
+                }
+                clear_active_chat_for(&state, &session.id);
+                emit_ai(
+                    &app_handle,
+                    "ai-error",
+                    AiErrorPayload {
+                        message: format!(
+                            "{cli_name} 异常退出{}：本轮输出可能不完整，请重试",
+                            suffix
+                        ),
                         thinking: if parsed.full_thinking.is_empty() {
                             None
                         } else {
@@ -3164,6 +3393,11 @@ async fn run_cli_turn(
 
             // 保存对话（单智能体时带上归属）
             let state = app_handle.state::<AppState>();
+            // 只有成功轮才把 CLI 续接 id 写回会话；失败/中断轮不落库，避免坏 id 循环续接。
+            if let Some(sid) = parsed.session_id.as_deref() {
+                let db = state.db.lock().await;
+                persist_cli_session(&db, &session, &backend, sid);
+            }
             let single_agent = if agents.len() == 1 {
                 agents.first()
             } else {
@@ -3266,8 +3500,12 @@ async fn run_agent_session_turn(
     let personality = state.personality.lock().await.clone();
     let profession = state.profession.lock().await.clone();
     let mut system = openclaw::build_system_prompt(&personality, &profession);
-    system = attach_memory_prompt(system);
-    system = attach_registered_apps_prompt(system, &state).await;
+    // 本地 CLI 后端没有长期记忆 / open_app 工具：只有 direct_api 才注入这两段，
+    // 否则模型会调用不存在的工具，或谎称"已记住 / 已打开"。
+    if backend == "direct_api" {
+        system = attach_memory_prompt(system);
+        system = attach_registered_apps_prompt(system, &state).await;
+    }
     system = attach_custom_prompt(system, &custom_prompt);
     system = attach_skill_prompt(
         system,
@@ -3512,6 +3750,7 @@ async fn abort_ai(
 #[tauri::command]
 async fn set_backend_type(
     backend: String,
+    app_handle: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     if !matches!(backend.as_str(), "claude_code" | "codex" | "dsh" | "direct_api") {
@@ -3528,11 +3767,19 @@ async fn set_backend_type(
         let mut backend_type = state.backend_type.lock().await;
         *backend_type = backend.clone();
     }
-    let db = state.db.lock().await;
-    db.save_setting("backend_type", &backend)
-        .map_err(|e| e.to_string())?;
+    let cleared = {
+        let db = state.db.lock().await;
+        db.save_setting("backend_type", &backend)
+            .map_err(|e| e.to_string())?;
+        // 切换后端后，其它后端期间产生的消息不在 CLI transcript 里；清掉主会话的
+        // per-backend resume id，让下一轮从 DB 历史重建上下文，避免断档/答非所问。
+        clear_main_session_cli_sessions(&db).unwrap_or(0)
+    };
 
     state.approved_tool_types.lock().await.clear();
+    if cleared > 0 {
+        notify_sessions_changed(&app_handle);
+    }
     Ok(())
 }
 
@@ -4346,7 +4593,9 @@ async fn create_chat_session(
     model: Option<String>,
     provider: Option<String>,
     reasoning_effort: Option<String>,
+    permission: Option<String>,
     title: Option<String>,
+    activate: Option<bool>,
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<storage::ChatSession, String> {
@@ -4364,6 +4613,9 @@ async fn create_chat_session(
         .map(|value| value.trim().to_string())
         .unwrap_or_default();
     let requested_effort = reasoning_effort
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default();
+    let requested_permission = permission
         .map(|value| value.trim().to_string())
         .unwrap_or_default();
     let requested_title = title
@@ -4388,6 +4640,7 @@ async fn create_chat_session(
         new.model = requested_model;
         new.provider = requested_provider;
         new.reasoning_effort = requested_effort;
+        new.permission = requested_permission;
         new.title = if requested_title.is_empty() {
             default_session_title(
                 &db,
@@ -4403,8 +4656,7 @@ async fn create_chat_session(
         db.create_chat_session(new).map_err(|e| e.to_string())?
     };
 
-    if session.slot == storage::MAIN_CHAT_SLOT {
-        // slot=main 时同时设为活跃主会话。
+    if session.slot == storage::MAIN_CHAT_SLOT && activate.unwrap_or(true) {
         return apply_active_main_session(&app_handle, &session.id).await;
     }
     notify_sessions_changed(&app_handle);
@@ -4551,16 +4803,56 @@ async fn set_chat_session_binding(
             next_agent_name.as_str(),
             next_agent_avatar.as_str(),
         );
-        db.update_chat_session(
-            &existing.id,
-            None,
-            Some(binding),
-            next_model.as_deref(),
-            cli_sessions_cleared.as_ref(),
-            next_effort.as_deref(),
-            next_provider.as_deref(),
-        )
-        .map_err(|e| e.to_string())?
+        // 换后端（如 claude → dsh）时旧权限档位属于另一套词汇，清回设置页默认。
+        let previous_backend = find_agent(&catalog, &existing.agent_id).map(|agent| agent.backend.clone());
+        let next_backend = find_agent(&catalog, &next_agent_id).map(|agent| agent.backend.clone());
+        let backend_changed = matches!(
+            (&previous_backend, &next_backend),
+            (Some(previous), Some(next)) if previous != next
+        );
+        let updated = db
+            .update_chat_session(
+                &existing.id,
+                None,
+                Some(binding),
+                next_model.as_deref(),
+                cli_sessions_cleared.as_ref(),
+                next_effort.as_deref(),
+                next_provider.as_deref(),
+            )
+            .map_err(|e| e.to_string())?;
+        if backend_changed {
+            db.set_chat_session_permission(&existing.id, "")
+                .map_err(|e| e.to_string())?
+        } else {
+            updated
+        }
+    };
+    notify_sessions_changed(&app_handle);
+    Ok(session)
+}
+
+/// 设置单个会话的本地 CLI 权限档位（空串 = 回到设置页默认）。
+/// 只影响该会话后续的 CLI 回合，不写全局设置，也不动 CLI 续接 id。
+#[tauri::command]
+async fn set_chat_session_permission(
+    id: String,
+    permission: String,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<storage::ChatSession, String> {
+    let id = id.trim().to_string();
+    if id.is_empty() {
+        return Err("会话 id 不能为空".to_string());
+    }
+    let permission = permission.trim().to_string();
+    if permission.chars().count() > 32 {
+        return Err("权限档位取值过长".to_string());
+    }
+    let session = {
+        let db = state.db.lock().await;
+        db.set_chat_session_permission(&id, &permission)
+            .map_err(|e| e.to_string())?
     };
     notify_sessions_changed(&app_handle);
     Ok(session)
@@ -5139,11 +5431,14 @@ async fn switch_model(
             .unwrap_or_default();
         let _ = save_chat_summary_if_needed(&db);
         // 只清空当前主会话，避免误删其它窗口的会话历史。
+        // 同时清掉 CLI 续接 id：否则"重置"后 CLI 仍会 resume 旧 transcript，保留旧上下文。
         if session_id.is_empty() {
             db.clear_messages().map_err(|e| e.to_string())?;
+            let _ = clear_main_session_cli_sessions(&db);
         } else {
             db.clear_session_messages(&session_id)
                 .map_err(|e| e.to_string())?;
+            clear_session_cli_sessions(&db, &session_id)?;
             let _ = db.touch_chat_session(&session_id, None, None);
         }
     }
@@ -5240,6 +5535,9 @@ const ALLOWED_SETTING_KEYS: &[&str] = &[
     "search_provider",
     "stream_mode",
     "api_mode",
+    "claude_permission_mode",
+    "codex_sandbox_mode",
+    "dsh_permission_mode",
     "computer_use_enabled",
     "computer_use_scale",
     "pet_character",
@@ -5532,27 +5830,63 @@ async fn generate_agent_spec(
         return Err(format!("描述不能超过 {DESC_MAX} 个字。"));
     }
 
+    // 必须用「当前激活的 API 配置」来生成：生成的智能体落库时 api_profile_id 为空，
+    // 运行时同样回落到 active_api_profile。若这里用全局直连配置，就会出现
+    // 「拿 A 的 Key 生成、交给 B 的 Key 跑」的漂移——Key 失效时更是生成成功、
+    // 保存后一召唤就报「API 配置已不存在」。
     let config = {
-        let cfg = state.direct_api_config.lock().await;
-        cfg.clone()
-            .ok_or_else(|| "未配置直接 API，请先在系统设置中配置 API Key".to_string())?
+        let db = state.db.lock().await;
+        active_api_profile(&db)
     };
+    if config.api_key.trim().is_empty() {
+        return Err("未配置直接 API，请先在系统设置中配置 API Key".to_string());
+    }
 
-    let tool_names: Vec<String> = direct_api::tool_definitions()
-        .iter()
-        .filter_map(|def| def.get("function")?.get("name")?.as_str().map(str::to_string))
-        .collect();
-    // 工具白名单要按「对话里实际可用的工具」过滤：智能体工坊自己的增删工具不该出现在这里。
-    let selectable_tools: Vec<&String> = tool_names
-        .iter()
-        .filter(|name| !matches!(name.as_str(), "create_agent" | "update_agent" | "list_agents"))
-        .collect();
+    // 工具白名单要按「对话里实际可用的工具」过滤：智能体工坊自己的增删工具不该出现——
+    // 它们既能改智能体，又会被写进免确认白名单，等于让 AI 自己给自己提权。
+    let mut selectable_tools: Vec<String> = Vec::new();
+    let mut tool_descriptions: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for def in direct_api::tool_definitions() {
+        let Some(function) = def.get("function") else { continue };
+        let Some(name) = function.get("name").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        if matches!(name, "create_agent" | "update_agent" | "list_agents") {
+            continue;
+        }
+        let description = function
+            .get("description")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .replace('\n', " ")
+            .trim()
+            .to_string();
+        tool_descriptions.insert(name.to_string(), description);
+        selectable_tools.push(name.to_string());
+    }
     let tool_catalog = if selectable_tools.is_empty() {
         "（无可用工具）".to_string()
     } else {
         selectable_tools
             .iter()
-            .map(|name| tool_purpose_for_factory(name))
+            .map(|name| {
+                let purpose = tool_purpose_for_factory(name);
+                // 手写说明表覆盖不到的工具，直接引用它自己的描述，别让 AI 面对「其他」瞎猜。
+                let purpose = if purpose == "其他" {
+                    let text = tool_descriptions.get(name).map(String::as_str).unwrap_or("");
+                    if text.chars().count() > 60 {
+                        format!("{}…", text.chars().take(60).collect::<String>())
+                    } else if text.is_empty() {
+                        "未提供说明".to_string()
+                    } else {
+                        text.to_string()
+                    }
+                } else {
+                    purpose.to_string()
+                };
+                format!("  - {name}：{purpose}")
+            })
             .collect::<Vec<_>>()
             .join("\n")
     };
@@ -5624,17 +5958,32 @@ system_prompt 为空或过于笼统的角色，在对话里只会表现得像一
     let value: serde_json::Value =
         serde_json::from_str(&json_text).map_err(|e| format!("解析智能体定义失败  {e}"))?;
 
-    let spec = normalize_generated_agent_spec(value, &tool_names);
+    // 白名单按过滤后的列表校验：工厂自己的增删工具绝不能被写进智能体的免确认白名单。
+    let spec = normalize_generated_agent_spec(value, &selectable_tools);
     // 空角色设定 = 空壳智能体：宁可报错让用户重试，也不要把它预填进表单。
-    if spec["system_prompt"].as_str().unwrap_or("").trim().is_empty() {
+    let prompt_len = spec["system_prompt"]
+        .as_str()
+        .unwrap_or("")
+        .trim()
+        .chars()
+        .count();
+    if prompt_len == 0 {
         return Err("AI 没有生成角色设定，请换个说法或重试。".to_string());
+    }
+    // 太短同样撑不起一个角色：提示词要求 400-800 字，几十个字等于没写。
+    const PROMPT_MIN: usize = 80;
+    if prompt_len < PROMPT_MIN {
+        return Err(format!(
+            "AI 生成的角色设定只有 {prompt_len} 个字，太短撑不起一个角色。换个说法重试，或自己补写设定。"
+        ));
     }
     Ok(spec)
 }
 
 /// 给「智能体工厂」看的工具说明：只有名字它很难判断该不该给免确认权限。
-fn tool_purpose_for_factory(name: &str) -> String {
-    let purpose = match name {
+/// 返回用途文案；"其他" 表示手写表没覆盖到，调用方会回退到工具自带的描述。
+fn tool_purpose_for_factory(name: &str) -> &'static str {
+    match name {
         "read_file" => "读取本地文件（文本 / Word / PDF / PPT）",
         "write_file" => "新建或覆盖写入文件",
         "edit_file" => "局部修改已有文件",
@@ -5656,18 +6005,60 @@ fn tool_purpose_for_factory(name: &str) -> String {
         _ if name.starts_with("browser_") => "控制浏览器",
         _ if name.starts_with("computer_") || name.starts_with("window_") => "控制桌面鼠标键盘窗口",
         _ => "其他",
-    };
-    format!("  - {name}：{purpose}")
+    }
 }
 
-/// 从模型输出里抠出第一个 JSON 对象（容忍 markdown 代码围栏和前后废话））
+/// 从模型输出里抠出第一个 JSON 对象（容忍 markdown 代码围栏和前后废话）。
+///
+/// 不能用「首个 { 到末个 }」截取：模型在寒暄里写个 {、或结尾补一句带 } 的说明，
+/// 截出来就不是合法 JSON。改成按括号配对扫描（跳过字符串字面量），并优先
+/// 返回第一个能真正解析成 JSON 的候选。
 fn extract_json_object(raw: &str) -> Option<String> {
-    let start = raw.find('{')?;
-    let end = raw.rfind('}')?;
-    if end <= start {
-        return None;
+    let cleaned = raw.replace("```", "");
+    let mut candidates: Vec<String> = Vec::new();
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut start: Option<usize> = None;
+    for (index, ch) in cleaned.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' => {
+                if depth == 0 {
+                    start = Some(index);
+                }
+                depth += 1;
+            }
+            '}' => {
+                if depth > 0 {
+                    depth -= 1;
+                    if depth == 0 {
+                        if let Some(begin) = start {
+                            candidates.push(cleaned[begin..=index].to_string());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
     }
-    Some(raw[start..=end].to_string())
+    // 第一个候选可能是寒暄里的 {角色} 这种伪对象，能解析的那个才是正主。
+    for candidate in &candidates {
+        if serde_json::from_str::<serde_json::Value>(candidate).is_ok() {
+            return Some(candidate.clone());
+        }
+    }
+    candidates.into_iter().next()
 }
 
 fn truncate_for_error(raw: &str) -> String {
@@ -5680,6 +6071,46 @@ fn truncate_for_error(raw: &str) -> String {
     }
 }
 
+/// 按字素簇截断字符串：基础字符/变体选择符/肤色修饰符/ZWJ 连接序列视为一个整体，
+/// 避免把 👨‍💻 这类表情从中间劈开。轻量近似实现，不引入新依赖。
+fn take_grapheme_clusters(input: &str, max_clusters: usize) -> String {
+    fn is_extend(ch: char) -> bool {
+        matches!(
+            ch as u32,
+            0x0300..=0x036F
+                | 0x1AB0..=0x1AFF
+                | 0x1DC0..=0x1DFF
+                | 0x20D0..=0x20FF
+                | 0xFE00..=0xFE0F
+                | 0xFE20..=0xFE2F
+                | 0x1F3FB..=0x1F3FF
+                | 0xE0100..=0xE01EF
+        )
+    }
+
+    let mut out = String::new();
+    let mut clusters = 0usize;
+    let mut pending_zwj = false;
+    for ch in input.chars() {
+        if ch == '\u{200D}' {
+            pending_zwj = true;
+            out.push(ch);
+            continue;
+        }
+        if pending_zwj || is_extend(ch) {
+            pending_zwj = false;
+            out.push(ch);
+            continue;
+        }
+        if clusters >= max_clusters {
+            break;
+        }
+        clusters += 1;
+        out.push(ch);
+    }
+    out
+}
+
 /// 把模型生成的智能体 JSON 规范化成安全可保存的结构）
 fn normalize_generated_agent_spec(
     value: serde_json::Value,
@@ -5690,23 +6121,30 @@ fn normalize_generated_agent_spec(
     const PROMPT_MAX: usize = 2000;
     let allowed: std::collections::HashSet<&String> = tool_names.iter().collect();
 
+    // 名字清洗口径必须和 save_agent 的校验一致：任何空白（含全角空格）、控制字符和 @
+    // 都要在这里清掉，否则用户填完一整张表点保存才被拒，白填一场。
     let name = value
         .get("name")
         .and_then(|v| v.as_str())
-        .unwrap_or("新智能体")
-        .trim()
-        .replace([' ', '@', '\t', '\n'], "")
-        .chars()
-        .take(NAME_MAX)
-        .collect::<String>();
+        .map(|raw| {
+            raw.chars()
+                .filter(|c| !c.is_whitespace() && !c.is_control() && *c != '@')
+                .take(NAME_MAX)
+                .collect::<String>()
+        })
+        .unwrap_or_default();
+    let name = if name.is_empty() {
+        "新智能体".to_string()
+    } else {
+        name
+    };
+    // 头像按字素簇截断：ZWJ 表情（👨‍💻 是 4 个码点）不能从中间劈开。
     let avatar = value
         .get("avatar")
         .and_then(|v| v.as_str())
-        .unwrap_or("🤖")
-        .trim()
-        .chars()
-        .take(2)
-        .collect::<String>();
+        .map(|raw| take_grapheme_clusters(raw.trim(), 1))
+        .filter(|raw| !raw.is_empty())
+        .unwrap_or_else(|| "🤖".to_string());
     let description = value
         .get("description")
         .and_then(|v| v.as_str())
@@ -5993,6 +6431,7 @@ async fn get_file_metadata(paths: Vec<String>) -> Result<Vec<FileMetadata>, Stri
         let path = std::path::Path::new(p);
         let exists = path.exists();
         let is_file = exists && path.is_file();
+        let is_dir = exists && path.is_dir();
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -6013,6 +6452,7 @@ async fn get_file_metadata(paths: Vec<String>) -> Result<Vec<FileMetadata>, Stri
             extension,
             exists,
             is_file,
+            is_dir,
         });
     }
     Ok(results)
@@ -6235,6 +6675,19 @@ async fn tts_synthesize(
     state.tts.synthesize(&req).await
 }
 
+/// TTS 播放状态事件载荷。
+///
+/// 前端不能靠 `tts_play` 的 resolve 来推断"播完了"：命令必须在音频开始播放时
+/// 就返回，否则串行播放时每一句之间都会多出一段等上一句播完的死时间。
+/// 播放开始/结束/打断改由事件广播，所有窗口（Dashboard、VoicePanel）共用同一份真相。
+#[derive(Clone, serde::Serialize)]
+struct TtsPlaybackEvent {
+    /// 本次播放会话 id，前端用它丢弃过期会话的结束事件。
+    playback_id: u64,
+    /// 本次播放的完整文本（前端可用于字幕/高亮）。
+    text: String,
+}
+
 #[tauri::command]
 async fn tts_play(
     text: String,
@@ -6242,8 +6695,9 @@ async fn tts_play(
     rate: Option<i32>,
     pitch: Option<i32>,
     volume: Option<i32>,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
+) -> Result<u64, String> {
     if text.len() > MAX_TTS_TEXT_BYTES {
         return Err(format!(
             "TTS 文本过长：{} 字节（上限 {} 字节 / 4KB）",
@@ -6263,16 +6717,52 @@ async fn tts_play(
     };
     let (audio_path, _) = state.tts.synthesize_to_file(&req).await?;
     let (playback_id, player) = state.tts_playback.play_wav_file(&audio_path)?;
-    tokio::task::spawn_blocking(move || player.sleep_until_end())
-        .await
-        .map_err(|e| format!("TTS 播放任务失败: {e}"))?;
-    state.tts_playback.clear_if_current(playback_id);
-    Ok(())
+
+    // 命令在音频真正开始播放时才返回，前端据此立刻切到"正在播放"。
+    // 注意：这里必须等 play_wav_file 成功后才有 id，保证 started 与 ended 配对。
+    let _ = app.emit(
+        "tts-playback-started",
+        TtsPlaybackEvent {
+            playback_id,
+            text: req.text.clone(),
+        },
+    );
+
+    // 阻塞式播放丢到后台线程，命令本身立即返回，前端不再被"等播完"卡住。
+    // AppState 由 app.manage 托管，后台闭包通过 AppHandle 取回同一份状态。
+    let app_handle = app.clone();
+    let text_for_event = req.text.clone();
+    tokio::task::spawn_blocking(move || {
+        player.sleep_until_end();
+        // 仅当这次会话仍是"当前会话"时才清理并广播 ended：
+        // 被打断 / 被新一句顶替的旧会话不该再发结束事件，否则前端会误把新播放标成结束。
+        let playback_state = app_handle.state::<AppState>();
+        if playback_state.tts_playback.clear_if_current(playback_id) {
+            let _ = app_handle.emit(
+                "tts-playback-ended",
+                TtsPlaybackEvent {
+                    playback_id,
+                    text: text_for_event,
+                },
+            );
+        }
+    });
+
+    Ok(playback_id)
 }
 
 #[tauri::command]
-fn tts_stop(state: tauri::State<'_, AppState>) -> Result<(), String> {
+fn tts_stop(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<(), String> {
     state.tts_playback.stop();
+    // 主动停止同样要让前端知道播放结束了；被 stop 掉的会话不会再走后台线程的 ended 分支，
+    // 这里补发一次，避免 UI 永远停在"正在播放"。playback_id 用 0 表示"非特定会话结束"。
+    let _ = app.emit(
+        "tts-playback-ended",
+        TtsPlaybackEvent {
+            playback_id: 0,
+            text: String::new(),
+        },
+    );
     Ok(())
 }
 
@@ -6302,6 +6792,41 @@ fn tts_cache_dir(app: &tauri::App) -> PathBuf {
     });
     path.push("tts_cache");
     path
+}
+
+#[cfg(test)]
+mod phase0_prompt_tests {
+    use super::*;
+
+    #[test]
+    fn prompt_safe_single_line_strips_control_and_truncates() {
+        let raw = "微信\n\"evil\"\\x";
+        let safe = prompt_safe_single_line(raw, 40);
+        assert!(!safe.contains('\n'));
+        assert!(!safe.contains('"'));
+        assert!(!safe.contains('\\'));
+        assert!(safe.chars().count() <= 40);
+        let long = "a".repeat(60);
+        let truncated = prompt_safe_single_line(&long, 10);
+        assert_eq!(truncated.chars().count(), 10);
+        assert!(truncated.ends_with('…'));
+    }
+
+    #[test]
+    fn resume_failure_messages_are_recognized() {
+        assert!(is_resume_failure_message(
+            "No conversation found with session ID: abc"
+        ));
+        assert!(is_resume_failure_message("Session not found: xyz"));
+        assert!(is_resume_failure_message("会话不存在"));
+        assert!(!is_resume_failure_message("Reached maximum budget ($0.5)"));
+        assert!(!is_resume_failure_message("API request failed"));
+    }
+
+    #[test]
+    fn cli_turn_timeout_is_thirty_minutes() {
+        assert_eq!(CLI_TURN_TIMEOUT_SECS, 30 * 60);
+    }
 }
 
 pub fn run() {
@@ -6354,6 +6879,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(move |app| {
             // 主窗口在 tauri.conf.json 中已设为 "create": false。
@@ -6483,6 +7009,7 @@ pub fn run() {
             rename_chat_session,
             delete_chat_session,
             set_chat_session_binding,
+            set_chat_session_permission,
             get_agent_model_catalog,
             set_active_chat_session,
             get_active_chat_session,

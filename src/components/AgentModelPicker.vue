@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import {
   effortLabel,
   effortOptionsFor,
@@ -10,6 +10,7 @@ import {
   type AgentModelOption,
   type AgentModelSlot,
 } from "../services/agentModels";
+import EffortSlider from "./EffortSlider.vue";
 
 const props = withDefaults(
   defineProps<{
@@ -21,8 +22,9 @@ const props = withDefaults(
     /** 当前会话/窗口偏好里的思考强度 id；空串 = 跟随本机默认。 */
     effort: string;
     disabled?: boolean;
+    embedded?: boolean;
   }>(),
-  { provider: "", disabled: false },
+  { provider: "", disabled: false, embedded: false },
 );
 
 const emit = defineEmits<{
@@ -30,6 +32,8 @@ const emit = defineEmits<{
 }>();
 
 const rootRef = ref<HTMLDivElement | null>(null);
+const popupRef = ref<HTMLDivElement | null>(null);
+const popupStyle = ref<Record<string, string>>({});
 const catalog = ref<AgentModelCatalog | null>(null);
 const loading = ref(false);
 const loadError = ref("");
@@ -145,6 +149,7 @@ function compatibleEffort(provider: string, modelId: string, effort: string): st
 }
 
 function close(): void {
+  if (props.embedded) return;
   open.value = false;
   customDraft.value = "";
   searchQuery.value = "";
@@ -175,8 +180,25 @@ async function loadCatalog(force: boolean): Promise<void> {
   }
 }
 
+function updatePopupPosition(): void {
+  if (props.embedded || !open.value || !rootRef.value) return;
+  const anchor = rootRef.value.getBoundingClientRect();
+  const width = Math.min(370, window.innerWidth - 24);
+  const height = Math.min(popupRef.value?.offsetHeight || 560, window.innerHeight - 24);
+  popupStyle.value = {
+    width: `${width}px`,
+    left: `${Math.max(12, Math.min(anchor.right - width, window.innerWidth - width - 12))}px`,
+    top: `${Math.max(12, Math.min(anchor.bottom + 8, window.innerHeight - height - 12))}px`,
+    maxHeight: `${Math.min(560, window.innerHeight - 24)}px`,
+  };
+}
+
+function handleWindowScroll(event: Event): void {
+  if (!(event.target instanceof Node) || !popupRef.value?.contains(event.target)) updatePopupPosition();
+}
+
 function openPopup(): void {
-  if (props.disabled) return;
+  if (props.disabled || props.embedded) return;
   open.value = true;
   activeProviderId.value = currentProvider.value;
   activeModelId.value = currentModel.value;
@@ -185,11 +207,13 @@ function openPopup(): void {
 }
 
 function togglePopup(): void {
+  if (props.disabled || props.embedded) return;
   if (open.value) close();
   else openPopup();
 }
 
 function selectModel(model: AgentModelOption): void {
+  if (props.disabled) return;
   const provider = (model.provider || "").trim();
   activeProviderId.value = provider;
   activeModelId.value = model.id;
@@ -201,6 +225,7 @@ function selectModel(model: AgentModelOption): void {
 }
 
 function selectFollowLocal(): void {
+  if (props.disabled) return;
   activeProviderId.value = "";
   activeModelId.value = "";
   emit("select", { model: "", provider: "", effort: "" });
@@ -208,22 +233,24 @@ function selectFollowLocal(): void {
 }
 
 function selectEffort(effortId: string): void {
-  // 「点击 effort = 只更新 effort」：始终针对当前已选中的 (provider, model) 做能力校正。
+  if (props.disabled) return;
+  const model = currentModel.value || (effortId ? catalog.value?.local_model || "" : "");
+  const provider = currentProvider.value || (model && !currentModel.value ? catalog.value?.local_provider || "" : "");
   emit("select", {
-    model: currentModel.value,
-    provider: currentProvider.value,
-    effort: compatibleEffort(currentProvider.value, currentModel.value, effortId),
+    model,
+    provider,
+    effort: compatibleEffort(provider, model, effortId),
   });
 }
 
 function submitCustom(): void {
+  if (props.disabled) return;
   const id = customDraft.value.trim();
   if (!id) return;
   const provider = currentProvider.value;
   activeProviderId.value = provider;
   activeModelId.value = id;
   emit("select", { model: id, provider, effort: compatibleEffort(provider, id, currentEffort.value) });
-  customDraft.value = "";
   close();
 }
 
@@ -232,10 +259,12 @@ const customPlaceholder = computed(() =>
 );
 
 function refresh(): void {
+  if (props.disabled || loading.value) return;
   void loadCatalog(true);
 }
 
 function moveActive(delta: number): void {
+  if (props.disabled) return;
   const models = visibleModels.value;
   const keys = ["", ...models.map(modelRowKey)];
   const currentKey = activeModelId.value ? activeProviderId.value + ":" + activeModelId.value : "";
@@ -253,6 +282,7 @@ function moveActive(delta: number): void {
 }
 
 function selectHighlighted(): void {
+  if (props.disabled) return;
   if (!activeModelId.value) {
     selectFollowLocal();
     return;
@@ -263,21 +293,24 @@ function selectHighlighted(): void {
   if (model) selectModel(model);
 }
 
-function clearSearchOrClose(): void {
-  if (searchQuery.value) searchQuery.value = "";
+function handleInputEscape(event: KeyboardEvent, fromSearch = false): void {
+  if (props.embedded || props.disabled) return;
+  event.stopPropagation();
+  event.preventDefault();
+  if (fromSearch && searchQuery.value) searchQuery.value = "";
   else close();
 }
 
 function handleDocumentPointerDown(event: PointerEvent): void {
-  if (!open.value) return;
+  if (props.embedded || !open.value) return;
   const root = rootRef.value;
   const target = event.target as Node | null;
-  if (root && target && root.contains(target)) return;
+  if (target && (root?.contains(target) || popupRef.value?.contains(target))) return;
   close();
 }
 
 function handleWindowKeydown(event: KeyboardEvent): void {
-  if (!open.value) return;
+  if (props.embedded || props.disabled || !open.value) return;
   if (event.key === "Escape") {
     event.preventDefault();
     close();
@@ -285,7 +318,7 @@ function handleWindowKeydown(event: KeyboardEvent): void {
   }
   const target = event.target as HTMLElement | null;
   const tag = target?.tagName;
-  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+  if (target?.closest(".effort-slider") || tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
   if (event.key === "ArrowDown" || event.key === "ArrowUp") {
     event.preventDefault();
     moveActive(event.key === "ArrowDown" ? 1 : -1);
@@ -298,16 +331,14 @@ function handleWindowKeydown(event: KeyboardEvent): void {
 }
 
 watch(
-  () => props.model,
-  (value) => {
-    if (open.value) activeModelId.value = (value || "").trim();
+  [currentModel, currentProvider, () => props.embedded],
+  ([model, provider]) => {
+    if (props.embedded || open.value) {
+      activeModelId.value = model;
+      activeProviderId.value = provider;
+    }
   },
-);
-watch(
-  () => props.provider,
-  (value) => {
-    if (open.value) activeProviderId.value = (value || "").trim();
-  },
+  { immediate: true },
 );
 watch(
   () => props.disabled,
@@ -320,28 +351,47 @@ watch(
   () => {
     loadToken += 1;
     loading.value = false;
-    close();
+    open.value = false;
+    customDraft.value = "";
+    searchQuery.value = "";
+    activeModelId.value = currentModel.value;
+    activeProviderId.value = currentProvider.value;
     catalog.value = null;
     loadError.value = "";
     void loadCatalog(false);
   },
 );
 
+watch([open, activeEfforts, groups, loadError], async () => {
+  if (!props.embedded && open.value) {
+    await nextTick();
+    updatePopupPosition();
+  }
+}, { flush: "post" });
+
 onMounted(() => {
-  document.addEventListener("pointerdown", handleDocumentPointerDown, true);
-  window.addEventListener("keydown", handleWindowKeydown);
+  watch(() => props.embedded, (embedded, _, onCleanup) => {
+    if (embedded) return;
+    window.addEventListener("resize", updatePopupPosition);
+    window.addEventListener("scroll", handleWindowScroll, true);
+    document.addEventListener("pointerdown", handleDocumentPointerDown, true);
+    window.addEventListener("keydown", handleWindowKeydown);
+    onCleanup(() => {
+      window.removeEventListener("resize", updatePopupPosition);
+      window.removeEventListener("scroll", handleWindowScroll, true);
+      document.removeEventListener("pointerdown", handleDocumentPointerDown, true);
+      window.removeEventListener("keydown", handleWindowKeydown);
+    });
+  }, { immediate: true });
   // 窗口挂载即预取目录（service 自带缓存）：重启后 pill 直接显示展示名而不是原始 id。
   void loadCatalog(false);
-});
-onBeforeUnmount(() => {
-  document.removeEventListener("pointerdown", handleDocumentPointerDown, true);
-  window.removeEventListener("keydown", handleWindowKeydown);
 });
 </script>
 
 <template>
-  <div ref="rootRef" class="dash-agent-model-picker">
+  <div ref="rootRef" class="dash-agent-model-picker" :class="{ 'is-embedded': embedded }">
     <button
+      v-if="!embedded"
       type="button"
       class="dash-agent-field dash-agent-model-trigger"
       :class="{ 'is-open': open }"
@@ -354,15 +404,26 @@ onBeforeUnmount(() => {
       <span class="dash-agent-field-label">模型</span>
       <span class="dash-agent-model-trigger-text">
         <span class="dash-agent-model-value">
-          {{ modelLabel }}<span v-if="showChannel" class="dash-agent-model-channel"> · {{ channelLabel }}</span>
+          {{ modelLabel }}
         </span>
-        <span class="dash-agent-model-sub">思考：{{ effortText }}</span>
+        <span class="dash-agent-model-sub"><span v-if="showChannel" class="dash-agent-model-channel">{{ channelLabel }} · </span>思考 {{ effortText }}</span>
       </span>
       <span v-if="loading && !catalog && open" class="dash-agent-model-spinner" aria-hidden="true" />
-      <span v-else class="dash-agent-model-caret" aria-hidden="true">▼</span>
+      <span v-else class="dash-agent-model-caret" aria-hidden="true">
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6" /></svg>
+      </span>
     </button>
 
-    <div v-if="open" class="dash-agent-model-pop" role="dialog" aria-label="模型与思考强度">
+    <Teleport to="body" :disabled="embedded">
+    <div
+      v-if="embedded || open"
+      ref="popupRef"
+      class="dash-agent-model-pop"
+      :class="{ 'is-embedded': embedded }"
+      :style="embedded ? undefined : popupStyle"
+      :role="embedded ? 'group' : 'dialog'"
+      aria-label="模型与思考强度"
+    >
       <div class="dash-agent-model-pop-head">
         <span class="dash-agent-model-pop-title">
           模型<span v-if="totalModels" class="dash-agent-model-pop-count">{{ totalModels }}</span>
@@ -370,11 +431,12 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="dash-agent-model-refresh"
-          :disabled="loading"
+          :disabled="disabled || loading"
           title="重新探测本机模型目录"
           @click="refresh"
         >
-          {{ loading ? "…" : "↻" }}
+          <span v-if="loading">…</span>
+          <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-15.4-6.4L3 8" /><path d="M3 3v5h5" /><path d="M3 12a9 9 0 0 0 15.4 6.4L21 16" /><path d="M16 16h5v5" /></svg>
         </button>
       </div>
 
@@ -383,8 +445,9 @@ onBeforeUnmount(() => {
         v-model="searchQuery"
         class="dash-agent-model-search"
         placeholder="搜索模型 / 渠道…"
+        :disabled="disabled"
         spellcheck="false"
-        @keydown.esc.stop.prevent="clearSearchOrClose"
+        @keydown.esc="handleInputEscape($event, true)"
       />
 
       <div v-if="loadError" class="dash-agent-model-error">{{ loadError }}</div>
@@ -393,6 +456,7 @@ onBeforeUnmount(() => {
         <button
           type="button"
           :class="['dash-agent-model-row', 'dash-agent-model-row-local', { active: isLocalSelected }]"
+          :disabled="disabled"
           @click="selectFollowLocal"
         >
           <span class="dash-agent-model-row-main">
@@ -411,6 +475,7 @@ onBeforeUnmount(() => {
             :key="modelRowKey(model)"
             type="button"
             :class="['dash-agent-model-row', { active: isHighlighted(model) }]"
+            :disabled="disabled"
             @click="selectModel(model)"
           >
             <span class="dash-agent-model-row-main">
@@ -426,27 +491,12 @@ onBeforeUnmount(() => {
       </div>
 
       <div v-if="activeEfforts.length" class="dash-agent-model-efforts">
-        <div class="dash-agent-model-efforts-title">思考强度</div>
-        <div class="dash-agent-model-effort-chips">
-          <button
-            type="button"
-            :class="['dash-agent-model-effort', { active: !currentEffort }]"
-            title="不传 effort，使用本机默认"
-            @click="selectEffort('')"
-          >
-            跟随本机默认
-          </button>
-          <button
-            v-for="effort in activeEfforts"
-            :key="effort.id"
-            type="button"
-            :class="['dash-agent-model-effort', { active: currentEffort === effort.id }]"
-            :title="effort.description || effort.name"
-            @click="selectEffort(effort.id)"
-          >
-            {{ effortLabel(effort.id, effort.name) }}
-          </button>
-        </div>
+        <EffortSlider
+          :options="activeEfforts"
+          :model-value="currentEffort"
+          :disabled="disabled"
+          @change="selectEffort"
+        />
       </div>
       <div v-else-if="activeEffortHint" class="dash-agent-model-efforts-note">{{ activeEffortHint }}</div>
 
@@ -455,19 +505,68 @@ onBeforeUnmount(() => {
           v-model="customDraft"
           class="dash-agent-model-custom-input"
           :placeholder="customPlaceholder"
+          :disabled="disabled"
           spellcheck="false"
           @keydown.enter.stop.prevent="submitCustom"
-          @keydown.esc.stop.prevent="close"
+          @keydown.esc="handleInputEscape"
         />
         <button
           type="button"
           class="dash-agent-model-custom-btn"
-          :disabled="!customDraft.trim()"
+          :disabled="disabled || !customDraft.trim()"
           @click="submitCustom"
         >
           使用
         </button>
       </div>
     </div>
+    </Teleport>
   </div>
 </template>
+
+<style scoped>
+.dash-agent-model-picker.is-embedded {
+  position: static;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+.dash-agent-model-pop.is-embedded {
+  position: static;
+  inset: auto;
+  z-index: auto;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  max-height: none;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+  animation: none;
+}
+.dash-agent-model-pop.is-embedded > * {
+  box-sizing: border-box;
+  min-width: 0;
+  flex-shrink: 0;
+}
+.dash-agent-model-pop.is-embedded .dash-agent-model-list {
+  flex: none;
+  max-height: min(360px, 45vh);
+  overscroll-behavior: auto;
+}
+.dash-agent-model-pop.is-embedded .dash-agent-model-row { box-sizing: border-box; }
+.dash-agent-model-pop.is-embedded .dash-agent-model-row-id,
+.dash-agent-model-pop.is-embedded .dash-agent-model-row-desc { white-space: normal; }
+.dash-agent-model-pop.is-embedded .dash-agent-model-efforts { margin-inline: 0; }
+.dash-agent-model-row:disabled,
+.dash-agent-model-search:disabled,
+.dash-agent-model-custom-input:disabled { opacity: 0.6; cursor: default; }
+</style>

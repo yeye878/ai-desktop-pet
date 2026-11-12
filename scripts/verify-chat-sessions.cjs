@@ -53,6 +53,38 @@ function componentCallback(file, eventName) {
   return found.arguments[1].getText(source);
 }
 
+function paneFunction(name, globals) {
+  const vue = fs.readFileSync(path.join(root, "src/components/SessionPane.vue"), "utf8");
+  const script = vue.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1];
+  const source = ts.createSourceFile("SessionPane.ts", script, ts.ScriptTarget.Latest, true);
+  const declaration = source.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === name);
+  assert.ok(declaration, `SessionPane 缺少 ${name}`);
+  return evaluate(`${declaration.getText(source)}\nexports.run = ${name};`, globals).run;
+}
+
+function makePaneContext(session = null) {
+  const calls = [];
+  return {
+    props: { paneId: "pane-1", sessionId: session?.id || "" },
+    session: { value: session },
+    creating: { value: false },
+    savingModel: { value: false },
+    loading: { value: false },
+    newSlot: { value: "codex" },
+    paneError: { value: "" },
+    settingsError: { value: "" },
+    disposed: false,
+    SLOT_DEFAULT_AGENT: { claude: "builtin-claude", codex: "builtin-codex", dsh: "builtin-dsh" },
+    sessions: {
+      create: async (slot, options) => { calls.push(["create", slot, plain(options)]); return { id: "created" }; },
+      bind: async (id, patch) => { calls.push(["bind", id, plain(patch)]); },
+    },
+    closeDialog: () => calls.push(["close"]),
+    emit: (...args) => calls.push(args),
+    calls,
+  };
+}
+
 function makeSession(patch = {}) {
   return {
     id: "session-1",
@@ -107,7 +139,7 @@ function createBackend(options = {}) {
           preview: "",
         });
         sessions.unshift(session);
-        if (isMain) activeId = session.id;
+        if (isMain && args.activate !== false) activeId = session.id;
         return structuredClone(session);
       }
       case "set_active_chat_session": {
@@ -263,7 +295,7 @@ test("create(main) 更新活跃主会话，create(agent) 不影响活跃主会�
   assert.equal(store.sessions.length, 2);
   assert.deepEqual(plain(backend.calls.at(-1)), {
     command: "create_chat_session",
-    args: { slot: "main", agentId: "", model: "", provider: "", reasoningEffort: "", title: "" },
+    args: { slot: "main", agentId: "", model: "", provider: "", reasoningEffort: "", permission: "", title: "", activate: true },
   });
 
   const activeBefore = store.activeMainId;
@@ -272,6 +304,106 @@ test("create(main) 更新活跃主会话，create(agent) 不影响活跃主会�
   assert.equal(store.activeMainId, activeBefore, "agent 窗口新建会话不能抢走主会话活跃 id");
   assert.equal(store.find(claude.id)?.agent_id, "builtin-claude");
   assert.equal(store.find(claude.id)?.model, "sonnet");
+});
+
+test("窗格新建主对话不切换全局活跃会话，刷新后也保持不变", async () => {
+  const backend = createBackend({ sessions: [makeSession({ id: "main-a" })], activeId: "main-a" });
+  const store = loadSessionsStore(backend);
+  await store.load();
+  const created = await store.create("main", { activate: false, model: "custom-model" });
+  assert.equal(store.activeMainId, "main-a");
+  assert.equal(store.find(created.id).model, "custom-model");
+  assert.equal(backend.calls.at(-1).args.activate, false);
+  await store.load();
+  assert.equal(store.activeMainId, "main-a");
+});
+
+test("dev mock：窗格新建主会话不广播活跃会话切换", async () => {
+  const mock = loadDevMock();
+  const before = await mock.invoke("get_active_chat_session", {});
+  const switchedBefore = mock.eventsOf("chat-session-changed").length;
+  const created = await mock.invoke("create_chat_session", { slot: "main", activate: false });
+  assert.notEqual(created.id, before.id);
+  assert.equal((await mock.invoke("get_active_chat_session", {})).id, before.id);
+  assert.equal(mock.eventsOf("chat-session-changed").length, switchedBefore);
+  assert.ok(mock.eventsOf("chat-sessions-changed").length > 0);
+});
+
+test("窗格新建继承模型绑定，但不复制旧权限、不停止旧任务", async () => {
+  const previous = makeSession({ id: "old", slot: "dsh", agent_id: "custom-agent", model: "model-x", provider: "channel-a", reasoning_effort: "high", permission: "read-only" });
+  const context = makePaneContext(previous);
+  context.loading.value = true;
+  await paneFunction("createConversation", context)();
+  assert.deepEqual(context.calls, [
+    ["create", "dsh", { agentId: "custom-agent", model: "model-x", provider: "channel-a", reasoningEffort: "high", activate: false }],
+    ["close"],
+    ["assign", "pane-1", "created"],
+  ]);
+  assert.equal(context.creating.value, false);
+  assert.equal(previous.id, "old");
+  assert.equal(previous.permission, "read-only");
+});
+
+test("空窗格按选择的对话类型创建，重复点击不会重复创建", async () => {
+  const context = makePaneContext();
+  await paneFunction("createConversation", context)();
+  assert.equal(context.calls[0][1], "codex");
+  assert.equal(context.calls[0][2].agentId, "builtin-codex");
+  context.creating.value = true;
+  const count = context.calls.length;
+  await paneFunction("createConversation", context)();
+  assert.equal(context.calls.length, count);
+});
+
+test("新建失败不换绑窗格，重试可以继续创建", async () => {
+  const context = makePaneContext(makeSession({ id: "old" }));
+  context.sessions.create = async () => { throw new Error("连接中断"); };
+  await paneFunction("createConversation", context)();
+  assert.match(context.paneError.value, /新建对话失败/);
+  assert.equal(context.props.sessionId, "old");
+  assert.equal(context.creating.value, false);
+  assert.deepEqual(context.calls, []);
+  context.sessions.create = async () => ({ id: "retry" });
+  await paneFunction("createConversation", context)();
+  assert.equal(context.paneError.value, "");
+  assert.deepEqual(context.calls.at(-1), ["assign", "pane-1", "retry"]);
+});
+
+test("创建期间窗格被换绑，完成后不覆盖新绑定", async () => {
+  const context = makePaneContext(makeSession({ id: "old" }));
+  let finish;
+  context.sessions.create = () => new Promise((resolve) => { finish = resolve; });
+  const pending = paneFunction("createConversation", context)();
+  context.props.sessionId = "another";
+  finish({ id: "created" });
+  await pending;
+  assert.equal(context.props.sessionId, "another");
+  assert.equal(context.calls.length, 0);
+  assert.match(context.paneError.value, /新对话已创建/);
+});
+
+test("模型设置只保存当前会话变化字段，运行中和保存中禁止修改", async () => {
+  const context = makePaneContext(makeSession({ id: "target", model: "m", provider: "p", reasoning_effort: "low" }));
+  const select = paneFunction("selectModel", context);
+  await select({ model: "m", provider: "p", effort: "high" });
+  assert.deepEqual(context.calls, [["bind", "target", { reasoningEffort: "high" }]]);
+  assert.equal(context.savingModel.value, false);
+  context.loading.value = true;
+  await select({ model: "other", provider: "p", effort: "high" });
+  assert.equal(context.calls.length, 1);
+  context.loading.value = false;
+  context.savingModel.value = true;
+  await select({ model: "other", provider: "p", effort: "high" });
+  assert.equal(context.calls.length, 1);
+});
+
+test("模型设置保存失败显示错误，保留原绑定", async () => {
+  const context = makePaneContext(makeSession({ id: "target", model: "m", provider: "p", reasoning_effort: "low" }));
+  context.sessions.bind = async () => { throw new Error("连接中断"); };
+  await paneFunction("selectModel", context)({ model: "new", provider: "p", effort: "low" });
+  assert.equal(context.session.value.model, "m");
+  assert.match(context.settingsError.value, /保存模型失败/);
+  assert.equal(context.savingModel.value, false);
 });
 
 test("bySlot 始终按 updated_at 倒序返回各槽位会话", async () => {

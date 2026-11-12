@@ -67,12 +67,22 @@ pub struct CodexAdapter {
 }
 
 fn exec_args(session_id: Option<&str>, model: Option<&str>, effort: Option<&str>) -> Vec<String> {
+    exec_args_with_sandbox(session_id, model, effort, "workspace-write")
+}
+
+fn exec_args_with_sandbox(
+    session_id: Option<&str>,
+    model: Option<&str>,
+    effort: Option<&str>,
+    sandbox: &str,
+) -> Vec<String> {
     // exec cannot ask for approval in the desktop chat. Keep a bounded writable
-    // workspace and fail commands that would need additional permission.
+    // workspace by default and fail commands that would need additional
+    // permission; the user can opt into danger-full-access in settings.
     let mut args: Vec<String> = [
         "exec",
         "--sandbox",
-        "workspace-write",
+        sandbox,
         "-c",
         "approval_policy=\"never\"",
         // 默认配置下 reasoning 事件常常为空，detailed 摘要才能展示"思考过程"。
@@ -108,11 +118,12 @@ impl CodexAdapter {
         system_prompt: &str,
     ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
         let session = self.session_id.lock().unwrap().clone();
-        self.spawn_streaming_with(app, message, system_prompt, session.as_deref(), None, None)
+        self.spawn_streaming_with(app, message, system_prompt, session.as_deref(), None, None, "")
             .await
     }
 
-    /// 显式会话 / 模型 / 思考强度版本：不依赖适配器内部状态，供多会话与协作调用。
+    /// 显式会话 / 模型 / 思考强度 / 沙箱档位版本：不依赖适配器内部状态，供多会话与协作调用。
+    /// permission 为空串时回到默认的 `workspace-write`。
     pub async fn spawn_streaming_with(
         &self,
         app: &tauri::AppHandle,
@@ -121,10 +132,22 @@ impl CodexAdapter {
         session: Option<&str>,
         model: Option<&str>,
         effort: Option<&str>,
+        permission: &str,
     ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
         let workspace = workspace_dir(app)?;
-        self.spawn_in_workspace_with(&workspace, message, system_prompt, session, model, effort)
-            .await
+        // 会话级 / 设置页选定的沙箱档位：只在显式的 danger-full-access 时放开
+        // 工作区外的写入，其余情况保持默认的 workspace-write。
+        let sandbox = crate::cli_permission::codex_sandbox_mode(permission);
+        self.spawn_in_workspace_with(
+            &workspace,
+            message,
+            system_prompt,
+            session,
+            model,
+            effort,
+            sandbox,
+        )
+        .await
     }
 
     #[cfg(test)]
@@ -135,8 +158,16 @@ impl CodexAdapter {
         system_prompt: &str,
     ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
         let session = self.session_id.lock().unwrap().clone();
-        self.spawn_in_workspace_with(workspace, message, system_prompt, session.as_deref(), None, None)
-            .await
+        self.spawn_in_workspace_with(
+            workspace,
+            message,
+            system_prompt,
+            session.as_deref(),
+            None,
+            None,
+            "workspace-write",
+        )
+        .await
     }
 
     async fn spawn_in_workspace_with(
@@ -147,10 +178,11 @@ impl CodexAdapter {
         session: Option<&str>,
         model: Option<&str>,
         effort: Option<&str>,
+        sandbox: &str,
     ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
         std::fs::create_dir_all(&workspace)?;
         let mut child = cli_command(&find_cli()?)
-            .args(exec_args(session, model, effort))
+            .args(exec_args_with_sandbox(session, model, effort, sandbox))
             .current_dir(workspace)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -909,6 +941,19 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "approval_policy=\"never\""));
         assert!(args.iter().any(|arg| arg == "--json"));
         assert!(args.iter().any(|arg| arg == "--skip-git-repo-check"));
+    }
+
+    #[test]
+    fn codex_sandbox_mode_comes_from_the_permission_setting() {
+        for sandbox in ["read-only", "workspace-write", "danger-full-access"] {
+            let args = exec_args_with_sandbox(None, None, None, sandbox);
+            let index = args.iter().position(|arg| arg == "--sandbox").unwrap();
+            assert_eq!(args[index + 1], sandbox);
+            assert!(
+                args.iter().any(|arg| arg == "approval_policy=\"never\""),
+                "exec 无法应答审批，审批策略必须保持 never"
+            );
+        }
     }
 
     #[test]
