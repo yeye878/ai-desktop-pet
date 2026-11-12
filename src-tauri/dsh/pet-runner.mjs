@@ -5,7 +5,8 @@
  * 写到 stdout，桌宠拿不到推理过程和工具调用，也无法续接会话。这个 runner 走同一套
  * 核心 API（agentDefaultModel / agents / sessions），但：
  *
- *   1. 任务文本从 --prompt-file 读取，不再受命令行长度限制；
+ *   1. 任务文本从 --prompt-file 读取并立即删除（用后即删：文件含完整 system 提示
+ *      与首轮历史，读取后只留在内存里），且不再受命令行长度限制；
  *   2. 订阅 session/event，把推理增量、正文增量、工具调用与结果按 JSONL 写到 stdout；
  *   3. 支持 --resume <session-id>，配合 sessions.flush 让下一轮真正续接同一会话。
  *
@@ -28,7 +29,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { readFile } from 'node:fs/promises'
+import { readFile, unlink } from 'node:fs/promises'
 import { createInterface } from 'node:readline'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
@@ -53,10 +54,10 @@ const USAGE = [
   'dsh --profile dsh-pet --prompt-file <path> [--resume <session-id>] [--model <model>] [--provider <id>] [--effort <id>]',
   'dsh --profile dsh-pet --list-models [--provider <id>]',
   '',
-  '桌宠专用 runner：读取提示词文件，流式输出推理/正文/工具事件，转发授权请求，可选续接已有会话。',
+  '桌宠专用 runner：读取并立即删除提示词文件，流式输出推理/正文/工具事件，转发授权请求，可选续接已有会话。',
   '',
   'Options:',
-  '  --prompt-file <path>    UTF-8 提示词文件（--list-models 模式下可省略）',
+  '  --prompt-file <path>    UTF-8 提示词文件，读取后立即删除（--list-models 模式下可省略）',
   '  --resume <session-id>   续接该会话，失败时自动新建',
   '  --model <model>         本回合模型覆盖（默认跟随本机配置）',
   '  --provider <id>         本回合渠道（provider）覆盖（默认跟随本机配置）',
@@ -346,6 +347,11 @@ async function run(ctx) {
   if (!options.promptFile) throw new Error('缺少 --prompt-file 参数')
 
   const task = await readFile(options.promptFile, 'utf8')
+  // 任务已进内存，提示词文件用后即删（隐私）：它含完整 system 提示 + 首轮历史，
+  // 不该留在磁盘上。删除失败静默忽略，本轮照常继续，残留交给 Rust 侧 TTL sweep 兜底。
+  try {
+    await unlink(options.promptFile)
+  } catch {}
   if (task.trim() === '') throw new Error('提示词文件为空')
 
   // 等配置树结算，保证工具与沙箱等能力都已挂载后再创建 agent。

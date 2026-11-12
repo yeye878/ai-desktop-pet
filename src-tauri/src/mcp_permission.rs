@@ -56,9 +56,10 @@ impl PermissionDecision {
 }
 
 /// 谁来决定一次授权请求。生产路径是 UiPermission，测试注入自己的实现。
+/// session_id 来自桥 URL 的会话后缀（多会话并行时区分归属），可能为空。
 #[async_trait]
 pub trait PermissionAnswerer: Send + Sync {
-    async fn decide(&self, request: PermissionRequest) -> PermissionDecision;
+    async fn decide(&self, request: PermissionRequest, session_id: &str) -> PermissionDecision;
 }
 
 /// 走桌宠确认弹窗（与直连 API、dsh 同一套）。
@@ -74,28 +75,31 @@ impl UiPermission {
         Self { app }
     }
 
-    async fn current_cancel(&self) -> CancellationToken {
+    async fn current_cancel(&self, session_id: &str) -> CancellationToken {
         let state = self.app.state::<crate::AppState>();
-        let session_id = crate::current_turn_session(&state);
         state
             .abort_tokens
             .lock()
             .ok()
-            .and_then(|tokens| {
-                tokens
-                    .get(&session_id)
-                    .cloned()
-                    .or_else(|| tokens.values().next().cloned())
-            })
+            .and_then(|tokens| tokens.get(session_id).cloned())
             .unwrap_or_default()
     }
 }
 
 #[async_trait]
 impl PermissionAnswerer for UiPermission {
-    async fn decide(&self, request: PermissionRequest) -> PermissionDecision {
-        let payload = confirm_payload(&request);
-        let cancel = self.current_cancel().await;
+    async fn decide(&self, request: PermissionRequest, session_hint: &str) -> PermissionDecision {
+        // MCP 回调来自独立网络任务，没有回合 task-local 上下文；
+        // 归属以 URL 会话后缀为准，旧配置（无后缀）才回退到最近发起的回合。
+        let state = self.app.state::<crate::AppState>();
+        let session_id = if session_hint.trim().is_empty() {
+            crate::current_turn_session(&state)
+        } else {
+            session_hint.trim().to_string()
+        };
+        let mut payload = confirm_payload(&request);
+        payload.session_id = session_id.clone();
+        let cancel = self.current_cancel(&session_id).await;
         match crate::interactions::confirm_with_ui(&self.app, &cancel, payload, CONFIRM_TIMEOUT).await
         {
             WaitResult::Answered(true) => PermissionDecision::Allow,
@@ -137,6 +141,9 @@ pub fn confirm_payload(request: &PermissionRequest) -> ToolConfirmPayload {
         summary,
         command,
         path,
+        // MCP 回调来自独立网络任务，不依赖当前回合的 task-local 上下文；
+        // 会话归属由 UiPermission::decide 按桥 URL 的会话后缀补齐。
+        session_id: String::new(),
     }
 }
 
@@ -162,7 +169,31 @@ pub fn write_config(app: &tauri::AppHandle, bridge: &BridgeHandle) -> Result<Pat
     Ok(path)
 }
 
+/// 为本回合写带会话后缀的 MCP 配置：桥据此把授权请求归属到正确会话，
+/// 多个 claude 会话并行时弹窗不会串台。
+pub fn write_session_config(
+    app: &tauri::AppHandle,
+    bridge: &BridgeHandle,
+    session_id: &str,
+) -> Result<PathBuf, String> {
+    if session_id.is_empty()
+        || !session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("非法会话 id".to_string());
+    }
+    let base = config_path(app)?;
+    let dir = base.parent().ok_or("无法定位应用数据目录")?;
+    std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
+    let path = dir.join(format!("claude-mcp-permission-{session_id}.json"));
+    std::fs::write(&path, bridge.mcp_config_json_for_session(session_id))
+        .map_err(|error| format!("无法写入 {}：{error}", path.display()))?;
+    Ok(path)
+}
+
 /// 运行中的桥：端口、路径 token，以及给 claude 用的 MCP 配置文本。
+#[derive(Clone)]
 pub struct BridgeHandle {
     pub port: u16,
     token: String,
@@ -173,11 +204,25 @@ impl BridgeHandle {
         format!("http://127.0.0.1:{}/mcp/{}", self.port, self.token)
     }
 
+    /// 带会话后缀的 URL；桥以前缀匹配 token，后缀用于归属会话。
+    pub fn url_for_session(&self, session_id: &str) -> String {
+        format!("{}/{}", self.url(), session_id)
+    }
+
     /// --mcp-config 接受 JSON 文件或字符串；桌宠写文件，避免命令行转义问题。
     pub fn mcp_config_json(&self) -> String {
         json!({
             "mcpServers": {
                 SERVER_NAME: { "type": "http", "url": self.url() }
+            }
+        })
+        .to_string()
+    }
+
+    pub fn mcp_config_json_for_session(&self, session_id: &str) -> String {
+        json!({
+            "mcpServers": {
+                SERVER_NAME: { "type": "http", "url": self.url_for_session(session_id) }
             }
         })
         .to_string()
@@ -246,6 +291,15 @@ async fn handle_connection(mut stream: TcpStream, state: SharedState) -> Result<
         let _ = respond(&mut stream, 404, "text/plain", "not found").await;
         return Ok(());
     }
+    // token 前缀之后的路径段是会话后缀（claude 适配器按回合写入配置）。
+    let session_hint = target[state.1.len()..]
+        .split('?')
+        .next()
+        .unwrap_or("")
+        .trim_matches('/')
+        .chars()
+        .take(128)
+        .collect::<String>();
     if method != "POST" {
         let _ = respond(&mut stream, 405, "text/plain", "method not allowed").await;
         return Ok(());
@@ -255,7 +309,7 @@ async fn handle_connection(mut stream: TcpStream, state: SharedState) -> Result<
         return Ok(());
     };
 
-    match dispatch(&state.0, message).await {
+    match dispatch(&state.0, message, &session_hint).await {
         Some(reply) => {
             let text = reply.to_string();
             let _ = respond(&mut stream, 200, "application/json", &text).await;
@@ -315,7 +369,11 @@ async fn respond(
 }
 
 /// 处理一条 JSON-RPC 消息；通知返回 None（按 MCP 约定不回包）。
-async fn dispatch(answerer: &Arc<dyn PermissionAnswerer>, message: Value) -> Option<Value> {
+async fn dispatch(
+    answerer: &Arc<dyn PermissionAnswerer>,
+    message: Value,
+    session_hint: &str,
+) -> Option<Value> {
     let id = message.get("id").cloned();
     let method = message["method"].as_str().unwrap_or_default().to_string();
     let params = message.get("params").cloned().unwrap_or(Value::Null);
@@ -358,7 +416,7 @@ async fn dispatch(answerer: &Arc<dyn PermissionAnswerer>, message: Value) -> Opt
                     input: arguments.get("input").cloned().unwrap_or(json!({})),
                     tool_use_id: arguments["tool_use_id"].as_str().map(str::to_string),
                 };
-                let decision = answerer.decide(request).await;
+                let decision = answerer.decide(request, session_hint).await;
                 Ok(json!({
                     "content": [{ "type": "text", "text": decision.to_json().to_string() }],
                     "isError": false
@@ -383,12 +441,14 @@ mod tests {
     struct Recorder {
         decision: PermissionDecision,
         seen: Arc<Mutex<Vec<PermissionRequest>>>,
+        sessions: Arc<Mutex<Vec<String>>>,
     }
 
     #[async_trait]
     impl PermissionAnswerer for Recorder {
-        async fn decide(&self, request: PermissionRequest) -> PermissionDecision {
+        async fn decide(&self, request: PermissionRequest, session_id: &str) -> PermissionDecision {
             self.seen.lock().unwrap().push(request);
+            self.sessions.lock().unwrap().push(session_id.to_string());
             self.decision.clone()
         }
     }
@@ -434,9 +494,11 @@ mod tests {
     #[tokio::test]
     async fn answers_the_mcp_handshake_and_forwards_permission_calls() {
         let seen = Arc::new(Mutex::new(Vec::new()));
+        let sessions = Arc::new(Mutex::new(Vec::new()));
         let answerer = Arc::new(Recorder {
             decision: PermissionDecision::Allow,
             seen: seen.clone(),
+            sessions: sessions.clone(),
         });
         let bridge = serve(answerer).await.unwrap();
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
@@ -482,6 +544,25 @@ mod tests {
             .contains("allow"));
         assert_eq!(seen.lock().unwrap().len(), 1);
         assert_eq!(seen.lock().unwrap()[0].tool_name, "Bash");
+
+        // 带会话后缀的 URL：授权请求要归属到对应会话（多会话并行不串台）。
+        let scoped = client
+            .post(bridge.url_for_session("sess-abc_123"))
+            .json(&json!({
+                "jsonrpc": "2.0", "id": 6, "method": "tools/call",
+                "params": { "name": TOOL_NAME, "arguments": { "tool_name": "Write", "input": { "file_path": "C:/b.txt" } } }
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap();
+        assert!(scoped["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("allow"));
+        assert_eq!(sessions.lock().unwrap().as_slice(), ["", "sess-abc_123"]);
 
         let unknown = client
             .post(bridge.url())
@@ -582,6 +663,7 @@ mod tests {
         let answerer = Arc::new(Recorder {
             decision: PermissionDecision::Allow,
             seen: seen.clone(),
+            sessions: Arc::new(Mutex::new(Vec::new())),
         });
         let bridge = serve(answerer).await.unwrap();
         let config = root.join("mcp.json");
@@ -597,8 +679,6 @@ mod tests {
             .arg("--include-partial-messages")
             .arg("--append-system-prompt")
             .arg("这是桌宠接入测试，回答简短。")
-            .arg("--max-budget-usd")
-            .arg("0.5")
             .arg("--mcp-config")
             .arg(&config)
             .arg("--permission-prompt-tool")

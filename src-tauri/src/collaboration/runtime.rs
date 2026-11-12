@@ -270,8 +270,12 @@ async fn execute_job(
     let personality = state.personality.lock().await.clone();
     let profession = state.profession.lock().await.clone();
     let mut system = crate::openclaw::build_system_prompt(&personality, &profession);
-    system = crate::attach_memory_prompt(system);
-    system = crate::attach_registered_apps_prompt(system, &state).await;
+    // 只有 direct_api 角色拥有长期记忆 / open_app 工具；CLI 后端注入这些能力说明
+    // 会让模型调用不存在的工具或谎称已保存/已打开。
+    if profile.is_some() {
+        system = crate::attach_memory_prompt(system);
+        system = crate::attach_registered_apps_prompt(system, &state).await;
+    }
     system = crate::attach_custom_prompt(system, &custom_prompt);
     system = crate::attach_skill_prompt(system, skill.as_ref(), &skills, profile.is_some()).await;
     system.push_str("\n\n");
@@ -311,23 +315,38 @@ async fn execute_cli(
     let model = Some(agent.model.as_str())
         .map(str::trim)
         .filter(|model| !model.is_empty());
+    // 角色调用没有独立会话行，权限档位直接取设置页里的后端默认值。
+    let permission_key = match backend {
+        "codex" => crate::cli_permission::CODEX_SANDBOX_MODE_KEY,
+        "dsh" => crate::cli_permission::DSH_PERMISSION_MODE_KEY,
+        _ => crate::cli_permission::CLAUDE_PERMISSION_MODE_KEY,
+    };
+    let permission = crate::cli_permission::read_setting(app, permission_key).await;
     // Each role invocation has its own CLI context. Reconstruct it from the full
     // transcript instead of borrowing the ordinary pet's CLI session.
     let mut child = match backend {
         "claude_code" => {
             crate::openclaw::ClaudeAdapter::new()
-                .spawn_streaming_with(app, message, system, None, model, None)
+                .spawn_streaming_with(
+                    app,
+                    message,
+                    system,
+                    None,
+                    model,
+                    None,
+                    &permission,
+                )
                 .await
         }
         "codex" => {
             crate::codex::CodexAdapter::default()
-                .spawn_streaming_with(app, message, system, None, model, None)
+                .spawn_streaming_with(app, message, system, None, model, None, &permission)
                 .await
         }
         "dsh" => {
             // 角色调用不复用桌宠的 dsh 会话：上下文由完整共享记录重建。
             crate::dsh::DshAdapter::default()
-                .spawn_streaming_with(app, message, &[], system, None, model, None, None)
+                .spawn_streaming_with(app, message, &[], system, None, model, None, None, &permission)
                 .await
         }
         _ => {
@@ -361,7 +380,12 @@ async fn execute_cli(
     let read = async {
         if backend == "dsh" {
             let approvals: Option<Box<dyn crate::dsh::ApprovalAnswerer>> = Some(Box::new(
-                crate::dsh::UiApproval::new(app.clone(), cancel.clone()),
+                crate::dsh::UiApproval::for_session(
+                    app.clone(),
+                    cancel.clone(),
+                    session_id.clone(),
+                    crate::cli_permission::dsh_permission(&permission).auto_approve,
+                ),
             ));
             crate::dsh::read_stream_with_activity(
                 &mut child,
@@ -437,12 +461,10 @@ async fn execute_cli(
         || !exit.map(|exit| exit.success()).unwrap_or(false)
         || parsed.full_text.trim().is_empty()
     {
-        return Err(TurnError::failed(
-            parsed
-                .error_msg
-                .unwrap_or_else(|| "CLI 未正常完成回复，请检查本机登录或配置。".into()),
-            &parsed.full_thinking,
-        ));
+        let message = parsed
+            .error_msg
+            .unwrap_or_else(|| "CLI 未正常完成回复，请检查本机登录或配置。".into());
+        return Err(TurnError::failed(message, &parsed.full_thinking));
     }
     Ok(TurnOutput {
         text: parsed.full_text,

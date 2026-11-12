@@ -30,6 +30,8 @@ pub struct ToolConfirmPayload {
     pub summary: String,
     pub command: Option<String>,
     pub path: Option<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub session_id: String,
 }
 
 /// ask_user 工具弹窗里的单个候选项。
@@ -45,6 +47,8 @@ pub struct AskUserPayload {
     id: String,
     question: String,
     options: Vec<AskUserOption>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    session_id: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -1231,6 +1235,7 @@ async fn request_tool_confirmation(
     let payload = ToolConfirmPayload {
         id: confirm_id.clone(), tool_name: tool_name.to_string(), arguments: pretty_args.to_string(),
         summary: tool_summary(tool_name, args), command: tool_command(tool_name, args), path: tool_path(tool_name, args),
+        session_id: crate::current_turn_session(state),
     };
     {
         let mut confirms = state.pending_confirms.lock().await;
@@ -1399,7 +1404,7 @@ async fn request_user_answer(
 
     let (tx, rx) = tokio::sync::oneshot::channel::<String>();
     let question_id = format!("ask_{}", uuid::Uuid::new_v4());
-    let payload = AskUserPayload { id: question_id.clone(), question: question.clone(), options: options.clone() };
+    let payload = AskUserPayload { id: question_id.clone(), question: question.clone(), options: options.clone(), session_id: crate::current_turn_session(state) };
     {
         let mut questions = state.pending_questions.lock().await;
         questions.insert(question_id.clone(), crate::interactions::PendingRequest { sender: tx, payload: payload.clone() });

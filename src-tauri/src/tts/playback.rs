@@ -66,12 +66,18 @@ impl NativeAudioPlayer {
         }
     }
 
-    pub fn clear_if_current(&self, id: u64) {
+    /// 若 `id` 仍是当前会话则摘除并返回 `true`。
+    ///
+    /// 被打断 / 被新一句顶替的旧会话应返回 `false`，调用方据此决定是否广播结束事件——
+    /// 否则一次打断会发出两个结束事件，前端会把仍在播放的新句子误标为已结束。
+    pub fn clear_if_current(&self, id: u64) -> bool {
         if let Ok(mut current) = self.current.lock() {
             if current.as_ref().is_some_and(|session| session.id == id) {
                 current.take();
+                return true;
             }
         }
+        false
     }
 }
 

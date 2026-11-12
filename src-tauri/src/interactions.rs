@@ -114,9 +114,17 @@ pub async fn confirm_with_ui(
     let waiting = format!("[等待授权] {}\n", payload.summary);
     {
         let state = app.state::<crate::AppState>();
-        crate::append_session_thinking(&state, &waiting);
-        crate::emit_ai(app, "ai-thinking", &waiting);
+        // MCP 等独立任务没有回合 task-local 上下文，按载荷里的会话归属定向，
+        // 避免并行回合时把等待提示写进别的会话。
+        let session_id = if payload.session_id.trim().is_empty() {
+            crate::current_turn_session(&state)
+        } else {
+            payload.session_id.clone()
+        };
+        crate::append_session_thinking_for(&state, &session_id, &waiting);
+        crate::emit_ai_for(app, &session_id, "ai-thinking", &waiting);
     }
+    // 载荷自带 session_id，这里不能用 AiEmit（会用 task-local 覆盖归属）。
     let _ = app.emit("ai-tool-confirm", payload);
 
     let outcome = wait_for_response(receiver, cancel, timeout).await;

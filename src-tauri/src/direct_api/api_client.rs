@@ -487,6 +487,46 @@ fn normalize_content_to_responses(content: Value) -> Vec<Value> {
     }
 }
 
+/// 将 Chat Completions 风格的嵌套工具定义转换为 Responses API 需要的扁平结构。
+/// 兼容已扁平的定义；缺少 name 的项会被跳过；description/parameters 缺省补齐，
+/// 且不额外添加 "strict" 字段。
+fn responses_tool_definitions(tools: &[Value]) -> Vec<Value> {
+    let mut definitions = Vec::with_capacity(tools.len());
+
+    for tool in tools {
+        let nested = tool.get("function").filter(|f| f.is_object());
+        let name = nested
+            .and_then(|f| f.get("name"))
+            .and_then(Value::as_str)
+            .or_else(|| tool.get("name").and_then(Value::as_str));
+        let Some(name) = name.map(str::trim).filter(|n| !n.is_empty()) else {
+            continue;
+        };
+
+        let description = nested
+            .and_then(|f| f.get("description"))
+            .and_then(Value::as_str)
+            .or_else(|| tool.get("description").and_then(Value::as_str))
+            .unwrap_or("");
+
+        let parameters = nested
+            .and_then(|f| f.get("parameters"))
+            .or_else(|| tool.get("parameters"))
+            .filter(|p| p.is_object())
+            .cloned()
+            .unwrap_or_else(|| json!({ "type": "object", "properties": {} }));
+
+        definitions.push(json!({
+            "type": "function",
+            "name": name,
+            "description": description,
+            "parameters": parameters,
+        }));
+    }
+
+    definitions
+}
+
 /// 构建 Responses API 请求体（流式和非流式通用）
 pub fn build_responses_request_body(
     config: &DirectApiConfig,
@@ -509,10 +549,11 @@ pub fn build_responses_request_body(
     }
 
     if let Some(t) = tools {
-        if !t.is_empty() {
+        let definitions = responses_tool_definitions(&t);
+        if !definitions.is_empty() {
             body.as_object_mut()
                 .unwrap()
-                .insert("tools".to_string(), json!(t));
+                .insert("tools".to_string(), json!(definitions));
         }
     }
 
@@ -937,6 +978,116 @@ data: [DONE]
 "#;
 
         assert!(api_error_message_from_sse_text(sse).is_none());
+    }
+
+    #[test]
+    fn responses_tool_definitions_flatten_nested_chat_completions_shape() {
+        let nested = vec![json!({
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "读取本地文件",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "path": { "type": "string" } },
+                    "required": ["path"]
+                }
+            }
+        })];
+
+        let definitions = responses_tool_definitions(&nested);
+
+        assert_eq!(definitions.len(), 1);
+        let def = &definitions[0];
+        assert_eq!(def["type"], "function");
+        assert_eq!(def["name"], "read_file");
+        assert!(
+            def.get("function").is_none(),
+            "Responses tools 不能保留 Chat Completions 的 function 嵌套键"
+        );
+        assert_eq!(def["description"], "读取本地文件");
+        assert_eq!(def["parameters"]["type"], "object");
+        assert!(def["parameters"]["properties"]["path"].is_object());
+        assert!(def.get("strict").is_none(), "不要擅自添加 strict 字段");
+    }
+
+    #[test]
+    fn responses_tool_definitions_accept_flat_tools_and_skip_unnamed() {
+        let input = vec![
+            json!({
+                "type": "function",
+                "name": "flat_tool",
+                "parameters": { "type": "object", "properties": {} }
+            }),
+            json!({ "type": "function", "function": { "description": "缺少 name" } }),
+            json!({ "type": "web_search_preview" }),
+        ];
+
+        let definitions = responses_tool_definitions(&input);
+
+        assert_eq!(definitions.len(), 1);
+        assert_eq!(definitions[0]["name"], "flat_tool");
+        assert_eq!(definitions[0]["description"], "");
+        assert_eq!(definitions[0]["parameters"]["type"], "object");
+        assert!(definitions[0]["parameters"]["properties"].is_object());
+
+        // 缺省 description/parameters 时补默认值
+        let defaults = responses_tool_definitions(&[json!({ "name": "only_name" })]);
+        assert_eq!(defaults.len(), 1);
+        assert_eq!(defaults[0]["type"], "function");
+        assert_eq!(defaults[0]["description"], "");
+        assert_eq!(defaults[0]["parameters"]["type"], "object");
+        assert!(defaults[0]["parameters"]["properties"].is_object());
+    }
+
+    #[test]
+    fn responses_request_body_uses_flat_tool_definitions() {
+        let tools = crate::direct_api::tools::tool_definitions();
+        let source_names: Vec<String> = tools
+            .iter()
+            .filter_map(|tool| {
+                tool.get("function")?
+                    .get("name")?
+                    .as_str()
+                    .map(str::to_string)
+            })
+            .collect();
+
+        let body = build_responses_request_body(
+            &DirectApiConfig::default(),
+            &[],
+            Some(tools.clone()),
+            true,
+        );
+        let body_tools = body["tools"]
+            .as_array()
+            .expect("responses 请求体应包含 tools 数组");
+
+        assert_eq!(body_tools.len(), tools.len());
+        for def in body_tools {
+            assert!(
+                def.get("function").is_none(),
+                "Responses tools 项必须是扁平结构: {def}"
+            );
+            assert!(
+                def.get("name")
+                    .and_then(|n| n.as_str())
+                    .is_some_and(|n| !n.is_empty()),
+                "工具名称缺失: {def}"
+            );
+        }
+
+        // 工具名称齐全，一个都不能少
+        let body_names: Vec<&str> = body_tools
+            .iter()
+            .filter_map(|def| def.get("name").and_then(|n| n.as_str()))
+            .collect();
+        for name in &source_names {
+            assert!(
+                body_names.contains(&name.as_str()),
+                "responses 请求体缺少工具: {name}"
+            );
+        }
     }
 }
 

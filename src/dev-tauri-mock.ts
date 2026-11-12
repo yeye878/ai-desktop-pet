@@ -85,6 +85,8 @@ type MockChatSession = {
   provider: string;
   /** 思考强度 id；空串 = 跟随本机默认（与后端 chat_sessions.reasoning_effort 一致）。 */
   reasoning_effort: string;
+  /** 本会话的本地 CLI 权限档位；空串 = 跟随设置页默认（chat_sessions.permission）。 */
+  permission: string;
   created_at: number;
   updated_at: number;
 };
@@ -421,6 +423,7 @@ function createMockChatSession(options: {
   model?: string;
   provider?: string;
   reasoningEffort?: string;
+  permission?: string;
   createdAt?: number;
   updatedAt?: number;
 }): MockChatSession {
@@ -440,6 +443,7 @@ function createMockChatSession(options: {
     model: options.model || "",
     provider: options.provider || "",
     reasoning_effort: options.reasoningEffort || "",
+    permission: options.permission || "",
     created_at: createdAt,
     updated_at: options.updatedAt ?? createdAt,
   };
@@ -935,8 +939,9 @@ function handleMockCommand(cmd: string, args: MockPayload) {
         model: readArg(args, "model", "model", "").trim(),
         provider: readArg(args, "provider", "model_provider", "").trim(),
         reasoningEffort: readArg(args, "reasoningEffort", "reasoning_effort", "").trim(),
+        permission: readArg(args, "permission", "permission", "").trim(),
       });
-      if (slot === "main") {
+      if (slot === "main" && args?.activate !== false) {
         mockActiveMainSessionId = session.id;
         emitMockActiveSession(session);
       }
@@ -984,6 +989,15 @@ function handleMockCommand(cmd: string, args: MockPayload) {
         if (activeSession) emitMockActiveSession(activeSession);
       }
       return { active_main_session_id: mockActiveMainSessionId };
+    }
+    case "set_chat_session_permission": {
+      seedMockChatState();
+      const session = findMockChatSession(readArg(args, "id", "id"));
+      if (!session) throw new Error("会话不存在");
+      // 与后端一致：只改权限档位，不刷新 updated_at（不让会话被顶到列表最前）。
+      session.permission = readArg(args, "permission", "permission", "").trim();
+      emitMockSessionsChanged();
+      return publicMockChatSession(session);
     }
     case "set_chat_session_binding": {
       seedMockChatState();
@@ -1091,6 +1105,13 @@ function handleMockCommand(cmd: string, args: MockPayload) {
         session.title = message.replace(/\s+/g, " ").trim().slice(0, 24);
       }
       emitMockSessionsChanged();
+      // 与真实后端一致：用户消息广播给所有视图，各端按最后一条消息去重。
+      void emit("sync-chat-message", {
+        session_id: session.id,
+        role: "user",
+        content: message,
+        quote: quotedRole && quotedContent ? { role: quotedRole, content: quotedContent } : undefined,
+      });
       const active: MockActiveChat = { message, thinking: "", started_at: nowSeconds(), session_id: session.id };
       mockActiveChats.set(session.id, active);
       void emit("ai-started", { session_id: session.id, message });
