@@ -4999,184 +4999,263 @@ ttsPlayer.stop();
           </div>
 
           <!-- ========== 外观 ========== -->
-          <div v-else-if="activePage === 'appearance'" key="appearance" class="appearance-atelier-page">
-            <div class="page-header atelier-header">
-              <div class="page-kicker">Appearance</div>
-              <h1 class="page-title">个性外观</h1>
-              <p class="page-subtitle">自定义桌宠的主题、字体和外观风格</p>
-            </div>
+          <div v-else-if="activePage === 'appearance'" key="appearance" class="atelier-page">
+            <!-- ===== 实时预览舞台 ===== -->
+            <header class="atelier-hero">
+              <div class="atelier-hero-stage" :class="{ 'has-bg': chatBg !== 'none' }">
+                <BgCanvas
+                  v-if="chatBg !== 'none'"
+                  :mode="chatBg"
+                  :custom-image="customBgImage"
+                  :intensity="chatBgIntensity"
+                />
+                <div v-if="chatBg !== 'none'" class="atelier-hero-scrim" aria-hidden="true"></div>
 
-            <!-- 主题皮肤 -->
-            <div class="appearance-atelier-layout">
-              <div class="dash-card character-panel">
-              <div class="dash-card-title"><span class="card-icon"><AppIcon name="pet-figure" :size="15" /></span> 本体形象</div>
-              <div class="dash-character-grid">
+                <div class="atelier-hero-pet" aria-hidden="true">
+                  <PetCanvas
+                    v-if="currentCharacter === 'classic' || currentCharacter === 'custom-pixel'"
+                    preview
+                    :character="currentCharacter"
+                    :scale="1.08"
+                    style="pointer-events: none;"
+                  />
+                  <img v-else src="../assets/pets/daimao-batiao/stills/still-03.png" alt="" />
+                </div>
+
+                <!-- 示例对话：用来预览气泡配色与字体颜色 -->
+                <div class="atelier-hero-chat" aria-hidden="true">
+                  <span class="atelier-hero-bubble user">晚上一起写周报？</span>
+                  <span class="atelier-hero-bubble bot">好呀，我先把要点列出来 ✨</span>
+                </div>
+
+                <span class="atelier-hero-badge">
+                  <span class="atelier-hero-badge-dot" :style="{ background: currentChatBgPreset.swatch }"></span>
+                  {{ currentChatBgPreset.name }}
+                </span>
+              </div>
+
+              <div class="atelier-hero-meta">
+                <div class="atelier-hero-kicker">Live Preview</div>
+                <h1 class="atelier-hero-title">个性外观</h1>
+                <p class="atelier-hero-desc">每一次改动都会立刻应用到上面的预览和「对话互动」页面。</p>
+
+                <ul class="atelier-hero-chips">
+                  <li>
+                    <span class="atelier-chip-label">主题</span>
+                    <span class="atelier-chip-value"><span class="atelier-chip-dot" :style="{ background: themes.find(t => t.id === currentSkin)?.headerGradient }"></span>{{ themes.find(t => t.id === currentSkin)?.name || '默认' }}</span>
+                  </li>
+                  <li>
+                    <span class="atelier-chip-label">形象</span>
+                    <span class="atelier-chip-value">{{ petCharacters.find(c => c.id === currentCharacter)?.name || 'Bongo Cat' }}</span>
+                  </li>
+                  <li>
+                    <span class="atelier-chip-label">背景</span>
+                    <span class="atelier-chip-value">{{ currentChatBgPreset.name }}</span>
+                  </li>
+                  <li>
+                    <span class="atelier-chip-label">字体</span>
+                    <span class="atelier-chip-value">{{ FONT_COLORS.find(c => c.value === currentFontColor)?.name || '默认' }}</span>
+                  </li>
+                </ul>
+              </div>
+            </header>
+
+            <!-- ===== 形象 ===== -->
+            <section class="atelier-section">
+              <div class="atelier-section-head">
+                <div class="atelier-section-kicker">Identity</div>
+                <h2 class="atelier-section-title">形象</h2>
+                <p class="atelier-section-desc">决定桌宠长什么样。切换后立刻生效，不需要重启。</p>
+              </div>
+
+              <div class="atelier-character-grid">
                 <button
                   v-for="character in petCharacters"
                   :key="character.id"
-                  :class="['dash-character-item', { active: currentCharacter === character.id }]"
+                  type="button"
+                  :class="['atelier-character', { active: currentCharacter === character.id }]"
                   @click="selectCharacter(character.id)"
                 >
-                  <div class="dash-character-preview">
+                  <span class="atelier-character-stage">
                     <PetCanvas
                       v-if="character.id === 'classic' || character.id === 'custom-pixel'"
                       preview
                       :character="character.id"
-                      :scale="0.73"
+                      :scale="0.72"
                       style="pointer-events: none;"
                     />
                     <img v-else src="../assets/pets/daimao-batiao/stills/still-03.png" alt="" />
-                  </div>
-                  <span class="dash-character-name">{{ character.name }}</span>
-                  <span class="dash-character-desc">{{ character.description }}</span>
+                  </span>
+                  <span class="atelier-character-name">{{ character.name }}</span>
+                  <span class="atelier-character-desc">{{ character.description }}</span>
+                  <span v-if="currentCharacter === character.id" class="atelier-check"><AppIcon name="check" :size="12" /></span>
                 </button>
               </div>
-            </div>
 
-              <div class="dash-card character-panel">
-              <div class="dash-card-title"><span class="card-icon"><AppIcon name="pixel-grid" :size="15" /></span> 自定义像素桌宠</div>
-              <CustomPixelPetWorkshop @selected="onCustomPixelSelected" />
-            </div>
+              <details class="atelier-details">
+                <summary>自定义像素桌宠 · 上传图片生成自己的形象</summary>
+                <CustomPixelPetWorkshop @selected="onCustomPixelSelected" />
+              </details>
+            </section>
 
-              <div class="dash-card palette-panel skin-panel">
-              <div class="dash-card-title"><span class="card-icon"><AppIcon name="wardrobe" :size="15" /></span> 主题皮肤</div>
-              <div class="dash-skin-grid">
-                <div
-                  v-for="t in themes" :key="t.id"
-                  :class="['dash-skin-item', { active: currentSkin === t.id }]"
+            <!-- ===== 配色 ===== -->
+            <section class="atelier-section">
+              <div class="atelier-section-head">
+                <div class="atelier-section-kicker">Palette</div>
+                <h2 class="atelier-section-title">配色</h2>
+                <p class="atelier-section-desc">主题决定整个控制台的色调，字体颜色决定 AI 气泡里的文字颜色。</p>
+              </div>
+
+              <div class="atelier-subhead">
+                <span>主题皮肤</span>
+                <small>{{ themes.length }} 套</small>
+              </div>
+              <div class="atelier-skin-grid">
+                <button
+                  v-for="t in themes"
+                  :key="t.id"
+                  type="button"
+                  :class="['atelier-skin', { active: currentSkin === t.id }]"
+                  :title="t.name"
                   @click="selectSkin(t.id)"
                 >
-                  <div class="dash-skin-preview" :style="{ background: t.headerGradient }">
-                    <span v-if="currentSkin === t.id" class="dash-skin-check"><AppIcon name="check" :size="13" /></span>
-                  </div>
-                  <span class="dash-skin-name">{{ t.name }}</span>
-                  <span v-if="t.animated" class="dash-skin-tag">随时间变色</span>
-                </div>
-              </div>
-            </div>
-
-            <!-- 字体颜色 -->
-              <div class="dash-card sample-sheet font-panel">
-              <div class="dash-card-title"><span class="card-icon"><AppIcon name="type-color" :size="15" /></span> 字体颜色</div>
-              <div class="dash-font-color-grid">
-                <div
-                  v-for="fc in FONT_COLORS" :key="fc.id"
-                  :class="['dash-font-color-item', { active: currentFontColor === fc.value }]"
-                  @click="selectFontColor(fc.value)"
-                >
-                  <span class="dash-font-color-preview" :style="{ color: fc.value || 'var(--pet-bubble-bot-text, #4a4a4a)' }">Aa</span>
-                  <span class="dash-font-color-name">{{ fc.name }}</span>
-                </div>
-              </div>
-            </div>
-
-            <!-- 对话背景 -->
-            <div class="dash-card film-strip-panel bg-panel">
-              <div class="dash-card-title">
-                <span class="card-icon"><AppIcon name="scene-bg" :size="15" /></span> 对话背景
-                <span class="dash-card-title-note">改动会立刻同步到「对话互动」页面</span>
-              </div>
-
-              <!-- 实时预览：这里跑的就是对话页同一份 BgCanvas，所见即所得 -->
-              <div class="dash-bg-stage">
-                <div class="dash-bg-stage-frame" :data-bg="chatBg">
-                  <BgCanvas
-                    v-if="chatBg !== 'none'"
-                    :mode="chatBg"
-                    :custom-image="customBgImage"
-                    :intensity="chatBgIntensity"
-                  />
-                  <div v-if="chatBg === 'none'" class="dash-bg-stage-empty">
-                    当前未启用动态背景
-                  </div>
-                  <div v-else class="dash-bg-stage-scrim" aria-hidden="true"></div>
-                  <div class="dash-bg-stage-bubbles" aria-hidden="true">
-                    <span class="dash-bg-stage-bubble user">晚上一起写周报？</span>
-                    <span class="dash-bg-stage-bubble bot">好呀，我先把要点列出来 ✨</span>
-                  </div>
-                  <div class="dash-bg-stage-tag">
-                    <span class="dash-bg-stage-dot" :style="{ background: currentChatBgPreset.swatch }"></span>
-                    {{ currentChatBgPreset.name }}
-                  </div>
-                </div>
-                <div class="dash-bg-stage-meta">
-                  <div class="dash-bg-stage-name">{{ currentChatBgPreset.name }}</div>
-                  <div class="dash-bg-stage-desc">{{ currentChatBgPreset.description }}</div>
-                  <div class="dash-bg-stage-actions">
-                    <button type="button" class="dash-btn primary" @click="chooseBgImage">导入图片</button>
-                    <button type="button" class="dash-btn" :disabled="chatBg === 'none'" @click="selectBg('none')">关闭背景</button>
-                    <button
-                      v-if="hasCustomBg"
-                      type="button"
-                      class="dash-btn danger"
-                      @click="clearCustomBg"
-                    >清除自定义图片</button>
-                  </div>
-                </div>
-              </div>
-
-              <!-- 预设卡片：真实缩略色板 + 名称 + 一句话说明 -->
-              <div class="dash-bg-cards">
-                <button
-                  v-for="preset in chatBackgroundCards"
-                  :key="preset.id"
-                  type="button"
-                  :class="['dash-bg-card', { active: chatBg === preset.id, custom: preset.id === 'custom' }]"
-                  :title="preset.description"
-                  @click="preset.id === 'custom' ? chooseBgImage() : selectBg(preset.id)"
-                >
-                  <span class="dash-bg-card-thumb" :style="{ background: preset.swatch }">
-                    <span v-if="preset.id === 'custom'" class="dash-bg-card-thumb-icon">
-                      <img v-if="customBgImage" :src="customBgImage" alt="" />
-                      <template v-else>＋</template>
-                    </span>
-                    <span v-else class="dash-bg-card-thumb-icon">{{ preset.icon }}</span>
-                    <span v-if="chatBg === preset.id" class="dash-bg-card-check">✓</span>
+                  <span class="atelier-skin-swatch" :style="{ background: t.headerGradient }">
+                    <span v-if="currentSkin === t.id" class="atelier-check"><AppIcon name="check" :size="12" /></span>
                   </span>
-                  <div class="dash-bg-card-name">{{ preset.name }}</div>
-                  <div class="dash-bg-card-desc">{{ preset.description }}</div>
+                  <span class="atelier-skin-name">{{ t.name }}</span>
+                  <span v-if="t.animated" class="atelier-skin-tag">随时间变色</span>
                 </button>
               </div>
 
-              <!-- 浓度：同一套图案，只是强弱不同，切换时不会突然跳色 -->
-              <div class="dash-bg-intensity">
-                <div class="dash-bg-intensity-head">
-                  <span class="dash-bg-intensity-title">背景浓度</span>
-                  <span class="dash-bg-intensity-note">越淡越像纸面上的光晕，越明显纹理越清楚</span>
+              <div class="atelier-subhead">
+                <span>字体颜色</span>
+                <small>只影响 AI 气泡文字</small>
+              </div>
+              <div class="atelier-font-row">
+                <button
+                  v-for="fc in FONT_COLORS"
+                  :key="fc.id"
+                  type="button"
+                  :class="['atelier-font', { active: currentFontColor === fc.value }]"
+                  :title="fc.name"
+                  @click="selectFontColor(fc.value)"
+                >
+                  <span class="atelier-font-preview" :style="{ color: fc.value || 'var(--dash-text-primary)' }">Aa</span>
+                  <span class="atelier-font-name">{{ fc.name }}</span>
+                </button>
+              </div>
+            </section>
+
+            <!-- ===== 对话背景 ===== -->
+            <section class="atelier-section">
+              <div class="atelier-section-head">
+                <div class="atelier-section-kicker">Background</div>
+                <h2 class="atelier-section-title">对话背景</h2>
+                <p class="atelier-section-desc">铺在「对话互动」消息区背后的那层效果，单窗格与多窗格都会生效。</p>
+              </div>
+
+              <div class="dash-card bg-panel atelier-bg-panel">
+                <div class="atelier-bg-layout">
+                  <div class="atelier-bg-preview">
+                    <div class="dash-bg-stage-frame" :data-bg="chatBg">
+                      <BgCanvas
+                        v-if="chatBg !== 'none'"
+                        :mode="chatBg"
+                        :custom-image="customBgImage"
+                        :intensity="chatBgIntensity"
+                      />
+                      <div v-if="chatBg === 'none'" class="atelier-bg-empty">当前未启用背景</div>
+                      <div v-else class="atelier-bg-scrim" aria-hidden="true"></div>
+                      <div class="atelier-bg-samples" aria-hidden="true">
+                        <span class="atelier-bg-sample user">晚上一起写周报？</span>
+                        <span class="atelier-bg-sample bot">好呀，我先把要点列出来 ✨</span>
+                      </div>
+                      <span class="dash-bg-stage-tag">
+                        <span class="atelier-chip-dot" :style="{ background: currentChatBgPreset.swatch }"></span>
+                        {{ currentChatBgPreset.name }}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div class="atelier-bg-side">
+                    <div class="atelier-bg-name">{{ currentChatBgPreset.name }}</div>
+                    <p class="atelier-bg-desc">{{ currentChatBgPreset.description }}</p>
+
+                    <div class="atelier-bg-actions">
+                      <button type="button" class="dash-btn primary" @click="chooseBgImage">导入图片</button>
+                      <button type="button" class="dash-btn" :disabled="chatBg === 'none'" @click="selectBg('none')">关闭背景</button>
+                      <button v-if="hasCustomBg" type="button" class="dash-btn danger" @click="clearCustomBg">清除自定义</button>
+                    </div>
+
+                    <div class="atelier-bg-intensity">
+                      <div class="atelier-bg-intensity-head">
+                        <span>浓度</span>
+                        <small>越淡越像纸面上的光晕</small>
+                      </div>
+                      <div class="atelier-bg-intensity-opts">
+                        <button
+                          v-for="level in chatBgIntensityOptions"
+                          :key="level.id"
+                          type="button"
+                          :class="['atelier-bg-level', { active: Math.abs(chatBgIntensity - level.value) < 0.01 }]"
+                          :title="level.description"
+                          @click="selectBgIntensity(level.value)"
+                        >{{ level.name }}</button>
+                      </div>
+                    </div>
+                  </div>
                 </div>
-                <div class="dash-bg-intensity-options">
+
+                <div class="atelier-bg-presets">
                   <button
-                    v-for="level in chatBgIntensityOptions"
-                    :key="level.id"
+                    v-for="preset in chatBackgroundCards"
+                    :key="preset.id"
                     type="button"
-                    :class="['dash-bg-intensity-opt', { active: Math.abs(chatBgIntensity - level.value) < 0.01 }]"
-                    :title="level.description"
-                    @click="selectBgIntensity(level.value)"
+                    :class="['dash-bg-card', { active: chatBg === preset.id, custom: preset.id === 'custom' }]"
+                    :title="preset.description"
+                    @click="preset.id === 'custom' ? chooseBgImage() : selectBg(preset.id)"
                   >
-                    <span class="dash-bg-intensity-bar" :style="{ opacity: 0.25 + level.value * 0.75 }"></span>
-                    <span>{{ level.name }}</span>
+                    <span class="dash-bg-card-thumb" :style="{ background: preset.swatch }">
+                      <span v-if="preset.id === 'custom'" class="dash-bg-card-thumb-icon">
+                        <img v-if="customBgImage" :src="customBgImage" alt="" />
+                        <template v-else>＋</template>
+                      </span>
+                      <span v-else class="dash-bg-card-thumb-icon">{{ preset.icon }}</span>
+                      <span v-if="chatBg === preset.id" class="dash-bg-card-check">✓</span>
+                    </span>
+                    <div class="dash-bg-card-name">{{ preset.name }}</div>
                   </button>
                 </div>
+                <input ref="bgInputRef" class="hidden-input" type="file" accept="image/*" @change="onBgImageSelected" />
               </div>
-              <input ref="bgInputRef" class="hidden-input" type="file" accept="image/*" @change="onBgImageSelected" />
-            </div>
+            </section>
 
-            <!-- 用户头像 -->
-            <div class="dash-card portrait-frame-panel avatar-panel">
-              <div class="dash-card-title"><span class="card-icon"><AppIcon name="user-avatar" :size="15" /></span> 用户头像</div>
-              <div class="dash-avatar-section">
-                <div class="dash-avatar-preview">
-                  <img v-if="pet.userAvatar" :src="pet.userAvatar" alt="用户头像" />
-                  <AppIcon v-else name="user-avatar" :size="26" />
-                </div>
-                <div class="dash-avatar-actions">
-                  <button class="dash-btn primary" @click="chooseAvatar">选择图片</button>
-                  <button class="dash-btn" :disabled="!pet.userAvatar" @click="clearAvatar">恢复默认</button>
+            <!-- ===== 个人 ===== -->
+            <section class="atelier-section">
+              <div class="atelier-section-head">
+                <div class="atelier-section-kicker">Profile</div>
+                <h2 class="atelier-section-title">个人</h2>
+                <p class="atelier-section-desc">你在对话里显示的头像。</p>
+              </div>
+
+              <div class="dash-card avatar-panel atelier-avatar-card">
+                <div class="atelier-avatar-row">
+                  <div class="atelier-avatar-preview">
+                    <img v-if="pet.userAvatar" :src="pet.userAvatar" alt="用户头像" />
+                    <AppIcon v-else name="user-avatar" :size="30" />
+                  </div>
+                  <div class="atelier-avatar-info">
+                    <div class="atelier-avatar-name">用户头像</div>
+                    <p class="atelier-avatar-desc">支持 png / jpg，建议方形，显示尺寸 40px。</p>
+                    <div class="atelier-avatar-actions">
+                      <button class="dash-btn primary" @click="chooseAvatar">选择图片</button>
+                      <button class="dash-btn" :disabled="!pet.userAvatar" @click="clearAvatar">恢复默认</button>
+                    </div>
+                  </div>
                 </div>
                 <input ref="avatarInputRef" class="hidden-input" type="file" accept="image/*" @change="onAvatarSelected" />
               </div>
-            </div>
-          </div>
+            </section>
           </div>
 
           <!-- ========== 语音 ========== -->

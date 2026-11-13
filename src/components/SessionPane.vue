@@ -7,6 +7,8 @@ import { useAttachmentsStore } from "../stores/attachments";
 import { useDraftStore } from "../stores/drafts";
 import { getFileIcon } from "../services/attachments";
 import AgentActivity from "./AgentActivity.vue";
+import BgCanvas from "./BgCanvas.vue";
+import { useChatBackground } from "../composables/useChatBackground";
 import AgentModelPicker from "./AgentModelPicker.vue";
 import SessionPermissionPicker from "./SessionPermissionPicker.vue";
 import UserQuestion from "./UserQuestion.vue";
@@ -29,6 +31,11 @@ const emit = defineEmits<{
 }>();
 
 const runtime = useSessionRuntimeStore();
+/**
+ * 同屏多窗格的每个窗格也要吃「对话背景」设置。
+ * 之前只有单窗格视图挂了 BgCanvas，多窗口模式下背景整个失效。
+ */
+const { chatBg, customBgImage, chatBgIntensity } = useChatBackground();
 const sessions = useSessionsStore();
 const attachments = useAttachmentsStore();
 const attachmentDraft = computed(() => attachments.ensure(props.sessionId));
@@ -349,7 +356,19 @@ function rendered(content: string) {
       </select>
     </div>
 
-    <div v-else ref="messagesRef" class="session-pane-messages">
+    <div
+      v-else
+      :class="['session-pane-stage', chatBg !== 'none' ? 'has-bg' : '']"
+      :data-chat-bg="chatBg"
+    >
+      <BgCanvas
+        v-if="chatBg !== 'none'"
+        :mode="chatBg"
+        :custom-image="customBgImage"
+        :intensity="chatBgIntensity"
+      />
+      <div v-if="chatBg !== 'none'" class="session-pane-bg-scrim" aria-hidden="true"></div>
+    <div ref="messagesRef" class="session-pane-messages">
       <p v-if="!messages.length && !loading" class="session-pane-hint">暂无消息，发一条开始对话。</p>
       <div v-for="msg in messages" :key="msg.id" :class="['session-pane-msg', msg.role]">
         <AgentActivity
@@ -388,6 +407,7 @@ function rendered(content: string) {
           <div class="md-body" v-html="rendered(turn.streamingAnswer)"></div>
         </div>
       </div>
+    </div>
     </div>
 
     <div v-if="pendingConfirm" class="session-pane-confirm">
@@ -532,6 +552,12 @@ function rendered(content: string) {
 .session-pane-actions button:hover { background: rgba(0,0,0,.07); color: #3d3630; }
 .session-pane-switch { flex: 1; min-width: 70px; width: 0; font-size: 11px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: #7d7267; padding: 3px 4px; cursor: pointer; }
 .session-pane-switch:hover, .session-pane-switch:focus { border-color: rgba(120,110,100,.25); background: #fff; }
+.session-pane-stage { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; isolation: isolate; }
+.session-pane-stage > :deep(.bg-canvas) { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
+.session-pane-bg-scrim { position: absolute; inset: 0; z-index: 1; pointer-events: none;
+  background: radial-gradient(120% 90% at 50% 0%, rgba(255,255,255,.12), transparent 58%),
+              linear-gradient(180deg, rgba(255,255,255,.04), transparent 32%, transparent 76%, rgba(255,255,255,.05)); }
+.session-pane-stage.has-bg .session-pane-messages { position: relative; z-index: 2; }
 .session-pane-messages { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
 .session-pane-hint { color: #968b7f; font-size: 12px; text-align: center; margin: auto 0; }
 .session-pane-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; margin: 10px; border: 1.5px dashed rgba(120,110,100,.25); border-radius: 10px; color: #968b7f; font-size: 12px; }
