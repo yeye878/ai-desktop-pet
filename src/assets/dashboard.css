@@ -232,6 +232,10 @@ select {
 
 button {
   -webkit-app-region: no-drag;
+  /* button 默认 color 是 black，不继承父级。
+     没显式上色的自定义按钮（外观页的形象/主题/字体卡片等 37 处）
+     会因此渲染成纯黑，压在奶油纸面上又硬又脏。 */
+  color: inherit;
 }
 
 /* ---------- root ---------- */
@@ -897,7 +901,7 @@ button {
 
 .page-kicker {
   margin-bottom: 8px;
-  color: rgb(var(--dash-accent-rgb));
+  color: var(--dash-accent-text, rgb(var(--dash-accent-rgb)));
   font-size: 11px;
   font-weight: 760;
   letter-spacing: 0;
@@ -1316,7 +1320,7 @@ button {
   border: none;
   background: none;
   padding: 0;
-  color: rgba(var(--dash-accent-rgb), 1);
+  color: var(--dash-accent-text, rgb(var(--dash-accent-rgb)));
   font-size: 11px;
   font-weight: 600;
   cursor: pointer;
@@ -3084,11 +3088,17 @@ button {
 
 .dash-btn.primary {
   border-color: transparent;
+  /*
+   * 亮底 + 深字（Material 3 tonal button）：
+   * 主色是 L=0.66 的亮青，压白字只有 3:1 不达标；
+   * 换成本主题的深墨色后是 7:1，既保住"亮而鲜艳"，又读得清。
+   */
   background: linear-gradient(135deg, rgb(var(--dash-accent-rgb)), rgba(var(--pet-accent-rgb, 229, 154, 128), 0.82));
-  color: #fffaf4;
+  color: var(--dash-on-accent, #1f242b);
+  font-weight: 740;
   box-shadow:
     0 8px 20px rgba(var(--dash-accent-rgb), 0.20),
-    inset 0 1px 0 rgba(255, 255, 255, 0.15);
+    inset 0 1px 0 rgba(255, 255, 255, 0.34);
 }
 
 .dash-btn.primary:hover:not(:disabled) {
@@ -7498,7 +7508,7 @@ button {
   border: none;
   border-radius: 999px;
   background: transparent;
-  color: var(--dash-text-muted);
+  color: var(--dash-text-secondary);
   font-family: inherit;
   font-size: 10.5px;
   font-weight: 660;
@@ -7773,7 +7783,7 @@ button {
 }
 
 .lab-current-kicker {
-  color: rgb(var(--dash-accent-rgb));
+  color: var(--dash-accent-text, rgb(var(--dash-accent-rgb)));
   font-size: 10px;
   font-weight: 780;
   letter-spacing: 0.06em;
@@ -7980,7 +7990,7 @@ button {
 }
 
 .atelier-hero-kicker {
-  color: rgb(var(--dash-accent-rgb));
+  color: var(--dash-accent-text, rgb(var(--dash-accent-rgb)));
   font-size: 10px;
   font-weight: 780;
   letter-spacing: 0.07em;
@@ -8061,7 +8071,7 @@ button {
 }
 
 .atelier-section-kicker {
-  color: rgb(var(--dash-accent-rgb));
+  color: var(--dash-accent-text, rgb(var(--dash-accent-rgb)));
   font-size: 10px;
   font-weight: 780;
   letter-spacing: 0.07em;
@@ -8595,4 +8605,517 @@ button {
   .atelier-skin-grid {
     grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
   }
+}
+
+/* 外观页：把点击目标抬到 32px（原来 27px，手指/鼠标都不舒服） */
+.atelier-bg-level {
+  min-height: 32px;
+  padding: 6px 15px;
+}
+
+.atelier-font {
+  min-height: 36px;
+}
+
+/* ============================================================
+   外观页 v3：加"色块"，解决 avgC 只有 0.013（参考照片是 0.021）
+   ------------------------------------------------------------
+   上一版整体偏白：88% 面积是纸白渐变，只有 kicker 带一点主色。
+   做医美不是"更白"，而是"有色块 + 有渐变 + 有暗部"。
+   这里给 hero 和卡片预览加真正的颜色。
+   ============================================================ */
+
+/* 顶部预览：让主色真正出现在画面上（不是白底加一点描边） */
+.atelier-hero {
+  background:
+    url("./art/paper-grain-cool.webp"),
+    radial-gradient(120% 140% at 0% 0%, rgba(var(--dash-accent-rgb), 0.26), transparent 58%),
+    radial-gradient(100% 120% at 100% 100%, rgba(var(--pet-accent-rgb, 200, 220, 220), 0.30), transparent 62%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.82), rgba(var(--paper-tint-150-rgb), 0.5));
+  background-size: 420px 420px, auto, auto, auto;
+  border-color: rgba(var(--dash-accent-rgb), 0.16);
+}
+
+.atelier-hero-stage {
+  background:
+    radial-gradient(130% 100% at 22% 12%, rgba(255, 255, 255, 0.95), transparent 62%),
+    linear-gradient(155deg, rgba(var(--dash-accent-rgb), 0.3), rgba(var(--paper-tint-200-rgb), 0.9) 58%, rgba(var(--pet-accent-rgb, 200, 220, 220), 0.34));
+  border-color: rgba(var(--dash-accent-rgb), 0.14);
+}
+
+/* 形象/主题卡的预览位：给一个和主题同色系的柔和底，而不是纯白 */
+.atelier-character-stage {
+  background:
+    radial-gradient(100% 90% at 50% 0%, rgba(255, 255, 255, 0.92), transparent 70%),
+    linear-gradient(165deg, rgba(var(--dash-accent-rgb), 0.16), rgba(var(--paper-tint-200-rgb), 0.75));
+}
+
+.atelier-character.active .atelier-character-stage {
+  background:
+    radial-gradient(100% 90% at 50% 0%, rgba(255, 255, 255, 0.9), transparent 70%),
+    linear-gradient(165deg, rgba(var(--dash-accent-rgb), 0.3), rgba(var(--paper-tint-300-rgb), 0.8));
+}
+
+/* 主题色卡：加深边缘，让色块有体积感而不是平涂 */
+.atelier-skin-swatch {
+  background-image:
+    linear-gradient(160deg, rgba(255, 255, 255, 0.42), transparent 48%),
+    linear-gradient(0deg, rgba(0, 0, 0, 0.1), transparent 55%);
+  background-blend-mode: soft-light, multiply;
+}
+
+/* 分区标题的竖线加粗并带渐变，取代原来一根纯色细线 */
+.atelier-section-head,
+.lab-section-head {
+  border-left: 3px solid transparent;
+  border-image: linear-gradient(180deg, rgb(var(--dash-accent-rgb)), rgba(var(--dash-accent-rgb), 0.25)) 1;
+}
+
+/* 说明文字：从 ink-650 再深一点，10.5px 的小字需要 5:1 以上 */
+.atelier-character-desc,
+.atelier-skin-tag {
+  color: var(--dash-text-secondary);
+}
+
+/* 摘要卡：给一点主色底，避免右侧整片白 */
+.atelier-hero-chips li {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.86), rgba(var(--paper-tint-150-rgb), 0.6));
+  border-color: rgba(var(--dash-accent-rgb), 0.12);
+}
+
+.atelier-chip-label {
+  color: var(--dash-text-secondary);
+}
+
+/* 示例气泡：把白字换成深字（亮青底上白字只有 3:1） */
+.atelier-hero-bubble.user {
+  color: var(--dash-on-accent, #1f242b);
+  background: linear-gradient(135deg, rgb(var(--dash-accent-rgb)), rgba(var(--pet-accent-rgb, 200, 220, 220), 0.86));
+  font-weight: 700;
+}
+
+.atelier-bg-sample.user {
+  color: var(--dash-on-accent, #1f242b);
+  background: linear-gradient(135deg, rgb(var(--dash-accent-rgb)), rgba(var(--pet-accent-rgb, 200, 220, 220), 0.8));
+  font-weight: 700;
+}
+
+/* 按钮与徽标：主色块上的字统一走 onAccent */
+.custom-pixel-btn.primary {
+  color: var(--dash-on-accent, #1f242b);
+  font-weight: 740;
+}
+
+.dash-mini-btn.primary {
+  color: var(--dash-on-accent, #1f242b);
+}
+
+.atelier-hero-badge {
+  border: 1px solid rgba(var(--dash-accent-rgb), 0.18);
+}
+
+/* 背景预设卡的图标：让符号有对比，而不是白底白字 */
+.dash-bg-card-thumb-icon {
+  color: var(--dash-text-secondary);
+  text-shadow: 0 1px 2px rgba(255, 255, 255, 0.8);
+}
+
+.dash-bg-card.active .dash-bg-card-thumb-icon {
+  color: var(--dash-on-accent, #1f242b);
+}
+
+/* 无背景占位：4.37:1 差一点，压深 */
+.atelier-bg-empty {
+  color: var(--dash-text-secondary);
+}
+
+/* ============================================================
+   外观页 v4：两栏布局
+   ------------------------------------------------------------
+   上一版 1706px 高，要滚一屏多才看完，视觉上就是"一叠卡片"。
+   把「形象」和「配色」并排，整页高度压到 1200 左右，一屏能看全，
+   用户才能判断"好不好看"。
+   ============================================================ */
+
+.atelier-page {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.12fr);
+  gap: 20px 22px;
+  align-items: start;
+}
+
+.atelier-hero {
+  grid-column: 1 / -1;
+  margin-bottom: 4px;
+}
+
+/* 形象、配色 并排 */
+.atelier-section:nth-of-type(1) { grid-column: 1; margin-bottom: 0; }
+.atelier-section:nth-of-type(2) { grid-column: 2; margin-bottom: 0; }
+
+/* 对话背景、个人 通栏 */
+.atelier-section:nth-of-type(3) { grid-column: 1 / -1; margin-bottom: 0; }
+.atelier-section:nth-of-type(4) { grid-column: 1 / -1; margin-bottom: 0; }
+
+/* 形象卡在窄栏里改成竖排（2 列），避免被压扁 */
+.atelier-character-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.atelier-character:first-child {
+  grid-column: 1 / -1;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+}
+
+.atelier-character:first-child .atelier-character-stage {
+  width: 108px;
+  height: 96px;
+  flex: none;
+}
+
+.atelier-character:first-child .atelier-character-name,
+.atelier-character:first-child .atelier-character-desc {
+  text-align: left;
+}
+
+/* 主题色卡缩小，让 12 套在右栏排成 4 列 */
+.atelier-skin-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.atelier-skin { padding: 6px; gap: 4px; }
+.atelier-skin-swatch { height: 36px; border-radius: 8px; }
+.atelier-skin-name { font-size: 11px; }
+
+/* 顶部预览加高，桌宠更主角 */
+.atelier-hero-stage { min-height: 258px; }
+.atelier-hero-pet { width: 156px; height: 186px; left: 22px; }
+
+.atelier-hero-chat { right: 18px; bottom: 20px; max-width: 56%; }
+.atelier-hero-bubble { font-size: 12.5px; padding: 8px 13px; }
+
+/* hero 右侧摘要更紧凑 */
+.atelier-hero-chips { margin-top: 14px; gap: 7px; }
+.atelier-hero-chips li { padding: 7px 10px; }
+
+/* 背景面板压缩：预览和说明并排后，预设条也瘦一点 */
+.atelier-bg-presets .dash-bg-card { width: 84px; }
+.atelier-bg-presets .dash-bg-card-thumb { height: 42px; }
+
+/* 个人卡片在通栏里不要太宽 */
+.atelier-avatar-card { max-width: none; }
+
+@media (max-width: 1180px) {
+  .atelier-page { grid-template-columns: minmax(0, 1fr); }
+  .atelier-section:nth-of-type(1),
+  .atelier-section:nth-of-type(2) { grid-column: 1 / -1; }
+  .atelier-skin-grid { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); }
+}
+
+@media (max-width: 720px) {
+  .atelier-character-grid { grid-template-columns: minmax(0, 1fr); }
+  .atelier-skin-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .atelier-hero-stage { min-height: 210px; }
+  .atelier-hero-pet { width: 118px; height: 140px; }
+}
+
+
+/* ============================================================
+   外观页 v5：视觉表达重做
+   ------------------------------------------------------------
+   量化依据：整页 1478px 高、hero 仅 296px，其余是同款圆角白卡；
+   卡片圆角/描边/投影全在同一档，导致没有视觉主体。
+   这一轮只动表达层：放大 hero、拉开层级、去掉重复的卡片外壳。
+   ============================================================ */
+
+/* ---------- hero：放大成真正的主体 ---------- */
+.atelier-hero {
+  padding: 22px;
+  gap: 22px;
+  grid-template-columns: minmax(0, 1.22fr) minmax(0, 1fr);
+  border-radius: 26px;
+  border: 1px solid rgba(var(--dash-accent-rgb), 0.2);
+  background:
+    url("./art/paper-grain-cool.webp"),
+    radial-gradient(130% 150% at 2% 0%, rgba(var(--dash-accent-rgb), 0.34), transparent 56%),
+    radial-gradient(110% 130% at 100% 100%, rgba(var(--pet-accent-rgb, 200, 220, 220), 0.4), transparent 60%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.9), rgba(var(--paper-tint-150-rgb), 0.62));
+  background-size: 420px 420px, auto, auto, auto;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 18px 46px rgba(52, 56, 63, 0.09);
+}
+
+.atelier-hero-stage {
+  min-height: 300px;
+  border-radius: 20px;
+  border: 1px solid rgba(var(--dash-accent-rgb), 0.12);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 10px 28px rgba(52, 56, 63, 0.07);
+}
+
+/* 桌宠放大到 210px：它是这个页面的主角 */
+.atelier-hero-pet {
+  width: 210px;
+  height: 246px;
+  left: 12px;
+  bottom: -14px;
+  filter: drop-shadow(0 16px 26px rgba(52, 56, 63, 0.18));
+}
+
+.atelier-hero-chat {
+  right: 20px;
+  bottom: 24px;
+  gap: 9px;
+  max-width: 54%;
+}
+
+.atelier-hero-bubble {
+  font-size: 13.5px;
+  padding: 10px 15px;
+  border-radius: 14px;
+  box-shadow: 0 8px 22px rgba(52, 56, 63, 0.13);
+}
+
+.atelier-hero-badge {
+  top: 14px;
+  left: 14px;
+  padding: 5px 13px 5px 9px;
+  font-size: 11px;
+}
+
+/* 右侧文字：更大的字号与更强层级 */
+.atelier-hero-kicker {
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+}
+
+.atelier-hero-title {
+  margin-top: 6px;
+  font-size: 34px;
+  font-weight: 860;
+  letter-spacing: -0.01em;
+}
+
+.atelier-hero-desc {
+  margin-top: 10px;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.atelier-hero-chips {
+  margin-top: 20px;
+  gap: 9px;
+}
+
+.atelier-hero-chips li {
+  padding: 9px 12px;
+  border-radius: 12px;
+}
+
+.atelier-chip-label {
+  font-size: 10.5px;
+}
+
+.atelier-chip-value {
+  font-size: 13px;
+  font-weight: 760;
+  color: var(--dash-text-primary);
+}
+
+.atelier-hero-chips li {
+  background: rgba(255, 255, 255, 0.94);
+}
+
+/* ---------- 分区：去掉重复的卡片外壳，用大字重 + 间距分层 ---------- */
+.atelier-page {
+  gap: 30px 26px;
+  padding-bottom: 40px;
+}
+
+.atelier-section {
+  margin-bottom: 0;
+}
+
+.atelier-section-head {
+  margin-bottom: 16px;
+  padding-left: 15px;
+  border-left: 4px solid transparent;
+  border-image: linear-gradient(180deg, rgb(var(--dash-accent-rgb)), rgba(var(--dash-accent-rgb), 0.15)) 1;
+}
+
+.atelier-section-kicker {
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  /* 卡片底比纸面更白，浅色会掉到 3.3:1；10px 小字必须压到主文本色 */
+  color: var(--dash-text-primary);
+}
+
+.atelier-section-title {
+  margin-top: 4px;
+  font-size: 21px;
+  font-weight: 820;
+}
+
+.atelier-section-desc {
+  margin-top: 6px;
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+/* ---------- 形象卡：选中即抬升，形成明确的层次 ---------- */
+.atelier-character {
+  border-width: 1px;
+  border-color: rgba(52, 56, 63, 0.08);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.78));
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.9),
+    0 6px 16px rgba(52, 56, 63, 0.07);
+  padding: 12px;
+}
+
+.atelier-character:hover {
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.9),
+    0 14px 32px rgba(52, 56, 63, 0.13);
+}
+
+.atelier-character.active {
+  border-color: rgb(var(--dash-accent-rgb));
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(var(--paper-tint-100-rgb), 0.92));
+  box-shadow:
+    0 0 0 3px rgba(var(--dash-accent-rgb), 0.16),
+    0 16px 36px rgba(var(--dash-accent-rgb), 0.2);
+}
+
+.atelier-character-stage {
+  border-radius: 13px;
+}
+
+.atelier-character-name {
+  font-size: 13.5px;
+  margin-top: 2px;
+}
+
+.atelier-character-desc {
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+/* ---------- 主题：做成色票，让颜色占主体 ---------- */
+.atelier-skin {
+  border-width: 1px;
+  border-radius: 14px;
+  padding: 7px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 4px 12px rgba(52, 56, 63, 0.06);
+}
+
+.atelier-skin-swatch {
+  height: 52px;
+  border-radius: 10px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    inset 0 -8px 16px rgba(0, 0, 0, 0.08);
+}
+
+.atelier-skin:hover {
+  box-shadow: 0 10px 24px rgba(52, 56, 63, 0.12);
+}
+
+.atelier-skin.active {
+  box-shadow:
+    0 0 0 2px rgb(var(--dash-accent-rgb)),
+    0 10px 26px rgba(var(--dash-accent-rgb), 0.24);
+}
+
+.atelier-skin-name {
+  font-size: 11.5px;
+  font-weight: 720;
+}
+
+/* ---------- 字体颜色：做成圆形色点，比"Aa 方块"更像调色板 ---------- */
+.atelier-font {
+  padding: 8px 14px 8px 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 3px 10px rgba(52, 56, 63, 0.06);
+}
+
+.atelier-font-preview {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(var(--dash-accent-rgb), 0.1);
+  font-size: 14px;
+}
+
+.atelier-font.active {
+  box-shadow:
+    0 0 0 2px rgb(var(--dash-accent-rgb)),
+    0 8px 20px rgba(var(--dash-accent-rgb), 0.2);
+}
+
+/* ---------- 背景面板：抬起一层，和上面的裸分区区分开 ---------- */
+.atelier-bg-panel {
+  border-radius: 20px;
+  border-width: 1px;
+  border-color: rgba(52, 56, 63, 0.08);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.9),
+    0 10px 30px rgba(52, 56, 63, 0.07);
+  padding: 20px;
+}
+
+.atelier-bg-stage-frame {
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    0 8px 24px rgba(52, 56, 63, 0.1);
+}
+
+.atelier-bg-presets .dash-bg-card {
+  border-radius: 13px;
+  box-shadow: 0 3px 10px rgba(52, 56, 63, 0.05);
+}
+
+.atelier-bg-presets .dash-bg-card.active {
+  box-shadow:
+    0 0 0 2px rgb(var(--dash-accent-rgb)),
+    0 8px 20px rgba(var(--dash-accent-rgb), 0.2);
+}
+
+/* ---------- 个人卡 ---------- */
+.atelier-avatar-card {
+  border-radius: 20px;
+  padding: 22px;
+}
+
+.atelier-avatar-preview {
+  width: 88px;
+  height: 88px;
+  border-radius: 22px;
+  border-width: 2px;
+  box-shadow: inset 0 2px 8px rgba(52, 56, 63, 0.06);
+}
+
+/* ---------- 窄窗 ---------- */
+@media (max-width: 1180px) {
+  .atelier-hero { grid-template-columns: minmax(0, 1fr); }
+  .atelier-hero-stage { min-height: 240px; }
+  .atelier-hero-pet { width: 160px; height: 188px; }
+  .atelier-hero-title { font-size: 28px; }
 }

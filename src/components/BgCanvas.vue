@@ -91,29 +91,31 @@ function pick<T>(arr: T[]): T { return arr[Math.floor(Math.random() * arr.length
 function initCute() {
   ctPetals = []; ctBubbles = [];
   // Sakura petals
-  for (let i = 0; i < 35; i++) ctPetals.push({
+  // 花瓣换成更深的玫粉：原来 #d9bcc8 / #eddfe5 压在近白底上几乎看不见，
+  // 这就是"看起来什么都没画"的原因。
+  for (let i = 0; i < 52; i++) ctPetals.push({
     x: rnd(0, W), y: rnd(-H, H),
     vx: rnd(-0.5, 0.5), vy: rnd(0.4, 1.2),
-    size: rnd(3, 8), angle: rnd(0, 6.28), spin: rnd(-0.04, 0.04),
+    size: rnd(3.5, 9), angle: rnd(0, 6.28), spin: rnd(-0.04, 0.04),
     sway: rnd(0.5, 1.5), swayOff: rnd(0, 6.28),
-    color: pick(['#d9bcc8','#d9bcc8','#c29cad','#eddfe5','#e6d2da','#f2e8e6']),
-    alpha: rnd(0.3, 0.65), temp: false, life: 1, decay: 0,
+    color: pick(['#c98fa4','#c98fa4','#b8768f','#d9a8b8','#a9647e','#cf9db0']),
+    alpha: rnd(0.45, 0.85), temp: false, life: 1, decay: 0,
   });
   // Floating pastel bubbles
   for (let i = 0; i < 18; i++) ctBubbles.push({
     x: rnd(0, W), y: rnd(0, H),
     vx: rnd(-0.2, 0.2), vy: rnd(-0.3, -0.08),
     r: rnd(5, 16), phase: rnd(0, 6.28), speed: rnd(0.8, 1.8),
-    color: pick(CUTE_C), alpha: rnd(0.1, 0.25),
+    color: pick(CUTE_C), alpha: rnd(0.22, 0.42),
   });
 }
 
 function initMinimal() {
   mnDots = []; mnRays = [];
-  const sp = 24;
+  const sp = 18;
   for (let gx = sp; gx < W; gx += sp)
     for (let gy = sp; gy < H; gy += sp)
-      mnDots.push({ x: gx, y: gy, glow: 0, r: 1.5 });
+      mnDots.push({ x: gx, y: gy, glow: 0, r: 1.8 });
 }
 
 /**
@@ -143,7 +145,7 @@ function initAurora() {
       bottom: rnd(H * 0.55, H * 0.95),
       core: base.core,
       edge: base.edge,
-      alpha: rnd(0.22, 0.34),
+      alpha: rnd(0.75, 1.05),
     });
   }
   for (let i = 0; i < 70; i++) {
@@ -179,8 +181,8 @@ function initInk() {
     ikRidges.push({
       points,
       // 远山用淡墨，alpha 比原先再压低一档，让纸色主导
-      alpha: 0.075 - layer * 0.017,
-      tint: layer === 0 ? "120,128,140" : layer === 1 ? "104,112,126" : "92,100,114",
+      alpha: 0.30 - layer * 0.055,
+      tint: layer === 0 ? "128,136,148" : layer === 1 ? "104,112,126" : "86,94,108",
     });
   }
   for (let i = 0; i < 5; i++) {
@@ -538,9 +540,10 @@ function drawAurora(ctx: CanvasRenderingContext2D) {
   const k = strength();
   // 1. 纸面底色：不再是夜空，而是比控制台纸面略偏冷的浅色，边界自然消失
   const bg = ctx.createLinearGradient(0, 0, W * 0.4, H);
-  bg.addColorStop(0, '#f6fbfa');
-  bg.addColorStop(0.5, '#f3f6fb');
-  bg.addColorStop(1, '#f8f5fb');
+  bg.addColorStop(0, '#fdfffd');
+  bg.addColorStop(0.34, '#f4fdf8');
+  bg.addColorStop(0.66, '#ebf9f6');
+  bg.addColorStop(1, '#e2f3f0');
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, W, H);
 
@@ -561,7 +564,7 @@ function drawAurora(ctx: CanvasRenderingContext2D) {
       const curvature = Math.sin(t * Math.PI) * sway;
       const x = c.x + (t - 0.5) * c.width + curvature;
       const rx = c.width / steps * 1.8;
-      const peak = c.alpha * lateral * lateral * k * 1.05;
+      const peak = c.alpha * lateral * lateral * k * 1.9;
       if (peak <= 0.002) continue;
       const grad = ctx.createRadialGradient(x, (topY + botY) / 2, 0, x, (topY + botY) / 2, Math.max(rx, (botY - topY) * 0.7));
       grad.addColorStop(0, `rgba(${css},${peak.toFixed(3)})`);
@@ -579,8 +582,8 @@ function drawAurora(ctx: CanvasRenderingContext2D) {
   for (const s of auStars) {
     const twinkle = 0.55 + Math.sin(s.phase) * 0.45;
     ctx.save();
-    ctx.globalAlpha = Math.min(0.32, Math.max(0.02, s.base * twinkle * k * 0.5));
-    ctx.fillStyle = '#8fb8c9';
+    ctx.globalAlpha = Math.min(0.6, Math.max(0.04, s.base * twinkle * k * 0.9));
+    ctx.fillStyle = '#5d94ad';
     ctx.beginPath();
     ctx.arc(s.x, s.y, s.r * 0.9, 0, Math.PI * 2);
     ctx.fill();
@@ -605,9 +608,10 @@ function drawInk(ctx: CanvasRenderingContext2D) {
   const k = strength();
   // 1. 宣纸底：与聊天区原本的纸色一致，衔接不突兀
   const paper = ctx.createLinearGradient(0, 0, W * 0.2, H);
-  paper.addColorStop(0, '#faf7f0');
-  paper.addColorStop(0.55, '#f6f2e9');
-  paper.addColorStop(1, '#f1ece2');
+  paper.addColorStop(0, '#fffef8');
+  paper.addColorStop(0.38, '#fdf8ec');
+  paper.addColorStop(0.72, '#f9f1e0');
+  paper.addColorStop(1, '#f2e8d2');
   ctx.fillStyle = paper;
   ctx.fillRect(0, 0, W, H);
 
@@ -747,10 +751,11 @@ function drawRain(ctx: CanvasRenderingContext2D) {
 
   // 1. 底色：左上角亮、右下角略沉，模拟阴天窗边的光
   const bg = ctx.createLinearGradient(0, 0, W * 0.35, H);
-  bg.addColorStop(0, '#fbfdfe');
-  bg.addColorStop(0.42, '#eef4f7');
-  bg.addColorStop(0.78, '#e2ecf1');
-  bg.addColorStop(1, '#d7e4ea');
+  bg.addColorStop(0, '#ffffff');
+  bg.addColorStop(0.28, '#f7fbfd');
+  bg.addColorStop(0.6, '#eaf3f6');
+  bg.addColorStop(0.84, '#dce9ef');
+  bg.addColorStop(1, '#cfdfe7');
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, W, H);
 
@@ -770,12 +775,12 @@ function drawRain(ctx: CanvasRenderingContext2D) {
 
   for (const s of farAndMid) {
     ctx.save();
-    ctx.globalAlpha = Math.min(0.58, s.alpha * k * 3.4);
+    ctx.globalAlpha = Math.min(0.7, s.alpha * k * 4.2);
     // 两端渐隐：雨丝不是等粗的棍子
     const tailX = s.x - s.vx * 2.6;
     const tailY = s.y - s.len;
     const grad = ctx.createLinearGradient(s.x, s.y, tailX, tailY);
-    grad.addColorStop(0, 'rgba(118,152,172,1)');
+    grad.addColorStop(0, 'rgba(96,132,154,1)');
     grad.addColorStop(0.4, 'rgba(134,166,184,0.72)');
     grad.addColorStop(0.78, 'rgba(158,186,200,0.28)');
     grad.addColorStop(1, 'rgba(176,198,210,0)');
@@ -891,6 +896,132 @@ function drawRain(ctx: CanvasRenderingContext2D) {
 }
 
 
+/**
+ * 通用光场：所有背景共用的一层「房间光」。
+ *
+ * 为什么需要它：之前每套背景都是「近白底 + 一点图案」，
+ * 实测 avgL 0.94、brightPct 98%、entropy 0.2 —— 像素全挤在最亮处，
+ * 没有明暗过渡，看起来就是一张平的脏白纸（这就是"廉价"的根源）。
+ *
+ * 这层光做三件事：
+ *   1. 一束从左上斜射进来的暖光（multiply 提亮）
+ *   2. 右下角的柔和暗角（multiply 压深，制造纵深）
+ *   3. 极细的纸纹噪声（避免大面积纯色显得塑料）
+ */
+function drawLightField(ctx: CanvasRenderingContext2D, k: number, warm = '255, 250, 240') {
+  const diag = Math.sqrt(W * W + H * H);
+
+  /*
+   * 这一层负责"贵气"而不是"阴影"。
+   *
+   * 之前的做法是 multiply 压暗做纵深，实测把画面底部压到 L≈0.65，
+   * 大片灰区域看起来像蒙了层土 —— 那是"廉价"的真正来源，不是缺少对比。
+   *
+   * 现在反过来：先用 screen 把整体提亮到接近纯纸白，再用极轻的明暗塑造
+   * 一点点起伏，最后加一道柔光带和中心光斑。亮而通透才是纸面该有的样子。
+   */
+
+  // 1. 整体提亮：一层很淡的暖白，把纸面提到"被光照着"的亮度
+  ctx.save();
+  ctx.globalCompositeOperation = 'screen';
+  const lift = ctx.createLinearGradient(0, 0, W * 0.6, H);
+  lift.addColorStop(0, `rgba(${warm},${Math.min(0.16, 0.13 * k).toFixed(3)})`);
+  lift.addColorStop(0.55, `rgba(255, 254, 252,${(0.07 * k).toFixed(3)})`);
+  lift.addColorStop(1, `rgba(252, 253, 255,${(0.04 * k).toFixed(3)})`);
+  ctx.fillStyle = lift;
+  ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+
+  // 2. 极轻的斜向明暗：只留 8% 的落差，够形成"光的方向"，不会发灰
+  ctx.save();
+  ctx.globalCompositeOperation = 'multiply';
+  const sweep = ctx.createLinearGradient(0, 0, W * 0.95, H);
+  sweep.addColorStop(0, 'rgba(255, 255, 255, 1)');
+  sweep.addColorStop(0.4, `rgba(252, 252, 253,${(1 - 0.012 * k).toFixed(3)})`);
+  sweep.addColorStop(0.75, `rgba(244, 246, 248,${(1 - 0.038 * k).toFixed(3)})`);
+  sweep.addColorStop(1, `rgba(236, 240, 244,${(1 - 0.062 * k).toFixed(3)})`);
+  ctx.fillStyle = sweep;
+  ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+
+  // 3. 角落收边：12% 上限，只负责"画面不外溢"，不负责压暗
+  ctx.save();
+  ctx.globalCompositeOperation = 'multiply';
+  const vignette = ctx.createRadialGradient(
+    W * 0.38, H * 0.3, diag * 0.1,
+    W * 0.38, H * 0.3, diag * 0.95,
+  );
+  vignette.addColorStop(0, 'rgba(255,255,255,0)');
+  vignette.addColorStop(0.55, `rgba(248, 249, 251,${(0.03 * k).toFixed(3)})`);
+  vignette.addColorStop(0.82, `rgba(238, 241, 245,${(0.07 * k).toFixed(3)})`);
+  vignette.addColorStop(1, `rgba(226, 231, 238,${(0.12 * k).toFixed(3)})`);
+  ctx.fillStyle = vignette;
+  ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+
+  // 4. 顶部柔光带：像窗光打在墙顶，是"亮"的主要观感来源
+  ctx.save();
+  ctx.globalCompositeOperation = 'screen';
+  const top = ctx.createLinearGradient(0, 0, 0, H * 0.46);
+  top.addColorStop(0, `rgba(255, 255, 255,${(0.3 * k).toFixed(3)})`);
+  top.addColorStop(0.5, `rgba(255, 254, 250,${(0.08 * k).toFixed(3)})`);
+  top.addColorStop(1, 'rgba(255, 255, 255, 0)');
+  ctx.fillStyle = top;
+  ctx.fillRect(0, 0, W, H * 0.46);
+  ctx.restore();
+
+  // 5. 左上光斑：一处柔和的高光，画面立刻"有光"而不是"有灰"
+  ctx.save();
+  ctx.globalCompositeOperation = 'screen';
+  const bloom = ctx.createRadialGradient(
+    W * 0.24, H * 0.12, 0,
+    W * 0.24, H * 0.12, Math.max(W, H) * 0.46,
+  );
+  bloom.addColorStop(0, `rgba(${warm},${Math.min(0.26, 0.18 * k).toFixed(3)})`);
+  bloom.addColorStop(0.45, `rgba(255, 252, 246,${(0.06 * k).toFixed(3)})`);
+  bloom.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = bloom;
+  ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+}
+
+/**
+ * 纸纹噪声：用极细的随机点打散大面积纯色。
+ * 只画一次到离屏 canvas 再复用，避免每帧几千次 fillRect。
+ */
+let grainCanvas: HTMLCanvasElement | null = null;
+function grainLayer(): HTMLCanvasElement {
+  if (grainCanvas) return grainCanvas;
+  const c = document.createElement('canvas');
+  c.width = 128;
+  c.height = 128;
+  const g = c.getContext('2d');
+  if (g) {
+    const img = g.createImageData(128, 128);
+    for (let i = 0; i < img.data.length; i += 4) {
+      const v = 120 + Math.random() * 135;
+      img.data[i] = v; img.data[i + 1] = v; img.data[i + 2] = v;
+      img.data[i + 3] = Math.random() < 0.35 ? 22 : 0;
+    }
+    g.putImageData(img, 0, 0);
+  }
+  grainCanvas = c;
+  return c;
+}
+
+function drawGrain(ctx: CanvasRenderingContext2D, k: number) {
+  const tile = grainLayer();
+  ctx.save();
+  ctx.globalAlpha = Math.min(0.5, 0.3 * k);
+  ctx.globalCompositeOperation = 'overlay';
+  const pattern = ctx.createPattern(tile, 'repeat');
+  if (pattern) {
+    ctx.fillStyle = pattern;
+    ctx.fillRect(0, 0, W, H);
+  }
+  ctx.restore();
+}
+
 function draw() {
   if (!ctx) return;
   ctx.clearRect(0, 0, W, H);
@@ -899,16 +1030,16 @@ function draw() {
   if (props.mode === 'cute') {
     // Background gradient
     const g = ctx.createLinearGradient(0, 0, W, H);
-    g.addColorStop(0,'rgba(255,220,230,0.18)'); g.addColorStop(0.5,'rgba(255,200,215,0.12)'); g.addColorStop(1,'rgba(250,230,248,0.16)');
+    g.addColorStop(0, '#fffbfc'); g.addColorStop(0.34, '#fdf2f6'); g.addColorStop(0.68, '#fbeaf2'); g.addColorStop(1, '#f7e6f0');
     ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
     // Bubbles
     for (const b of ctBubbles) {
       ctx.save(); ctx.globalAlpha = b.alpha;
       const bg = ctx.createRadialGradient(b.x - b.r*0.3, b.y - b.r*0.3, 0, b.x, b.y, b.r);
-      bg.addColorStop(0,'rgba(255,255,255,0.6)'); bg.addColorStop(1, b.color + '22');
+      bg.addColorStop(0,'rgba(255,255,255,0.85)'); bg.addColorStop(1, b.color + '55');
       ctx.fillStyle = bg;
       ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI*2); ctx.fill();
-      ctx.strokeStyle = b.color + '55'; ctx.lineWidth = 0.8; ctx.stroke();
+      ctx.strokeStyle = b.color + '99'; ctx.lineWidth = 1; ctx.stroke();
       ctx.restore();
     }
     // Sakura petals
@@ -919,7 +1050,7 @@ function draw() {
       // Petal shape
       ctx.beginPath(); ctx.ellipse(0, 0, p.size, p.size * 0.55, 0, 0, Math.PI*2); ctx.fill();
       // Inner crease
-      ctx.strokeStyle = 'rgba(255,255,255,0.45)'; ctx.lineWidth = 0.5;
+      ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = 0.6;
       ctx.beginPath(); ctx.moveTo(-p.size * 0.5, 0); ctx.lineTo(p.size * 0.5, 0); ctx.stroke();
       ctx.restore();
     }
@@ -942,17 +1073,17 @@ function draw() {
   } else if (props.mode === 'minimal') {
     // Background
     const g = ctx.createLinearGradient(0, 0, W, H);
-    g.addColorStop(0,'rgba(248,250,252,0.2)'); g.addColorStop(1,'rgba(226,232,240,0.12)');
+    g.addColorStop(0, '#fdfefe'); g.addColorStop(0.4, '#f7fafc'); g.addColorStop(0.72, '#eef5f9'); g.addColorStop(1, '#e4eef5');
     ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
     // Draw connection lines between nearby glowing dots
     ctx.lineWidth = 0.8;
     for (let i = 0; i < mnDots.length; i++) {
       const a = mnDots[i]; if (a.glow < 0.05) continue;
       for (let j = i + 1; j < mnDots.length; j++) {
-        const b = mnDots[j]; if (b.glow < 0.05) continue;
+        const b = mnDots[j]; if (b.glow < 0.05 && (a.glow < 0.05)) continue;
         const dx = a.x - b.x, dy = a.y - b.y, d = Math.sqrt(dx*dx+dy*dy);
         if (d < 50) {
-          ctx.strokeStyle = `rgba(148,163,184,${Math.min(a.glow,b.glow)*0.5})`;
+          ctx.strokeStyle = `rgba(120,140,166,${Math.min(a.glow,b.glow)*0.95})`;
           ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
         }
       }
@@ -1008,8 +1139,11 @@ function draw() {
     // 3. Hex Grid：纸面上的淡网格，只在鼠标附近浮现
     ctx.lineWidth = 1;
     for (const h of sfHexes) {
-      if (h.glow > 0.01) {
-        ctx.strokeStyle = `rgba(120,168,214,${(h.glow * 0.22 * k).toFixed(3)})`;
+      // 常驻一层极淡的网格（base 0.18），鼠标靠近再叠加到 1.0。
+      // 之前只有 glow>0.01 才画，而 glow 初始为 0，导致不碰鼠标时整片空白。
+      const vis = 0.18 + h.glow * 0.82;
+      if (vis > 0.01) {
+        ctx.strokeStyle = `rgba(110,158,206,${(vis * 0.3 * k).toFixed(3)})`;
         ctx.beginPath();
         for (let i = 0; i < 6; i++) {
           const a = i * Math.PI / 3;
@@ -1167,10 +1301,6 @@ function draw() {
         ctx.restore();
       }
     }
-  } else if (props.mode === 'minimal') {
-    const g = ctx.createLinearGradient(0, 0, W, H);
-    g.addColorStop(0, 'rgba(241,245,249,0.12)'); g.addColorStop(1, 'rgba(226,232,240,0.08)');
-    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
   } else if (props.mode === 'aurora') {
     drawAurora(ctx);
   } else if (props.mode === 'ink') {
@@ -1184,6 +1314,13 @@ function draw() {
     if (ir > cr) { dh = H; dw = H * ir; dx = (W - dw) / 2; dy = 0; }
     else { dw = W; dh = W / ir; dx = 0; dy = (H - dh) / 2; }
     ctx.drawImage(customImg, dx, dy, dw, dh); ctx.globalAlpha = 1;
+  }
+
+  // 统一光场：所有预设背景共用，给画面明暗纵深（custom 图片不加，避免压暗用户照片）
+  if (props.mode !== 'custom') {
+    const k = strength();
+    drawLightField(ctx, k);
+    drawGrain(ctx, k);
   }
 
   // Ripples (shared)
