@@ -333,9 +333,11 @@ fn has_sensitive_component(path: &Path) -> bool {
         let Component::Normal(name) = component else {
             return false;
         };
-        let name = name.to_string_lossy().to_ascii_lowercase();
+        // Windows ADS 与尾随点/空格不能绕过敏感文件名检查。
+        let raw = name.to_string_lossy().to_ascii_lowercase();
+        let name = raw.split(':').next().unwrap_or_default().trim_end_matches([' ', '.']);
         matches!(
-            name.as_str(),
+            name,
             ".ssh"
                 | ".gnupg"
                 | ".aws"
@@ -348,7 +350,33 @@ fn has_sensitive_component(path: &Path) -> bool {
                 | "id_ecdsa"
                 | "id_ed25519"
                 | "ntuser.dat"
-        ) || name == ".env"
+                // 常见凭据与令牌：git / npm / pip / netrc / Claude Code / Codex CLI
+                | ".git-credentials"
+                | ".npmrc"
+                | ".pypirc"
+                | ".netrc"
+                | "_netrc"
+                | ".credentials.json"
+                | ".codex"
+                | ".dsh"
+                | ".configstore"
+                | "credentials.json"
+                | ".credentials.yaml"
+                | ".credentials.yml"
+                | "auth.json"
+                | "tokens.json"
+                | "local state"
+                | "key4.db"
+                | "logins.json"
+                // 浏览器资料目录里的 Cookie / 密码 / 自动填充库
+                | "cookies"
+                | "login data"
+                | "web data"
+                // 桌宠自己的数据库（聊天记录、记忆）
+                | "pet.db"
+        ) || ["pet.db", "cookies", "login data", "web data", "key4.db"].iter()
+            .any(|base| name.strip_prefix(base).map(|tail| tail.starts_with(['-', '.'])).unwrap_or(false))
+            || name == ".env"
             || name.starts_with(".env.")
             || name.ends_with(".pem")
             || name.ends_with(".pfx")
@@ -377,13 +405,22 @@ pub fn is_path_allowed(path: &str) -> Result<PathBuf, String> {
 
 /// 检查命令是否包含危险操作
 fn is_command_safe(command: &str) -> Result<(), String> {
+    // 注意：这只是兜底的误操作拦截（命令每次执行前仍需用户确认），不是安全边界。
+    // 规则要具体：以前裸的 "shutdown" / "restart" / "format " 会误拦 `wsl --shutdown`、
+    // `npm restart`、`docker restart`、`git log --format ...` 之类的正常命令。
+    let cmd_lower_for_format = command.to_lowercase();
+    if formats_a_drive(&cmd_lower_for_format) {
+        return Err("命令包含危险操作，已被拦截: format <盘符>:".to_string());
+    }
     let dangerous_patterns = [
         "rm -rf /",
         "rmdir /s /q C:\\",
-        "format ",
         "del /f /s /q C:\\",
-        "shutdown",
-        "restart",
+        "shutdown /",
+        "shutdown -",
+        "shutdown.exe",
+        "stop-computer",
+        "restart-computer",
         "reg delete",
         "reg add",
         "net user",
@@ -406,6 +443,29 @@ fn is_command_safe(command: &str) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// 是否在格式化磁盘：`format` 后面紧跟（可带空白）盘符和冒号，如 `format d:`、`format  C: /q`。
+fn formats_a_drive(command_lower: &str) -> bool {
+    let mut rest = command_lower;
+    while let Some(position) = rest.find("format") {
+        let before_ok = rest[..position]
+            .chars()
+            .next_back()
+            .is_none_or(|c| c.is_whitespace() || matches!(c, '&' | '|' | ';' | '(' | '"' | '\''));
+        let after = &rest[position + "format".len()..];
+        let mut chars = after.trim_start().chars();
+        let has_space = after.starts_with(char::is_whitespace);
+        if before_ok
+            && has_space
+            && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+            && chars.next() == Some(':')
+        {
+            return true;
+        }
+        rest = after;
+    }
+    false
 }
 
 pub fn tool_definitions() -> Vec<serde_json::Value> {
@@ -529,7 +589,8 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
                     "type": "object",
                     "properties": {
                         "app": { "type": "string", "description": "应用名称（如 notepad, chrome, vscode, calc, explorer）或可执行文件的完整路径" },
-                        "args": { "type": "string", "description": "传递给应用的可选参数（如要打开的文件路径）" }
+                        "args": { "type": "string", "description": "传递给应用的可选参数（如要打开的文件路径）。整串是一个存在的路径时会作为单个参数传入" },
+                        "arg_list": { "type": "array", "items": { "type": "string" }, "description": "可选：逐个传入的参数列表，每项原样传递（多个带空格的路径时用它代替 args）" }
                     },
                     "required": ["app"]
                 }
@@ -845,7 +906,7 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
             "type": "function",
             "function": {
                 "name": "save_memory",
-                "description": "将一条信息保存到长期记忆库中。适合保存用户的偏好、事实、习惯或任何需要跨会话记住的内容。",
+                "description": "将一条信息保存到长期记忆库中。适合保存用户的偏好、事实、习惯或任何需要跨会话记住的内容。约束：category 必填（去除首尾空白后 1-64 字符，不能包含换行等控制字符）；key 必填（1-200 字符，不能包含控制字符）；value 必填（1-4000 字符）。category 不能是 app_path——app_path 只能由应用注册流程写入。",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -989,7 +1050,7 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
                         "system_prompt": { "type": "string", "description": "完整的角色设定（120-800 字），用第二人称「你」书写，包含：身份、职责与工作范围、工作方式（先做什么再做什么）、输出风格、边界（不做什么）。要具体可执行，不要照抄用户原话。" },
                         "allowed_tools": {
                             "type": "array",
-                            "description": "可选，勾选为「免确认工具」的名单：只放它完成任务必须用的工具，例如 read_file、write_file、list_directory、run_command、web_search、read_webpage、create_docx、ask_user、save_memory。没把握就留空（留空表示每次调用仍会正常询问用户）。",
+                            "description": "可选，「免确认工具」名单，只能填只读工具：read_file、list_directory、file_search、code_search、web_search、read_webpage、get_weather、search_memory、save_memory、list_scheduled_tasks、ask_user、list_agents、computer_screenshot、computer_wait、window_list、browser_snapshot、browser_extract、browser_status。写文件、执行命令等高风险工具只能由用户在智能体工坊里手动勾选。没把握就留空（留空表示每次调用仍会正常询问用户）。",
                             "items": { "type": "string" }
                         },
                         "model": { "type": "string", "description": "可选，专属模型名。留空则跟随用户当前选择的 API 配置。" }
@@ -1013,7 +1074,7 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
                         "system_prompt": { "type": "string", "description": "可选，新的完整角色设定（120-800 字，第二人称）" },
                         "allowed_tools": {
                             "type": "array",
-                            "description": "可选，替换整个免确认工具名单；不传则保持原样，传空数组表示清空。",
+                            "description": "可选，替换整个免确认工具名单（只能填只读工具，规则同 create_agent）；不传则保持原样，传空数组表示清空。",
                             "items": { "type": "string" }
                         },
                         "model": { "type": "string", "description": "可选，专属模型名" }
@@ -1171,14 +1232,28 @@ async fn exec_read_file(args: &serde_json::Value) -> Result<String, String> {
         .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase());
-    match ext.as_deref() {
-        Some("docx") => return read_docx_text(&path_buf),
-        Some("pdf") => return read_pdf_text(&path_buf),
-        Some("pptx") | Some("pptm") | Some("ppsx") => return read_pptx_text(&path_buf),
+    // 文档解析是同步 CPU 密集代码：放进 spawn_blocking（外层 30 秒超时才打断得了），
+    // 并先按文件大小拦截，避免几百 MB 的 PDF / 压缩炸弹拖垮进程。
+    const MAX_DOCUMENT_BYTES: u64 = 40 * 1024 * 1024;
+    type DocumentReader = fn(&Path) -> Result<String, String>;
+    let document_reader: Option<DocumentReader> = match ext.as_deref() {
+        Some("docx") => Some(read_docx_text),
+        Some("pdf") => Some(read_pdf_text),
+        Some("pptx") | Some("pptm") | Some("ppsx") => Some(read_pptx_text),
         Some("ppt") => {
             return Err("旧版 .ppt 二进制格式暂不支持，请将文件另存为 .pptx 后再读取".to_string())
         }
-        _ => {}
+        _ => None,
+    };
+    if let Some(reader) = document_reader {
+        let size = tokio::fs::metadata(&path_buf).await.map(|m| m.len()).unwrap_or(0);
+        if size > MAX_DOCUMENT_BYTES {
+            return Err(format!("文档过大：{} 字节（文档解析上限 40MB）", size));
+        }
+        let path = path_buf.clone();
+        return tokio::task::spawn_blocking(move || reader(&path))
+            .await
+            .map_err(|e| format!("解析文档时出现异常: {e}"))?;
     }
 
     let size = tokio::fs::metadata(&path_buf)
@@ -1194,9 +1269,7 @@ async fn exec_read_file(args: &serde_json::Value) -> Result<String, String> {
                 size
             ));
         }
-        let content = tokio::fs::read_to_string(&path_buf)
-            .await
-            .map_err(|e| format!("读取文件失败: {e}"))?;
+        let (content, legacy_encoding) = read_text_file(&path_buf).await?;
         let lines: Vec<&str> = content.lines().collect();
         let total = lines.len();
         let offset = offset_opt.unwrap_or(1) as usize;
@@ -1206,6 +1279,9 @@ async fn exec_read_file(args: &serde_json::Value) -> Result<String, String> {
         }
         let end = (offset - 1 + limit).min(total);
         let mut out = format!("[文件共 {total} 行，当前显示第 {offset}-{end} 行]\n");
+        if legacy_encoding {
+            out.push_str(LEGACY_ENCODING_NOTE);
+        }
         for (i, line) in lines[offset - 1..end].iter().enumerate() {
             out.push_str(&format!("{}: {}\n", offset + i, line));
         }
@@ -1226,9 +1302,12 @@ async fn exec_read_file(args: &serde_json::Value) -> Result<String, String> {
         ));
     }
 
-    let content = tokio::fs::read_to_string(&path_buf)
-        .await
-        .map_err(|e| format!("读取文件失败: {e}"))?;
+    let (content, legacy_encoding) = read_text_file(&path_buf).await?;
+    let content = if legacy_encoding {
+        format!("{LEGACY_ENCODING_NOTE}{content}")
+    } else {
+        content
+    };
 
     if content.len() > 524288 {
         let safe_end = content.floor_char_boundary(524288);
@@ -1241,6 +1320,22 @@ async fn exec_read_file(args: &serde_json::Value) -> Result<String, String> {
     }
 }
 
+const LEGACY_ENCODING_NOTE: &str =
+    "[提示：该文件不是 UTF-8，已按系统本地编码（简体中文系统为 GBK）解码显示；edit_file 无法直接修改它]\n";
+
+/// 读取文本文件：UTF-8（去 BOM）优先，不是 UTF-8 时按系统 ANSI 代码页解码（中文系统 = GBK）。
+/// 返回 (文本, 是否按本地代码页解码)。以前用 read_to_string，GBK 的 txt/csv 一律读取失败。
+async fn read_text_file(path: &Path) -> Result<(String, bool), String> {
+    let bytes = tokio::fs::read(path)
+        .await
+        .map_err(|e| format!("读取文件失败: {e}"))?;
+    // 含 NUL 字节基本是二进制文件（或 UTF-16 文本）：不要把它当本地编码硬解成乱码。
+    if bytes.iter().take(8192).any(|byte| *byte == 0) {
+        return Err("读取文件失败：这看起来是二进制文件（或 UTF-16 文本），read_file 只读取文本内容".to_string());
+    }
+    Ok(crate::text_decode::decode_text_file(&bytes))
+}
+
 /// 从 .docx 文件中提取纯文本内容
 fn read_docx_text(path: &Path) -> Result<String, String> {
     use std::io::Read;
@@ -1251,10 +1346,16 @@ fn read_docx_text(path: &Path) -> Result<String, String> {
 
     let mut xml_content = String::new();
     {
-        let mut entry = archive
+        // 限制解压后的大小：几 KB 的 docx 也可能解压出数 GB 的 XML（压缩炸弹）。
+        const MAX_DOCUMENT_XML_BYTES: u64 = 64 * 1024 * 1024;
+        let entry = archive
             .by_name("word/document.xml")
             .map_err(|_| "docx 文件中未找到 word/document.xml".to_string())?;
+        if entry.size() > MAX_DOCUMENT_XML_BYTES {
+            return Err("docx 正文解压后超过 64MB，已拒绝解析".to_string());
+        }
         entry
+            .take(MAX_DOCUMENT_XML_BYTES)
             .read_to_string(&mut xml_content)
             .map_err(|e| format!("读取 document.xml 失败: {e}"))?;
     }
@@ -2166,9 +2267,32 @@ async fn exec_edit_file(args: &serde_json::Value) -> Result<String, String> {
         return Err(format!("文件过大：{} 字节（上限 2MB）", size));
     }
 
-    let content = tokio::fs::read_to_string(&path_buf)
+    let raw = tokio::fs::read(&path_buf)
         .await
-        .map_err(|e| format!("读取文件失败（可能不是 UTF-8 文本文件）: {e}"))?;
+        .map_err(|e| format!("读取文件失败: {e}"))?;
+    const UTF8_BOM: &[u8] = b"\xEF\xBB\xBF";
+    let bom = raw.starts_with(UTF8_BOM);
+    let content = std::str::from_utf8(if bom { &raw[UTF8_BOM.len()..] } else { &raw })
+        .map_err(|_| {
+            "这个文件不是 UTF-8 编码（可能是 GBK），edit_file 只能修改 UTF-8 文本，直接改会破坏原编码。可以用 read_file 查看内容，再用 write_file 以 UTF-8 重写整个文件。".to_string()
+        })?
+        .to_string();
+
+    // Windows 上的文件常是 CRLF，而模型给出的 old_text 几乎总是 LF：直接匹配必然 0 次。
+    // 原文是 CRLF 且按 LF 匹配不到时，把 old/new 都换成 CRLF 再匹配，替换后保持原换行风格。
+    let (old_text, new_text) = if !content.contains(old_text)
+        && content.contains("\r\n")
+        && old_text.contains('\n')
+        && !old_text.contains("\r\n")
+    {
+        (
+            old_text.replace('\n', "\r\n"),
+            new_text.replace("\r\n", "\n").replace('\n', "\r\n"),
+        )
+    } else {
+        (old_text.to_string(), new_text.to_string())
+    };
+    let (old_text, new_text) = (old_text.as_str(), new_text.as_str());
 
     let count = content.matches(old_text).count();
     match count {
@@ -2181,7 +2305,12 @@ async fn exec_edit_file(args: &serde_json::Value) -> Result<String, String> {
         )),
         _ => {
             let new_content = content.replacen(old_text, new_text, 1);
-            tokio::fs::write(&path_buf, &new_content)
+            let mut bytes = Vec::with_capacity(new_content.len() + 3);
+            if bom {
+                bytes.extend_from_slice(UTF8_BOM);
+            }
+            bytes.extend_from_slice(new_content.as_bytes());
+            tokio::fs::write(&path_buf, &bytes)
                 .await
                 .map_err(|e| format!("写入文件失败: {e}"))?;
 
@@ -2341,22 +2470,12 @@ async fn exec_run_command(args: &serde_json::Value) -> Result<String, String> {
     let mut child = cmd.spawn().map_err(|e| format!("执行命令失败: {e}"))?;
     let mut tree_guard = ChildTreeGuard::new(child.id());
 
-    let mut stdout = child.stdout.take().expect("无法打开标准输出");
-    let mut stderr = child.stderr.take().expect("无法打开标准错误");
-
-    let stdout_task = tokio::spawn(async move {
-        let mut buffer = Vec::new();
-        use tokio::io::AsyncReadExt;
-        let _ = stdout.read_to_end(&mut buffer).await;
-        buffer
-    });
-
-    let stderr_task = tokio::spawn(async move {
-        let mut buffer = Vec::new();
-        use tokio::io::AsyncReadExt;
-        let _ = stderr.read_to_end(&mut buffer).await;
-        buffer
-    });
+    let stdout = child.stdout.take().expect("无法打开标准输出");
+    let stderr = child.stderr.take().expect("无法打开标准错误");
+    let stdout_buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let stderr_buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut stdout_task = spawn_pipe_reader(stdout, stdout_buffer.clone());
+    let mut stderr_task = spawn_pipe_reader(stderr, stderr_buffer.clone());
 
     // 可选 timeout_secs（1-600 秒）：构建/安装/测试等长命令需要更久
     let timeout_secs = args["timeout_secs"]
@@ -2369,11 +2488,31 @@ async fn exec_run_command(args: &serde_json::Value) -> Result<String, String> {
         Ok(Ok(status)) => {
             // wait() 已回收子进程，立刻撤销兜底（此后该 pid 可能被系统复用）。
             tree_guard.disarm();
-            let stdout_bytes = stdout_task.await.unwrap_or_default();
-            let stderr_bytes = stderr_task.await.unwrap_or_default();
+            // 命令启动的后台进程（`start /b server`、dev server 等）会继承输出管道，
+            // 管道永远等不到 EOF。以前这里无超时地等读取任务，整轮对话会一直挂住；
+            // 现在只再等一小会儿，然后带着已收集的输出返回。
+            let drained = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                let _ = (&mut stdout_task).await;
+                let _ = (&mut stderr_task).await;
+            })
+            .await
+            .is_ok();
+            if !drained {
+                stdout_task.abort();
+                stderr_task.abort();
+            }
 
-            let stdout = String::from_utf8_lossy(&stdout_bytes).into_owned();
-            let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
+            let read_buffer = |buffer: &std::sync::Arc<std::sync::Mutex<Vec<u8>>>| {
+                buffer.lock().map(|bytes| bytes.clone()).unwrap_or_default()
+            };
+            let stdout_bytes = read_buffer(&stdout_buffer);
+            let stderr_bytes = read_buffer(&stderr_buffer);
+            let capped = stdout_bytes.len() >= RUN_COMMAND_CAPTURE_LIMIT
+                || stderr_bytes.len() >= RUN_COMMAND_CAPTURE_LIMIT;
+
+            // cmd 在隐藏控制台里按系统 OEM 代码页（中文系统为 GBK）输出，不能直接按 UTF-8 解码。
+            let stdout = crate::text_decode::decode_process_output(&stdout_bytes);
+            let stderr = crate::text_decode::decode_process_output(&stderr_bytes);
 
             let status_code = status
                 .code()
@@ -2387,8 +2526,11 @@ async fn exec_run_command(args: &serde_json::Value) -> Result<String, String> {
             if !stderr.is_empty() {
                 result.push_str(&format!("--- 标准错误 ---\n{}\n", stderr));
             }
+            if !drained {
+                result.push_str("\n[命令已结束，但它启动的后台进程仍占用输出管道；之后的输出未收集，后台进程仍在运行]\n");
+            }
 
-            if result.len() > 65536 {
+            if result.len() > 65536 || capped {
                 let safe_end = result.floor_char_boundary(65536);
                 result = format!("{}\n\n... [输出已截断，仅保留前 64KB]", &result[..safe_end]);
             }
@@ -2410,6 +2552,33 @@ async fn exec_run_command(args: &serde_json::Value) -> Result<String, String> {
             ))
         }
     }
+}
+
+/// 单个输出管道最多收集的字节数：超出部分继续读走（避免子进程写满管道卡死）但不再保存。
+const RUN_COMMAND_CAPTURE_LIMIT: usize = 1024 * 1024;
+
+fn spawn_pipe_reader<R>(
+    mut pipe: R,
+    buffer: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+) -> tokio::task::JoinHandle<()>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut chunk = [0u8; 8192];
+        loop {
+            match pipe.read(&mut chunk).await {
+                Ok(0) | Err(_) => break,
+                Ok(count) => {
+                    if let Ok(mut bytes) = buffer.lock() {
+                        let room = RUN_COMMAND_CAPTURE_LIMIT.saturating_sub(bytes.len());
+                        bytes.extend_from_slice(&chunk[..count.min(room)]);
+                    }
+                }
+            }
+        }
+    })
 }
 
 pub async fn web_search(query: &str, preferred_provider: &str) -> Result<String, String> {
@@ -4205,56 +4374,85 @@ async fn exec_list_scheduled_tasks() -> Result<String, String> {
     }
 }
 
-/// `search_memory` 用的两条查询语句。抽成常量是为了让回归测试能直接 `prepare()` 它们，
-/// 断言占位符数量与绑定参数数量一致——这两个 bug 都属于"静态可测但此前没人测"的类型。
+/// search_memory 的关键词拆分：按空白与常见中英文标点切开（最多 6 个词）。
+/// 没有分隔符时整句就是一个词，保持原来的子串匹配语义；
+/// 多个词时任一命中即入选，再按命中词数排序——"喜欢 颜色" 这类查询不再要求整句连续出现。
+fn memory_query_terms(query: &str) -> Vec<String> {
+    const SEPARATORS: &str = "，。、,.;；:：!?！？/|()（）[]【】\"'“”‘’";
+    let mut terms: Vec<String> = Vec::new();
+    for raw in query.split(|c: char| c.is_whitespace() || SEPARATORS.contains(c)) {
+        let term = raw.trim();
+        if term.is_empty() || terms.iter().any(|existing| existing == term) {
+            continue;
+        }
+        terms.push(term.to_string());
+        if terms.len() >= 6 {
+            break;
+        }
+    }
+    terms
+}
+
+/// 构造 search_memory 的查询：每个关键词一组 `(key LIKE ?n OR value LIKE ?n)`，组间 OR。
 ///
-/// 两处易踩的坑：
-/// 1. **占位符必须连续**。不带 category 的分支曾写成 `LIMIT ?3` 却只绑定 2 个参数，
-///    SQLite 的 `parameter_count()` 因此是 3，导致这条**最常用**的调用形态每次直接报
-///    "Wrong number of parameters passed to query. Got 2, needed 3"。
-/// 2. **`escape_like()` 必须配套 `ESCAPE '\'`**。转义函数会给 `%` `_` `\` 加反斜杠，
-///    若 SQL 里没有 `ESCAPE` 子句，反斜杠会被当成普通字符参与匹配，
-///    于是关键词里含这三个字符时**静默 0 命中**（不报错，看起来只是"没记忆"）。
-const SEARCH_MEMORY_SQL_WITH_CATEGORY: &str = "SELECT id, category, key, value, created_at
-     FROM pet_memory
-     WHERE (key LIKE ?1 ESCAPE '\\' OR value LIKE ?1 ESCAPE '\\') AND category = ?2
-     ORDER BY id DESC LIMIT ?3";
-const SEARCH_MEMORY_SQL_WITHOUT_CATEGORY: &str = "SELECT id, category, key, value, created_at
-     FROM pet_memory
-     WHERE (key LIKE ?1 ESCAPE '\\' OR value LIKE ?1 ESCAPE '\\')
-     ORDER BY id DESC LIMIT ?2";
+/// 两处易踩的坑（都有回归测试）：
+/// 1. **占位符必须连续**：category 永远是最后一个占位符 `?{n+1}`，参数个数 = 词数 (+1)。
+/// 2. **`escape_like()` 必须配套 `ESCAPE '\'`**：否则关键词里含 `%` `_` `\` 时静默 0 命中。
+fn search_memory_sql(term_count: usize, with_category: bool) -> String {
+    let clauses = (1..=term_count)
+        .map(|n| format!("key LIKE ?{n} ESCAPE '\\' OR value LIKE ?{n} ESCAPE '\\'"))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    let mut sql = format!(
+        "SELECT id, category, key, value, created_at, updated_at FROM pet_memory WHERE ({clauses})"
+    );
+    if with_category {
+        sql.push_str(&format!(" AND category = ?{}", term_count + 1));
+    }
+    sql.push_str(" ORDER BY MAX(created_at, updated_at) DESC, id DESC LIMIT 200");
+    sql
+}
 
-async fn exec_search_memory(args: &serde_json::Value) -> Result<String, String> {
-    let query = args["query"].as_str().ok_or("缺少 'query' 参数")?;
-    let category = args["category"].as_str();
-    let limit = args["limit"].as_u64().unwrap_or(10) as u32;
-
-    let db_path = get_db_path_for_tools()?;
-    let conn = open_pet_db(&db_path).map_err(|e| format!("打开数据库失败: {e}"))?;
-
-    let like_pattern = format!("%{}%", escape_like(query));
-    let limit = limit.min(30);
-
-    let (sql, params): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(cat) = category {
-        (
-            SEARCH_MEMORY_SQL_WITH_CATEGORY,
-            vec![
-                Box::new(like_pattern),
-                Box::new(cat.to_string()),
-                Box::new(limit),
-            ],
-        )
-    } else {
-        (
-            SEARCH_MEMORY_SQL_WITHOUT_CATEGORY,
-            vec![Box::new(like_pattern), Box::new(limit)],
-        )
+/// 记忆时间展示：更新过的显示更新时间，否则显示创建时间（本地时区）。
+fn format_memory_time(created_at: i64, updated_at: i64) -> String {
+    let format = |secs: i64| {
+        chrono::DateTime::from_timestamp(secs, 0)
+            .map(|time| time.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_else(|| secs.to_string())
     };
+    if updated_at > created_at {
+        format!("更新于 {}", format(updated_at))
+    } else {
+        format!("创建于 {}", format(created_at))
+    }
+}
 
+/// 在给定连接上搜索记忆（与数据库路径解耦，便于单测）。
+fn search_memory_in(
+    conn: &rusqlite::Connection,
+    query: &str,
+    category: Option<&str>,
+    limit: usize,
+) -> Result<String, String> {
+    let terms = memory_query_terms(query);
+    if terms.is_empty() {
+        return Err("搜索词 'query' 不能为空".to_string());
+    }
+    let sql = search_memory_sql(terms.len(), category.is_some());
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = terms
+        .iter()
+        .map(|term| Box::new(format!("%{}%", escape_like(term))) as Box<dyn rusqlite::types::ToSql>)
+        .collect();
+    if let Some(category) = category {
+        params.push(Box::new(category.to_string()));
+    }
     let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
     let mut stmt = conn
-        .prepare(sql)
+        .prepare(&sql)
         .map_err(|e| format!("查询记忆失败: {e}"))?;
+    // created_at / updated_at 是 INTEGER 列：必须按 i64 读。按 String 读会让每一条命中都
+    // 报 "Invalid column type Integer"，search_memory 因此从来没成功返回过记忆。
     let rows = stmt
         .query_map(param_refs.as_slice(), |row| {
             Ok((
@@ -4262,125 +4460,262 @@ async fn exec_search_memory(args: &serde_json::Value) -> Result<String, String> 
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
             ))
         })
         .map_err(|e| format!("查询记忆失败: {e}"))?;
-
-    let mut lines = Vec::new();
+    let mut hits = Vec::new();
     for row in rows {
-        let (id, category, key, value, created_at) =
-            row.map_err(|e| format!("读取记忆失败: {e}"))?;
-        let val_display = if value.len() > 120 {
-            format!("{}...", &value[..120])
-        } else {
-            value
-        };
-        lines.push(format!(
-            "#{} [{}] {} | {} | 创建: {}",
-            id, category, key, val_display, created_at
-        ));
+        hits.push(row.map_err(|e| format!("读取记忆失败: {e}"))?);
     }
 
-    if lines.is_empty() {
-        Ok(format!("未找到与 \"{}\" 相关的记忆。", query))
-    } else {
-        Ok(lines.join("\n"))
+    // SQL 已按新近程度排序；稳定排序后，命中关键词多的排在前面。
+    let lower_terms: Vec<String> = terms.iter().map(|term| term.to_lowercase()).collect();
+    hits.sort_by_key(|(_, _, key, value, _, _)| {
+        let haystack = format!("{key}\n{value}").to_lowercase();
+        std::cmp::Reverse(
+            lower_terms
+                .iter()
+                .filter(|term| haystack.contains(term.as_str()))
+                .count(),
+        )
+    });
+    hits.truncate(limit);
+
+    if hits.is_empty() {
+        return Ok(format!("未找到与 \"{}\" 相关的记忆。", query));
     }
+    Ok(hits
+        .into_iter()
+        .map(|(id, category, key, value, created_at, updated_at)| {
+            // 按字符截断：中文记忆按字节下标切会落在字符中间直接 panic。
+            format!(
+                "#{} [{}] {} | {} | {}",
+                id,
+                category,
+                key,
+                truncate_chars(&value, 120),
+                format_memory_time(created_at, updated_at)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+async fn exec_search_memory(args: &serde_json::Value) -> Result<String, String> {
+    execute_memory_tool_at(&get_db_path_for_tools()?, "search_memory", args)
+}
+
+/// 校验 save_memory 的输入（纯函数，便于单测；category/key 会 trim 后使用）。
+fn validate_memory_input(category: &str, key: &str, value: &str) -> Result<(), String> {
+    let category = category.trim();
+    if category.is_empty() {
+        return Err("category 不能为空".to_string());
+    }
+    if category.chars().count() > 64 {
+        return Err("category 过长（最多 64 字符）".to_string());
+    }
+    if category.chars().any(char::is_control) {
+        return Err("category 不能包含控制字符（如换行、制表符）".to_string());
+    }
+    // app_path 分类只允许应用注册流程写入，避免 AI 通过 save_memory 伪造/覆盖应用路径。
+    let normalized = category
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if normalized == "app_path" {
+        return Err("category 不能是 app_path：app_path 只能由应用注册流程写入".to_string());
+    }
+
+    let key = key.trim();
+    if key.is_empty() {
+        return Err("key 不能为空".to_string());
+    }
+    if key.chars().count() > 200 {
+        return Err("key 过长（最多 200 字符）".to_string());
+    }
+    if key.chars().any(char::is_control) {
+        return Err("key 不能包含控制字符（如换行、回车）".to_string());
+    }
+
+    if value.trim().is_empty() {
+        return Err("value 不能为空".to_string());
+    }
+    if value.trim().chars().count() > 4000 {
+        return Err("value 过长（最多 4000 字符）".to_string());
+    }
+
+    Ok(())
+}
+
+/// 在给定连接上保存记忆：同一 (category, key) 覆盖旧值（与应用内 save_memory 共用 upsert）。
+fn save_memory_in(
+    conn: &rusqlite::Connection,
+    category: &str,
+    key: &str,
+    value: &str,
+) -> Result<String, String> {
+    let existed = conn
+        .query_row(
+            "SELECT id FROM pet_memory WHERE category = ?1 AND key = ?2",
+            rusqlite::params![category, key],
+            |row| row.get::<_, i64>(0),
+        )
+        .is_ok();
+    let id: i64 = conn
+        .query_row(
+            crate::storage::UPSERT_MEMORY_SQL,
+            rusqlite::params![category, key, value],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("保存记忆失败: {e}"))?;
+    Ok(if existed {
+        format!("记忆已更新: #{} [{}] {}", id, category, key)
+    } else {
+        format!("记忆已保存: #{} [{}] {}", id, category, key)
+    })
 }
 
 async fn exec_save_memory(args: &serde_json::Value) -> Result<String, String> {
-    let category = args["category"].as_str().ok_or("缺少 'category' 参数")?;
-    let key = args["key"].as_str().ok_or("缺少 'key' 参数")?;
-    let value = args["value"].as_str().ok_or("缺少 'value' 参数")?;
-
-    let db_path = get_db_path_for_tools()?;
-    let conn = open_pet_db(&db_path).map_err(|e| format!("打开数据库失败: {e}"))?;
-
-    conn.execute(
-        "INSERT INTO pet_memory (category, key, value) VALUES (?1, ?2, ?3)",
-        rusqlite::params![category, key, value],
-    )
-    .map_err(|e| format!("保存记忆失败: {e}"))?;
-
-    let id = conn.last_insert_rowid();
-    Ok(format!("记忆已保存: #{} [{}] {}", id, category, key))
+    execute_memory_tool_at(&get_db_path_for_tools()?, "save_memory", args)
 }
 
 async fn exec_delete_memory(args: &serde_json::Value) -> Result<String, String> {
-    let id = args["id"].as_i64().ok_or("缺少 'id' 参数")?;
+    execute_memory_tool_at(&get_db_path_for_tools()?, "delete_memory", args)
+}
 
-    let db_path = get_db_path_for_tools()?;
-    let conn = open_pet_db(&db_path).map_err(|e| format!("打开数据库失败: {e}"))?;
-
-    let affected = conn
-        .execute("DELETE FROM pet_memory WHERE id = ?1", [id])
-        .map_err(|e| format!("删除记忆失败: {e}"))?;
-
-    if affected == 0 {
-        Ok(format!("未找到 ID 为 {} 的记忆，可能已被删除。", id))
-    } else {
-        Ok(format!("记忆 #{} 已删除。", id))
+/// API 与本机 CLI 共用同一套校验、搜索及 upsert，调用方显式指定数据库。
+pub(crate) fn execute_memory_tool_at(
+    path: &Path,
+    name: &str,
+    args: &serde_json::Value,
+) -> Result<String, String> {
+    // 在打开数据库前校验工具名与写入内容，不能把桥扩展成任意工具入口。
+    if !matches!(name, "search_memory" | "save_memory" | "delete_memory") {
+        return Err(format!("未知记忆工具: {name}"));
+    }
+    if name == "save_memory" {
+        validate_memory_input(
+            args["category"].as_str().ok_or("缺少 'category' 参数")?,
+            args["key"].as_str().ok_or("缺少 'key' 参数")?,
+            args["value"].as_str().ok_or("缺少 'value' 参数")?,
+        )?;
+    }
+    let conn = open_pet_db(path)?;
+    match name {
+        "search_memory" => search_memory_in(
+            &conn,
+            args["query"].as_str().ok_or("缺少 'query' 参数")?,
+            args["category"].as_str().map(str::trim).filter(|s| !s.is_empty()),
+            args["limit"].as_u64().unwrap_or(10).clamp(1, 30) as usize,
+        ),
+        "save_memory" => save_memory_in(
+            &conn,
+            args["category"].as_str().unwrap().trim(),
+            args["key"].as_str().unwrap().trim(),
+            args["value"].as_str().unwrap().trim(),
+        ),
+        "delete_memory" => {
+            let id = args["id"].as_i64().filter(|id| *id > 0).ok_or("id 必须是正整数")?;
+            // 应用注册路径属于受管理数据，不能由普通记忆工具删除。
+            let affected = conn.execute(
+                "DELETE FROM pet_memory WHERE id = ?1 AND category != 'app_path'",
+                [id],
+            ).map_err(|e| format!("删除记忆失败: {e}"))?;
+            Ok(if affected == 0 {
+                format!("未找到可删除的记忆 #{id}（应用注册记录需在应用管理中删除）。")
+            } else {
+                format!("记忆 #{id} 已删除。")
+            })
+        }
+        _ => unreachable!(),
     }
 }
 
+/// open_app 拒绝的 shell 元字符：程序直接 CreateProcess 启动，不经过 cmd.exe，
+/// 但 .bat/.cmd 目标仍会被系统交给 cmd.exe 解释，这些字符一律拦下。
+const OPEN_APP_FORBIDDEN_CHARS: &[char] = &['&', '|', '<', '>', '^', ';', '`', '$', '\n', '\r'];
+
+/// 解析 open_app 的启动参数。
+/// - `arg_list`（字符串数组）：逐个原样传入，适合带空格的路径；
+/// - `args`（字符串）：整串是一个已存在的路径时作为单个参数（常见：打开带空格路径的文件），
+///   否则按空白切分并去掉包裹的引号。
+fn open_app_arguments(args: &serde_json::Value) -> Result<Vec<String>, String> {
+    let list: Vec<String> = if let Some(items) = args["arg_list"].as_array() {
+        items
+            .iter()
+            .filter_map(|item| item.as_str())
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(str::to_string)
+            .collect()
+    } else {
+        let raw = args["args"].as_str().unwrap_or("").trim();
+        let unquoted = raw.trim_matches('"');
+        if raw.is_empty() {
+            Vec::new()
+        } else if !unquoted.contains('"') && Path::new(unquoted).exists() {
+            vec![unquoted.to_string()]
+        } else {
+            raw.split_whitespace()
+                .map(|part| part.trim_matches('"').to_string())
+                .filter(|part| !part.is_empty())
+                .collect()
+        }
+    };
+    if list.iter().any(|arg| arg.contains(OPEN_APP_FORBIDDEN_CHARS)) {
+        return Err("参数包含不允许的 shell 元字符".to_string());
+    }
+    Ok(list)
+}
+
 async fn exec_open_app(args: &serde_json::Value) -> Result<String, String> {
-    let app = args["app"].as_str().ok_or("缺少 'app' 参数")?;
-    let app_args = args["args"].as_str().unwrap_or("");
+    let app = args["app"]
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or("缺少 'app' 参数")?;
     let mut resolved = resolve_app_name(app);
+    let mut from_registry = false;
 
     if let Ok(db_path) = get_db_path_for_tools() {
         if let Ok(conn) = open_pet_db(&db_path) {
-            let stmt = conn.prepare("SELECT value FROM pet_memory WHERE category = 'app_path' AND LOWER(key) = LOWER(?1)");
-            if let Ok(mut s) = stmt {
-                let rows = s.query_map([app], |row| row.get::<_, String>(0));
-                if let Ok(mut r) = rows {
-                    if let Some(Ok(val)) = r.next() {
-                        resolved = val;
-                    }
-                }
+            // 同名注册过多次时取最新一条（升级前的旧库里可能残留重复行）。
+            if let Ok(path) = conn.query_row(
+                "SELECT value FROM pet_memory
+                 WHERE category = 'app_path' AND LOWER(key) = LOWER(?1)
+                 ORDER BY id DESC LIMIT 1",
+                [app],
+                |row| row.get::<_, String>(0),
+            ) {
+                resolved = path;
+                from_registry = true;
             }
         }
     }
 
-    // 拒绝 shell 元字符：避免通过 AI 控制的 resolved 路径触发命令注入
-    if resolved.chars().any(|c| {
-        matches!(
-            c,
-            '&' | '|' | '<' | '>' | '^' | ';' | '`' | '$' | '\n' | '\r' | '"'
-        )
-    }) {
+    if resolved.contains(OPEN_APP_FORBIDDEN_CHARS) || resolved.contains('"') {
         return Err(format!("解析出的应用路径包含不允许的字符: {resolved}"));
     }
-    if app_args.chars().any(|c| {
-        matches!(
-            c,
-            '&' | '|' | '<' | '>' | '^' | ';' | '`' | '$' | '\n' | '\r' | '"'
-        )
-    }) {
-        return Err("args 包含不允许的 shell 元字符".to_string());
-    }
-    let resolved_path = std::path::Path::new(&resolved);
-    if !resolved_path.exists() {
-        return Err(format!("应用路径不存在: {resolved}"));
+    let arg_list = open_app_arguments(args)?;
+
+    // 只有路径形式才预先检查存在性：notepad.exe / calc.exe 这类裸名交给系统按 PATH 查找。
+    // 以前对裸名也做 exists()（相对当前工作目录），整张内置别名表因此全部失效。
+    let resolved_path = Path::new(&resolved);
+    let is_path_like = resolved_path.is_absolute() || resolved.contains(['\\', '/']);
+    if is_path_like && !resolved_path.exists() {
+        return Err(if from_registry {
+            format!("已注册的应用路径不存在: {resolved}（应用可能已移动或卸载，请重新注册它的快捷方式）")
+        } else {
+            format!("应用路径不存在: {resolved}")
+        });
     }
 
-    // 解析额外参数，按空格切分但保留双引号包裹（仅最基础切分）
-    let arg_list: Vec<String> = if app_args.trim().is_empty() {
-        Vec::new()
-    } else {
-        app_args
-            .split_whitespace()
-            .map(|s| s.trim_matches('"').to_string())
-            .filter(|s| !s.is_empty())
-            .collect()
-    };
-
-    // 直接以 resolved 路径作为可执行文件启动，避免 cmd.exe 解析器介入
+    // 直接以 resolved 作为可执行文件启动，不经过 cmd.exe 解析
     let mut cmd = tokio::process::Command::new(&resolved);
-    for arg in &arg_list {
-        cmd.arg(arg);
-    }
+    cmd.args(&arg_list);
 
     #[cfg(target_os = "windows")]
     {
@@ -4389,12 +4724,37 @@ async fn exec_open_app(args: &serde_json::Value) -> Result<String, String> {
         cmd.creation_flags(0x0800_0000);
     }
 
-    cmd.spawn().map_err(|e| format!("启动应用失败: {e}"))?;
-    Ok(format!("已启动: {} ({})", app, resolved))
+    match cmd.spawn() {
+        Ok(_) => Ok(format!("已启动: {} ({})", app, resolved)),
+        Err(error) if !is_path_like && error.kind() == std::io::ErrorKind::NotFound => Err(format!(
+            "找不到应用「{app}」（{resolved} 不在系统 PATH 中）。可以把它的快捷方式拖给桌宠注册，之后就能按名字打开。"
+        )),
+        Err(error) => Err(format!("启动应用失败: {error}")),
+    }
 }
 
-/// 递归搜索匹配 glob 模式的文件
+/// 文件 / 内容搜索的墙钟上限。目录遍历是同步阻塞代码：外层 `tokio::time::timeout`
+/// 打断不了它（future 根本不让出），所以放进 spawn_blocking 并在循环里自查截止时间。
+const SEARCH_WALL_CLOCK_LIMIT: std::time::Duration = std::time::Duration::from_secs(45);
+const SEARCH_TIMEOUT_NOTE: &str = "\n... [搜索超过 45 秒已停止，结果可能不完整；请用 directory / glob 缩小范围]";
+
+async fn run_blocking_search<F>(search: F) -> Result<String, String>
+where
+    F: FnOnce(std::time::Instant) -> Result<String, String> + Send + 'static,
+{
+    let deadline = std::time::Instant::now() + SEARCH_WALL_CLOCK_LIMIT;
+    tokio::task::spawn_blocking(move || search(deadline))
+        .await
+        .map_err(|e| format!("搜索任务异常退出: {e}"))?
+}
+
+// 递归搜索匹配 glob 模式的文件
 async fn exec_file_search(args: &serde_json::Value) -> Result<String, String> {
+    let args = args.clone();
+    run_blocking_search(move |deadline| file_search_blocking(&args, deadline)).await
+}
+
+fn file_search_blocking(args: &serde_json::Value, deadline: std::time::Instant) -> Result<String, String> {
     let pattern = args["pattern"].as_str().ok_or("缺少 'pattern' 参数")?;
     let directory = args["directory"].as_str();
     let max_results = args["max_results"]
@@ -4421,9 +4781,10 @@ async fn exec_file_search(args: &serde_json::Value) -> Result<String, String> {
     };
 
     let mut results: Vec<(PathBuf, u64)> = Vec::new();
+    let mut timed_out = false;
 
     for root in &search_dirs {
-        if results.len() >= max_results {
+        if timed_out || results.len() >= max_results {
             break;
         }
         // walkdir 递归搜索，最大深度 10 层
@@ -4441,6 +4802,10 @@ async fn exec_file_search(args: &serde_json::Value) -> Result<String, String> {
             if results.len() >= max_results {
                 break;
             }
+            if std::time::Instant::now() >= deadline {
+                timed_out = true;
+                break;
+            }
             if !entry.file_type().is_file() {
                 continue;
             }
@@ -4454,7 +4819,8 @@ async fn exec_file_search(args: &serde_json::Value) -> Result<String, String> {
 
     if results.is_empty() {
         let scope = directory.unwrap_or("所有允许目录");
-        return Ok(format!("在 {} 中未找到匹配 '{}' 的文件", scope, pattern));
+        let note = if timed_out { SEARCH_TIMEOUT_NOTE } else { "" };
+        return Ok(format!("在 {} 中未找到匹配 '{}' 的文件{note}", scope, pattern));
     }
 
     let mut output = format!("找到 {} 个匹配 '{}' 的文件:\n", results.len(), pattern);
@@ -4466,11 +4832,19 @@ async fn exec_file_search(args: &serde_json::Value) -> Result<String, String> {
     if results.len() >= max_results {
         output.push_str(&format!("\n... [已达到最大结果数 {}]", max_results));
     }
+    if timed_out {
+        output.push_str(SEARCH_TIMEOUT_NOTE);
+    }
     Ok(output)
 }
 
 /// code_search 工具入口：在文本文件内容中按子串搜索，返回 文件:行号:行内容
 async fn exec_code_search(args: &serde_json::Value) -> Result<String, String> {
+    let args = args.clone();
+    run_blocking_search(move |deadline| code_search_blocking(&args, deadline)).await
+}
+
+fn code_search_blocking(args: &serde_json::Value, deadline: std::time::Instant) -> Result<String, String> {
     let query = args["query"].as_str().ok_or("缺少 'query' 参数")?;
     if query.trim().is_empty() {
         return Err("搜索内容 'query' 不能为空".to_string());
@@ -4516,6 +4890,7 @@ async fn exec_code_search(args: &serde_json::Value) -> Result<String, String> {
     const MAX_FILE_BYTES: u64 = 1024 * 1024;
     let mut matches: Vec<String> = Vec::new();
     let mut files_scanned: usize = 0;
+    let mut timed_out = false;
 
     'outer: for root in &search_dirs {
         let walker = walkdir::WalkDir::new(root)
@@ -4536,6 +4911,10 @@ async fn exec_code_search(args: &serde_json::Value) -> Result<String, String> {
             if matches.len() >= max_results {
                 break 'outer;
             }
+            if std::time::Instant::now() >= deadline {
+                timed_out = true;
+                break 'outer;
+            }
             if !entry.file_type().is_file() {
                 continue;
             }
@@ -4554,13 +4933,15 @@ async fn exec_code_search(args: &serde_json::Value) -> Result<String, String> {
             if metadata.len() > MAX_FILE_BYTES || metadata.len() == 0 {
                 continue;
             }
-            // 非 UTF-8（二进制兜底）或含 NUL 字节的文件直接跳过
-            let Ok(content) = std::fs::read_to_string(entry.path()) else {
+            // 含 NUL 字节的按二进制跳过；非 UTF-8 文本按系统本地编码（中文系统 = GBK）解码，
+            // 以前 read_to_string 失败就静默跳过，GBK 的 txt / csv 永远搜不到。
+            let Ok(bytes) = std::fs::read(entry.path()) else {
                 continue;
             };
-            if content.contains('\0') {
+            if bytes.contains(&0) {
                 continue;
             }
+            let (content, _) = crate::text_decode::decode_text_file(&bytes);
             files_scanned += 1;
 
             for (i, line) in content.lines().enumerate() {
@@ -4588,8 +4969,9 @@ async fn exec_code_search(args: &serde_json::Value) -> Result<String, String> {
     let scope = directory.unwrap_or("用户常用目录");
     let case_note = if case_sensitive { "区分大小写" } else { "不区分大小写" };
     if matches.is_empty() {
+        let note = if timed_out { SEARCH_TIMEOUT_NOTE } else { "" };
         return Ok(format!(
-            "在 {} 中搜索 '{}'（{}，扫描 {} 个文本文件）未找到匹配。可尝试：换用更短的关键词、去掉 glob 限制、或确认搜索目录。",
+            "在 {} 中搜索 '{}'（{}，扫描 {} 个文本文件）未找到匹配。可尝试：换用更短的关键词、去掉 glob 限制、或确认搜索目录。{note}",
             scope, query, case_note, files_scanned
         ));
     }
@@ -4610,6 +4992,9 @@ async fn exec_code_search(args: &serde_json::Value) -> Result<String, String> {
         output.push_str(&format!(
             "\n... [已达到最大结果数 {max_results}，可用更具体的 query 或 glob 缩小范围]"
         ));
+    }
+    if timed_out {
+        output.push_str(SEARCH_TIMEOUT_NOTE);
     }
     Ok(output)
 }
@@ -4751,6 +5136,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn local_reads_reject_credentials_sidecars_and_allow_project_text() {
+        let dir = std::env::temp_dir().join(unique_test_name("read-protection", "dir"));
+        std::fs::create_dir_all(&dir).unwrap();
+        for relative in [".dsh/credentials.yaml", "AUTH.JSON", ".credentials.yaml", "pet.db-wal", "pet.db.backup", "Cookies-journal", "key4.db", ".env.local"] {
+            let path = dir.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "test-secret").unwrap();
+            let error = exec_read_file(&json!({"path":path})).await.unwrap_err();
+            assert!(error.contains("敏感"), "{relative}: {error}");
+            assert!(!error.contains("test-secret"));
+        }
+        let path = dir.join("README.md");
+        std::fs::write(&path, "普通项目说明").unwrap();
+        assert!(exec_read_file(&json!({"path":path})).await.unwrap().contains("普通项目说明"));
+        // 不需要真实 ADS 文件，也必须按其基础文件名判定。
+        assert!(has_sensitive_component(Path::new(".env:stream")));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -5476,11 +5881,10 @@ mod tests {
         assert!(result.contains("offset=7"), "应提示下一页 offset: {result}");
     }
 
-    // ===== A4：search_memory 的 SQL 回归 =====
+    // ===== A4：search_memory / save_memory 回归 =====
     //
-    // 两个 bug 都属于"静态可测、但此前没人测"：
-    // 1) 不带 category 的分支写成 `LIMIT ?3` 却只绑定 2 个参数 → 每次调用直接报错；
-    // 2) escape_like() 转了义却没有配套 `ESCAPE '\'` → 含 % _ \ 的关键词静默 0 命中。
+    // 夹具必须和 storage/db.rs 的真实表结构一致：created_at / updated_at 是 INTEGER。
+    // 旧夹具把 created_at 建成 TEXT，掩盖了"按 String 读 INTEGER 列，每次命中都报错"的问题。
 
     fn memory_test_conn() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
@@ -5490,8 +5894,10 @@ mod tests {
                  category TEXT NOT NULL,
                  key TEXT NOT NULL,
                  value TEXT NOT NULL,
-                 created_at TEXT NOT NULL DEFAULT (strftime('%s','now'))
+                 created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                 updated_at INTEGER NOT NULL DEFAULT 0
              );
+             CREATE UNIQUE INDEX idx_pet_memory_category_key_unique ON pet_memory(category, key);
              INSERT INTO pet_memory (category, key, value) VALUES
                  ('fact', 'p1', '100% done'),
                  ('fact', 'p2', 'report_final'),
@@ -5502,41 +5908,27 @@ mod tests {
     }
 
     fn memory_hit_count(conn: &rusqlite::Connection, query: &str, category: Option<&str>) -> usize {
-        let like = format!("%{}%", escape_like(query));
-        let (sql, params): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = match category {
-            Some(cat) => (
-                SEARCH_MEMORY_SQL_WITH_CATEGORY,
-                vec![Box::new(like), Box::new(cat.to_string()), Box::new(10u32)],
-            ),
-            None => (
-                SEARCH_MEMORY_SQL_WITHOUT_CATEGORY,
-                vec![Box::new(like), Box::new(10u32)],
-            ),
-        };
-        let refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-        let mut stmt = conn.prepare(sql).unwrap();
-        let mut rows = stmt.query(refs.as_slice()).unwrap();
-        let mut count = 0;
-        while rows.next().unwrap().is_some() {
-            count += 1;
+        let result = search_memory_in(conn, query, category, 30).unwrap();
+        if result.starts_with("未找到") {
+            0
+        } else {
+            result.lines().count()
         }
-        count
     }
 
     #[test]
-    fn search_memory_sql_placeholder_count_matches_bound_params() {
+    fn search_memory_sql_placeholders_are_contiguous() {
         let conn = memory_test_conn();
-        for (label, sql, bound) in [
-            ("带 category", SEARCH_MEMORY_SQL_WITH_CATEGORY, 3usize),
-            ("不带 category", SEARCH_MEMORY_SQL_WITHOUT_CATEGORY, 2usize),
-        ] {
-            let stmt = conn.prepare(sql).unwrap();
-            assert_eq!(
-                stmt.parameter_count(),
-                bound,
-                "{label} 分支的占位符数量必须与绑定参数数量一致，\
-                 否则每次调用都会报 'Wrong number of parameters passed to query'"
-            );
+        for terms in 1..=6 {
+            for (with_category, expected) in [(false, terms), (true, terms + 1)] {
+                let sql = search_memory_sql(terms, with_category);
+                let stmt = conn.prepare(&sql).unwrap();
+                assert_eq!(
+                    stmt.parameter_count(),
+                    expected,
+                    "占位符数量必须等于绑定参数数量，否则每次调用都会报 'Wrong number of parameters': {sql}"
+                );
+            }
         }
     }
 
@@ -5545,21 +5937,89 @@ mod tests {
         let conn = memory_test_conn();
         // 缺 ESCAPE 子句时 `\%` 会被当成"反斜杠 + 通配符"，下面两条会退化成 0 命中。
         assert_eq!(memory_hit_count(&conn, "100%", None), 1, "字面量 % 应能命中");
-        assert_eq!(
-            memory_hit_count(&conn, "report_final", None),
-            1,
-            "字面量 _ 应能命中"
-        );
-        assert_eq!(
-            memory_hit_count(&conn, "100%", Some("fact")),
-            1,
-            "带 category 路径同样要能命中"
-        );
+        assert_eq!(memory_hit_count(&conn, "report_final", None), 1, "字面量 _ 应能命中");
+        assert_eq!(memory_hit_count(&conn, "100%", Some("fact")), 1, "带 category 路径同样要能命中");
         assert_eq!(memory_hit_count(&conn, "report_final", Some("fact")), 1);
-        // 基本行为不能被破坏
         assert_eq!(memory_hit_count(&conn, "plain", None), 1);
         assert_eq!(memory_hit_count(&conn, "100%", Some("nope")), 0);
         assert_eq!(memory_hit_count(&conn, "missing", None), 0);
+    }
+
+    #[test]
+    fn search_memory_reads_integer_timestamps_and_truncates_cjk_by_chars() {
+        let conn = memory_test_conn();
+        // 第 120 个字节正好落在多字节汉字中间：按字节切会 panic。
+        let value = format!("{}运行时间 2026-11-13，{}", "a".repeat(119), "很长的中文记忆".repeat(30));
+        conn.execute(
+            "INSERT INTO pet_memory (category, key, value) VALUES ('fact', '长记忆', ?1)",
+            [&value],
+        )
+        .unwrap();
+        let result = search_memory_in(&conn, "运行时间", None, 10).expect("命中时不能因为列类型报错");
+        assert!(result.contains("长记忆"), "{result}");
+        assert!(result.contains("..."), "超长 value 应按字符截断: {result}");
+        assert!(result.contains("创建于"), "时间应格式化为本地日期: {result}");
+    }
+
+    #[test]
+    fn search_memory_matches_any_keyword_and_ranks_by_hits() {
+        let conn = memory_test_conn();
+        conn.execute_batch(
+            "INSERT INTO pet_memory (category, key, value) VALUES
+                 ('preference', '颜色偏好', '用户喜欢蓝色，讨厌橙色'),
+                 ('preference', '饮食', '用户喜欢喝咖啡');",
+        )
+        .unwrap();
+        // 整句"喜欢 蓝色"在任何一条里都不连续出现，旧的整句子串匹配会 0 命中。
+        let result = search_memory_in(&conn, "喜欢 蓝色", None, 10).unwrap();
+        let lines: Vec<&str> = result.lines().collect();
+        assert_eq!(lines.len(), 2, "{result}");
+        assert!(lines[0].contains("颜色偏好"), "两个词都命中的应排第一: {result}");
+    }
+
+    #[test]
+    fn command_guard_blocks_destructive_commands_without_false_positives() {
+        for blocked in [
+            "format d:",
+            "FORMAT C: /q",
+            "cmd /c format  e:",
+            "shutdown /s /t 0",
+            "shutdown -r",
+            "Stop-Computer -Force",
+            "diskpart",
+        ] {
+            assert!(is_command_safe(blocked).is_err(), "应拦截: {blocked}");
+        }
+        for allowed in [
+            "npm restart",
+            "docker restart web",
+            "wsl --shutdown",
+            "git log --format=%h",
+            "dotnet format",
+            "npm run format",
+            "echo formatting d: drive",
+        ] {
+            assert!(is_command_safe(allowed).is_ok(), "不应误拦: {allowed}");
+        }
+    }
+
+    #[test]
+    fn save_memory_upserts_instead_of_duplicating() {
+        let conn = memory_test_conn();
+        let first = save_memory_in(&conn, "preference", "颜色偏好", "蓝色").unwrap();
+        assert!(first.starts_with("记忆已保存"), "{first}");
+        let second = save_memory_in(&conn, "preference", "颜色偏好", "绿色").unwrap();
+        assert!(second.starts_with("记忆已更新"), "{second}");
+        let rows: Vec<(String, i64)> = conn
+            .prepare("SELECT value, updated_at FROM pet_memory WHERE key = '颜色偏好'")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows.len(), 1, "同一 (category, key) 只能有一行");
+        assert_eq!(rows[0].0, "绿色");
+        assert!(rows[0].1 > 0, "更新时应写入 updated_at");
     }
 
     // ===== A1：run_command 的进程树回收 =====
@@ -5870,5 +6330,65 @@ mod tests {
             frontend.difference(&labels).collect::<Vec<_>>(),
             labels.difference(&frontend).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn validate_memory_input_accepts_trimmed_normal_values() {
+        assert!(validate_memory_input(" preference ", " 用户喜欢的颜色 ", " 蓝色 ").is_ok());
+    }
+
+    #[test]
+    fn validate_memory_input_rejects_app_path_category() {
+        for category in ["app_path", "APP_PATH", " app_path ", "App_Path", "app_path\t"] {
+            let result = validate_memory_input(category, "notepad", "C:\\Windows\\notepad.exe");
+            assert!(result.is_err(), "应拒绝 app_path 分类: {category:?}");
+            assert!(
+                result.unwrap_err().contains("app_path"),
+                "错误文案应说明 app_path 只能由应用注册流程写入"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_memory_input_rejects_empty_and_overlong_fields() {
+        assert!(validate_memory_input("", "key", "value").is_err());
+        assert!(validate_memory_input("   ", "key", "value").is_err());
+        assert!(validate_memory_input("note", "", "value").is_err());
+        assert!(validate_memory_input("note", "   ", "value").is_err());
+        assert!(validate_memory_input("note", "key", "   ").is_err());
+        assert!(validate_memory_input(&"c".repeat(65), "key", "value").is_err());
+        assert!(validate_memory_input("note", &"k".repeat(201), "value").is_err());
+        assert!(validate_memory_input("note", "key", &"v".repeat(4001)).is_err());
+        // 边界值仍应通过
+        assert!(validate_memory_input(
+            &"c".repeat(64),
+            &"k".repeat(200),
+            &"v".repeat(4000)
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn validate_memory_input_rejects_control_chars_in_category_and_key() {
+        assert!(validate_memory_input("pre\nference", "key", "value").is_err());
+        assert!(validate_memory_input("pre\tference", "key", "value").is_err());
+        assert!(validate_memory_input("note", "key\r\nline", "value").is_err());
+        assert!(validate_memory_input("note", "key\0", "value").is_err());
+        // value 允许换行（多行记忆内容）
+        assert!(validate_memory_input("note", "key", "line1\nline2").is_ok());
+    }
+
+    #[test]
+    fn save_memory_schema_documents_validation_limits() {
+        let save_memory = tool_definitions()
+            .into_iter()
+            .find(|tool| tool["function"]["name"] == "save_memory")
+            .expect("缺少 save_memory 工具定义");
+        let description = save_memory["function"]["description"]
+            .as_str()
+            .expect("save_memory description 应为字符串");
+
+        assert!(description.contains("app_path"));
+        assert!(description.contains("4000"));
     }
 }

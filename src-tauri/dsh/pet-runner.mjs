@@ -5,7 +5,8 @@
  * 写到 stdout，桌宠拿不到推理过程和工具调用，也无法续接会话。这个 runner 走同一套
  * 核心 API（agentDefaultModel / agents / sessions），但：
  *
- *   1. 任务文本从 --prompt-file 读取，不再受命令行长度限制；
+ *   1. 任务文本从 --prompt-file 读取并立即删除（用后即删：文件含完整 system 提示
+ *      与首轮历史，读取后只留在内存里），且不再受命令行长度限制；
  *   2. 订阅 session/event，把推理增量、正文增量、工具调用与结果按 JSONL 写到 stdout；
  *   3. 支持 --resume <session-id>，配合 sessions.flush 让下一轮真正续接同一会话。
  *
@@ -28,14 +29,56 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { readFile } from 'node:fs/promises'
+import { readFile, unlink } from 'node:fs/promises'
 import { createInterface } from 'node:readline'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
+import { defineTool } from '@deepseek-ai/dsh-tools'
 
 export const name = 'pet-runner'
-export const inject = ['agentDefaultModel', 'agents', 'sessions', 'cmdlineArgs', 'appExit', 'llm']
+export const inject = ['agentDefaultModel', 'agents', 'sessions', 'cmdlineArgs', 'appExit', 'llm', 'tools']
+
+/** 只转发三种记忆操作；URL 由桌宠为当前子进程注入，不写入 DSH 全局配置。 */
+function installMemoryTools(ctx) {
+  const url = process.env.PET_MEMORY_MCP_URL
+  if (!url) return
+  const endpoint = new URL(url)
+  if (endpoint.protocol !== 'http:' || endpoint.hostname !== '127.0.0.1' || !endpoint.pathname.startsWith('/mcp/')) {
+    throw new Error('pet-runner: invalid local memory endpoint')
+  }
+  const text = (description, required = false) => ({ type: 'string', description, ...(required ? { required: true } : {}) })
+  const definitions = [
+    { name: 'search_memory', description: '搜索桌宠长期记忆，返回匹配的 ID、分类和内容。', parameters: {
+      query: text('搜索关键词', true), category: text('可选分类'), limit: { type: 'integer', description: '最多返回条数（1–30）' }
+    } },
+    { name: 'save_memory', description: '保存用户明确要求记住的偏好；相同分类和键会更新。不要保存密码或令牌。', parameters: {
+      category: text('分类，例如 preference', true), key: text('记忆键', true), value: text('记忆内容', true)
+    } },
+    { name: 'delete_memory', description: '删除一条普通记忆；先搜索并核对 ID。', parameters: {
+      id: { type: 'integer', required: true, description: '记忆 ID（正整数）' }
+    } }
+  ]
+  for (const definition of definitions) {
+    ctx.tools.register(defineTool({
+      ...definition,
+      output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] },
+      async execute(args) {
+        const response = await fetch(url, {
+          method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: randomUUID(), method: 'tools/call', params: { name: definition.name, arguments: args } }),
+          signal: AbortSignal.timeout(15000)
+        })
+        if (!response.ok) throw new Error(`记忆服务返回 HTTP ${response.status}`)
+        const packet = await response.json()
+        if (packet.error) throw new Error(packet.error.message || '记忆调用失败')
+        const result = packet.result?.content?.filter(part => part.type === 'text').map(part => part.text).join('\n')
+        if (packet.result?.isError || typeof result !== 'string') throw new Error(result || '无效记忆结果')
+        return result
+      }
+    }))
+  }
+}
 
 /** 单个字段写进协议前的上限，避免一次工具输出把整行撑爆。 */
 const FIELD_LIMIT = 4000
@@ -53,10 +96,10 @@ const USAGE = [
   'dsh --profile dsh-pet --prompt-file <path> [--resume <session-id>] [--model <model>] [--provider <id>] [--effort <id>]',
   'dsh --profile dsh-pet --list-models [--provider <id>]',
   '',
-  '桌宠专用 runner：读取提示词文件，流式输出推理/正文/工具事件，转发授权请求，可选续接已有会话。',
+  '桌宠专用 runner：读取并立即删除提示词文件，流式输出推理/正文/工具事件，转发授权请求，可选续接已有会话。',
   '',
   'Options:',
-  '  --prompt-file <path>    UTF-8 提示词文件（--list-models 模式下可省略）',
+  '  --prompt-file <path>    UTF-8 提示词文件，读取后立即删除（--list-models 模式下可省略）',
   '  --resume <session-id>   续接该会话，失败时自动新建',
   '  --model <model>         本回合模型覆盖（默认跟随本机配置）',
   '  --provider <id>         本回合渠道（provider）覆盖（默认跟随本机配置）',
@@ -320,6 +363,10 @@ async function run(ctx) {
   const exit = ctx.get('appExit')
   const argv = ctx.get('cmdlineArgs').get()
   const options = parseArgs(argv)
+  // 新版 headless 的沙箱配置依赖该服务；任务仍由桌宠 runner 驱动。
+  if (ctx.get('headlessStartup') === undefined) {
+    ctx.provide('headlessStartup', { json: true })
+  }
   if (options.help) {
     process.stdout.write(USAGE)
     exit(0)
@@ -346,6 +393,11 @@ async function run(ctx) {
   if (!options.promptFile) throw new Error('缺少 --prompt-file 参数')
 
   const task = await readFile(options.promptFile, 'utf8')
+  // 任务已进内存，提示词文件用后即删（隐私）：它含完整 system 提示 + 首轮历史，
+  // 不该留在磁盘上。删除失败静默忽略，本轮照常继续，残留交给 Rust 侧 TTL sweep 兜底。
+  try {
+    await unlink(options.promptFile)
+  } catch {}
   if (task.trim() === '') throw new Error('提示词文件为空')
 
   // 等配置树结算，保证工具与沙箱等能力都已挂载后再创建 agent。
@@ -358,8 +410,10 @@ async function run(ctx) {
   // 思考强度按「本回合最终 provider+模型」校验：支持才覆盖，否则保持本机默认。
   const requestedEffort = typeof options.effort === 'string' ? options.effort.trim() : ''
   if (requestedEffort !== '') await applyRequestedEffort(ctx, selection, requestedEffort)
-  const agentOptions = { provider: selection.provider, model: selection.model }
-  const setup = (agentCtx) => {
+  const agentOptions = { ...selection }
+  const setup = (agentCtx, agent) => {
+    // 新版将选择保存在 Agent.model；旧版仍通过第二个参数安装选择。
+    agent?.model?.select?.(selection)
     installModelSelection(agentCtx, { current: selection, assembled: undefined })
   }
 
@@ -404,18 +458,24 @@ async function run(ctx) {
   emit({ type: 'session', session_id: sessionId, resumed })
 
   let reason
+  const streamChunk = (chunk) => {
+    if (!chunk || typeof chunk !== 'object') return
+    if (chunk.type === 'text-delta' && chunk.text) emit({ type: 'text', text: chunk.text })
+    else if (chunk.type === 'reasoning-delta' && chunk.text) emit({ type: 'thinking', text: chunk.text })
+    else if (chunk.type === 'tool-call-delta' && chunk.id) {
+      emit({ type: 'tool', phase: 'start', id: String(chunk.id), name: chunk.name ? String(chunk.name) : undefined })
+    }
+  }
+  // 新版把流式增量从持久化 session 事件移到了 Agent 瞬时事件。
+  ctx.on('agent/assistant-stream', ({ agent: subject, frame }) => {
+    if (subject === agent && frame?.type === 'chunk') streamChunk(frame.chunk)
+  })
   const streamEvent = (event) => {
     const data = event.data
     if (!data || typeof data !== 'object') return
     switch (event.type) {
       case 'assistant/chunk': {
-        const chunk = data.chunk
-        if (!chunk || typeof chunk !== 'object') return
-        if (chunk.type === 'text-delta' && chunk.text) emit({ type: 'text', text: chunk.text })
-        else if (chunk.type === 'reasoning-delta' && chunk.text) emit({ type: 'thinking', text: chunk.text })
-        else if (chunk.type === 'tool-call-delta' && chunk.id) {
-          emit({ type: 'tool', phase: 'start', id: String(chunk.id), name: chunk.name ? String(chunk.name) : undefined })
-        }
+        streamChunk(data.chunk)
         return
       }
       case 'tool/call':
@@ -428,7 +488,10 @@ async function run(ctx) {
         })
         return
       case 'tool/result': {
-        const block = Array.isArray(data.message?.content) ? data.message.content[0] : undefined
+        // 新版 ToolMessage 直接携带 toolCallId，旧版放在首个 content block。
+        const block = data.message?.toolCallId !== undefined
+          ? data.message
+          : (Array.isArray(data.message?.content) ? data.message.content[0] : undefined)
         emit({
           type: 'tool',
           phase: 'result',
@@ -509,6 +572,7 @@ async function run(ctx) {
 export function apply(ctx) {
   const exit = ctx.get('appExit')
   if (exit === undefined) throw new Error('pet-runner: the launcher must provide ctx.appExit before the tree mounts')
+  installMemoryTools(ctx)
   run(ctx).catch((error) => {
     emit({ type: 'error', code: 'PET_RUNNER_FAILED', message: String(error?.message ?? error) })
     exit(1)

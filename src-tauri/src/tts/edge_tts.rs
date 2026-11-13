@@ -1,6 +1,6 @@
 use crate::tts::{TtsRequest, TtsVoice};
 use futures_util::{SinkExt, StreamExt};
-use sha2::{Digest, Sha256};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::Duration;
 use tokio_tungstenite::tungstenite::http::Request;
@@ -14,30 +14,72 @@ const WSS_URL: &str = "wss://speech.platform.bing.com/consumer/speech/synthesize
 const OUTPUT_FORMAT: &str = "audio-24khz-96kbitrate-mono-mp3";
 const EDGE_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0";
 const EDGE_ORIGIN: &str = "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold";
-const SEC_MS_GEC_VERSION: &str = "1-143.0.3650.75";
-const WIN_EPOCH_OFFSET_SECS: u64 = 11_644_473_600;
-
-fn compute_sec_ms_gec() -> String {
-    let unix_secs = SystemTime::now()
+const SEC_MS_GEC_VERSION: &str = "2-143.0.3650.75";
+// 只校正本模块令牌的时间，不修改操作系统时钟。
+static CLOCK_OFFSET: AtomicI64 = AtomicI64::new(0);
+fn unix_now() -> i64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs();
-    let ticks = unix_secs + WIN_EPOCH_OFFSET_SECS;
-    let rounded = ticks - (ticks % 300);
-    let final_ticks = rounded * 10_000_000;
-    let input = format!("{final_ticks}{TRUSTED_TOKEN}");
-    let hash = Sha256::digest(input.as_bytes());
-    hex::encode_upper(hash)
+        .as_secs() as i64
+}
+fn compute_sec_ms_gec() -> String {
+    super::edge_token::generate(
+        unix_now()
+            .saturating_add(CLOCK_OFFSET.load(Ordering::Relaxed))
+            .max(0) as u64,
+    )
+}
+fn clock_offset_from_date(date: &str, now: i64) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc2822(date)
+        .ok()
+        .map(|server| server.timestamp().saturating_sub(now))
+}
+fn correct_clock(date: Option<&str>) -> bool {
+    let Some(offset) = date.and_then(|date| clock_offset_from_date(date, unix_now())) else {
+        return false;
+    };
+    CLOCK_OFFSET.store(offset, Ordering::Relaxed);
+    true
 }
 
 pub async fn list_voices() -> Result<Vec<TtsVoice>, String> {
-    let client = reqwest::Client::new();
-    let resp = client
-        .get(VOICES_URL)
-        .header("User-Agent", EDGE_UA)
-        .send()
-        .await
-        .map_err(|e| format!("获取声音列表失败: {e}"))?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut retry = false;
+    let mut transient_retries = 0;
+    let resp = loop {
+        let response = client
+            .get(VOICES_URL)
+            .query(&[
+                ("Sec-MS-GEC", compute_sec_ms_gec()),
+                ("Sec-MS-GEC-Version", SEC_MS_GEC_VERSION.to_string()),
+            ])
+            .header("User-Agent", EDGE_UA)
+            .send()
+            .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(error) if transient_retries < 2 && (error.is_connect() || error.is_timeout()) => {
+                transient_retries += 1;
+                tokio::time::sleep(Duration::from_millis(400 * transient_retries)).await;
+                continue;
+            }
+            Err(error) => return Err(format!("获取声音列表失败: {error}")),
+        };
+        if response.status() == reqwest::StatusCode::FORBIDDEN
+            && !retry
+            && correct_clock(response.headers().get("Date").and_then(|v| v.to_str().ok()))
+        {
+            retry = true;
+            continue;
+        }
+        break response
+            .error_for_status()
+            .map_err(|e| format!("获取声音列表失败: {e}"))?;
+    };
     let items: Vec<serde_json::Value> = resp
         .json()
         .await
@@ -56,43 +98,81 @@ pub async fn list_voices() -> Result<Vec<TtsVoice>, String> {
     Ok(voices)
 }
 
+/// 保留最终握手状态，避免把服务拒绝误报成音频解码故障。
+fn describe_connect_error(error: tungstenite::Error) -> String {
+    if let tungstenite::Error::Http(response) = &error {
+        let status = response.status().as_u16();
+        if status == 403 {
+            return "Edge 语音服务拒绝连接（403）：已使用新版令牌并尝试按服务器时间重试，请检查网络或稍后重试".to_string();
+        }
+        return format!("Edge 语音服务握手失败（HTTP {status}）");
+    }
+    format!("WebSocket 连接失败: {error}")
+}
+
 pub async fn synthesize(req: &TtsRequest) -> Result<Vec<u8>, String> {
     let conn_id = Uuid::new_v4().to_string().replace('-', "");
-    let sec_ms_gec = compute_sec_ms_gec();
-    let muid = hex::encode_upper(Uuid::new_v4().as_bytes());
-    let url = format!(
+    let (ws_stream, _) = {
+        let mut retry = false;
+        let mut transient_retries = 0;
+        loop {
+            let sec_ms_gec = compute_sec_ms_gec();
+            let muid = hex::encode_upper(Uuid::new_v4().as_bytes());
+            let url = format!(
         "{WSS_URL}?TrustedClientToken={TRUSTED_TOKEN}&ConnectionId={conn_id}&Sec-MS-GEC={sec_ms_gec}&Sec-MS-GEC-Version={SEC_MS_GEC_VERSION}"
     );
 
-    let request = Request::builder()
-        .uri(&url)
-        .header("User-Agent", EDGE_UA)
-        .header("Origin", EDGE_ORIGIN)
-        .header("Pragma", "no-cache")
-        .header("Cache-Control", "no-cache")
-        .header("Sec-MS-GEC", &sec_ms_gec)
-        .header("Sec-MS-GEC-Version", SEC_MS_GEC_VERSION)
-        .header("Host", "speech.platform.bing.com")
-        .header("Connection", "Upgrade")
-        .header("Upgrade", "websocket")
-        .header("Sec-WebSocket-Version", "13")
-        .header(
-            "Sec-WebSocket-Key",
-            tungstenite::handshake::client::generate_key(),
-        )
-        .header("Cookie", format!("muid={muid};"))
-        .body(())
-        .map_err(|e| format!("构建请求失败: {e}"))?;
+            let request = Request::builder()
+                .uri(&url)
+                .header("User-Agent", EDGE_UA)
+                .header("Origin", EDGE_ORIGIN)
+                .header("Pragma", "no-cache")
+                .header("Cache-Control", "no-cache")
+                .header("Sec-MS-GEC", &sec_ms_gec)
+                .header("Sec-MS-GEC-Version", SEC_MS_GEC_VERSION)
+                .header("Host", "speech.platform.bing.com")
+                .header("Connection", "Upgrade")
+                .header("Upgrade", "websocket")
+                .header("Sec-WebSocket-Version", "13")
+                .header(
+                    "Sec-WebSocket-Key",
+                    tungstenite::handshake::client::generate_key(),
+                )
+                .header("Cookie", format!("muid={muid};"))
+                .body(())
+                .map_err(|e| format!("构建请求失败: {e}"))?;
 
-    let (ws_stream, _) = tokio::time::timeout(Duration::from_secs(15), connect_async(request))
-        .await
-        .map_err(|_| "WebSocket 连接超时".to_string())?
-        .map_err(|e| format!("WebSocket 连接失败: {e}"))?;
+            match tokio::time::timeout(Duration::from_secs(15), connect_async(request)).await {
+                Ok(Ok(connection)) => break connection,
+                Ok(Err(tungstenite::Error::Http(response)))
+                    if response.status().as_u16() == 403 && !retry =>
+                {
+                    if correct_clock(response.headers().get("Date").and_then(|v| v.to_str().ok())) {
+                        retry = true;
+                    } else {
+                        return Err(describe_connect_error(tungstenite::Error::Http(response)));
+                    }
+                }
+                Ok(Err(tungstenite::Error::Io(_) | tungstenite::Error::Tls(_)))
+                    if transient_retries < 2 =>
+                {
+                    // 服务偶尔会在 TLS 握手阶段提前断开。尚未发送文本，可安全重连。
+                    transient_retries += 1;
+                    tokio::time::sleep(Duration::from_millis(400 * transient_retries)).await;
+                }
+                Ok(Err(error)) => return Err(describe_connect_error(error)),
+                Err(_) => return Err("WebSocket 连接超时".to_string()),
+            }
+        }
+    };
 
     let (mut write, mut read) = ws_stream.split();
 
+    let timestamp = chrono::Utc::now()
+        .format("%a %b %d %Y %H:%M:%S GMT+0000 (Coordinated Universal Time)")
+        .to_string();
     let config_msg = format!(
-        "Content-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n\
+        "X-Timestamp:{timestamp}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n\
         {{\"context\":{{\"synthesis\":{{\"audio\":{{\"metadataoptions\":{{\
         \"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"}},\
         \"outputFormat\":\"{OUTPUT_FORMAT}\"}}}}}}}}"
@@ -106,7 +186,7 @@ pub async fn synthesize(req: &TtsRequest) -> Result<Vec<u8>, String> {
     let request_id = Uuid::new_v4().to_string().replace('-', "");
     let ssml_msg = format!(
         "X-RequestId:{request_id}\r\nContent-Type:application/ssml+xml\r\n\
-        Path:ssml\r\n\r\n{ssml}"
+        X-Timestamp:{timestamp}Z\r\nPath:ssml\r\n\r\n{ssml}"
     );
     write
         .send(Message::Text(ssml_msg))
@@ -221,7 +301,17 @@ fn extract_audio_payload(data: &[u8]) -> Option<&[u8]> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn server_clock_correction_validates_http_date() {
+        assert_eq!(
+            clock_offset_from_date("Thu, 01 Jan 1970 00:10:00 GMT", 10),
+            Some(590)
+        );
+        assert_eq!(clock_offset_from_date("invalid", 10), None);
+    }
+
     #[tokio::test]
+    #[ignore = "requires the live Microsoft Edge speech service"]
     async fn test_list_voices() {
         match list_voices().await {
             Ok(v) => println!("Successfully listed {} voices", v.len()),
@@ -230,6 +320,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires the live Microsoft Edge speech service"]
     async fn test_synthesize() {
         let req = TtsRequest {
             text: "你好，这是一次测试。".to_string(),

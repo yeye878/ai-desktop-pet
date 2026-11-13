@@ -7,6 +7,10 @@ export default defineConfig({
   server: {
     port: 1420,
     strictPort: true,
+    // 不监视 Rust 目录：cargo 编译时会锁住 target 下的文件，Windows 上监视器会 EBUSY 崩溃。
+    watch: {
+      ignored: ["**/src-tauri/**"],
+    },
   },
   envPrefix: ["VITE_", "TAURI_"],
   build: {

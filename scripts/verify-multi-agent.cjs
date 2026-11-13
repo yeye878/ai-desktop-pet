@@ -127,6 +127,7 @@ for (const component of ["Dashboard", "ChatBubble"]) {
         if (!session || session.slot === "main") return { kind: "ignore" };
         return { kind: "agent", slot: session.slot, sessionId };
       },
+      mainTurns: {},
       currentAgentSessionId: { value: "" },
       settleAgentTurn(sessionId, text, extra) { agentTurns.push({ sessionId, text, ...extra }); },
       toolEvents: { value: [] }, thinkingContent: { value: "" }, streamingAnswer: { value: "" },
@@ -152,17 +153,13 @@ for (const component of ["Dashboard", "ChatBubble"]) {
     handler({ payload: { text: "agent 回复", thinking: "t", session_id: agentSession.id, agent_id: "builtin-dsh", agent_name: "dsh", agent_avatar: "⌘" } });
     assert.equal(chat.messages.length, 0, "agent 窗口的回复不能混进主对话");
     if (component === "Dashboard") {
-      assert.equal(agentTurns.length, 1, "Dashboard 应把 agent 会话的完成事件写入 agent 回合状态");
-      assert.equal(agentTurns[0].sessionId, agentSession.id);
-      assert.equal(agentTurns[0].text, "agent 回复");
-      assert.equal(agentTurns[0].agent?.name, "dsh");
-      assert.equal(sessionLoads.count, 1, "agent 回合结束后应刷新会话列表");
+      assert.equal(agentTurns.length, 0, "agent 会话由共享运行时收尾，Dashboard 不得重复写入或清空轨迹");
     } else {
       assert.equal(agentTurns.length, 0, "浮动聊天窗不处理 agent 窗口回合");
     }
     handler({ payload: { text: "未知会话", thinking: null, session_id: "session-unknown" } });
     assert.equal(chat.messages.length, 0, "未知 session_id 的 ai-finished 必须忽略");
-    if (component === "Dashboard") assert.equal(agentTurns.length, 1);
+    if (component === "Dashboard") assert.equal(agentTurns.length, 0);
     handler({ payload: { text: "当前会话的回复", thinking: null, session_id: "session-a" } });
     assert.equal(chat.messages.length, 1);
     assert.equal(chat.messages[0].content, "当前会话的回复");

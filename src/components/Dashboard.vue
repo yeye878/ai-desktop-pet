@@ -1,18 +1,27 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch, nextTick, reactive } from "vue";
-import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { ref, computed, onMounted, onUnmounted, watch, nextTick, reactive, type Component } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import CustomPixelPetWorkshop from "./CustomPixelPetWorkshop.vue";
 import CodexConnection from "./CodexConnection.vue";
 import DshConnection from "./DshConnection.vue";
+import AgentPermissionControl from "./AgentPermissionControl.vue";
 import AgentActivity from "./AgentActivity.vue";
 import AgentModelPicker from "./AgentModelPicker.vue";
+import SessionPermissionPicker from "./SessionPermissionPicker.vue";
+import AgentPicker from "./AgentPicker.vue";
+import MetaPicker from "./MetaPicker.vue";
+import EffortSlider from "./EffortSlider.vue";
+import SessionPane from "./SessionPane.vue";
+import AttachmentTray from "./AttachmentTray.vue";
+import { useAttachmentsStore } from "../stores/attachments";
+import { attachmentDropTarget, buildMessageWithFiles, getFileIcon } from "../services/attachments";
 import UserQuestion from "./UserQuestion.vue";
 import { createInteractionSubmission, subscribePendingInteraction, type AskUserPayload } from "../services/pendingInteractions";
 import { isNearBottom, legacyActivity, toolStatusLabel, createAgentActivity, type AgentActivityItem } from "../services/agentActivity";
-import { restoreActivityPresentation, saveActivityPresentation } from "../services/agentActivityCache";
+import { saveActivityPresentation } from "../services/agentActivityCache";
 import {
   effortLabel,
   fetchAgentModelCatalog,
@@ -20,7 +29,8 @@ import {
   providerLabel,
   type AgentModelCatalog,
 } from "../services/agentModels";
-import { ArrowDown, House, MessageCircle, Brain, Palette, Bot, Mic, Settings as SettingsIcon, Info, PawPrint, Send, Plus, Power } from "@lucide/vue";
+import { ArrowDown, House, MessageCircle, Brain, Palette, Bot, Mic, Settings as SettingsIcon, Info, PawPrint, Send, Plus, Power, Square as LayoutSingle, Columns2, Columns3, Grid2x2, PanelLeft, Paperclip } from "@lucide/vue";
+import AppIcon from "./AppIcon.vue";
 import CollaborationBar from "./CollaborationBar.vue";
 import type { CollaborationReply, CollaborationState } from "../services/collaboration";
 import PetCanvas from "./PetCanvas.vue";
@@ -30,6 +40,16 @@ import { useSkillsStore, type Skill } from "../stores/skills";
 import { useChatStore, messageAgentFromPayload, type AiFinishedPayload, type Message, type MessageAgent, type QuotedMessage, type ToolEventItem } from "../stores/chat";
 import { useAgentsStore, type Agent } from "../stores/agents";
 import { useSessionsStore, SLOT_DEFAULT_AGENT, AGENT_SLOTS, type ChatSession, type ChatSlot } from "../stores/sessions";
+import { useSessionRuntimeStore, type SessionTurn } from "../stores/sessionRuntime";
+import {
+  WORKSPACE_LAYOUTS,
+  layoutPaneCount,
+  readWorkspaceLayout,
+  readWorkspacePanes,
+  saveWorkspaceLayout,
+  saveWorkspacePanes,
+  type WorkspaceLayout,
+} from "../services/workspace";
 import {
   stripQuoteMarkers,
   truncateQuoteContent,
@@ -71,6 +91,7 @@ import {
   type TtsSettings,
   type TtsVoice,
 } from "../services/tts";
+import { ensurePlaybackSubscription, isSpeaking, speakingText } from "../services/ttsPlaybackState";
 import {
   DEFAULT_WEATHER_CONFIG,
   formatTemperature,
@@ -103,6 +124,7 @@ const isPetActive = ref(false);
 const skillsStore = useSkillsStore();
 const agentsStore = useAgentsStore();
 const sessions = useSessionsStore();
+const sessionRuntime = useSessionRuntimeStore();
 
 // === 多会话 / 三个 agent 独立对话窗口 ===
 type AgentWindowSlot = Exclude<ChatSlot, "main">;
@@ -112,7 +134,7 @@ const SLOT_WINDOW_LABELS: Record<AgentWindowSlot, string> = {
   dsh: "DeepSeek Harness",
 };
 /** 侧边栏子项用固定图标区分三个窗口；窗口 header 优先用 agent 自己的头像。 */
-const SLOT_WINDOW_ICONS: Record<AgentWindowSlot, string> = { claude: "✳", codex: "⌘", dsh: "🐋" };
+const SLOT_WINDOW_ICONS: Record<AgentWindowSlot, string> = { claude: "claude", codex: "codex", dsh: "dsh" };
 const CHAT_SLOT_STORAGE_KEY = "dash.chat-slot";
 const AGENT_WINDOW_PREF_PREFIX = "dash.agent-window.";
 const AGENT_SESSION_STORAGE_PREFIX = "dash.agent-session.";
@@ -212,6 +234,157 @@ function toggleChatSubnav() {
 watch(chatSlot, (slot) => {
   writeStoredValue(CHAT_SLOT_STORAGE_KEY, slot);
   if (slot !== "main") chatNavExpanded.value = true;
+});
+
+// === 系统设置：侧边栏子列表（与「对话互动」同一套展开交互） ===
+type SystemSection = "backend" | "models" | "permissions" | "persona" | "skills" | "weather";
+interface SystemSectionItem { id: SystemSection; label: string; icon: string; desc: string }
+const SYSTEM_SECTION_STORAGE_KEY = "dash.system-section";
+const SYSTEM_SECTIONS: SystemSectionItem[] = [
+  { id: "backend", label: "AI 后端", icon: "sliders", desc: "选择由谁来回答，查看连接状态" },
+  { id: "models", label: "模型接口", icon: "api", desc: "直连 API 的模型配置、密钥与接口协议" },
+  { id: "permissions", label: "执行权限", icon: "shield-bolt", desc: "工具执行前要不要先问你" },
+  { id: "persona", label: "角色设定", icon: "persona-heart", desc: "性格、职业，以及追加到每次对话的系统提示" },
+  { id: "skills", label: "技能", icon: "skill-puzzle", desc: "激活一个技能，改变它处理任务的方式" },
+  { id: "weather", label: "天气提醒", icon: "weather-sun", desc: "天气栏与每日天气问候" },
+];
+function isSystemSection(value: unknown): value is SystemSection {
+  return SYSTEM_SECTIONS.some((item) => item.id === value);
+}
+function readStoredSystemSection(): SystemSection {
+  const raw = readStoredValue(SYSTEM_SECTION_STORAGE_KEY);
+  return isSystemSection(raw) ? raw : "backend";
+}
+const systemSection = ref<SystemSection>(readStoredSystemSection());
+const systemNavExpanded = ref(false);
+const currentSystemSection = computed(
+  () => SYSTEM_SECTIONS.find((item) => item.id === systemSection.value) ?? SYSTEM_SECTIONS[0],
+);
+
+/** 进入系统设置的某个子页（缺省回到上次停留的子页），并展开侧边栏子列表。 */
+function openSystemSection(section: SystemSection = systemSection.value) {
+  systemSection.value = section;
+  activePage.value = "system";
+  systemNavExpanded.value = true;
+}
+
+function toggleSystemSubnav() {
+  systemNavExpanded.value = !systemNavExpanded.value;
+}
+
+watch(systemSection, (section) => {
+  writeStoredValue(SYSTEM_SECTION_STORAGE_KEY, section);
+  // 子页切换不经过页面级 Transition，手动回到顶部，避免停在上个子页的滚动位置。
+  void nextTick(() => document.querySelector(".dashboard-content")?.scrollTo({ top: 0 }));
+});
+watch(activePage, (page) => {
+  if (page === "system") systemNavExpanded.value = true;
+});
+
+const backendOptions = [
+  { id: "claude_code", label: "Claude Code", short: "Claude", icon: "claude", desc: "本机 Claude Code CLI，可读写文件、执行命令" },
+  { id: "codex", label: "Codex", short: "Codex", icon: "codex", desc: "本机 Codex CLI，默认在工作目录沙箱内执行" },
+  { id: "dsh", label: "DeepSeek Harness", short: "DSH", icon: "dsh", desc: "本机 DeepSeek Harness，复用本机登录与模型" },
+  { id: "direct_api", label: "直连 API", short: "API", icon: "api", desc: "OpenAI 兼容接口，内置文件、搜索、记忆等工具" },
+] as const;
+function backendLabel(id: string) {
+  return backendOptions.find((item) => item.id === id)?.label ?? id;
+}
+function backendShortLabel(id: string) {
+  return backendOptions.find((item) => item.id === id)?.short ?? id;
+}
+function backendIcon(id: string) {
+  return backendOptions.find((item) => item.id === id)?.icon ?? "sliders";
+}
+
+// === 同屏多窗格工作区 ===
+// 窗格身份（paneId）与会话身份（sessionId）分离；布局与绑定持久化到 localStorage。
+const workspaceLayout = ref<WorkspaceLayout>(readWorkspaceLayout());
+const workspacePanes = ref<string[]>(readWorkspacePanes(workspaceLayout.value));
+const workspacePaneIds = computed(() =>
+  Array.from({ length: layoutPaneCount(workspaceLayout.value) }, (_, index) => `pane-${index}`),
+);
+const isWorkspaceMode = computed(() => workspaceLayout.value !== "single");
+const WORKSPACE_LAYOUT_ICONS: Record<WorkspaceLayout, Component> = {
+  single: LayoutSingle,
+  two: Columns2,
+  three: Columns3,
+  master: PanelLeft,
+  four: Grid2x2,
+};
+
+function setWorkspaceLayout(layout: WorkspaceLayout) {
+  const previous = workspacePanes.value;
+  workspaceLayout.value = layout;
+  saveWorkspaceLayout(layout);
+  // 单窗格只是暂时查看会话，保留多窗格绑定，返回同屏时附件仍出现在原会话。
+  if (layout !== "single") {
+    workspacePanes.value = Array.from({ length: layoutPaneCount(layout) }, (_, index) => previous[index] || "");
+  }
+  // 从单窗格切到多窗格时，把当前会话带进第一个窗格，避免面对一屏空窗格。
+  if (layout !== "single" && !workspacePanes.value[0]) workspacePanes.value[0] = currentSessionId.value;
+  saveWorkspacePanes(workspacePanes.value);
+}
+function assignWorkspacePane(paneId: string, sessionId: string) {
+  const index = workspacePaneIds.value.indexOf(paneId);
+  if (index < 0) return;
+  const next = [...workspacePanes.value];
+  // 同一会话只在一个窗格显示，避免两个输入框同时作用于同一回合。
+  const duplicate = next.findIndex((id, i) => id === sessionId && i !== index);
+  if (duplicate >= 0) next[duplicate] = "";
+  next[index] = sessionId;
+  workspacePanes.value = next;
+  saveWorkspacePanes(next);
+}
+function closeWorkspacePane(paneId: string) {
+  // 只移除视图：不停止回合、不删除会话。剩一个窗格时回到单窗格视图。
+  const index = workspacePaneIds.value.indexOf(paneId);
+  if (index < 0 || workspaceLayout.value === "single") return;
+  const next = workspacePanes.value.filter((_, i) => i !== index);
+  if (next.filter(Boolean).length <= 1) {
+    const only = next.find(Boolean) || "";
+    workspacePanes.value = [only];
+    setWorkspaceLayout("single");
+    if (only) void openSessionInSingle(only);
+  } else {
+    // 数组变短后必须同步降级布局，否则窗格数与绑定数错位、会话整体左移。
+    const layout = WORKSPACE_LAYOUTS.find((item) => item.panes === next.length)?.id ?? "two";
+    workspaceLayout.value = layout;
+    saveWorkspaceLayout(layout);
+    workspacePanes.value = next;
+    saveWorkspacePanes(next);
+  }
+}
+function moveWorkspacePane(targetPaneId: string, sourcePaneId: string) {
+  const target = workspacePaneIds.value.indexOf(targetPaneId);
+  const source = workspacePaneIds.value.indexOf(sourcePaneId);
+  if (target < 0 || source < 0 || target === source) return;
+  const next = [...workspacePanes.value];
+  [next[target], next[source]] = [next[source], next[target]];
+  workspacePanes.value = next;
+  saveWorkspacePanes(next);
+}
+async function openSessionInSingle(sessionId: string) {
+  const session = sessions.find(sessionId);
+  if (!session) return;
+  if (session.slot === "main") {
+    await sessions.setActiveMain(session.id);
+    openChatSlot("main");
+  } else {
+    rememberAgentSession(session.slot, session.id);
+    openChatSlot(session.slot);
+    await ensureAgentWindow(session.slot);
+  }
+  setWorkspaceLayout("single");
+}
+// 会话列表就绪后剔除失效绑定（如此前删除的会话），避免窗格指向不存在的会话。
+watch(() => sessions.sessions, (list) => {
+  if (!list.length) return;
+  const ids = new Set(list.map((item) => item.id));
+  if (workspacePanes.value.some((id) => id && !ids.has(id))) {
+    workspacePanes.value = workspacePanes.value.map((id) => (id && !ids.has(id) ? "" : id));
+    saveWorkspacePanes(workspacePanes.value);
+  }
 });
 
 // 自定义提示（Dashboard 速览面板）
@@ -436,7 +609,6 @@ const showAllEdgeVoices = ref(false);
 // 两条路径若各持一个实例会互相抢后端（play_wav_file 起手 self.stop() 杀对方会话）。
 // 合并为单实例后，新 speak 通过 stopLocal() 递增共享 playbackToken，让旧循环优雅退出。
 const ttsPlayer = new TtsPlayer();
-const isPreviewing = ref(false);
 
 // === 性格/职业 ===
 const personalities = [
@@ -590,6 +762,26 @@ const thinkingDepthOptions = [
   { value: "high", label: "高" },
 ];
 
+/** 主对话思考强度滑块的档位说明（auto 由滑块的「自动」档承担）。 */
+const mainEffortOptions = [
+  { id: "low", name: "低", description: "快速回应，适合闲聊与简单问答" },
+  { id: "medium", name: "中", description: "平衡速度与深度，日常任务推荐" },
+  { id: "high", name: "高", description: "更充分的推理，适合复杂调试与规划" },
+];
+const mainEffortValue = computed(() => {
+  const value = apiConfig.value.thinking_depth;
+  return !value || value === "auto" ? "" : value;
+});
+const mainThinkingLabel = computed(() =>
+  thinkingDepthOptions.find((item) => item.value === apiConfig.value.thinking_depth)?.label || "自动",
+);
+const mainModelOptions = computed(() =>
+  apiProfiles.value.map((profile) => ({ value: profile.id, label: profile.name || profile.model, desc: profile.model })),
+);
+function onMainEffortChange(id: string) {
+  void updateThinkingDepth(id || "auto");
+}
+
 const executionModeOptions = [
   { value: "plan", label: "计划模式", desc: "只制定计划，不调用工具和改文件" },
   { value: "normal", label: "普通模式", desc: "每类操作首次执行前需要确认" },
@@ -639,8 +831,12 @@ const currentExecutionModeLabel = computed(() => {
   if (backendType.value === "codex") return "Codex";
   if (backendType.value === "dsh") return "DeepSeek Harness";
   if (backendType.value !== "direct_api") return "Claude Code";
-  return executionModeOptions.find((item) => item.value === apiConfig.value.execution_mode)?.label || "普通模式";
+  return apiExecutionModeLabel.value;
 });
+/** 直连 API 当前模型配置的执行模式（不随后端切换变化，供系统设置页展示）。 */
+const apiExecutionModeLabel = computed(
+  () => executionModeOptions.find((item) => item.value === apiConfig.value.execution_mode)?.label || "普通模式",
+);
 
 const contextUsageLabel = computed(() => {
   const chars = chat.messages.reduce((sum, msg) => {
@@ -907,20 +1103,12 @@ async function completeAgentDraft() {
   }
 }
 
-function thinkingDepthLabel(value: string) {
-  return thinkingDepthOptions.find((item) => item.value === value)?.label || "自动";
-}
-
-function searchProviderLabel(value: string) {
-  return searchProviderOptions.find((item) => item.value === value)?.label || "Bing";
-}
-
 // 陪伴动作：只改桌宠状态，点在舞台上当场演出来
 const companionActions = [
-  { id: "wave", icon: "↗", label: "打招呼", desc: "挥挥手" },
-  { id: "happy", icon: "◎", label: "开心一下", desc: "加一点元气" },
-  { id: "sleep", icon: "Zz", label: "去睡觉", desc: "安静休息" },
-  { id: "wake", icon: "⏱", label: "叫醒它", desc: "回到待命" },
+  { id: "wave", icon: "wave", label: "打招呼", desc: "挥挥手" },
+  { id: "happy", icon: "happy", label: "开心一下", desc: "加一点元气" },
+  { id: "sleep", icon: "sleep", label: "去睡觉", desc: "安静休息" },
+  { id: "wake", icon: "wake", label: "叫醒它", desc: "回到待命" },
 ];
 
 // 对话操作：动的是上下文，与陪伴动作分层；清空是破坏性操作，必须走确认
@@ -930,9 +1118,9 @@ const conversationActions = [
 ];
 
 const missionEntries = [
-  { page: "chat" as NavPage, icon: "💬", title: "对话舱", desc: "直接派发任务或闲聊" },
-  { page: "appearance" as NavPage, icon: "◐", title: "换装台", desc: "皮肤、字体和背景" },
-  { page: "voice" as NavPage, icon: "◌", title: "声线站", desc: "快捷键、语音和试听" },
+  { page: "chat" as NavPage, icon: "chat-cabin", title: "对话舱", desc: "直接派发任务或闲聊" },
+  { page: "appearance" as NavPage, icon: "wardrobe", title: "换装台", desc: "皮肤、字体和背景" },
+  { page: "voice" as NavPage, icon: "voice-station", title: "声线站", desc: "快捷键、语音和试听" },
 ];
 
 const activeActionId = ref("");
@@ -945,6 +1133,33 @@ const PRESETS: Record<string, { base_url: string; model: string }> = {
   qwen: { base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-plus" },
   ollama: { base_url: "http://localhost:11434/v1", model: "qwen2.5:7b" },
 };
+const presetOptions = [
+  { id: "openai", label: "OpenAI" },
+  { id: "deepseek", label: "DeepSeek" },
+  { id: "qwen", label: "通义千问" },
+  { id: "ollama", label: "Ollama 本地" },
+];
+const streamModeOptions = [
+  { value: "auto", label: "自动检测" },
+  { value: "stream", label: "流式 SSE" },
+  { value: "non_stream", label: "非流式 JSON" },
+];
+const apiModeOptions = [
+  { value: "chat_completions", label: "Chat Completions" },
+  { value: "responses", label: "Responses" },
+];
+const streamModeLabel = computed(
+  () => streamModeOptions.find((item) => item.value === apiConfig.value.stream_mode)?.label || "自动检测",
+);
+const apiModeLabel = computed(
+  () => apiModeOptions.find((item) => item.value === apiConfig.value.api_mode)?.label || "Chat Completions",
+);
+
+async function confirmDeleteApiProfile(profile: ApiProfile) {
+  const name = profile.name || profile.model;
+  if (!window.confirm(`删除模型配置「${name}」？保存的 API 密钥也会一起移除。`)) return;
+  await deleteApiProfile(profile.id);
+}
 
 // === 加载函数 ===
 async function loadSystemInfo() {
@@ -1448,15 +1663,18 @@ function newApiProfileDraft() {
   clearFetchedModels();
 }
 
-async function activateApiProfile(id: string) {
+async function activateApiProfile(id: string, options: { switchBackend?: boolean } = {}) {
   if (!id) return;
   try {
     const profile = await invoke<ApiProfile>("set_active_api_profile", { id });
     applyApiConfig(profile);
     clearFetchedModels();
+    testResult.value = { success: false, message: "" };
+    compatibilityResult.value = null;
     currentModel.value = `直连 API: ${apiConfig.value.model}`;
     await currentWindow.emit("api-config-changed");
-    if (backendType.value !== "direct_api") {
+    // 聊天栏切模型 = 要用它聊天，顺手切到直连 API；设置页里点配置只是编辑，不改后端。
+    if (options.switchBackend !== false && backendType.value !== "direct_api") {
       await selectBackend("direct_api");
     }
   } catch (e) {
@@ -1482,6 +1700,8 @@ async function deleteApiProfile(id: string) {
 }
 
 async function resetModel() {
+  // switch_model 会清空当前主对话的消息并断开 CLI 续接，属于不可恢复操作。
+  if (!window.confirm("重置会清空当前主对话的全部消息，并让本机 CLI 重新开始一段会话。确定继续吗？")) return;
   try {
     await invoke("switch_model");
     resetDashChatUi();
@@ -1825,11 +2045,10 @@ async function updateTtsSettings(patch: Partial<TtsSettings>) {
 }
 
 async function previewVoice() {
-if (isPreviewing.value) { ttsPlayer.stop(); isPreviewing.value = false; return; }
-  isPreviewing.value = true;
+  // 用真实播放状态判断"是否在播"，而不是自己记一个等异步返回的标志。
+  if (isSpeaking.value) { ttsPlayer.stop(); return; }
   try { await ttsPlayer.speak("你好，我是你的桌宠伙伴，很高兴认识你。", ttsSettings.value); }
   catch (e: any) { if (e.message !== "Aborted") alert("试听失败: " + (e.message || e)); }
-  isPreviewing.value = false;
 }
 
 async function speakDashboardReply(text: string) {
@@ -1961,13 +2180,8 @@ let unlistenWeatherUpdate: UnlistenFn | null = null;
 let unlistenDragDrop: UnlistenFn | null = null;
 let unlistenVoiceSettingsChanged: UnlistenFn | null = null;
 let unlistenTtsSettingsChanged: UnlistenFn | null = null;
-// === agent 对话窗口：按 sessionId 分组的本地回合状态（切走再回来不丢） ===
-type AgentTurn = {
-  loading: boolean;
-  thinking: string;
-  toolEvents: ToolEventItem[];
-  activity: ReturnType<typeof createAgentActivity>;
-};
+// === 对话状态：agent 与同屏视图共享运行时；主对话保留旧事件兼容状态 ===
+type AgentTurn = SessionTurn;
 type MainTurn = {
   loading: boolean;
   thinking: string;
@@ -1975,31 +2189,17 @@ type MainTurn = {
   toolEvents: ToolEventItem[];
   activity: ReturnType<typeof createAgentActivity>;
 };
-const agentMessages = reactive<Record<string, Message[]>>({});
-const agentTurns = reactive<Record<string, AgentTurn>>({});
 const mainTurns = reactive<Record<string, MainTurn>>({});
 /** 主对话当前已载入的会话 id：从其它页面切回来时据此判断要不要重载。 */
 const loadedMainSessionId = ref("");
-const agentLoadedSessions = new Set<string>();
 let agentPresentationStorage: Storage | undefined;
 try { agentPresentationStorage = globalThis.localStorage; } catch { /* WebView 可能禁用 storage。 */ }
-/** 乐观插入的本地消息 id 从高位起，避免和历史上库的数据库行 id 撞 key。 */
-let nextAgentMessageId = 1_000_000;
 
 function ensureAgentMessages(sessionId: string): Message[] {
-  if (!agentMessages[sessionId]) agentMessages[sessionId] = [];
-  return agentMessages[sessionId];
+  return sessionRuntime.ensure(sessionId).messages;
 }
 function ensureAgentTurn(sessionId: string): AgentTurn {
-  if (!agentTurns[sessionId]) {
-    agentTurns[sessionId] = {
-      loading: false,
-      thinking: "",
-      toolEvents: [],
-      activity: createAgentActivity(reactive<AgentActivityItem[]>([])),
-    };
-  }
-  return agentTurns[sessionId];
+  return sessionRuntime.ensure(sessionId).turn;
 }
 function ensureMainTurn(sessionId: string): MainTurn {
   if (!mainTurns[sessionId]) {
@@ -2056,25 +2256,23 @@ function settleBackgroundMainTurn(
 }
 function isSessionBusy(sessionId: string): boolean {
   if (!sessionId) return false;
+  const runtime = sessionRuntime.peek(sessionId);
+  if (runtime) return runtime.turn.loading;
   if (sessionId === sessions.activeMainId && chat.isLoading) return true;
-  return !!mainTurns[sessionId]?.loading || !!agentTurns[sessionId]?.loading;
+  return !!mainTurns[sessionId]?.loading;
 }
 function clearAgentSessionState(sessionId: string) {
   if (!sessionId) return;
-  delete agentMessages[sessionId];
-  delete agentTurns[sessionId];
+  sessionRuntime.remove(sessionId);
   delete mainTurns[sessionId];
-  agentLoadedSessions.delete(sessionId);
 }
 function clearAllAgentSessionState() {
-  for (const key of Object.keys(agentMessages)) delete agentMessages[key];
-  for (const key of Object.keys(agentTurns)) delete agentTurns[key];
+  sessionRuntime.clear();
   for (const key of Object.keys(mainTurns)) delete mainTurns[key];
-  agentLoadedSessions.clear();
   for (const slot of AGENT_SLOTS) rememberAgentSession(slot, "");
 }
 
-// 当前 pane 的派生状态：主对话继续用 chat store，agent 窗口用本地按 session 分组的状态。
+// 当前窗格显示的会话绑定。
 const currentAgentSession = computed<ChatSession | undefined>(() => {
   const slot = agentSlot.value;
   if (!slot) return undefined;
@@ -2091,20 +2289,12 @@ const currentSession = computed<ChatSession | undefined>(() => {
   if (isMainSlot.value) return sessions.find(sessions.activeMainId) ?? sessions.activeMain();
   return currentAgentSession.value;
 });
-const currentAgentTurn = computed<AgentTurn | undefined>(() => {
-  const id = currentAgentSessionId.value;
-  return id ? agentTurns[id] : undefined;
-});
-const paneMessages = computed<Message[]>(() => {
-  if (isMainSlot.value) return chat.messages;
-  const id = currentAgentSessionId.value;
-  return id ? agentMessages[id] ?? [] : [];
-});
-const paneIsLoading = computed(() => (isMainSlot.value ? chat.isLoading : !!currentAgentTurn.value?.loading));
-const paneThinking = computed(() => (isMainSlot.value ? thinkingContent.value : currentAgentTurn.value?.thinking ?? ""));
-const paneActivityItems = computed<AgentActivityItem[]>(() =>
-  isMainSlot.value ? chat.activity.items : currentAgentTurn.value?.activity.items ?? [],
-);
+// 有 sessionId 的两种布局都显示同一个运行时；旧版无 session_id 事件沿用主对话兼容状态。
+const currentRuntime = computed(() => currentSessionId.value ? sessionRuntime.peek(currentSessionId.value) : undefined);
+const paneMessages = computed<Message[]>(() => currentRuntime.value?.messages ?? (isMainSlot.value ? chat.messages : []));
+const paneIsLoading = computed(() => currentRuntime.value?.turn.loading ?? (isMainSlot.value ? chat.isLoading : false));
+const paneThinking = computed(() => currentRuntime.value?.turn.thinking ?? (isMainSlot.value ? thinkingContent.value : ""));
+const paneActivityItems = computed<AgentActivityItem[]>(() => currentRuntime.value?.turn.activity.items ?? (isMainSlot.value ? chat.activity.items : []));
 const paneSessions = computed<ChatSession[]>(() =>
   isMainSlot.value ? sessions.bySlot("main") : agentSlot.value ? sessions.bySlot(agentSlot.value) : [],
 );
@@ -2129,8 +2319,35 @@ const currentAgentIdentity = computed<{ id: string; name: string; avatar: string
     avatar: session?.agent_avatar || agent?.avatar || SLOT_WINDOW_ICONS[slot],
   };
 });
-const agentWindowAgentOptions = computed<{ id: string; name: string; avatar: string }[]>(() => {
-  const options = agentsStore.agents.map((agent) => ({ id: agent.id, name: agent.name, avatar: agent.avatar }));
+/** agent 窗口当前绑定的后端：权限选择器按后端展示不同档位。 */
+const currentAgentBackend = computed(() => {
+  const agent = agentsStore.agents.find((item) => item.id === currentAgentIdentity.value.id);
+  if (agent) return agent.backend;
+  return agentSlot.value === "codex"
+    ? "codex"
+    : agentSlot.value === "dsh"
+      ? "dsh"
+      : agentSlot.value === "claude"
+        ? "claude_code"
+        : "";
+});
+/** 多窗格看板：会话所属后端（主会话跟随全局后端）。 */
+function paneSessionBackend(sessionId: string): string {
+  const session = sessions.find(sessionId);
+  if (!session) return "";
+  if (session.slot === "main") return backendType.value;
+  const agent = agentsStore.agents.find((item) => item.id === session.agent_id);
+  if (agent) return agent.backend;
+  return session.slot === "codex"
+    ? "codex"
+    : session.slot === "dsh"
+      ? "dsh"
+      : session.slot === "claude"
+        ? "claude_code"
+        : "";
+}
+const agentWindowAgentOptions = computed<{ id: string; name: string; avatar: string; description?: string }[]>(() => {
+  const options: { id: string; name: string; avatar: string; description?: string }[] = agentsStore.agents.map((agent) => ({ id: agent.id, name: agent.name, avatar: agent.avatar, description: agent.description }));
   const current = currentAgentIdentity.value;
   if (current.id && !options.some((item) => item.id === current.id)) options.unshift({ ...current });
   if (!options.length && agentSlot.value) {
@@ -2185,8 +2402,8 @@ watch(
 /** 某个 agent 窗口当前是否有回合在跑（侧边栏子项的运行指示灯）。 */
 function agentSlotBusy(slot: AgentWindowSlot): boolean {
   const sessionId = agentSessionIds[slot];
-  if (sessionId && agentTurns[sessionId]?.loading) return true;
-  return sessions.bySlot(slot).some((item) => !!agentTurns[item.id]?.loading);
+  if (sessionId && sessionRuntime.peek(sessionId)?.turn.loading) return true;
+  return sessions.bySlot(slot).some((item) => !!sessionRuntime.peek(item.id)?.turn.loading);
 }
 
 /** 历史消息（Rust ChatMessage / mock ChatMessage）转成前端 MessageDraft。 */
@@ -2288,44 +2505,8 @@ function subscribeDashboardCollaboration(): () => void {
   return () => { stopped = true; listeners.splice(0).forEach((unlisten) => unlisten()); };
 }
 
-async function restoreAgentActiveTurn(sessionId: string) {
-  try {
-    const active = await invoke<{ thinking?: string; session_id?: string } | null>("get_active_chat", { sessionId });
-    if (!active || active.session_id !== sessionId) return;
-    const turn = ensureAgentTurn(sessionId);
-    turn.loading = true;
-    turn.thinking = active.thinking || "";
-    turn.toolEvents = [];
-    turn.activity.reset();
-    if (active.thinking) turn.activity.items.push(...legacyActivity(active.thinking));
-  } catch { /* 无 Tauri 环境忽略。 */ }
-}
-
 async function loadAgentSessionMessages(sessionId: string, force = false): Promise<void> {
-  if (!sessionId) return;
-  if (!force && agentLoadedSessions.has(sessionId)) return;
-  agentLoadedSessions.add(sessionId);
-  const list = ensureAgentMessages(sessionId);
-  try {
-    const history = await invoke<any[] | null>("get_chat_session_messages", { sessionId, limit: 200 });
-    if (Array.isArray(history)) {
-      list.splice(0, list.length, ...history.map((item) => {
-        const message: Message = {
-          id: typeof item?.id === "number" ? item.id : nextAgentMessageId++,
-          ...historyToMessageDraft(item),
-          session_id: sessionId,
-        };
-        if (message.role === "assistant") {
-          const restored = restoreActivityPresentation(agentPresentationStorage, message);
-          if (restored) Object.assign(message, restored);
-        }
-        return message;
-      }));
-    }
-  } catch (error) {
-    console.error("加载会话历史失败", error);
-  }
-  await restoreAgentActiveTurn(sessionId);
+  await sessionRuntime.load(sessionId, force);
 }
 
 async function ensureAgentWindow(slot: AgentWindowSlot): Promise<void> {
@@ -2341,6 +2522,7 @@ async function ensureAgentWindow(slot: AgentWindowSlot): Promise<void> {
 async function ensureCurrentChatPane() {
   if (chatSlot.value === "main") {
     const stale = loadedMainSessionId.value !== sessions.activeMainId;
+    if (sessions.activeMainId) await sessionRuntime.load(sessions.activeMainId);
     if (sessions.activeMainId && stale) await refreshChatState();
   } else {
     await ensureAgentWindow(chatSlot.value);
@@ -2401,8 +2583,7 @@ async function createChatSession() {
     });
     if (!created || !created.id) throw new Error("后端未返回新会话");
     rememberAgentSession(slot, created.id);
-    agentMessages[created.id] = [];
-    agentLoadedSessions.add(created.id);
+    sessionRuntime.ensure(created.id).loaded = true;
     ensureAgentTurn(created.id);
     await nextTick();
     scrollDashChatToBottom();
@@ -2445,6 +2626,10 @@ async function removeChatSession(session: ChatSession) {
   try {
     await sessions.remove(session.id);
     clearAgentSessionState(session.id);
+    if (workspacePanes.value.includes(session.id)) {
+      workspacePanes.value = workspacePanes.value.map((id) => (id === session.id ? "" : id));
+      saveWorkspacePanes(workspacePanes.value);
+    }
     if (renamingSessionId.value === session.id) renamingSessionId.value = null;
     if (session.slot === "main") {
       await sessions.load();
@@ -2517,10 +2702,9 @@ async function onAgentModelSelect(payload: { model: string; provider: string; ef
     sessionError.value = "保存模型失败：" + errorMessage(error);
   }
 }
-async function onAgentWindowAgentChange(event: Event) {
+async function onAgentWindowAgentChange(agentId: string) {
   const slot = agentSlot.value;
   if (!slot) return;
-  const agentId = (event.target as HTMLSelectElement).value;
   const agent = agentsStore.agents.find((item) => item.id === agentId);
   saveWindowPreference(slot, { agentId });
   const session = currentAgentSession.value;
@@ -2551,7 +2735,7 @@ async function ensureAgentSessionForSend(slot: AgentWindowSlot): Promise<ChatSes
     if (!created || !created.id) throw new Error("后端未返回新会话");
     rememberAgentSession(slot, created.id);
     ensureAgentMessages(created.id);
-    agentLoadedSessions.add(created.id);
+    sessionRuntime.ensure(created.id).loaded = true;
     ensureAgentTurn(created.id);
     return created;
   } catch (error) {
@@ -2564,118 +2748,32 @@ async function ensureAgentSessionForSend(slot: AgentWindowSlot): Promise<ChatSes
 async function sendAgentWindowMessage() {
   const slot = agentSlot.value;
   if (!slot) return;
+  const draftKey = attachmentDraftKey.value;
   const text = chatInput.value.trim();
   const files = [...pendingFiles.value];
   const quote = pendingQuote.value ? { ...pendingQuote.value } : undefined;
   if (!text && files.length === 0 && !quote) return;
-  if (paneIsLoading.value) return;
+  if (paneIsLoading.value || filesLoading.value) return;
   closeDashMessageMenu();
   if (voiceSettings.value.enabled && voiceSettings.value.autoSpeak) ttsPlayer.preparePlayback();
   const session = await ensureAgentSessionForSend(slot);
   if (!session) return;
-  const turn = ensureAgentTurn(session.id);
-  if (turn.loading) return;
-  const messages = ensureAgentMessages(session.id);
-  const fullMessage = buildMessageWithFiles(text, files);
-  const fileAttachments = files.length > 0
-    ? files.map((file) => ({ name: file.name, isImage: file.isImage, extension: file.extension }))
-    : undefined;
-  const aiAttachments = files.length > 0
-    ? files.map((file) => ({ path: file.path, name: file.name, size: file.size, extension: file.extension, isImage: file.isImage }))
-    : [];
-  const displayText = text || (quote ? "（引用消息）" : "(已发送文件)");
-  messages.push({
-    id: nextAgentMessageId++,
-    role: "user",
-    content: displayText,
-    timestamp: Date.now(),
-    files: fileAttachments,
-    quote,
-    session_id: session.id,
-  });
+  if (sessionRuntime.ensure(session.id).turn.loading) return;
   chatInput.value = "";
   pendingQuote.value = null;
-  clearPendingFiles();
-  turn.loading = true;
-  turn.thinking = "";
-  turn.toolEvents = [];
-  turn.activity.reset();
+  for (const file of files) attachments.remove(draftKey, file.id);
   followingActivity.value = true;
+  await sessionRuntime.send(session.id, text, files, quote);
   scrollDashChatToBottom();
-  const targetAgentId = session.agent_id || currentAgentIdentity.value.id || SLOT_DEFAULT_AGENT[slot];
-  try {
-    await invoke("send_to_ai", {
-      message: fullMessage,
-      attachments: aiAttachments,
-      quotedRole: quote?.role,
-      quotedContent: quote ? truncateQuoteContent(quote.content) : undefined,
-      mentionAgents: [],
-      collaborationEnabled: false,
-      sessionId: session.id,
-      targetAgentId,
-      model: session.model || "",
-    });
-  } catch (error) {
-    turn.loading = false;
-    turn.activity.reset();
-    messages.push({
-      id: nextAgentMessageId++,
-      role: "assistant",
-      content: "出错了: " + errorMessage(error),
-      timestamp: Date.now(),
-      session_id: session.id,
-    });
-  }
-}
-
-/** agent 回合收尾：插入 assistant 消息（含 thinking / 工具快照 / 活动轨迹快照）。 */
-function settleAgentTurn(
-  sessionId: string,
-  content: string,
-  options: { thinking?: string; toolEvents?: ToolEventItem[]; agent?: MessageAgent | null; reason?: "completed" | "failed" | "aborted" } = {},
-) {
-  const turn = ensureAgentTurn(sessionId);
-  const messages = ensureAgentMessages(sessionId);
-  const toolSnapshot = options.toolEvents?.length ? options.toolEvents : turn.toolEvents;
-  const last = messages[messages.length - 1];
-  if (!(last?.role === "assistant" && last.content === content)) {
-    const message: Message = {
-      id: nextAgentMessageId++,
-      role: "assistant",
-      content,
-      thinking: options.thinking || undefined,
-      timestamp: Date.now(),
-      toolEvents: toolSnapshot.length ? JSON.parse(JSON.stringify(toolSnapshot)) as ToolEventItem[] : undefined,
-      agent: options.agent ?? null,
-      session_id: sessionId,
-    };
-    if (turn.activity.items.length) {
-      const presentation = turn.activity.finish(message.content, options.reason ?? "completed");
-      Object.assign(message, presentation);
-      saveActivityPresentation(agentPresentationStorage, { ...message, ...presentation });
-    }
-    messages.push(message);
-  }
-  turn.loading = false;
-  turn.thinking = "";
-  turn.toolEvents = [];
-  turn.activity.reset();
-  if (sessionId === currentAgentSessionId.value) scrollDashChatToBottom();
 }
 
 async function abortCurrentTurn() {
-  if (isMainSlot.value) {
-    await abortAi();
+  const id = currentSessionId.value;
+  if (id && sessionRuntime.peek(id)) {
+    await sessionRuntime.abort(id);
     return;
   }
-  const session = currentAgentSession.value;
-  if (session) {
-    const turn = ensureAgentTurn(session.id);
-    if (turn.loading) {
-      settleAgentTurn(session.id, "已中止", { thinking: turn.thinking || undefined, reason: "aborted" });
-    }
-  }
-  try { await invoke("abort_ai", { sessionId: session?.id || undefined }); } catch {}
+  await abortAi();
 }
 
 /** 主对话的多会话能力也走这里：后端清空所有会话后重置本地 agent 状态。 */
@@ -2688,46 +2786,23 @@ function resetAllChatSessionUi() {
 
 let stopCollaboration: (() => void) | null = null;
 
-// === 文件拖拽与预加载相关数据 ===
-interface PendingFile {
-  id: string;
-  path: string;
-  name: string;
-  size: number;
-  extension: string;
-  isImage: boolean;
-  previewUrl: string;
-  status: "loading" | "ready" | "error";
-  errorMessage?: string;
-}
-interface RustFileMetadata {
-  path: string;
-  name: string;
-  size: number;
-  extension: string;
-  exists: boolean;
-  is_file: boolean;
-}
-const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"];
-const MAX_FILE_SIZE = 50 * 1024 * 1024;
-const MAX_FILES = 5;
-const pendingFiles = ref<PendingFile[]>([]);
-const fileValidationError = ref("");
+// === 附件草稿按会话共享，单窗格与同屏窗格使用同一份文件列表 ===
+const attachments = useAttachmentsStore();
+const attachmentDraftKey = computed(() => currentSessionId.value || `slot:${chatSlot.value}`);
+const attachmentDraft = computed(() => attachments.ensure(attachmentDraftKey.value));
+const pendingFiles = computed(() => attachmentDraft.value.files);
+const filesLoading = computed(() => pendingFiles.value.some((file) => file.status === "loading"));
 const isFileOver = ref(false);
-let fileErrorTimer: ReturnType<typeof setTimeout> | null = null;
+const fileOverPaneId = ref("");
+const workspaceFileError = ref("");
 
-function showFileError(msg: string) {
-  fileValidationError.value = msg;
-  if (fileErrorTimer) clearTimeout(fileErrorTimer);
-  fileErrorTimer = setTimeout(() => {
-    fileValidationError.value = "";
-  }, 3000);
+async function pickDashboardFiles() {
+  const key = attachmentDraftKey.value;
+  await attachments.pick(key, (paths) => addToPendingFiles(paths, key));
 }
 
-async function addToPendingFiles(paths: string[]) {
-  if (fileErrorTimer) clearTimeout(fileErrorTimer);
-  fileValidationError.value = "";
-
+async function addToPendingFiles(paths: string[], key = attachmentDraftKey.value) {
+  const showFileError = (message: string) => { attachments.ensure(key).error = message; };
   const hasLnk = paths.some(p => p.toLowerCase().endsWith(".lnk"));
   if (hasLnk) {
     for (const p of paths) {
@@ -2749,156 +2824,42 @@ async function addToPendingFiles(paths: string[]) {
           showFileError(`注册快捷方式失败: ${err}`);
         }
       } else {
-        await processNormalFiles([p]);
+        await attachments.add(key, [p]);
       }
     }
     return;
   }
 
-  await processNormalFiles(paths);
-}
-
-async function processNormalFiles(paths: string[]) {
-  if (pendingFiles.value.length + paths.length > MAX_FILES) {
-    fileValidationError.value = `最多同时添加 ${MAX_FILES} 个文件`;
-    fileErrorTimer = setTimeout(() => {
-      fileValidationError.value = "";
-    }, 3000);
-    return;
-  }
-
-  try {
-    const metadataList = await invoke<RustFileMetadata[]>("get_file_metadata", { paths });
-
-    for (const meta of metadataList) {
-      if (!meta.exists || !meta.is_file) {
-        showFileError(`文件不存在或是目录: ${meta.name}`);
-        continue;
-      }
-      if (meta.size > MAX_FILE_SIZE) {
-        showFileError(`文件过大: ${meta.name} (最大 50MB)`);
-        continue;
-      }
-
-      const isImage = IMAGE_EXTENSIONS.includes(meta.extension);
-      let previewUrl = "";
-
-      if (isImage) {
-        previewUrl = convertFileSrc(meta.path);
-      }
-
-      pendingFiles.value.push({
-        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        path: meta.path,
-        name: meta.name,
-        size: meta.size,
-        extension: meta.extension,
-        isImage,
-        previewUrl,
-        status: "ready",
-      });
-    }
-  } catch (err) {
-    showFileError(`获取文件信息失败: ${err}`);
-  }
-}
-
-function removePendingFile(id: string) {
-  pendingFiles.value = pendingFiles.value.filter((f) => f.id !== id);
+  await attachments.add(key, paths);
 }
 
 function clearPendingFiles() {
-  pendingFiles.value = [];
-  fileValidationError.value = "";
-}
-
-async function handleImageError(file: PendingFile) {
-  try {
-    const dataUrl = await invoke<string>("read_file_as_data_url", { path: file.path });
-    file.previewUrl = dataUrl;
-  } catch {
-    file.status = "error";
-    file.errorMessage = "预览不可用";
-  }
-}
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-// 用 unicode 字符作为文件图标以兼容各平台
-function getFileIcon(ext: string): string {
-  const map: Record<string, string> = {
-    pdf: "\u{1F4C4}",
-    doc: "\u{1F4DD}",
-    docx: "\u{1F4DD}",
-    xls: "\u{1F4CA}",
-    xlsx: "\u{1F4CA}",
-    csv: "\u{1F4CA}",
-    ppt: "\u{1F4D1}",
-    pptx: "\u{1F4D1}",
-    zip: "\u{1F4E6}",
-    rar: "\u{1F4E6}",
-    "7z": "\u{1F4E6}",
-    mp3: "\u{1F3B5}",
-    wav: "\u{1F3B5}",
-    flac: "\u{1F3B5}",
-    mp4: "\u{1F3AC}",
-    avi: "\u{1F3AC}",
-    mkv: "\u{1F3AC}",
-    txt: "\u{1F4C3}",
-    md: "\u{1F4C3}",
-    json: "\u{1F4C3}",
-    js: "\u{1F4BB}",
-    ts: "\u{1F4BB}",
-    py: "\u{1F4BB}",
-    rs: "\u{1F4BB}",
-    go: "\u{1F4BB}",
-    java: "\u{1F4BB}",
-  };
-  return map[ext] || "\u{1F4CE}";
-}
-
-function buildMessageWithFiles(text: string, files: PendingFile[]): string {
-  if (files.length === 0) return text;
-
-  const imageCount = files.filter((f) => f.isImage).length;
-  const regularFileCount = files.length - imageCount;
-  const fileLines = files
-    .map((f, i) => {
-      const typeLabel = f.isImage ? "图片" : "文件";
-      const icon = f.isImage ? "\u{1F4F7}" : getFileIcon(f.extension);
-      return `${i + 1}. ${icon} ${typeLabel}: "${f.name}" (路径: ${f.path}, 大小: ${formatFileSize(f.size)})`;
-    })
-    .join("\n");
-
-  const hints = [
-    imageCount > 0 ? "图片会随消息作为视觉输入发送，请直接观察图片内容。" : "",
-    regularFileCount > 0 ? "普通文件可使用 read_file 工具读取内容。" : "",
-  ].filter(Boolean).join(" ");
-  const fileBlock = `\n\n---\n[用户附加了以下本地文件]\n${fileLines}\n\n提示: ${hints}`;
-
-  return text ? `${text}${fileBlock}` : `[用户附加了文件，但没有输入文字]${fileBlock}`;
+  attachments.clear(attachmentDraftKey.value);
 }
 
 function handleDragDropEvent(event: any) {
-  // 检查是否是 .lnk 文件（快捷方式在任何页面都可注册）
-  const hasLnk = event.type === "drop" && event.paths?.some((p: string) => p.toLowerCase().endsWith(".lnk"));
+  const hasLnk = event.type === "drop" && event.paths?.some((path: string) => path.toLowerCase().endsWith(".lnk"));
+  const hovering = event.type === "enter" || event.type === "over";
+  isFileOver.value = activePage.value === "chat" && hovering;
+  fileOverPaneId.value = "";
+  if (activePage.value !== "chat" && !hasLnk) return;
 
-  if (activePage.value !== "chat" && !hasLnk) {
-    isFileOver.value = false;
+  if (activePage.value === "chat" && isWorkspaceMode.value) {
+    const panes = Array.from(document.querySelectorAll<HTMLElement>(".dash-workspace-grid .session-pane")).map((element) => {
+      const paneId = element.dataset.paneId || "";
+      return { paneId, sessionId: workspacePanes.value[workspacePaneIds.value.indexOf(paneId)] || "", rect: element.getBoundingClientRect() };
+    });
+    const target = event.position ? attachmentDropTarget(event.position, window.devicePixelRatio || 1, panes) : null;
+    if (hovering) {
+      fileOverPaneId.value = target?.paneId || "";
+      workspaceFileError.value = "";
+    } else if (event.type === "drop" && event.paths?.length) {
+      if (target?.sessionId) void addToPendingFiles(event.paths, target.sessionId);
+      else workspaceFileError.value = target ? "先为此窗格选择会话，再添加文件" : "请将文件拖入要发送的会话窗格";
+    }
     return;
   }
-  if (event.type === "enter" || event.type === "over") {
-    isFileOver.value = true;
-    return;
-  }
-  isFileOver.value = false;
-  if (event.type === "drop" && event.paths?.length > 0) {
-    void addToPendingFiles(event.paths);
-  }
+  if (event.type === "drop" && event.paths?.length) void addToPendingFiles(event.paths);
 }
 
 let refreshChatStatePromise: Promise<void> | null = null;
@@ -2925,6 +2886,8 @@ async function doRefreshChatState() {
     ]);
     // 请求期间用户又切了主会话：丢弃旧响应。
     if (sessionId && sessions.activeMainId && sessions.activeMainId !== sessionId) return;
+    if (sessionId) await sessionRuntime.load(sessionId);
+    if (sessionId && sessionId !== sessions.activeMainId) return;
     chat.setMessages(Array.isArray(history) ? history.map(historyToMessageDraft) : []);
     loadedMainSessionId.value = sessions.activeMainId || sessionId;
     const cachedTurn = sessionId ? mainTurns[sessionId] : undefined;
@@ -3002,18 +2965,19 @@ async function abortAi() {
 }
 
 async function sendDashboardMessage() {
-  // agent 独立窗口有自己的一套消息与事件，不写主 chat store。
+  // agent 发送与同屏窗格共用会话运行时。
   if (!isMainSlot.value) {
     await sendAgentWindowMessage();
     return;
   }
 
+  const sessionId = sessions.activeMainId;
   const text = chatInput.value.trim();
   const files = [...pendingFiles.value];
   const quote = pendingQuote.value ? { ...pendingQuote.value } : undefined;
 
   if (!text && files.length === 0 && !quote) return;
-  if (chat.isLoading) return;
+  if (paneIsLoading.value || filesLoading.value) return;
   closeDashMessageMenu();
   if (voiceSettings.value.enabled && voiceSettings.value.autoSpeak) {
     ttsPlayer.preparePlayback();
@@ -3023,7 +2987,7 @@ async function sendDashboardMessage() {
 
   const fileAttachments =
     files.length > 0
-      ? files.map((f) => ({ name: f.name, isImage: f.isImage, extension: f.extension }))
+      ? files.map((f) => ({ name: f.name, isImage: f.isImage, extension: f.extension, isDir: f.isDir }))
       : undefined;
   const aiAttachments =
     files.length > 0
@@ -3075,6 +3039,7 @@ async function sendDashboardMessage() {
     chat.isLoading = false;
     streamingAnswer.value = "";
     chat.addMessage("assistant", `出错了: ${err}`);
+    if (sessionId) sessionRuntime.settle(sessionId, `出错了: ${err}`, { reason: "failed" });
     syncPetState("confused");
   }
 }
@@ -3138,7 +3103,7 @@ async function runDashSlashCommand(command: SlashCommand) {
       await clearDashboardChatWithConfirm();
       break;
     case "skills":
-      activePage.value = "system";
+      openSystemSection("skills");
       await skillsStore.load();
       break;
     case "chat":
@@ -3323,11 +3288,18 @@ function questionAnswered(id: string) {
   if (pendingQuestion.value?.id === id) pendingQuestion.value = null;
 }
 
-function toggleAutoApprovedTool(toolId: string, enabled: boolean) {
+async function toggleAutoApprovedTool(toolId: string, enabled: boolean) {
   const current = new Set(apiConfig.value.auto_approved_tools);
   if (enabled) current.add(toolId);
   else current.delete(toolId);
   apiConfig.value.auto_approved_tools = Array.from(current).sort();
+  // 与执行模式一致：改了立即保存；新建中的配置等用户点「保存配置」时一起保存。
+  if (!apiConfig.value.id || !apiConfig.value.base_url || !apiConfig.value.model) return;
+  try {
+    await saveApiConfig({ quiet: true });
+  } catch (e) {
+    testResult.value = { success: false, message: "免确认工具保存失败: " + e };
+  }
 }
 
 function isToolAutoApproved(toolId: string) {
@@ -3446,6 +3418,8 @@ onMounted(async () => {
   // 会话列表要在载入历史之前就绪，activeMainId 才能用于事件路由。
   try { await sessions.startSync(); } catch (error) { console.error("加载会话列表失败", error); }
   unlistenWeatherUpdate = await listen<WeatherUpdateEvent>("weather-update", handleWeatherUpdate);
+  // 播放状态由后端事件驱动；必须在挂载时就订阅，否则首个播报会整段没有状态反馈。
+  void ensurePlaybackSubscription();
 
   resetTaskDraftTime();
   loadSystemInfo();
@@ -3472,6 +3446,7 @@ onMounted(async () => {
   isMaximized.value = await currentWindow.isMaximized();
 
   // 加载对话历史并监听实时同步
+  await sessionRuntime.start();
   await refreshChatState();
 
   unlistenThinking = await listen<{ session_id?: string; text?: string } | string>("ai-thinking", (event) => {
@@ -3481,13 +3456,7 @@ onMounted(async () => {
     if (!text) return;
     const route = routeIncomingSession(raw?.session_id);
     if (route.kind === "ignore") return;
-    if (route.kind === "agent") {
-      const turn = ensureAgentTurn(route.sessionId);
-      turn.loading = true;
-      turn.thinking += text;
-      turn.activity.appendThinking(text);
-      return;
-    }
+    if (route.kind === "agent") return; // 由共享运行时处理，避免重复追加或重置轨迹。
     if (route.kind === "main-bg") {
       const turn = ensureMainTurn(route.sessionId);
       turn.loading = true;
@@ -3506,12 +3475,7 @@ onMounted(async () => {
     if (!text) return;
     const route = routeIncomingSession(event.payload?.session_id);
     if (route.kind === "ignore") return;
-    if (route.kind === "agent") {
-      const turn = ensureAgentTurn(route.sessionId);
-      turn.loading = true;
-      turn.activity.appendText(text);
-      return;
-    }
+    if (route.kind === "agent") return; // 由共享运行时处理，避免重复追加或重置轨迹。
     if (route.kind === "main-bg") {
       const turn = ensureMainTurn(route.sessionId);
       turn.loading = true;
@@ -3530,11 +3494,7 @@ onMounted(async () => {
     const route = routeIncomingSession(payload?.session_id);
     if (route.kind === "ignore") return;
     if (route.kind === "agent") {
-      settleAgentTurn(route.sessionId, payload.text, {
-        thinking: payload.thinking || undefined,
-        agent: messageAgentFromPayload(payload),
-      });
-      void sessions.load().catch((error) => console.error("刷新会话列表失败", error));
+      sessions.scheduleReload();
       if (route.sessionId === currentAgentSessionId.value) void speakDashboardReply(speakableText(payload.text));
       return;
     }
@@ -3572,24 +3532,7 @@ onMounted(async () => {
     const payload = event.payload ?? {};
     const route = routeIncomingSession(payload.session_id);
     if (route.kind === "ignore") return;
-    if (route.kind === "agent") {
-      const turn = ensureAgentTurn(route.sessionId);
-      // 区分可恢复中断和致命错误
-      let agentText: string;
-      if (payload.aborted) {
-        agentText = "已中止";
-      } else if (turn.thinking || turn.activity.items.length) {
-        agentText = "⚠️ " + payload.message;
-      } else {
-        agentText = "出错了: " + payload.message;
-      }
-      settleAgentTurn(route.sessionId, agentText, {
-        thinking: payload.thinking || turn.thinking || undefined,
-        reason: payload.aborted ? "aborted" : "failed",
-      });
-      void sessions.load().catch((error) => console.error("刷新会话列表失败", error));
-      return;
-    }
+    if (route.kind === "agent") return; // 由共享运行时处理，避免重复追加或重置轨迹。
     if (route.kind === "main-bg") {
       const turn = ensureMainTurn(route.sessionId);
       let bgText: string;
@@ -3657,29 +3600,7 @@ onMounted(async () => {
     const syncAgent: MessageAgent | null = payload.agent?.name
       ? { id: payload.agent.id || undefined, name: payload.agent.name, avatar: payload.agent.avatar || undefined }
       : null;
-    if (route.kind === "agent") {
-      const messages = ensureAgentMessages(route.sessionId);
-      const lastAgentMessage = messages[messages.length - 1];
-      if (lastAgentMessage && lastAgentMessage.role === payload.role && lastAgentMessage.content === payload.content) return;
-      messages.push({
-        id: nextAgentMessageId++,
-        role: payload.role === "assistant" ? "assistant" : "user",
-        content: payload.content,
-        timestamp: Date.now(),
-        files: payload.files ?? payload.fileAttachments,
-        quote: payload.quote,
-        agent: syncAgent,
-        session_id: route.sessionId,
-      });
-      if (payload.role === "user") {
-        const turn = ensureAgentTurn(route.sessionId);
-        turn.loading = true;
-        turn.thinking = "";
-        turn.toolEvents = [];
-        turn.activity.reset();
-      }
-      return;
-    }
+    if (route.kind === "agent") return; // 由共享运行时处理，避免重复追加或重置轨迹。
     if (route.kind === "main-bg") {
       if (payload.role === "user") {
         const turn = ensureMainTurn(route.sessionId);
@@ -3712,15 +3633,7 @@ onMounted(async () => {
     const payload = event.payload;
     const route = routeIncomingSession(payload?.session_id);
     if (route.kind === "ignore") return;
-    if (route.kind === "agent") {
-      const turn = ensureAgentTurn(route.sessionId);
-      turn.loading = true;
-      turn.activity.upsertTool(payload);
-      const index = turn.toolEvents.findIndex((item) => item.id === payload.id);
-      if (index >= 0) turn.toolEvents[index] = { ...turn.toolEvents[index], ...payload };
-      else turn.toolEvents.push(payload);
-      return;
-    }
+    if (route.kind === "agent") return; // 由共享运行时处理，避免重复追加或重置轨迹。
     if (route.kind === "main-bg") {
       const turn = ensureMainTurn(route.sessionId);
       turn.loading = true;
@@ -3772,6 +3685,7 @@ onUnmounted(() => {
   stopCollaboration?.();
   agentsStore.stopSync();
   sessions.stopSync();
+  sessionRuntime.stop();
   if (sysInfoTimer) clearInterval(sysInfoTimer);
   if (weatherTimer) clearInterval(weatherTimer);
   if (actionFeedbackTimer) clearTimeout(actionFeedbackTimer);
@@ -3803,14 +3717,8 @@ ttsPlayer.stop();
     <!-- 自定义标题栏 -->
     <div class="dashboard-titlebar" data-tauri-drag-region>
       <div class="titlebar-title">
-        <span class="titlebar-mark">AP</span>
+        <span class="titlebar-mark"><AppIcon name="brand-pet" :size="14" /></span>
         <span>Desktop Pet</span>
-      </div>
-      <div class="titlebar-charm-strip" aria-hidden="true">
-        <span class="titlebar-charm charm-dot"></span>
-        <span class="titlebar-charm charm-capsule"></span>
-        <span class="titlebar-charm charm-star"></span>
-        <span class="titlebar-charm charm-ring"></span>
       </div>
       <div class="titlebar-controls">
         <button class="titlebar-btn" @click="minimizeWindow" title="最小化">
@@ -3835,10 +3743,11 @@ ttsPlayer.stop();
 
     <div class="dashboard-body">
       <!-- 侧边栏 -->
-      <div class="dashboard-sidebar">
+      <!-- 子列表展开后导航变长，会压到底部的装饰插画：展开时先把插画淡出 -->
+      <div :class="['dashboard-sidebar', { 'sidebar-art-hidden': chatNavExpanded || systemNavExpanded }]">
         <div class="sidebar-header">
           <div class="sidebar-brand">
-            <span class="brand-logo">AP</span>
+            <span class="brand-logo"><AppIcon name="brand-pet" :size="22" /></span>
             <div class="brand-title-group">
               <span class="brand-name">AI Desktop Pet</span>
               <span class="brand-tag">Control Suite</span>
@@ -3880,7 +3789,7 @@ ttsPlayer.stop();
                 :class="['sidebar-subitem', { active: activePage === 'chat' && chatSlot === item.slot }]"
                 @click="openChatSlot(item.slot)"
               >
-                <span class="sidebar-subitem-avatar" aria-hidden="true">{{ item.icon }}</span>
+                <span class="sidebar-subitem-avatar" aria-hidden="true"><AppIcon :name="item.icon" :size="13" /></span>
                 <span class="sidebar-subitem-label">{{ item.label }}</span>
                 <span v-if="agentSlotBusy(item.slot)" class="sidebar-subitem-live" aria-hidden="true" />
               </button>
@@ -3914,13 +3823,43 @@ ttsPlayer.stop();
             <span class="sidebar-item-icon"><Mic :size="15" /></span>
             <span>语音设置</span>
           </button>
-          <button
-            :class="['sidebar-item', { active: activePage === 'system' }]"
-            @click="activePage = 'system'"
-          >
-            <span class="sidebar-item-icon"><SettingsIcon :size="15" /></span>
-            <span>系统设置</span>
-          </button>
+          <div :class="['sidebar-group', { expanded: systemNavExpanded }]">
+            <div :class="['sidebar-item', 'sidebar-item-parent', { active: activePage === 'system' }]">
+              <button type="button" class="sidebar-item-main" title="进入系统设置" @click="openSystemSection()">
+                <span class="sidebar-item-icon"><SettingsIcon :size="15" /></span>
+                <span class="sidebar-item-label">系统设置</span>
+              </button>
+              <button
+                type="button"
+                :class="['sidebar-item-caret', { open: systemNavExpanded }]"
+                :aria-expanded="systemNavExpanded"
+                aria-label="展开/收起系统设置分区"
+                title="展开/收起系统设置分区"
+                @click.stop="toggleSystemSubnav"
+              >
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+                  <path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </button>
+            </div>
+            <div v-show="systemNavExpanded" class="sidebar-subnav">
+              <button
+                v-for="item in SYSTEM_SECTIONS"
+                :key="item.id"
+                :class="['sidebar-subitem', { active: activePage === 'system' && systemSection === item.id }]"
+                :aria-current="activePage === 'system' && systemSection === item.id ? 'page' : undefined"
+                @click="openSystemSection(item.id)"
+              >
+                <span class="sidebar-subitem-avatar" aria-hidden="true"><AppIcon :name="item.icon" :size="13" /></span>
+                <span class="sidebar-subitem-label">{{ item.label }}</span>
+                <span
+                  v-if="item.id === 'backend'"
+                  class="sidebar-subitem-hint"
+                  :title="'当前 AI 后端：' + backendLabel(backendType)"
+                >{{ backendShortLabel(backendType) }}</span>
+              </button>
+            </div>
+          </div>
 
           <div class="sidebar-divider" />
 
@@ -3986,7 +3925,7 @@ ttsPlayer.stop();
                     :title="action.desc"
                     @click="companionAction(action.id)"
                   >
-                    <span class="companion-chip-icon" aria-hidden="true">{{ action.icon }}</span>
+                    <span class="companion-chip-icon" aria-hidden="true"><AppIcon :name="action.icon" :size="16" /></span>
                     <span>{{ action.label }}</span>
                   </button>
                 </div>
@@ -4073,14 +4012,14 @@ ttsPlayer.stop();
                     class="home-shortcut"
                     @click="activePage = entry.page"
                   >
-                    <span class="home-shortcut-icon" aria-hidden="true">{{ entry.icon }}</span>
+                    <span class="home-shortcut-icon" aria-hidden="true"><AppIcon :name="entry.icon" :size="17" /></span>
                     <span class="home-shortcut-copy">
                       <strong>{{ entry.title }}</strong>
                       <small>{{ entry.desc }}</small>
                     </span>
                   </button>
                   <button type="button" class="home-shortcut" @click="openAgentsPage()">
-                    <span class="home-shortcut-icon" aria-hidden="true">🧩</span>
+                    <span class="home-shortcut-icon" aria-hidden="true"><AppIcon name="agent-hub" :size="17" /></span>
                     <span class="home-shortcut-copy">
                       <strong>智能体</strong>
                       <small>召集角色一起干活</small>
@@ -4111,6 +4050,44 @@ ttsPlayer.stop();
 
           <!-- ========== 对话互动 (独立页面) ========== -->
           <div v-else-if="activePage === 'chat'" key="chat" class="dash-chat-page">
+           <div class="dash-workspace-wrap">
+            <div class="dash-workspace-toolbar">
+              <span class="dash-workspace-toolbar-label">同屏布局</span>
+              <div class="dash-workspace-seg" role="group" aria-label="同屏布局">
+                <button
+                  v-for="item in WORKSPACE_LAYOUTS"
+                  :key="item.id"
+                  type="button"
+                  :class="['dash-workspace-seg-btn', { active: workspaceLayout === item.id }]"
+                  :title="item.label"
+                  :aria-label="item.label"
+                  :aria-pressed="workspaceLayout === item.id"
+                  @click="setWorkspaceLayout(item.id)"
+                >
+                  <component :is="WORKSPACE_LAYOUT_ICONS[item.id]" :size="14" />
+                  <span class="dash-workspace-seg-text">{{ item.label }}</span>
+                </button>
+              </div>
+            </div>
+            <p v-if="isWorkspaceMode && workspaceFileError" class="dash-workspace-file-error" role="alert">
+              <span>{{ workspaceFileError }}</span>
+              <button type="button" aria-label="关闭附件提示" @click="workspaceFileError = ''">×</button>
+            </p>
+            <div v-if="isWorkspaceMode" :class="['dash-workspace-grid', `layout-${workspaceLayout}`]">
+              <SessionPane
+                v-for="(paneId, index) in workspacePaneIds"
+                :key="paneId"
+                :pane-id="paneId"
+                :file-over="isFileOver && fileOverPaneId === paneId"
+                :session-id="workspacePanes[index] || ''"
+                :backend="paneSessionBackend(workspacePanes[index] || '')"
+                @assign="assignWorkspacePane"
+                @close="closeWorkspacePane"
+                @open-single="openSessionInSingle"
+                @pane-drop="moveWorkspacePane"
+              />
+            </div>
+            <template v-else>
            <div class="dash-chat-main">
             <!-- 对话页头部：主对话显示会话标题/状态；agent 窗口显示 agent 与模型选择 -->
             <div :class="['dash-chat-head', { 'dash-chat-head-agent': !isMainSlot }]">
@@ -4125,21 +4102,15 @@ ttsPlayer.stop();
               </template>
               <template v-else>
                 <div class="dash-agent-head-info">
-                  <span class="dash-agent-head-avatar" aria-hidden="true">{{ currentAgentIdentity.avatar }}</span>
-                  <div class="dash-agent-head-text">
-                    <div class="dash-chat-head-title">{{ currentAgentIdentity.name }}</div>
-                    <div class="dash-agent-head-sub">{{ currentSlotLabel }} 窗口 · {{ currentSession?.title || "新会话" }}</div>
-                  </div>
+                  <AgentPicker
+                    :agents="agentWindowAgentOptions"
+                    :model-value="currentAgentIdentity.id"
+                    :subtitle="currentSlotLabel + ' · ' + (currentSession?.title || '新会话')"
+                    :disabled="paneIsLoading"
+                    @change="onAgentWindowAgentChange"
+                  />
                 </div>
                 <div class="dash-agent-head-controls">
-                  <label class="dash-agent-field" title="选择该窗口使用的智能体">
-                    <span class="dash-agent-field-label">Agent</span>
-                    <select class="dash-agent-select" :value="currentAgentIdentity.id" @change="onAgentWindowAgentChange($event)">
-                      <option v-for="agent in agentWindowAgentOptions" :key="agent.id" :value="agent.id">
-                        {{ agent.avatar }} {{ agent.name }}
-                      </option>
-                    </select>
-                  </label>
                   <AgentModelPicker
                     v-if="agentSlot"
                     :slot="agentSlot"
@@ -4148,6 +4119,13 @@ ttsPlayer.stop();
                     :effort="currentAgentEffortValue"
                     :disabled="paneIsLoading"
                     @select="onAgentModelSelect"
+                  />
+                  <SessionPermissionPicker
+                    v-if="agentSlot && currentSessionId"
+                    :session-id="currentSessionId"
+                    :backend="currentAgentBackend"
+                    :disabled="paneIsLoading"
+                    placement="down"
                   />
                   <span :class="['dash-status-pill', 'state', paneIsLoading ? 'busy' : 'ready']">
                     {{ paneIsLoading ? "运行中" : "就绪" }}
@@ -4177,30 +4155,30 @@ ttsPlayer.stop();
                   :disabled="isWeatherLoading"
                   @click="refreshWeather"
                 >
-                  ↻
+                  <AppIcon name="refresh" :size="13" />
                 </button>
               </template>
               <template v-else-if="isWeatherLoading">
-                <span class="weather-icon">🌡</span>
+                <span class="weather-icon"><AppIcon name="weather-sun" :size="14" /></span>
                 <span class="weather-desc">天气刷新中...</span>
               </template>
               <template v-else>
-                <span class="weather-icon">!</span>
+                <span class="weather-icon"><AppIcon name="alert" :size="14" /></span>
                 <span class="weather-desc">天气获取失败：{{ weatherError }}</span>
-                <button type="button" class="weather-refresh-btn" title="重试" @click="refreshWeather">↻</button>
+                <button type="button" class="weather-refresh-btn" title="重试" @click="refreshWeather"><AppIcon name="refresh" :size="13" /></button>
               </template>
             </div>
             <div class="dash-chat-messages" ref="dashChatMessagesRef" @click="closeDashMessageMenu" @scroll.passive="trackChatScroll">
               <!-- Glassmorphism drop zone overlay -->
               <div v-if="isFileOver" class="dash-drop-overlay">
                 <div class="dash-drop-overlay-box">
-                  <span class="dash-drop-icon">📂</span>
+                  <span class="dash-drop-icon"><AppIcon name="folder-drop" :size="44" /></span>
                   <span class="dash-drop-text">释放文件以添加为附件</span>
                 </div>
               </div>
               <div v-if="paneMessages.length === 0" class="dash-chat-empty">
-                <template v-if="isMainSlot">🐾 暂无对话历史，跟小家伙说点什么吧！</template>
-                <template v-else>🪄 {{ currentAgentIdentity.name }} 还没有消息，直接发一条开始对话吧。</template>
+                <template v-if="isMainSlot">暂无对话历史，跟小家伙说点什么吧</template>
+                <template v-else>{{ currentAgentIdentity.name }} 还没有消息，直接发一条开始对话吧</template>
               </div>
               
               <div
@@ -4217,7 +4195,12 @@ ttsPlayer.stop();
                 <AgentActivity v-if="msg.role === 'assistant'" :items="msg.activity" :tools="msg.toolEvents" :thinking="msg.activity ? undefined : msg.thinking" />
                 <div v-if="msg.role !== 'system'" class="dash-msg-bubble">
                   <div v-if="msg.agent && msg.role === 'assistant'" class="dash-msg-agent-badge">
-                    <span class="dash-msg-agent-avatar">{{ msg.agent.avatar || "🤖" }}</span>
+                    <span class="dash-msg-agent-avatar">
+                      <AppIcon v-if="msg.agent.id === 'builtin-claude'" name="claude" :size="12" />
+                      <AppIcon v-else-if="msg.agent.id === 'builtin-codex'" name="codex" :size="12" />
+                      <AppIcon v-else-if="msg.agent.id === 'builtin-dsh'" name="dsh" :size="12" />
+                      <template v-else>{{ msg.agent.avatar || "🤖" }}</template>
+                    </span>
                     <span class="dash-msg-agent-name">{{ msg.agent.name }}</span>
                   </div>
                   <!-- 用户引用的前文对话（微信式引用块） -->
@@ -4236,7 +4219,7 @@ ttsPlayer.stop();
                   <!-- 显示已发送的本地文件信息 -->
                   <div v-if="msg.files && msg.files.length > 0" class="dash-msg-files">
                     <div v-for="(file, fi) in msg.files" :key="fi" class="dash-msg-file-tag">
-                      <span>{{ file.isImage ? "\u{1F4F7}" : getFileIcon(file.extension) }}</span>
+                      <span>{{ file.isDir ? "\u{1F4C2}" : file.isImage ? "\u{1F4F7}" : getFileIcon(file.extension) }}</span>
                       <span>{{ file.name }}</span>
                     </div>
                   </div>
@@ -4277,53 +4260,7 @@ ttsPlayer.stop();
                 </div>
               </Transition>
 
-              <!-- 文件校验错误提示 -->
-              <Transition name="fade">
-                <div v-if="fileValidationError" class="dash-file-validation-error">
-                  {{ fileValidationError }}
-                </div>
-              </Transition>
-
-              <!-- 文件预加载面板 -->
-              <Transition name="slide-up">
-                <div v-if="pendingFiles.length > 0" class="dash-file-preview-area">
-                  <div class="dash-file-preview-header">
-                    <span>{{ pendingFiles.length }} 个文件待发送</span>
-                    <button class="dash-clear-all-btn" @click="clearPendingFiles">全部移除</button>
-                  </div>
-                  <div class="dash-file-preview-list">
-                    <TransitionGroup name="file-item">
-                      <div
-                        v-for="file in pendingFiles"
-                        :key="file.id"
-                        class="dash-file-preview-item"
-                        :class="{ error: file.status === 'error' }"
-                      >
-                        <template v-if="file.isImage">
-                          <img
-                            v-if="file.previewUrl && file.status !== 'error'"
-                            :src="file.previewUrl"
-                            class="dash-preview-thumbnail"
-                            @error="handleImageError(file)"
-                          />
-                          <div v-else class="dash-preview-fallback">
-                            <span class="dash-file-icon">{{ getFileIcon(file.extension) }}</span>
-                            <span class="dash-fallback-text">预览不可用</span>
-                          </div>
-                        </template>
-                        <template v-else>
-                          <div class="dash-preview-file-card">
-                            <span class="dash-file-icon-lg">{{ getFileIcon(file.extension) }}</span>
-                            <span class="dash-file-name" :title="file.name">{{ file.name }}</span>
-                            <span class="dash-file-size">{{ formatFileSize(file.size) }}</span>
-                          </div>
-                        </template>
-                        <button class="dash-remove-file-btn" @click="removePendingFile(file.id)">&times;</button>
-                      </div>
-                    </TransitionGroup>
-                  </div>
-                </div>
-              </Transition>
+              <AttachmentTray :draft-key="attachmentDraftKey" />
 
               <Transition name="slide-up">
                 <div v-if="isMainSlot && showDashMentionMenu" class="dash-mention-menu" @mousedown.prevent>
@@ -4336,7 +4273,12 @@ ttsPlayer.stop();
                     @mouseenter="dashMentionSelectedIndex = index"
                     @click="chooseDashMentionItem(agent)"
                   >
-                    <span class="dash-mention-avatar">{{ agent.avatar || "🤖" }}</span>
+                    <span class="dash-mention-avatar">
+                      <AppIcon v-if="agent.id === 'builtin-claude'" name="claude" :size="14" />
+                      <AppIcon v-else-if="agent.id === 'builtin-codex'" name="codex" :size="14" />
+                      <AppIcon v-else-if="agent.id === 'builtin-dsh'" name="dsh" :size="14" />
+                      <template v-else>{{ agent.avatar || "🤖" }}</template>
+                    </span>
                     <span class="dash-mention-main">
                       <span class="dash-mention-title">@{{ agent.name }}</span>
                       <span class="dash-mention-desc">{{ agent.description || "自定义智能体" }}</span>
@@ -4348,7 +4290,7 @@ ttsPlayer.stop();
                     class="dash-mention-item dash-mention-new"
                     @click="openAgentEditor(); activePage = 'agents'"
                   >
-                    <span class="dash-mention-avatar">＋</span>
+                    <span class="dash-mention-avatar"><AppIcon name="plus" :size="14" /></span>
                     <span class="dash-mention-main">
                       <span class="dash-mention-title">新建智能体</span>
                       <span class="dash-mention-desc">打开智能体工坊，自由定义或用 AI 生成</span>
@@ -4380,6 +4322,9 @@ ttsPlayer.stop();
 
               <CollaborationBar v-if="isMainSlot" />
               <div class="dash-chat-input-area">
+                <button type="button" class="dash-chat-attach-btn" title="添加附件（也可拖入文件）" aria-label="添加附件" :disabled="attachmentDraft.picking" @click="pickDashboardFiles">
+                  <Paperclip :size="17" />
+                </button>
                 <input
                   ref="dashChatInputRef"
                   type="text"
@@ -4391,7 +4336,7 @@ ttsPlayer.stop();
                 />
                 <button
                   @click="sendDashboardMessage"
-                  :disabled="(!chatInput.trim() && pendingFiles.length === 0 && !pendingQuote) || paneIsLoading"
+                  :disabled="(!chatInput.trim() && pendingFiles.length === 0 && !pendingQuote) || paneIsLoading || filesLoading"
                   class="dash-chat-send-btn"
                   title="发送"
                   aria-label="发送"
@@ -4400,62 +4345,58 @@ ttsPlayer.stop();
                 </button>
               </div>
               <div class="dash-chat-meta-row">
-                <span class="dash-chat-hint">发送：Enter · 换行：Shift + Enter · 可拖入文件作为附件</span>
+                <span
+                  class="dash-chat-hint"
+                  :title="isMainSlot ? undefined : ('模型：' + currentSessionModelLabel + (currentSessionChannelLabel ? '（' + currentSessionChannelLabel + '）' : '') + (currentSessionEffortLabel ? ' · 思考：' + currentSessionEffortLabel : ''))"
+                >Enter 发送 · 拖入文件添加附件</span>
                 <span class="dash-chat-meta-spacer"></span>
                 <template v-if="isMainSlot">
                   <label class="dash-meta-field" title="模型">
-                    <span class="dash-meta-label">模型</span>
-                    <select
+                    <MetaPicker
                       v-if="apiProfiles.length > 0"
-                      class="dash-chat-model-select"
-                      :value="activeApiProfileId"
-                      @change="activateApiProfile(($event.target as HTMLSelectElement).value)"
-                    >
-                      <option v-for="profile in apiProfiles" :key="profile.id" :value="profile.id">
-                        {{ profile.name || profile.model }}
-                      </option>
-                    </select>
-                    <span v-else class="dash-meta-value">{{ currentModelLabel }}</span>
+                      label="模型"
+                      :options="mainModelOptions"
+                      :model-value="activeApiProfileId"
+                      @change="activateApiProfile"
+                    />
+                    <template v-else>
+                      <span class="dash-meta-label">模型</span>
+                      <span class="dash-meta-value">{{ currentModelLabel }}</span>
+                    </template>
                   </label>
-                  <label class="dash-meta-field" title="思考深度">
-                    <span class="dash-meta-label">思考</span>
-                    <select
-                      class="dash-thinking-select"
-                      :value="apiConfig.thinking_depth"
-                      @change="updateThinkingDepth(($event.target as HTMLSelectElement).value)"
-                    >
-                      <option v-for="opt in thinkingDepthOptions" :key="opt.value" :value="opt.value">
-                        {{ opt.label }}
-                      </option>
-                    </select>
-                  </label>
-                  <label class="dash-meta-field" title="执行模式">
-                    <span class="dash-meta-label">模式</span>
-                    <select
-                      class="dash-mode-select"
-                      :value="apiConfig.execution_mode"
-                      @change="updateExecutionMode(($event.target as HTMLSelectElement).value)"
-                    >
-                      <option v-for="mode in executionModeOptions" :key="mode.value" :value="mode.value">
-                        {{ mode.label }}
-                      </option>
-                    </select>
-                  </label>
+                  <MetaPicker label="思考" :current-label="mainThinkingLabel">
+                    <template #panel>
+                      <EffortSlider
+                        :options="mainEffortOptions"
+                        :model-value="mainEffortValue"
+                        @change="onMainEffortChange"
+                      />
+                    </template>
+                  </MetaPicker>
+                  <MetaPicker
+                    label="模式"
+                    :options="executionModeOptions"
+                    :model-value="apiConfig.execution_mode"
+                    @change="updateExecutionMode"
+                  />
+                  <SessionPermissionPicker
+                    v-if="backendType !== 'direct_api' && currentSessionId"
+                    :session-id="currentSessionId"
+                    :backend="backendType"
+                    :disabled="paneIsLoading"
+                    placement="up"
+                  />
                   <button type="button" class="dash-meta-btn" @click="activePage = 'memory'">记忆</button>
-                  <button type="button" class="dash-meta-btn" @click="activePage = 'system'">设置</button>
-                </template>
-                <template v-else>
-                  <span class="dash-agent-meta-pill" title="该窗口当前绑定的渠道、模型与思考强度（在顶部的模型选择器修改）">
-                    模型：{{ currentSessionModelLabel }}<template v-if="currentSessionChannelLabel">（{{ currentSessionChannelLabel }}）</template><template v-if="currentSessionEffortLabel"> · 思考：{{ currentSessionEffortLabel }}</template>
-                  </span>
-                  <button type="button" class="dash-meta-btn" @click="openAgentEditor(); activePage = 'agents'">智能体</button>
+                  <button type="button" class="dash-meta-btn" @click="openSystemSection('backend')">设置</button>
                 </template>
               </div>
             </div>
            </div>
+            </template>
+           </div>
 
             <!-- 右侧信息面板：会话 / 参与者 / 最近记忆 / 任务进度 -->
-            <aside class="dash-chat-aside">
+            <aside v-if="!isWorkspaceMode" class="dash-chat-aside">
               <section class="dash-aside-card dash-sessions-card">
                 <div class="dash-aside-title">
                   会话
@@ -4519,7 +4460,13 @@ ttsPlayer.stop();
               <section class="dash-aside-card">
                 <div class="dash-aside-title">参与者</div>
                 <div class="dash-aside-hero">
-                  <div :class="['dash-aside-avatar', { active: paneIsLoading }]">{{ isMainSlot ? "🐾" : currentAgentIdentity.avatar }}</div>
+                  <div :class="['dash-aside-avatar', { active: paneIsLoading }]">
+                    <AppIcon v-if="isMainSlot" name="brand-pet" :size="20" />
+                    <AppIcon v-else-if="currentAgentIdentity.id === 'builtin-claude'" name="claude" :size="20" />
+                    <AppIcon v-else-if="currentAgentIdentity.id === 'builtin-codex'" name="codex" :size="20" />
+                    <AppIcon v-else-if="currentAgentIdentity.id === 'builtin-dsh'" name="dsh" :size="20" />
+                    <template v-else>{{ currentAgentIdentity.avatar }}</template>
+                  </div>
                   <div class="dash-aside-hero-main">
                     <div class="dash-aside-hero-name">{{ isMainSlot ? chatHeaderTitle : currentAgentIdentity.name }}</div>
                     <div class="dash-aside-hero-desc">{{ isMainSlot ? "桌面桌宠 · 主助理" : currentSlotLabel + " 独立窗口" }}</div>
@@ -4527,6 +4474,7 @@ ttsPlayer.stop();
                 </div>
                 <div class="dash-aside-actions">
                   <button
+                    v-if="paneIsLoading"
                     type="button"
                     class="dash-aside-btn danger"
                     title="停止当前回复"
@@ -4549,11 +4497,10 @@ ttsPlayer.stop();
                     v-else
                     type="button"
                     class="dash-aside-btn"
-                    title="新建一个该窗口的会话"
-                    :disabled="creatingSession"
-                    @click="createChatSession"
+                    title="管理当前智能体"
+                    @click="openAgentEditor(); activePage = 'agents'"
                   >
-                    新会话
+                    管理智能体
                   </button>
                 </div>
               </section>
@@ -4598,7 +4545,7 @@ ttsPlayer.stop();
             <div class="dash-memory-layout">
               <div class="dash-memory-editor-stack">
                 <div class="dash-card palette-panel skin-panel">
-                  <div class="dash-card-title"><span class="card-icon">＋</span> 新建记忆</div>
+                  <div class="dash-card-title"><span class="card-icon"><AppIcon name="memory-note" :size="15" /></span> 新建记忆</div>
                   <div class="dash-form-group">
                     <label>标题</label>
                     <input type="text" v-model="memoryDraft.key" placeholder="例如：沟通偏好" />
@@ -4629,7 +4576,7 @@ ttsPlayer.stop();
                 </div>
 
                 <div class="dash-card dash-task-composer">
-                  <div class="dash-card-title"><span class="card-icon">时</span> 新建定时任务</div>
+                  <div class="dash-card-title"><span class="card-icon"><AppIcon name="clock-task" :size="15" /></span> 新建定时任务</div>
                   <div class="dash-form-group">
                     <label>任务</label>
                     <input type="text" v-model="taskDraft.title" placeholder="例如：提醒我喝水" />
@@ -4701,7 +4648,7 @@ ttsPlayer.stop();
                             :disabled="taskTogglingId === task.id"
                             @click="toggleScheduledTask(task)"
                           >
-                            {{ task.enabled ? 'Ⅱ' : '▶' }}
+                            <AppIcon :name="task.enabled ? 'pause' : 'play'" :size="13" />
                           </button>
                           <button
                             class="dash-icon-btn danger"
@@ -4709,7 +4656,7 @@ ttsPlayer.stop();
                             :disabled="taskDeletingId === task.id"
                             @click="deleteScheduledTask(task.id)"
                           >
-                            ×
+                            <AppIcon name="close" :size="13" />
                           </button>
                         </div>
                       </div>
@@ -4742,7 +4689,7 @@ ttsPlayer.stop();
                         :disabled="memoryDeletingId === memory.id"
                         @click="deleteMemoryItem(memory.id)"
                       >
-                        ×
+                        <AppIcon name="close" :size="13" />
                       </button>
                     </div>
                     <p>{{ memory.value }}</p>
@@ -4763,7 +4710,7 @@ ttsPlayer.stop();
             <div class="dash-agents-layout">
               <div class="dash-card dash-agents-list-panel">
                 <div class="dash-card-title">
-                  <span class="card-icon">🧩</span> 我的智能体
+                  <span class="card-icon"><AppIcon name="agent-hub" :size="15" /></span> 我的智能体
                   <button class="dash-agents-add-btn" @click="openAgentEditor()">＋ 新建</button>
                 </div>
                 <div v-if="agentSaved" class="dash-agents-saved-tip">✓ 已保存</div>
@@ -4771,7 +4718,12 @@ ttsPlayer.stop();
                   还没有自定义智能体。<br />点击「＋ 新建」自由定义，或用下方的 AI 帮你生成一个。
                 </div>
                 <div v-for="agent in agentsStore.agents" :key="agent.id" class="dash-agent-card">
-                  <span class="dash-agent-card-avatar">{{ agent.avatar || "🤖" }}</span>
+                  <span class="dash-agent-card-avatar">
+                    <AppIcon v-if="agent.id === 'builtin-claude'" name="claude" :size="18" />
+                    <AppIcon v-else-if="agent.id === 'builtin-codex'" name="codex" :size="18" />
+                    <AppIcon v-else-if="agent.id === 'builtin-dsh'" name="dsh" :size="18" />
+                    <template v-else>{{ agent.avatar || "🤖" }}</template>
+                  </span>
                   <div class="dash-agent-card-main">
                     <div class="dash-agent-card-name">@{{ agent.name }}</div>
                     <div class="dash-agent-card-desc">{{ agent.description || "（无描述）" }}</div>
@@ -4795,7 +4747,7 @@ ttsPlayer.stop();
                 </div>
 
                 <div class="dash-card-title" style="margin-top: 18px;">
-                  <span class="card-icon">✨</span> 用 AI 创建
+                  <span class="card-icon"><AppIcon name="ai-spark" :size="15" /></span> 用 AI 创建
                 </div>
                 <p class="dash-agents-ai-hint">一句话说清你要它做什么，AI 会推断使用场景，写出名字、头像、完整角色设定和工具权限，你确认后即可保存。也可以在对话里直接说「帮我创建一个……的智能体」。此功能使用系统设置中的直连 API 配置。</p>
                 <textarea
@@ -4860,7 +4812,7 @@ ttsPlayer.stop();
                       :disabled="agentCompleteLoading"
                       @click="completeAgentDraft()"
                     >
-                      {{ agentCompleteLoading ? "补全中…" : agentDraft.system_prompt.trim() ? "✨ AI 完善设定" : "✨ AI 补全设定" }}
+                      {{ agentCompleteLoading ? "补全中…" : agentDraft.system_prompt.trim() ? "AI 完善设定" : "AI 补全设定" }}
                     </button>
                   </div>
                 </div>
@@ -4917,7 +4869,7 @@ ttsPlayer.stop();
             <!-- 主题皮肤 -->
             <div class="appearance-atelier-layout">
               <div class="dash-card character-panel">
-              <div class="dash-card-title"><span class="card-icon">形</span> 本体形象</div>
+              <div class="dash-card-title"><span class="card-icon"><AppIcon name="pet-figure" :size="15" /></span> 本体形象</div>
               <div class="dash-character-grid">
                 <button
                   v-for="character in petCharacters"
@@ -4942,12 +4894,12 @@ ttsPlayer.stop();
             </div>
 
               <div class="dash-card character-panel">
-              <div class="dash-card-title"><span class="card-icon">PX</span> 自定义像素桌宠</div>
+              <div class="dash-card-title"><span class="card-icon"><AppIcon name="pixel-grid" :size="15" /></span> 自定义像素桌宠</div>
               <CustomPixelPetWorkshop @selected="onCustomPixelSelected" />
             </div>
 
               <div class="dash-card palette-panel skin-panel">
-              <div class="dash-card-title"><span class="card-icon">◐</span> 主题皮肤</div>
+              <div class="dash-card-title"><span class="card-icon"><AppIcon name="wardrobe" :size="15" /></span> 主题皮肤</div>
               <div class="dash-skin-grid">
                 <div
                   v-for="t in themes" :key="t.id"
@@ -4955,7 +4907,7 @@ ttsPlayer.stop();
                   @click="selectSkin(t.id)"
                 >
                   <div class="dash-skin-preview" :style="{ background: t.headerGradient }">
-                    <span v-if="currentSkin === t.id" class="dash-skin-check">✔</span>
+                    <span v-if="currentSkin === t.id" class="dash-skin-check"><AppIcon name="check" :size="13" /></span>
                   </div>
                   <span class="dash-skin-name">{{ t.name }}</span>
                   <span v-if="t.animated" class="dash-skin-tag">随时间变色</span>
@@ -4965,7 +4917,7 @@ ttsPlayer.stop();
 
             <!-- 字体颜色 -->
               <div class="dash-card sample-sheet font-panel">
-              <div class="dash-card-title"><span class="card-icon">Aa</span> 字体颜色</div>
+              <div class="dash-card-title"><span class="card-icon"><AppIcon name="type-color" :size="15" /></span> 字体颜色</div>
               <div class="dash-font-color-grid">
                 <div
                   v-for="fc in FONT_COLORS" :key="fc.id"
@@ -4980,33 +4932,33 @@ ttsPlayer.stop();
 
             <!-- 对话背景 -->
               <div class="dash-card film-strip-panel bg-panel">
-              <div class="dash-card-title"><span class="card-icon">▧</span> 对话背景</div>
+              <div class="dash-card-title"><span class="card-icon"><AppIcon name="scene-bg" :size="15" /></span> 对话背景</div>
               <div class="dash-bg-grid">
                 <button :class="['dash-bg-opt', { active: chatBg === 'none' }]" @click="selectBg('none')">
-                  <div class="dash-bg-preview">✖</div>
+                  <div class="dash-bg-preview"><AppIcon name="bg-none" :size="20" /></div>
                   <span class="dash-bg-label">无</span>
                 </button>
                 <button :class="['dash-bg-opt', { active: chatBg === 'cute' }]" @click="selectBg('cute')">
-                  <div class="dash-bg-preview">🐾</div>
+                  <div class="dash-bg-preview"><AppIcon name="bg-cute" :size="20" /></div>
                   <span class="dash-bg-label">可爱</span>
                 </button>
                 <button :class="['dash-bg-opt', { active: chatBg === 'scifi' }]" @click="selectBg('scifi')">
-                  <div class="dash-bg-preview">🚀</div>
+                  <div class="dash-bg-preview"><AppIcon name="bg-scifi" :size="20" /></div>
                   <span class="dash-bg-label">科幻</span>
                 </button>
                 <button :class="['dash-bg-opt', { active: chatBg === 'minimal' }]" @click="selectBg('minimal')">
-                  <div class="dash-bg-preview">○</div>
+                  <div class="dash-bg-preview"><AppIcon name="bg-minimal" :size="20" /></div>
                   <span class="dash-bg-label">简洁</span>
                 </button>
                 <button :class="['dash-bg-opt', { active: chatBg === 'custom' }]" @click="chooseBgImage">
                   <div class="dash-bg-preview">
                     <img v-if="customBgImage" :src="customBgImage" alt="" />
-                    <span v-else>📷</span>
+                    <AppIcon v-else name="bg-upload" :size="20" />
                   </div>
                   <span class="dash-bg-label">自定义</span>
                 </button>
                 <button v-if="chatBg === 'custom' && customBgImage" class="dash-bg-opt" @click="clearCustomBg">
-                  <div class="dash-bg-preview">🗑️</div>
+                  <div class="dash-bg-preview"><AppIcon name="trash" :size="20" /></div>
                   <span class="dash-bg-label">清除</span>
                 </button>
               </div>
@@ -5015,11 +4967,11 @@ ttsPlayer.stop();
 
             <!-- 用户头像 -->
             <div class="dash-card portrait-frame-panel avatar-panel">
-              <div class="dash-card-title"><span class="card-icon">◉</span> 用户头像</div>
+              <div class="dash-card-title"><span class="card-icon"><AppIcon name="user-avatar" :size="15" /></span> 用户头像</div>
               <div class="dash-avatar-section">
                 <div class="dash-avatar-preview">
                   <img v-if="pet.userAvatar" :src="pet.userAvatar" alt="用户头像" />
-                  <span v-else>👤</span>
+                  <AppIcon v-else name="user-avatar" :size="26" />
                 </div>
                 <div class="dash-avatar-actions">
                   <button class="dash-btn primary" @click="chooseAvatar">选择图片</button>
@@ -5040,7 +4992,7 @@ ttsPlayer.stop();
             </div>
 
             <div class="dash-card sound-panel voice-interaction-panel">
-              <div class="dash-card-title"><span class="card-icon">◌</span> 语音交互</div>
+              <div class="dash-card-title"><span class="card-icon"><AppIcon name="voice-station" :size="15" /></span> 语音交互</div>
 
               <div class="voice-toggle-grid">
               <div class="dash-switch-row sound-toggle-card">
@@ -5105,7 +5057,7 @@ ttsPlayer.stop();
             </div>
 
             <div class="dash-card mixer-panel voice-engine-panel">
-              <div class="dash-card-title"><span class="card-icon">≋</span> 声音引擎</div>
+              <div class="dash-card-title"><span class="card-icon"><AppIcon name="voice-mixer" :size="15" /></span> 声音引擎</div>
 
               <div class="dash-field-row">
                 <span class="dash-field-label">声音引擎</span>
@@ -5174,8 +5126,10 @@ ttsPlayer.stop();
 
                 <div class="dash-preview-row">
                   <button class="dash-btn primary" :disabled="filteredEdgeVoices.length === 0" @click="previewVoice">
-                    {{ isPreviewing ? '⏹ 停止' : '▶ 试听' }}
+                    <AppIcon :name="isSpeaking ? 'stop' : 'play'" :size="13" />
+                    <span>{{ isSpeaking ? '停止' : '试听' }}</span>
                   </button>
+                  <span v-if="isSpeaking" class="dash-preview-hint">正在播放 {{ speakingText.slice(0, 18) }}…</span>
                 </div>
               </template>
 
@@ -5220,526 +5174,662 @@ ttsPlayer.stop();
             </div>
           </div>
 
-          <!-- ========== 系统 ========== -->
-          <div v-else-if="activePage === 'system'" key="system" class="system-lab-page">
-            <div class="page-header lab-header">
-              <div class="page-kicker">System</div>
-              <h1 class="page-title">系统设置</h1>
-              <p class="page-subtitle">配置 AI 后端、性格和职业定位</p>
-            </div>
-
-            <!-- 自定义系统提示 -->
-            <div class="dash-card lab-module">
-              <div class="dash-card-title"><span class="card-icon">📝</span> 自定义系统提示</div>
-              <p class="dash-card-subtitle">追加到系统提示末尾，对所有对话生效。留空则不追加。</p>
-              <textarea
-                class="dash-textarea"
-                rows="3"
-                v-model="customPromptDraft"
-                placeholder="例如：你每次回复都以『汪！』开头..."
-              />
-              <div class="dash-card-actions">
-                <button class="dash-mini-btn primary" @click="saveCustomPrompt">
-                  {{ customPromptSaved ? "✅ 已保存" : "💾 保存" }}
-                </button>
-                <span v-if="skillsStore.activeSkill" class="dash-card-subtitle">
-                  当前激活技能：<b>{{ skillsStore.activeSkill.name }}</b>
-                </span>
+          <!-- ========== 系统设置（侧边栏子列表分区，见 docs/settings-redesign.md） ========== -->
+          <div v-else-if="activePage === 'system'" key="system" class="system-lab-page sys-page">
+            <div class="page-header lab-header sys-header">
+              <div class="sys-header-copy">
+                <div class="page-kicker">系统设置</div>
+                <h1 class="page-title">{{ currentSystemSection.label }}</h1>
+                <p class="page-subtitle">{{ currentSystemSection.desc }}</p>
               </div>
-            </div>
-
-            <!-- 技能（只读摘要） -->
-            <div class="dash-card lab-module">
-              <div class="dash-card-title"><span class="card-icon">🧩</span> 技能</div>
-              <p class="dash-card-subtitle">
-                编辑请到设置页。这里只展示摘要与激活切换。
-              </p>
-              <div v-if="skillsStore.skills.length === 0" class="dash-card-subtitle">
-                还没有任何技能。
-              </div>
-              <div v-else class="dash-skill-list">
-                <div
-                  v-for="s in skillsStore.skills"
-                  :key="s.id"
-                  class="dash-skill-row"
-                  :class="{ active: s.is_active }"
-                >
-                  <div class="dash-skill-info">
-                    <span class="dash-skill-name">{{ s.name }}</span>
-                    <span v-if="s.is_active" class="dash-skill-badge">已激活</span>
-                  </div>
-                  <div class="dash-skill-desc">{{ s.description || "(无描述)" }}</div>
-                  <div class="dash-card-actions">
-                    <button
-                      v-if="!s.is_active"
-                      class="dash-mini-btn"
-                      @click="activateSkill(s.id)"
-                    >激活</button>
-                    <button
-                      v-else
-                      class="dash-mini-btn"
-                      @click="activateSkill(null)"
-                    >取消激活</button>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <!-- AI 后端 -->
-            <div class="dash-card lab-module agent-backend-panel">
-              <div class="dash-card-title"><span class="card-icon">⌘</span> AI 后端与模型</div>
-
-              <div class="dash-backend-selector">
-                <button :class="['dash-backend-btn', { active: backendType === 'claude_code' }]" @click="selectBackend('claude_code')">
-                  <span>CC</span> Claude Code
-                </button>
-                <button :class="['dash-backend-btn', { active: backendType === 'codex' }]" @click="selectBackend('codex')">
-                  <span>CX</span> Codex
-                </button>
-                <button :class="['dash-backend-btn', { active: backendType === 'dsh' }]" @click="selectBackend('dsh')">
-                  <span>DS</span> DeepSeek Harness
-                </button>
-                <button :class="['dash-backend-btn', { active: backendType === 'direct_api' }]" @click="selectBackend('direct_api')">
-                  <span>API</span> 直连 API Agent
-                </button>
-              </div>
-
-              <template v-if="backendType === 'claude_code'">
-                <!-- 连接状态展示 -->
-                <div class="connection-status-row">
-                  <span class="status-label">本地连接状态：</span>
-                  <span :class="['status-value', claudeStatus.logged_in ? 'connected' : 'disconnected']">
-                    <span class="status-dot"></span>
-                    {{ claudeStatus.logged_in ? '已连接 (Local Connected)' : '未连接 (Unconnected)' }}
-                  </span>
-                </div>
-
-                <div v-if="claudeStatus.logged_in" class="connection-detail-box">
-                  <div class="detail-item">
-                    <span class="detail-label">AI 驱动模型:</span>
-                    <span class="detail-value font-mono">{{ claudeStatus.model || 'Claude 3.5 Sonnet' }}</span>
-                  </div>
-                  <div class="detail-item">
-                    <span class="detail-label">授权凭证:</span>
-                    <span class="detail-value font-mono">{{ claudeStatus.token_preview }}</span>
-                  </div>
-                  <div v-if="claudeStatus.base_url" class="detail-item">
-                    <span class="detail-label">API 接入点:</span>
-                    <span class="detail-value font-mono text-truncate">{{ claudeStatus.base_url }}</span>
-                  </div>
-                </div>
-
-                <div class="dash-current-model" style="margin-top: 14px;">当前会话模型：{{ currentModel || '加载中...' }}</div>
-                <p class="dash-hint">使用本地 Claude Code CLI 子进程，会话自动保持上下文与本地执行能力；需要授权的工具会弹出与直连 API 相同的确认窗口。</p>
-                
-                <div style="display:flex;gap:12px;margin-top:12px;">
-                  <button class="dash-btn primary" @click="resetModel">{{ modelSaved ? "✅ 已重置" : "🔄 重置会话" }}</button>
-                  <button class="dash-btn secondary" @click="startClaudeConfig">
-                    登录/配置 Claude Code
-                  </button>
-                </div>
-              </template>
-
-              <CodexConnection v-else-if="backendType === 'codex'" :model-saved="modelSaved" @reset="resetModel" />
-
-              <DshConnection v-else-if="backendType === 'dsh'" :model-saved="modelSaved" @reset="resetModel" />
-
-              <template v-else>
-                <div class="dash-profile-toolbar">
-                  <div>
-                    <div class="dash-profile-toolbar-title">已保存模型配置</div>
-                    <div class="dash-profile-toolbar-subtitle">保存后可在聊天输入框右下角一键切换</div>
-                  </div>
-                  <button class="dash-btn secondary" @click="newApiProfileDraft">新建模型</button>
-                </div>
-                <div v-if="apiProfiles.length > 0" class="dash-profile-list">
-                  <div
-                    v-for="profile in apiProfiles"
-                    :key="profile.id"
-                    :class="['dash-profile-item', { active: profile.id === activeApiProfileId }]"
-                  >
-                    <button class="dash-profile-main" @click="activateApiProfile(profile.id)">
-                      <span class="dash-profile-name">{{ profile.name || profile.model }}</span>
-                      <span class="dash-profile-meta">{{ profile.model }} · {{ profile.base_url }}</span>
-                      <span class="dash-profile-badges">
-                        <span>思考 {{ thinkingDepthLabel(profile.thinking_depth) }}</span>
-                        <span>搜索 {{ searchProviderLabel(profile.search_provider) }}</span>
-                        <span>{{ profile.has_api_key ? 'API Key 已隐藏' : '无 API Key' }}</span>
-                      </span>
-                    </button>
-                    <button
-                      class="dash-icon-btn danger"
-                      title="删除模型配置"
-                      :disabled="profileDeletingId === profile.id || apiProfiles.length <= 1"
-                      @click="deleteApiProfile(profile.id)"
-                    >
-                      ×
-                    </button>
-                  </div>
-                </div>
-                <div class="dash-form-group">
-                  <label>配置名称</label>
-                  <input type="text" v-model="apiConfig.name" placeholder="例如：OpenAI 工作模型" />
-                </div>
-                <div class="dash-form-group">
-                  <label>接口地址 (Base URL)</label>
-                  <div class="dash-inline-control">
-                    <input type="text" v-model="apiConfig.base_url" placeholder="https://api.openai.com/v1" @input="clearFetchedModels" />
-                    <button
-                      type="button"
-                      class="dash-btn secondary"
-                      :disabled="isFetchingModels || !apiConfig.base_url.trim()"
-                      @click="fetchApiModels"
-                    >
-                      {{ isFetchingModels ? '获取中...' : '获取模型' }}
-                    </button>
-                  </div>
-                </div>
-                <div class="dash-form-group">
-                  <label>API 密钥 (API Key)</label>
-                  <input 
-                    type="password" 
-                    v-model="apiConfig.api_key" 
-                    :placeholder="apiConfig.has_api_key ? '•••••••••••••••• (已保存)' : '请输入 sk-... 格式的 API Key'" 
-                    autocomplete="new-password" 
-                    @input="clearFetchedModels" 
-                  />
-                  <p class="dash-hint compact">已保存配置只显示“API Key 已隐藏”，不会在模型列表里明文展示。</p>
-                </div>
-                <div class="dash-form-group">
-                  <label>模型名称 (Model)</label>
-                  <input type="text" v-model="apiConfig.model" placeholder="gpt-4o-mini" />
-                </div>
-                <div v-if="modelFetchResult.message" :class="['dash-test-result', 'compact', modelFetchResult.success ? 'success' : 'error']">
-                  {{ modelFetchResult.message }}
-                </div>
-                <div v-if="fetchedModels.length > 0" class="dash-model-picker">
-                  <div class="dash-field-row">
-                    <span class="dash-field-label">选择模型</span>
-                    <select
-                      class="dash-select"
-                      :value="selectedFetchedModel"
-                      @change="selectFetchedModel(($event.target as HTMLSelectElement).value)"
-                    >
-                      <option v-for="model in fetchedModels" :key="model" :value="model">{{ model }}</option>
-                    </select>
-                  </div>
-                  <button class="dash-btn primary" :disabled="isAddingFetchedModel || !selectedFetchedModel" @click="addFetchedModelProfile">
-                    {{ isAddingFetchedModel ? '加入中...' : '加入模型列表' }}
-                  </button>
-                </div>
-                <div class="dash-form-group">
-                  <label>思考深度</label>
-                  <div class="dash-thinking-switch">
-                    <button
-                      v-for="item in thinkingDepthOptions"
-                      :key="item.value"
-                      type="button"
-                      :class="['dash-thinking-option', { active: apiConfig.thinking_depth === item.value }]"
-                      @click="updateThinkingDepth(item.value)"
-                    >
-                      {{ item.label }}
-                    </button>
-                  </div>
-                  <p class="dash-hint compact">切换后会立即保存到当前模型配置，并在下一次直连 API 请求中生效。</p>
-                </div>
-                <div class="dash-form-group">
-                  <label>优先搜索源</label>
-                  <select
-                    class="dash-select"
-                    :value="apiConfig.search_provider"
-                    @change="updateSearchProvider(($event.target as HTMLSelectElement).value)"
-                  >
-                    <option v-for="item in searchProviderOptions" :key="item.value" :value="item.value">
-                      {{ item.label }} - {{ item.desc }}
-                    </option>
-                  </select>
-                  <p class="dash-hint compact">国内网络推荐使用 Bing；DuckDuckGo 在国内网络下容易超时。</p>
-                </div>
-                <div class="dash-form-group">
-                  <label>执行模式</label>
-                  <div class="dash-mode-grid">
-                    <button
-                      v-for="mode in executionModeOptions"
-                      :key="mode.value"
-                      type="button"
-                      :class="['dash-mode-option', { active: apiConfig.execution_mode === mode.value }]"
-                      @click="apiConfig.execution_mode = mode.value"
-                    >
-                      <span>{{ mode.label }}</span>
-                      <small>{{ mode.desc }}</small>
-                    </button>
-                  </div>
-                </div>
-                <div class="dash-toggle-group">
-                  <label>Computer Use 桌面控制</label>
-                  <input
-                    type="checkbox"
-                    class="dash-toggle"
-                    :checked="computerUseEnabled"
-                    @change="updateComputerUseEnabled(($event.target as HTMLInputElement).checked)"
-                  />
-                </div>
-                <p class="dash-hint" style="margin-top:-4px;">
-                  开启后 AI 可使用查看屏幕、聚焦窗口、打开浏览器、鼠标和键盘工具。仅在需要桌面自动化时开启。
-                  <span v-if="computerUseSaved"> 已保存。</span>
-                </p>
-                <div v-if="apiConfig.execution_mode === 'custom'" class="dash-form-group">
-                  <label>自定义免确认操作</label>
-                  <div class="dash-tool-permission-grid">
-                    <label v-for="tool in toolPermissionOptions" :key="tool.id" class="dash-tool-permission">
-                      <input
-                        type="checkbox"
-                        :checked="isToolAutoApproved(tool.id)"
-                        @change="toggleAutoApprovedTool(tool.id, ($event.target as HTMLInputElement).checked)"
-                      />
-                      <span>{{ tool.label }}</span>
-                    </label>
-                  </div>
-                </div>
-                <div class="dash-form-group">
-                  <label>流式模式</label>
-                  <div class="dash-mode-grid">
-                    <button
-                      type="button"
-                      :class="['dash-mode-option', { active: apiConfig.stream_mode === 'auto' }]"
-                      @click="updateStreamMode('auto')"
-                    >
-                      <span>自动检测</span>
-                      <small>先 SSE 后 JSON</small>
-                    </button>
-                    <button
-                      type="button"
-                      :class="['dash-mode-option', { active: apiConfig.stream_mode === 'stream' }]"
-                      @click="updateStreamMode('stream')"
-                    >
-                      <span>流式 SSE</span>
-                      <small>OpenAI 标准</small>
-                    </button>
-                    <button
-                      type="button"
-                      :class="['dash-mode-option', { active: apiConfig.stream_mode === 'non_stream' }]"
-                      @click="updateStreamMode('non_stream')"
-                    >
-                      <span>非流式 JSON</span>
-                      <small>Auto Code 等</small>
-                    </button>
-                  </div>
-                  <p class="dash-hint">自动：先尝试 SSE，失败则回退到 JSON。Auto Code 等非标准接口选"非流式"。</p>
-                </div>
-                <div class="dash-form-group">
-                  <label>API 格式</label>
-                  <div class="dash-mode-grid">
-                    <button
-                      type="button"
-                      :class="['dash-mode-option', { active: apiConfig.api_mode === 'chat_completions' }]"
-                      @click="updateApiMode('chat_completions')"
-                    >
-                      <span>Chat Completions</span>
-                      <small>传统兼容格式 /v1/chat/completions</small>
-                    </button>
-                    <button
-                      type="button"
-                      :class="['dash-mode-option', { active: apiConfig.api_mode === 'responses' }]"
-                      @click="updateApiMode('responses')"
-                    >
-                      <span>Responses</span>
-                      <small>OpenAI 新格式 /v1/responses</small>
-                    </button>
-                  </div>
-                  <p class="dash-hint">Chat Completions 是主流兼容格式，Responses 是 OpenAI 2025 年推出的新格式。大多数情况选 Chat Completions。</p>
-                </div>
-                <div class="dash-form-group">
-                  <label>预设一键填充</label>
-                  <div class="dash-presets">
-                    <button class="dash-preset-badge" @click="applyPreset('openai')">OpenAI</button>
-                    <button class="dash-preset-badge" @click="applyPreset('deepseek')">DeepSeek</button>
-                    <button class="dash-preset-badge" @click="applyPreset('qwen')">通义千问</button>
-                    <button class="dash-preset-badge" @click="applyPreset('ollama')">Ollama本地</button>
-                  </div>
-                </div>
-
-                <div class="dash-toggle-group">
-                  <label>工具调用二次确认 (推荐)</label>
-                  <input
-                    type="checkbox"
-                    class="dash-toggle"
-                    :checked="apiConfig.execution_mode !== 'unreviewed'"
-                    @change="apiConfig.execution_mode = ($event.target as HTMLInputElement).checked ? 'normal' : 'unreviewed'"
-                  />
-                </div>
-                <p class="dash-hint" style="margin-top:-4px;">普通模式会在每类操作首次执行前请求确认；自定义模式按上方免确认列表执行。</p>
-
-                <div v-if="testResult.message" :class="['dash-test-result', testResult.success ? 'success' : 'error']">
-                  {{ testResult.success ? '✅ 连接成功！' : '❌ ' + testResult.message }}
-                </div>
-                <div class="dash-api-actions">
-                  <button class="dash-btn" @click="testConnection" :disabled="isTestingConnection || !apiConfig.base_url || !apiConfig.model">
-                    {{ isTestingConnection ? '测试中...' : '测试连接' }}
-                  </button>
-                  <button class="dash-btn primary" @click="saveApiConfig()" :disabled="isSavingConfig">
-                    {{ configSaved ? '保存成功' : (isSavingConfig ? '保存中...' : '保存配置') }}
-                  </button>
-                </div>
-                <div class="dash-api-actions" style="margin-top: 8px;">
-                  <button class="dash-btn deep-test-btn" @click="testCompatibility" :disabled="isTestingCompatibility || !apiConfig.base_url || !apiConfig.model">
-                    {{ isTestingCompatibility ? '检测中...' : '🔬 深度测试兼容性' }}
-                  </button>
-                </div>
-
-                <!-- 深度测试结果 -->
-                <div
-                  v-if="compatibilityResult"
-                  class="dash-compat-result"
-                  :class="compatibilityResult.http_ok ? 'success' : 'error'"
-                >
-                  <h4>兼容性检测报告</h4>
-                  <div class="compat-grid">
-                    <div class="compat-item">
-                      <span class="compat-label">HTTP 状态:</span>
-                      <span :class="compatibilityResult.http_ok ? 'pass' : 'fail'">
-                        {{ compatibilityResult.http_ok ? '✅' : '❌' }} {{ compatibilityResult.http_status }}
-                      </span>
-                    </div>
-                    <div class="compat-item">
-                      <span class="compat-label">SSE 格式:</span>
-                      <span :class="compatibilityResult.is_sse_format ? 'pass' : 'fail'">
-                        {{ compatibilityResult.is_sse_format ? '✅' : '❌' }}
-                      </span>
-                    </div>
-                    <div class="compat-item">
-                      <span class="compat-label">JSON 格式:</span>
-                      <span :class="compatibilityResult.is_json_format ? 'pass' : 'fail'">
-                        {{ compatibilityResult.is_json_format ? '✅' : '❌' }}
-                      </span>
-                    </div>
-                    <div class="compat-item">
-                      <span class="compat-label">内容提取:</span>
-                      <span :class="compatibilityResult.content_extracted ? 'pass' : 'fail'">
-                        {{ compatibilityResult.content_extracted ? '✅ 成功' : '❌ 失败' }}
-                      </span>
-                    </div>
-                    <div class="compat-item" v-if="compatibilityResult.content_extracted">
-                      <span class="compat-label">提取内容:</span>
-                      <span class="compat-content">{{ compatibilityResult.content_extracted }}</span>
-                    </div>
-                    <div class="compat-item" v-if="compatibilityResult.recommended_mode">
-                      <span class="compat-label">推荐模式:</span>
-                      <span class="compat-recommend">{{ compatibilityResult.recommended_mode === 'stream' ? '流式 (SSE)' : compatibilityResult.recommended_mode === 'non_stream' ? '非流式 (JSON)' : '自动' }}</span>
-                    </div>
-                    <div class="compat-item" v-if="compatibilityResult.errors && compatibilityResult.errors.length > 0">
-                      <span class="compat-label">错误:</span>
-                      <ul class="compat-errors">
-                        <li v-for="(err, idx) in compatibilityResult.errors" :key="idx">{{ err }}</li>
-                      </ul>
-                    </div>
-                  </div>
-                  <details v-if="compatibilityResult.raw_preview" class="compat-raw">
-                    <summary>查看原始响应 (前500字符)</summary>
-                    <pre>{{ compatibilityResult.raw_preview }}</pre>
-                  </details>
-                  <p class="compat-time">响应时间: {{ compatibilityResult.response_time_ms }} ms</p>
-                </div>
-              </template>
-            </div>
-
-            <div class="dash-card weather-settings-panel">
-              <div class="dash-card-title"><span class="card-icon">☼</span> 天气 API 与提醒</div>
-              <div class="dash-toggle-group">
-                <label>启用天气栏与每日天气问候</label>
-                <input
-                  type="checkbox"
-                  class="dash-toggle"
-                  v-model="weatherConfig.enabled"
-                />
-              </div>
-              <div class="weather-settings-grid">
-                <div class="dash-form-group">
-                  <label>城市/地区</label>
-                  <input
-                    type="text"
-                    v-model="weatherConfig.location"
-                    placeholder="建议填写中文城市；例如 上海 / 北京"
-                  />
-                </div>
-                <div class="dash-form-group">
-                  <label>wttr.in 兼容 API 地址</label>
-                  <input
-                    type="text"
-                    v-model="weatherConfig.api_url"
-                    placeholder="http://wttr.in 或 https://example.com/{location}?format=j1"
-                  />
-                </div>
-              </div>
-              <div v-if="weatherInfo" class="weather-settings-preview">
-                当前天气：{{ formatWeatherDisplay(weatherInfo) }} · {{ weatherInfo.description }}
-              </div>
-              <div
-                v-if="weatherConfigResult.message"
-                :class="['dash-test-result', 'compact', weatherConfigResult.success ? 'success' : 'error']"
+              <button
+                type="button"
+                class="sys-header-badge"
+                :title="'当前 AI 后端：' + backendLabel(backendType)"
+                @click="openSystemSection('backend')"
               >
-                {{ weatherConfigResult.message }}
-              </div>
-              <div class="dash-api-actions">
-                <button
-                  class="dash-btn"
-                  type="button"
-                  :disabled="isTestingWeatherConfig || !weatherConfig.api_url.trim()"
-                  @click="testWeatherConfig"
-                >
-                  {{ isTestingWeatherConfig ? '测试中...' : '测试天气 API' }}
-                </button>
-                <button
-                  class="dash-btn secondary"
-                  type="button"
-                  :disabled="isWeatherLoading || !weatherConfig.enabled"
-                  @click="refreshWeather"
-                >
-                  {{ isWeatherLoading ? '刷新中...' : '立即刷新' }}
-                </button>
-                <button
-                  class="dash-btn primary"
-                  type="button"
-                  :disabled="isSavingWeatherConfig"
-                  @click="saveWeatherConfig"
-                >
-                  {{ isSavingWeatherConfig ? '保存中...' : '保存天气设置' }}
-                </button>
-              </div>
+                <AppIcon :name="backendIcon(backendType)" :size="14" />
+                <span>{{ backendLabel(backendType) }}</span>
+              </button>
             </div>
 
-            <!-- 性格 -->
-            <div class="system-role-grid">
-            <div class="dash-card role-card personality-panel">
-              <div class="dash-card-title"><span class="card-icon">✦</span> 性格</div>
-              <div class="dash-option-grid">
-                <button
-                  v-for="item in personalities" :key="item.id"
-                  :class="['dash-option-item', { active: currentPersonality === item.id }]"
-                  @click="selectPersonality(item.id)"
-                >
-                  <span class="dash-option-name">{{ item.name }}</span>
-                  <span class="dash-option-desc">{{ item.desc }}</span>
-                </button>
-              </div>
-              <p class="dash-hint" style="margin-top:12px;">切换后会重置本地 AI 会话，让新设定立即生效</p>
-            </div>
+            <Transition name="page-fade" mode="out-in">
+              <div :key="systemSection" class="sys-body">
+                <!-- ===== AI 后端 ===== -->
+                <template v-if="systemSection === 'backend'">
+                  <section class="dash-card sys-section">
+                    <header class="sys-section-head">
+                      <div>
+                        <h2 class="sys-section-title">选择 AI 后端</h2>
+                        <p class="sys-section-desc">主对话和桌宠聊天使用这里选中的后端；Claude Code / Codex / DSH 三个 agent 窗口固定使用各自的本机 CLI，不受这里影响。</p>
+                      </div>
+                    </header>
+                    <div class="sys-backend-grid" role="radiogroup" aria-label="AI 后端">
+                      <button
+                        v-for="item in backendOptions"
+                        :key="item.id"
+                        type="button"
+                        role="radio"
+                        :aria-checked="backendType === item.id"
+                        :class="['sys-backend-card', { active: backendType === item.id }]"
+                        @click="backendType !== item.id && selectBackend(item.id)"
+                      >
+                        <span class="sys-backend-icon"><AppIcon :name="item.icon" :size="18" /></span>
+                        <span class="sys-backend-copy">
+                          <strong>{{ item.label }}</strong>
+                          <small>{{ item.desc }}</small>
+                        </span>
+                        <span v-if="backendType === item.id" class="sys-backend-check" aria-hidden="true"><AppIcon name="check" :size="12" :stroke-width="2.4" /></span>
+                      </button>
+                    </div>
+                  </section>
 
-            <!-- 职业 -->
-            <div class="dash-card role-card profession-panel">
-              <div class="dash-card-title"><span class="card-icon">◇</span> 职业</div>
-              <div class="dash-option-grid">
-                <button
-                  v-for="item in professions" :key="item.id"
-                  :class="['dash-option-item', { active: currentProfession === item.id }]"
-                  @click="selectProfession(item.id)"
-                >
-                  <span class="dash-option-name">{{ item.name }}</span>
-                  <span class="dash-option-desc">{{ item.desc }}</span>
-                </button>
+                  <section v-if="backendType === 'claude_code'" class="dash-card sys-section">
+                    <header class="sys-section-head">
+                      <div>
+                        <h2 class="sys-section-title">Claude Code 连接</h2>
+                        <p class="sys-section-desc">使用本机 Claude Code CLI 子进程，复用本机登录，会话自动保持上下文。</p>
+                      </div>
+                      <span :class="['sys-status', claudeStatus.logged_in ? 'ok' : 'off']">
+                        <span class="sys-status-dot" />{{ claudeStatus.logged_in ? '已连接' : '未连接' }}
+                      </span>
+                    </header>
+                    <dl class="sys-facts">
+                      <div><dt>驱动模型</dt><dd class="sys-mono">{{ claudeStatus.model || '跟随本机配置' }}</dd></div>
+                      <div v-if="claudeStatus.token_preview"><dt>授权凭证</dt><dd class="sys-mono">{{ claudeStatus.token_preview }}</dd></div>
+                      <div v-if="claudeStatus.base_url"><dt>API 接入点</dt><dd class="sys-mono">{{ claudeStatus.base_url }}</dd></div>
+                      <div><dt>当前会话模型</dt><dd>{{ currentModel || '加载中…' }}</dd></div>
+                    </dl>
+                    <footer class="sys-section-foot">
+                      <button type="button" class="sys-link-btn" @click="openSystemSection('permissions')">权限模式在「执行权限」里设置 →</button>
+                      <button type="button" class="dash-btn secondary" @click="startClaudeConfig">登录 / 配置</button>
+                      <button type="button" class="dash-btn" @click="resetModel">{{ modelSaved ? '已重置' : '重置会话' }}</button>
+                    </footer>
+                  </section>
+
+                  <section v-else-if="backendType === 'codex'" class="dash-card sys-section">
+                    <header class="sys-section-head">
+                      <div>
+                        <h2 class="sys-section-title">Codex 连接</h2>
+                        <p class="sys-section-desc">本机 Codex CLI 的安装、登录与工作目录。</p>
+                      </div>
+                    </header>
+                    <CodexConnection :model-saved="modelSaved" :show-permission="false" @reset="resetModel" />
+                  </section>
+
+                  <section v-else-if="backendType === 'dsh'" class="dash-card sys-section">
+                    <header class="sys-section-head">
+                      <div>
+                        <h2 class="sys-section-title">DeepSeek Harness 连接</h2>
+                        <p class="sys-section-desc">本机 DSH 的安装状态、模型与桌宠专属 profile。</p>
+                      </div>
+                    </header>
+                    <DshConnection :model-saved="modelSaved" :show-permission="false" @reset="resetModel" />
+                  </section>
+
+                  <section v-else class="dash-card sys-section">
+                    <header class="sys-section-head">
+                      <div>
+                        <h2 class="sys-section-title">直连 API</h2>
+                        <p class="sys-section-desc">通过 OpenAI 兼容接口直接调用模型，内置文件、命令、搜索、记忆等工具。</p>
+                      </div>
+                      <span :class="['sys-status', apiConfig.has_api_key ? 'ok' : 'off']">
+                        <span class="sys-status-dot" />{{ apiConfig.has_api_key ? '密钥已保存' : '未填密钥' }}
+                      </span>
+                    </header>
+                    <dl class="sys-facts">
+                      <div><dt>当前配置</dt><dd>{{ apiConfig.name || apiConfig.model || '未选择' }}</dd></div>
+                      <div><dt>模型</dt><dd class="sys-mono">{{ apiConfig.model || '—' }}</dd></div>
+                      <div><dt>接口地址</dt><dd class="sys-mono">{{ apiConfig.base_url || '—' }}</dd></div>
+                      <div><dt>执行模式</dt><dd>{{ apiExecutionModeLabel }}</dd></div>
+                    </dl>
+                    <footer class="sys-section-foot">
+                      <button type="button" class="dash-btn secondary" @click="openSystemSection('permissions')">执行权限</button>
+                      <button type="button" class="dash-btn primary" @click="openSystemSection('models')">管理模型配置</button>
+                    </footer>
+                  </section>
+                </template>
+
+                <!-- ===== 模型接口（直连 API） ===== -->
+                <template v-else-if="systemSection === 'models'">
+                  <div v-if="backendType !== 'direct_api'" class="sys-notice" role="status">
+                    <AppIcon name="alert" :size="15" />
+                    <span>当前 AI 后端是 {{ backendLabel(backendType) }}，这里的模型配置只在「直连 API」后端下生效。</span>
+                    <button type="button" class="dash-mini-btn primary" @click="selectBackend('direct_api')">切换到直连 API</button>
+                  </div>
+
+                  <div class="sys-models-layout">
+                    <aside class="dash-card sys-section sys-profile-pane" aria-label="已保存的模型配置">
+                      <header class="sys-section-head compact">
+                        <h2 class="sys-section-title">模型配置</h2>
+                        <button type="button" class="dash-mini-btn" @click="newApiProfileDraft">
+                          <AppIcon name="plus" :size="12" /> 新建
+                        </button>
+                      </header>
+                      <ul class="sys-profile-list">
+                        <li v-if="!apiConfig.id" class="sys-profile is-draft is-current">
+                          <span class="sys-profile-main">
+                            <span class="sys-profile-name">{{ apiConfig.name.trim() || '新建配置' }}</span>
+                            <span class="sys-profile-meta">尚未保存</span>
+                          </span>
+                        </li>
+                        <li
+                          v-for="profile in apiProfiles"
+                          :key="profile.id"
+                          :class="['sys-profile', { 'is-current': profile.id === apiConfig.id }]"
+                        >
+                          <button
+                            type="button"
+                            class="sys-profile-main"
+                            :title="profile.base_url"
+                            @click="activateApiProfile(profile.id, { switchBackend: false })"
+                          >
+                            <span class="sys-profile-name">{{ profile.name || profile.model }}</span>
+                            <span class="sys-profile-meta">{{ profile.model }}</span>
+                          </button>
+                          <span v-if="profile.id === activeApiProfileId" class="sys-pill">使用中</span>
+                          <button
+                            type="button"
+                            class="sys-profile-delete"
+                            title="删除模型配置"
+                            :aria-label="'删除模型配置 ' + (profile.name || profile.model)"
+                            :disabled="profileDeletingId === profile.id || apiProfiles.length <= 1"
+                            @click="confirmDeleteApiProfile(profile)"
+                          >
+                            <AppIcon name="close" :size="12" />
+                          </button>
+                        </li>
+                      </ul>
+                      <p class="sys-pane-note">点一下即切换为使用中的配置；聊天输入框右下角也能一键切换。</p>
+                    </aside>
+
+                    <div class="sys-editor">
+                      <section class="dash-card sys-section">
+                        <header class="sys-section-head">
+                          <div>
+                            <h2 class="sys-section-title">{{ apiConfig.id ? '连接' : '新建模型配置' }}</h2>
+                            <p class="sys-section-desc">名称、地址、密钥、模型改完后点「保存配置」；下方其他选项修改后会自动保存。</p>
+                          </div>
+                        </header>
+                        <div class="sys-fields">
+                          <label class="sys-field">
+                            <span class="sys-field-label">配置名称</span>
+                            <input v-model="apiConfig.name" class="dash-input" type="text" placeholder="例如：DeepSeek 工作模型" />
+                          </label>
+                          <div class="sys-field">
+                            <label class="sys-field-label" for="sys-api-base-url">接口地址 (Base URL)</label>
+                            <div class="sys-inline">
+                              <input
+                                id="sys-api-base-url"
+                                v-model="apiConfig.base_url"
+                                class="dash-input"
+                                type="text"
+                                placeholder="https://api.openai.com/v1"
+                                @input="clearFetchedModels"
+                              />
+                              <button
+                                type="button"
+                                class="dash-btn secondary"
+                                :disabled="isFetchingModels || !apiConfig.base_url.trim()"
+                                @click="fetchApiModels"
+                              >
+                                {{ isFetchingModels ? '获取中…' : '获取模型' }}
+                              </button>
+                            </div>
+                            <div class="sys-chips" role="group" aria-label="常用服务商预设">
+                              <span class="sys-chips-label">快速填充</span>
+                              <button v-for="preset in presetOptions" :key="preset.id" type="button" class="sys-chip" @click="applyPreset(preset.id)">{{ preset.label }}</button>
+                            </div>
+                          </div>
+                          <label class="sys-field">
+                            <span class="sys-field-label">API 密钥</span>
+                            <input
+                              v-model="apiConfig.api_key"
+                              class="dash-input"
+                              type="password"
+                              autocomplete="new-password"
+                              :placeholder="apiConfig.has_api_key ? '已保存（留空表示不修改）' : 'sk-...'"
+                              @input="clearFetchedModels"
+                            />
+                            <span class="sys-field-hint">保存后只显示掩码，不会明文回显；本地 Ollama 等不需要密钥的接口可以留空。</span>
+                          </label>
+                          <div class="sys-field">
+                            <label class="sys-field-label" for="sys-api-model">模型名称</label>
+                            <input id="sys-api-model" v-model="apiConfig.model" class="dash-input" type="text" placeholder="gpt-4o-mini" />
+                            <div v-if="fetchedModels.length > 0" class="sys-inline">
+                              <select
+                                class="dash-select"
+                                :value="selectedFetchedModel"
+                                aria-label="从接口获取到的模型"
+                                @change="selectFetchedModel(($event.target as HTMLSelectElement).value)"
+                              >
+                                <option v-for="model in fetchedModels" :key="model" :value="model">{{ model }}</option>
+                              </select>
+                              <button
+                                type="button"
+                                class="dash-btn secondary"
+                                :disabled="isAddingFetchedModel || !selectedFetchedModel"
+                                @click="addFetchedModelProfile"
+                              >
+                                {{ isAddingFetchedModel ? '加入中…' : '加入模型列表' }}
+                              </button>
+                            </div>
+                            <span v-if="modelFetchResult.message" :class="['sys-field-hint', modelFetchResult.success ? 'ok' : 'error']">{{ modelFetchResult.message }}</span>
+                          </div>
+                        </div>
+                        <footer class="sys-section-foot">
+                          <button
+                            type="button"
+                            class="dash-btn"
+                            :disabled="isTestingConnection || !apiConfig.base_url || !apiConfig.model"
+                            @click="testConnection"
+                          >
+                            {{ isTestingConnection ? '测试中…' : '测试连接' }}
+                          </button>
+                          <button type="button" class="dash-btn primary" :disabled="isSavingConfig" @click="saveApiConfig()">
+                            {{ configSaved ? '已保存' : (isSavingConfig ? '保存中…' : '保存配置') }}
+                          </button>
+                        </footer>
+                        <div v-if="testResult.message" :class="['sys-result', testResult.success ? 'ok' : 'error']" role="status">
+                          {{ testResult.success ? '连接成功' : testResult.message }}
+                        </div>
+                      </section>
+
+                      <section class="dash-card sys-section">
+                        <header class="sys-section-head">
+                          <div>
+                            <h2 class="sys-section-title">推理与搜索</h2>
+                            <p class="sys-section-desc">修改后立即保存到当前配置，下一次请求生效。</p>
+                          </div>
+                        </header>
+                        <div class="sys-rows">
+                          <div class="sys-row">
+                            <div class="sys-row-label">
+                              <span id="sys-thinking-label">思考深度</span>
+                              <small>「自动」不额外指定；低、中、高需要模型本身支持推理强度参数。</small>
+                            </div>
+                            <div class="sys-segmented" role="radiogroup" aria-labelledby="sys-thinking-label">
+                              <button
+                                v-for="item in thinkingDepthOptions"
+                                :key="item.value"
+                                type="button"
+                                role="radio"
+                                :aria-checked="apiConfig.thinking_depth === item.value"
+                                :class="{ active: apiConfig.thinking_depth === item.value }"
+                                @click="updateThinkingDepth(item.value)"
+                              >{{ item.label }}</button>
+                            </div>
+                          </div>
+                          <div class="sys-row">
+                            <div class="sys-row-label">
+                              <label for="sys-search-provider">优先搜索源</label>
+                              <small>国内网络推荐 Bing；DuckDuckGo 在国内网络下容易超时。</small>
+                            </div>
+                            <select
+                              id="sys-search-provider"
+                              class="dash-select sys-row-select"
+                              :value="apiConfig.search_provider"
+                              @change="updateSearchProvider(($event.target as HTMLSelectElement).value)"
+                            >
+                              <option v-for="item in searchProviderOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
+                            </select>
+                          </div>
+                        </div>
+                      </section>
+
+                      <details class="dash-card sys-section sys-collapsible">
+                        <summary class="sys-section-head">
+                          <div>
+                            <h2 class="sys-section-title">接口协议<span class="sys-tag">高级</span></h2>
+                            <p class="sys-section-desc">只有接口不完全兼容 OpenAI 时才需要改。当前：{{ streamModeLabel }} · {{ apiModeLabel }}</p>
+                          </div>
+                          <span class="sys-collapse-caret" aria-hidden="true"><AppIcon name="chevron-down" :size="14" /></span>
+                        </summary>
+                        <div class="sys-rows">
+                          <div class="sys-row">
+                            <div class="sys-row-label">
+                              <span id="sys-stream-label">流式模式</span>
+                              <small>自动：先按 SSE 解析，失败再按 JSON。Auto Code 等非标准接口选「非流式」。</small>
+                            </div>
+                            <div class="sys-segmented" role="radiogroup" aria-labelledby="sys-stream-label">
+                              <button
+                                v-for="item in streamModeOptions"
+                                :key="item.value"
+                                type="button"
+                                role="radio"
+                                :aria-checked="apiConfig.stream_mode === item.value"
+                                :class="{ active: apiConfig.stream_mode === item.value }"
+                                @click="updateStreamMode(item.value)"
+                              >{{ item.label }}</button>
+                            </div>
+                          </div>
+                          <div class="sys-row">
+                            <div class="sys-row-label">
+                              <span id="sys-apimode-label">API 格式</span>
+                              <small>大多数服务选 Chat Completions（/v1/chat/completions）；Responses 是 OpenAI 的新格式（/v1/responses）。</small>
+                            </div>
+                            <div class="sys-segmented" role="radiogroup" aria-labelledby="sys-apimode-label">
+                              <button
+                                v-for="item in apiModeOptions"
+                                :key="item.value"
+                                type="button"
+                                role="radio"
+                                :aria-checked="apiConfig.api_mode === item.value"
+                                :class="{ active: apiConfig.api_mode === item.value }"
+                                @click="updateApiMode(item.value)"
+                              >{{ item.label }}</button>
+                            </div>
+                          </div>
+                        </div>
+                        <footer class="sys-section-foot">
+                          <span class="sys-foot-note">不确定选哪种时，跑一次深度检测看推荐模式。</span>
+                          <button
+                            type="button"
+                            class="dash-btn"
+                            :disabled="isTestingCompatibility || !apiConfig.base_url || !apiConfig.model"
+                            @click="testCompatibility"
+                          >
+                            {{ isTestingCompatibility ? '检测中…' : '深度测试兼容性' }}
+                          </button>
+                        </footer>
+                        <div
+                          v-if="compatibilityResult"
+                          class="dash-compat-result sys-compat"
+                          :class="compatibilityResult.http_ok ? 'success' : 'error'"
+                        >
+                          <h4>兼容性检测报告</h4>
+                          <div class="compat-grid">
+                            <div class="compat-item">
+                              <span class="compat-label">HTTP 状态:</span>
+                              <span :class="compatibilityResult.http_ok ? 'pass' : 'fail'">
+                                {{ compatibilityResult.http_ok ? '通过' : '失败' }} ({{ compatibilityResult.http_status }})
+                              </span>
+                            </div>
+                            <div class="compat-item">
+                              <span class="compat-label">SSE 格式:</span>
+                              <span :class="compatibilityResult.is_sse_format ? 'pass' : 'fail'">
+                                {{ compatibilityResult.is_sse_format ? '支持' : '不支持' }}
+                              </span>
+                            </div>
+                            <div class="compat-item">
+                              <span class="compat-label">JSON 格式:</span>
+                              <span :class="compatibilityResult.is_json_format ? 'pass' : 'fail'">
+                                {{ compatibilityResult.is_json_format ? '支持' : '不支持' }}
+                              </span>
+                            </div>
+                            <div class="compat-item">
+                              <span class="compat-label">内容提取:</span>
+                              <span :class="compatibilityResult.content_extracted ? 'pass' : 'fail'">
+                                {{ compatibilityResult.content_extracted ? '成功' : '失败' }}
+                              </span>
+                            </div>
+                            <div v-if="compatibilityResult.content_extracted" class="compat-item">
+                              <span class="compat-label">提取内容:</span>
+                              <span class="compat-content">{{ compatibilityResult.content_extracted }}</span>
+                            </div>
+                            <div v-if="compatibilityResult.recommended_mode" class="compat-item">
+                              <span class="compat-label">推荐模式:</span>
+                              <span class="compat-recommend">{{ compatibilityResult.recommended_mode === 'stream' ? '流式 (SSE)' : compatibilityResult.recommended_mode === 'non_stream' ? '非流式 (JSON)' : '自动' }}</span>
+                            </div>
+                            <div v-if="compatibilityResult.errors && compatibilityResult.errors.length > 0" class="compat-item">
+                              <span class="compat-label">错误:</span>
+                              <ul class="compat-errors">
+                                <li v-for="(err, idx) in compatibilityResult.errors" :key="idx">{{ err }}</li>
+                              </ul>
+                            </div>
+                          </div>
+                          <details v-if="compatibilityResult.raw_preview" class="compat-raw">
+                            <summary>查看原始响应（前 500 字符）</summary>
+                            <pre>{{ compatibilityResult.raw_preview }}</pre>
+                          </details>
+                          <p class="compat-time">响应时间: {{ compatibilityResult.response_time_ms }} ms</p>
+                        </div>
+                      </details>
+                    </div>
+                  </div>
+                </template>
+
+                <!-- ===== 执行权限 ===== -->
+                <template v-else-if="systemSection === 'permissions'">
+                  <section class="dash-card sys-section">
+                    <header class="sys-section-head">
+                      <div>
+                        <h2 class="sys-section-title">直连 API 执行模式</h2>
+                        <p class="sys-section-desc">
+                          作用于模型配置「{{ apiConfig.name || apiConfig.model || '未命名' }}」，修改后立即保存。
+                          <template v-if="backendType !== 'direct_api'">当前后端是 {{ backendLabel(backendType) }}，切换到直连 API 后生效。</template>
+                        </p>
+                      </div>
+                    </header>
+                    <div class="sys-choice-grid" role="radiogroup" aria-label="直连 API 执行模式">
+                      <button
+                        v-for="mode in executionModeOptions"
+                        :key="mode.value"
+                        type="button"
+                        role="radio"
+                        :aria-checked="apiConfig.execution_mode === mode.value"
+                        :class="['sys-choice', { active: apiConfig.execution_mode === mode.value, risky: mode.value === 'unreviewed' }]"
+                        @click="updateExecutionMode(mode.value)"
+                      >
+                        <strong>{{ mode.label }}</strong>
+                        <small>{{ mode.desc }}</small>
+                      </button>
+                    </div>
+                    <div v-if="apiConfig.execution_mode === 'custom'" class="sys-subsection">
+                      <div class="sys-subsection-head">
+                        <span class="sys-subsection-title">免确认工具</span>
+                        <span class="sys-subsection-desc">勾选的工具执行前不再弹窗确认，勾选后立即保存。</span>
+                      </div>
+                      <div class="sys-check-grid">
+                        <label v-for="tool in toolPermissionOptions" :key="tool.id" class="sys-check">
+                          <input
+                            type="checkbox"
+                            :checked="isToolAutoApproved(tool.id)"
+                            @change="toggleAutoApprovedTool(tool.id, ($event.target as HTMLInputElement).checked)"
+                          />
+                          <span>{{ tool.label }}</span>
+                        </label>
+                      </div>
+                    </div>
+                    <div v-if="!apiConfig.id" class="sys-result warn">当前是还没保存的新建配置：执行模式会在你保存这份配置时一起保存。</div>
+                  </section>
+
+                  <section class="dash-card sys-section">
+                    <header class="sys-section-head">
+                      <div>
+                        <h2 class="sys-section-title">桌面控制</h2>
+                        <p class="sys-section-desc">只对直连 API 后端生效。</p>
+                      </div>
+                    </header>
+                    <div class="sys-rows">
+                      <div class="sys-row">
+                        <div class="sys-row-label">
+                          <label for="sys-computer-use">Computer Use</label>
+                          <small>开启后 AI 可以截屏、聚焦窗口、打开浏览器、操作鼠标和键盘；只在需要桌面自动化时开启。<template v-if="computerUseSaved"> 已保存。</template></small>
+                        </div>
+                        <input
+                          id="sys-computer-use"
+                          type="checkbox"
+                          class="dash-toggle"
+                          :checked="computerUseEnabled"
+                          @change="updateComputerUseEnabled(($event.target as HTMLInputElement).checked)"
+                        />
+                      </div>
+                    </div>
+                  </section>
+
+                  <section class="dash-card sys-section">
+                    <header class="sys-section-head">
+                      <div>
+                        <h2 class="sys-section-title">本机 CLI 默认权限</h2>
+                        <p class="sys-section-desc">主对话使用对应后端时、以及三个 agent 窗口的默认档位；单个会话可以在聊天栏里单独覆盖。</p>
+                      </div>
+                    </header>
+                    <div class="sys-permission-stack">
+                      <AgentPermissionControl backend="claude_code" />
+                      <AgentPermissionControl backend="codex" />
+                      <AgentPermissionControl backend="dsh" />
+                    </div>
+                  </section>
+                </template>
+
+                <!-- ===== 角色设定 ===== -->
+                <template v-else-if="systemSection === 'persona'">
+                  <section class="dash-card sys-section">
+                    <header class="sys-section-head">
+                      <div>
+                        <h2 class="sys-section-title">性格</h2>
+                        <p class="sys-section-desc">决定它说话的语气，从下一条消息开始生效。</p>
+                      </div>
+                    </header>
+                    <div class="sys-choice-grid" role="radiogroup" aria-label="性格">
+                      <button
+                        v-for="item in personalities"
+                        :key="item.id"
+                        type="button"
+                        role="radio"
+                        :aria-checked="currentPersonality === item.id"
+                        :class="['sys-choice', { active: currentPersonality === item.id }]"
+                        @click="selectPersonality(item.id)"
+                      >
+                        <strong>{{ item.name }}</strong>
+                        <small>{{ item.desc }}</small>
+                      </button>
+                    </div>
+                  </section>
+
+                  <section class="dash-card sys-section">
+                    <header class="sys-section-head">
+                      <div>
+                        <h2 class="sys-section-title">职业</h2>
+                        <p class="sys-section-desc">决定它擅长帮你做哪类事。</p>
+                      </div>
+                    </header>
+                    <div class="sys-choice-grid" role="radiogroup" aria-label="职业">
+                      <button
+                        v-for="item in professions"
+                        :key="item.id"
+                        type="button"
+                        role="radio"
+                        :aria-checked="currentProfession === item.id"
+                        :class="['sys-choice', { active: currentProfession === item.id }]"
+                        @click="selectProfession(item.id)"
+                      >
+                        <strong>{{ item.name }}</strong>
+                        <small>{{ item.desc }}</small>
+                      </button>
+                    </div>
+                  </section>
+
+                  <section class="dash-card sys-section">
+                    <header class="sys-section-head">
+                      <div>
+                        <h2 class="sys-section-title">自定义系统提示</h2>
+                        <p class="sys-section-desc">追加到系统提示末尾，对所有对话生效；留空则不追加。</p>
+                      </div>
+                    </header>
+                    <textarea
+                      v-model="customPromptDraft"
+                      class="dash-textarea sys-textarea"
+                      rows="5"
+                      aria-label="自定义系统提示"
+                      placeholder="例如：你每次回复都以『汪！』开头..."
+                    />
+                    <footer class="sys-section-foot">
+                      <span class="sys-foot-note">{{ customPromptDraft.trim().length }} 字</span>
+                      <button type="button" class="dash-btn primary" @click="saveCustomPrompt">
+                        {{ customPromptSaved ? '已保存' : '保存提示' }}
+                      </button>
+                    </footer>
+                  </section>
+                </template>
+
+                <!-- ===== 技能 ===== -->
+                <template v-else-if="systemSection === 'skills'">
+                  <section class="dash-card sys-section">
+                    <header class="sys-section-head">
+                      <div>
+                        <h2 class="sys-section-title">技能</h2>
+                        <p class="sys-section-desc">同一时间只能激活一个技能；新建和编辑技能请到「设置」窗口。</p>
+                      </div>
+                      <span v-if="skillsStore.activeSkill" class="sys-pill">已激活：{{ skillsStore.activeSkill.name }}</span>
+                    </header>
+                    <p v-if="skillsStore.skills.length === 0" class="sys-empty">还没有任何技能。</p>
+                    <ul v-else class="sys-skill-list">
+                      <li v-for="s in skillsStore.skills" :key="s.id" :class="['sys-skill', { active: s.is_active }]">
+                        <div class="sys-skill-copy">
+                          <span class="sys-skill-name">{{ s.name }}</span>
+                          <span class="sys-skill-desc">{{ s.description || '（无描述）' }}</span>
+                        </div>
+                        <button
+                          type="button"
+                          :class="['dash-mini-btn', { primary: !s.is_active }]"
+                          @click="activateSkill(s.is_active ? null : s.id)"
+                        >
+                          {{ s.is_active ? '取消激活' : '激活' }}
+                        </button>
+                      </li>
+                    </ul>
+                  </section>
+                </template>
+
+                <!-- ===== 天气提醒 ===== -->
+                <template v-else>
+                  <section class="dash-card sys-section">
+                    <header class="sys-section-head">
+                      <div>
+                        <h2 class="sys-section-title">天气栏与每日问候</h2>
+                        <p class="sys-section-desc">开启后首页显示天气，并每天发送一次天气问候。</p>
+                      </div>
+                    </header>
+                    <div class="sys-rows">
+                      <div class="sys-row">
+                        <div class="sys-row-label">
+                          <label for="sys-weather-enabled">启用天气</label>
+                          <small>关闭后不再请求天气接口。</small>
+                        </div>
+                        <input id="sys-weather-enabled" v-model="weatherConfig.enabled" type="checkbox" class="dash-toggle" />
+                      </div>
+                    </div>
+                    <div class="sys-fields sys-fields-2">
+                      <label class="sys-field">
+                        <span class="sys-field-label">城市 / 地区</span>
+                        <input v-model="weatherConfig.location" class="dash-input" type="text" placeholder="建议填中文城市，例如 上海" />
+                      </label>
+                      <label class="sys-field">
+                        <span class="sys-field-label">wttr.in 兼容接口</span>
+                        <input v-model="weatherConfig.api_url" class="dash-input" type="text" placeholder="http://wttr.in 或 https://example.com/{location}?format=j1" />
+                      </label>
+                    </div>
+                    <div v-if="weatherInfo" class="sys-result info">当前天气：{{ formatWeatherDisplay(weatherInfo) }} · {{ weatherInfo.description }}</div>
+                    <div v-if="weatherConfigResult.message" :class="['sys-result', weatherConfigResult.success ? 'ok' : 'error']">
+                      {{ weatherConfigResult.message }}
+                    </div>
+                    <footer class="sys-section-foot">
+                      <button
+                        type="button"
+                        class="dash-btn"
+                        :disabled="isTestingWeatherConfig || !weatherConfig.api_url.trim()"
+                        @click="testWeatherConfig"
+                      >
+                        {{ isTestingWeatherConfig ? '测试中…' : '测试接口' }}
+                      </button>
+                      <button
+                        type="button"
+                        class="dash-btn secondary"
+                        :disabled="isWeatherLoading || !weatherConfig.enabled"
+                        @click="refreshWeather"
+                      >
+                        {{ isWeatherLoading ? '刷新中…' : '立即刷新' }}
+                      </button>
+                      <button type="button" class="dash-btn primary" :disabled="isSavingWeatherConfig" @click="saveWeatherConfig">
+                        {{ isSavingWeatherConfig ? '保存中…' : '保存天气设置' }}
+                      </button>
+                    </footer>
+                  </section>
+                </template>
               </div>
-            </div>
-            </div>
+            </Transition>
           </div>
 
           <!-- ========== 关于 ========== -->
@@ -5751,7 +5841,7 @@ ttsPlayer.stop();
             </div>
 
             <div class="dash-card about-card">
-              <div class="about-logo">🐾</div>
+              <div class="about-logo"><AppIcon name="brand-pet" :size="38" /></div>
               <div class="about-name">AI Desktop Pet</div>
               <div class="about-version">v0.1.0</div>
               <p class="about-desc">

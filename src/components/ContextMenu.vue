@@ -3,6 +3,7 @@ import { useChatStore } from "../stores/chat";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import AppIcon from "./AppIcon.vue";
 
 const emit = defineEmits<{ close: []; openSettings: [tab: string]; openDashboard: [] }>();
 const chat = useChatStore();
@@ -29,6 +30,11 @@ async function action(name: string) {
       chat.isLoading = false;
       break;
     case "clear":
+      // clear_chat_history 会删除所有会话（含三个 agent 窗口）且不可恢复：必须先确认。
+      // 以前这里一点就删，右键菜单误触即丢失全部聊天记录。
+      if (!window.confirm("确定清空所有聊天记录吗？这会删除全部对话（包括 Claude Code / Codex / DSH 窗口），且不可撤销。")) {
+        break;
+      }
       await invoke("clear_chat_history");
       chat.clearMessages();
       await currentWindow.emit("chat-history-cleared");
@@ -52,37 +58,37 @@ async function action(name: string) {
 <template>
   <div class="context-menu">
     <div class="menu-item" @click="action('wave')">
-      <span class="menu-icon">&#x1F44B;</span>
+      <span class="menu-icon"><AppIcon name="wave" :size="14" /></span>
       <span>打个招呼</span>
     </div>
     <div class="menu-item" @click="action('happy')">
-      <span class="menu-icon">&#x1F60A;</span>
+      <span class="menu-icon"><AppIcon name="happy" :size="14" /></span>
       <span>开心一下</span>
     </div>
     <div class="menu-item" @click="action('sleep')">
-      <span class="menu-icon">&#x1F634;</span>
+      <span class="menu-icon"><AppIcon name="sleep" :size="14" /></span>
       <span>去睡觉</span>
     </div>
     <div class="menu-item" @click="action('wake')">
-      <span class="menu-icon">&#x23F0;</span>
+      <span class="menu-icon"><AppIcon name="wake" :size="14" /></span>
       <span>叫醒它</span>
     </div>
     <div class="menu-divider" />
     <div class="menu-item" @click="action('new-chat')">
-      <span class="menu-icon">＋</span>
+      <span class="menu-icon"><AppIcon name="chat-plus" :size="14" /></span>
       <span>新对话</span>
     </div>
     <div class="menu-item" @click="action('clear')">
-      <span class="menu-icon">&#x1F5D1;&#xFE0F;</span>
-      <span>清空对话</span>
+      <span class="menu-icon"><AppIcon name="trash" :size="14" /></span>
+      <span>清空全部对话…</span>
     </div>
     <div class="menu-divider" />
     <div class="menu-item" @click="action('dashboard')">
-      <span class="menu-icon">🏠</span>
+      <span class="menu-icon"><AppIcon name="dashboard" :size="14" /></span>
       <span>打开控制台</span>
     </div>
     <div class="menu-item exit-item" @click="action('hide')">
-      <span class="menu-icon">👋</span>
+      <span class="menu-icon"><AppIcon name="pet-hide" :size="14" /></span>
       <span>收起桌宠</span>
     </div>
   </div>
@@ -207,15 +213,18 @@ async function action(name: string) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 20px;
+  width: 22px;
+  height: 22px;
   border-radius: 7px;
-  background: rgba(255, 255, 255, 0.46);
-  color: #64748b;
+  background: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.08);
+  color: rgb(var(--pet-primary-rgb, 255, 107, 107));
   font-size: 12px;
+  transition: background 0.15s, color 0.15s;
 }
 
 .menu-item:hover .menu-icon {
-  background: rgba(255, 255, 255, 0.20);
+  background: rgba(255, 255, 255, 0.22);
+  color: #ffffff;
 }
 
 .menu-divider {

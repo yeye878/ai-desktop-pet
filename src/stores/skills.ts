@@ -27,8 +27,11 @@ export const useSkillsStore = defineStore("skills", () => {
   async function load() {
     loading.value = true;
     try {
-      skills.value = await invoke<Skill[]>("list_skills");
-      customPrompt.value = await invoke<string>("get_custom_system_prompt");
+      // 后端异常或预览环境返回非数组时退回空列表：skills 为 null 会让依赖
+      // activeSkill 的整页渲染直接抛错（系统设置页整页空白）。
+      const list = await invoke<Skill[] | null>("list_skills");
+      skills.value = Array.isArray(list) ? list : [];
+      customPrompt.value = (await invoke<string | null>("get_custom_system_prompt")) ?? "";
     } finally {
       loading.value = false;
     }

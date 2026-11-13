@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import AgentPermissionControl from "./AgentPermissionControl.vue";
 
-defineProps<{ modelSaved: boolean }>();
+// showPermission=false：权限档位改在「系统设置 › 执行权限」统一展示，这里不再重复。
+withDefaults(defineProps<{ modelSaved: boolean; showPermission?: boolean }>(), { showPermission: true });
 defineEmits<{ reset: [] }>();
 
 interface DshStatus {
@@ -81,7 +83,7 @@ onUnmounted(() => window.removeEventListener("focus", refreshStatus));
       <div><dt>工作目录</dt><dd>{{ status.workspace }}</dd></div>
     </dl>
     <p class="dsh-hint">
-      复用本机 dsh 的登录信息、模型与权限配置，无需在桌宠中填写 API Key。
+      复用本机 dsh 的登录信息与模型，无需在桌宠中填写 API Key。权限{{ showPermission ? "可在下方选择" : "在「执行权限」页选择" }}，默认跟随本机 DSH 配置。
       桌宠使用专属 profile：挂载 dsh-base 与 dsh-headless，并用自带 runner 替换随包的一次性应用，
       因此推理过程、工具轨迹和会话续接都和 Codex / Claude Code 一致；你自己 profile 里的实验插件不会被加载。
     </p>
@@ -89,6 +91,7 @@ onUnmounted(() => window.removeEventListener("focus", refreshStatus));
       沙箱内的命令直接执行；当模型要越出沙箱时（升权请求），桌宠会弹出与直连 API 相同的确认窗口，
       显示命令、参数和升权理由，允许后才放行。审批策略为 never 的预设不会询问，需要授权的一律直接拒绝。
     </p>
+    <AgentPermissionControl v-if="showPermission" backend="dsh" />
     <p v-if="status && !status.installed" class="dsh-hint">
       安装命令：<code>npm install -g @deepseek-ai/dsh</code>；配置模型：运行 <code>dsh web</code> 后在 Models 页面添加。
     </p>

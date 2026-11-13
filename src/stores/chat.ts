@@ -8,6 +8,7 @@ export interface FileAttachment {
   name: string;
   isImage: boolean;
   extension: string;
+  isDir?: boolean;
 }
 
 export interface ToolEventItem {

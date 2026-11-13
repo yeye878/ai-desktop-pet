@@ -31,6 +31,7 @@
     "global-shortcut:allow-unregister",
     "global-shortcut:allow-unregister-all",
     "global-shortcut:allow-is-registered",
-    "notification:default"
+    "notification:default",
+    "dialog:allow-open"
   ]
 }

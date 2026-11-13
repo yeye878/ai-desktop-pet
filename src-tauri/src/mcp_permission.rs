@@ -5,6 +5,7 @@
 //! claude 用 --mcp-config 拿到地址，工具被调用时桌宠弹出与直连 API 相同的确认窗口，
 //! 再把用户的决定按 {behavior: "allow" | "deny", message} 回给它。
 //!
+//! 同一个桥也向本机 CLI 提供三种长期记忆工具。
 //! 服务只在 127.0.0.1 上监听，路径里带一次性随机 token，避免同机其他进程驱动弹窗。
 
 use crate::direct_api::ToolConfirmPayload;
@@ -47,18 +48,23 @@ pub enum PermissionDecision {
 
 impl PermissionDecision {
     /// claude 的权限工具结果契约。
-    fn to_json(&self) -> Value {
+    fn to_json(&self, input: &Value) -> Value {
         match self {
-            PermissionDecision::Allow => json!({ "behavior": "allow" }),
+            PermissionDecision::Allow => json!({ "behavior": "allow", "updatedInput": input }),
             PermissionDecision::Deny(message) => json!({ "behavior": "deny", "message": message }),
         }
     }
 }
 
 /// 谁来决定一次授权请求。生产路径是 UiPermission，测试注入自己的实现。
+/// session_id 来自桥 URL 的会话后缀（多会话并行时区分归属），可能为空。
 #[async_trait]
 pub trait PermissionAnswerer: Send + Sync {
-    async fn decide(&self, request: PermissionRequest) -> PermissionDecision;
+    async fn decide(&self, request: PermissionRequest, session_id: &str) -> PermissionDecision;
+
+    fn memory_db_path(&self) -> Option<PathBuf> {
+        None
+    }
 }
 
 /// 走桌宠确认弹窗（与直连 API、dsh 同一套）。
@@ -74,33 +80,40 @@ impl UiPermission {
         Self { app }
     }
 
-    async fn current_cancel(&self) -> CancellationToken {
+    async fn current_cancel(&self, session_id: &str) -> CancellationToken {
         let state = self.app.state::<crate::AppState>();
-        let session_id = crate::current_turn_session(&state);
-        state
-            .abort_tokens
-            .lock()
-            .ok()
-            .and_then(|tokens| {
-                tokens
-                    .get(&session_id)
-                    .cloned()
-                    .or_else(|| tokens.values().next().cloned())
-            })
-            .unwrap_or_default()
+        crate::session_cancel_token(&state, session_id).unwrap_or_default()
     }
 }
 
 #[async_trait]
 impl PermissionAnswerer for UiPermission {
-    async fn decide(&self, request: PermissionRequest) -> PermissionDecision {
-        let payload = confirm_payload(&request);
-        let cancel = self.current_cancel().await;
-        match crate::interactions::confirm_with_ui(&self.app, &cancel, payload, CONFIRM_TIMEOUT).await
+    fn memory_db_path(&self) -> Option<PathBuf> {
+        Some(crate::get_db_path())
+    }
+
+    async fn decide(&self, request: PermissionRequest, session_hint: &str) -> PermissionDecision {
+        // MCP 回调来自独立网络任务，没有回合 task-local 上下文；
+        // 归属以 URL 会话后缀为准，旧配置（无后缀）才回退到最近发起的回合。
+        let state = self.app.state::<crate::AppState>();
+        let session_id = if session_hint.trim().is_empty() {
+            crate::current_turn_session(&state)
+        } else {
+            session_hint.trim().to_string()
+        };
+        let mut payload = confirm_payload(&request);
+        payload.session_id = session_id.clone();
+        let cancel = self.current_cancel(&session_id).await;
+        match crate::interactions::confirm_with_ui(&self.app, &cancel, payload, CONFIRM_TIMEOUT)
+            .await
         {
             WaitResult::Answered(true) => PermissionDecision::Allow,
-            WaitResult::Answered(false) => PermissionDecision::Deny("用户在桌宠里拒绝了这次调用".into()),
-            WaitResult::TimedOut => PermissionDecision::Deny("等待用户确认超时，已按拒绝处理".into()),
+            WaitResult::Answered(false) => {
+                PermissionDecision::Deny("用户在桌宠里拒绝了这次调用".into())
+            }
+            WaitResult::TimedOut => {
+                PermissionDecision::Deny("等待用户确认超时，已按拒绝处理".into())
+            }
             WaitResult::Cancelled => PermissionDecision::Deny("本轮已取消".into()),
             WaitResult::Closed => PermissionDecision::Deny("确认窗口已关闭".into()),
         }
@@ -137,6 +150,9 @@ pub fn confirm_payload(request: &PermissionRequest) -> ToolConfirmPayload {
         summary,
         command,
         path,
+        // MCP 回调来自独立网络任务，不依赖当前回合的 task-local 上下文；
+        // 会话归属由 UiPermission::decide 按桥 URL 的会话后缀补齐。
+        session_id: String::new(),
     }
 }
 
@@ -162,7 +178,31 @@ pub fn write_config(app: &tauri::AppHandle, bridge: &BridgeHandle) -> Result<Pat
     Ok(path)
 }
 
+/// 为本回合写带会话后缀的 MCP 配置：桥据此把授权请求归属到正确会话，
+/// 多个 claude 会话并行时弹窗不会串台。
+pub fn write_session_config(
+    app: &tauri::AppHandle,
+    bridge: &BridgeHandle,
+    session_id: &str,
+) -> Result<PathBuf, String> {
+    if session_id.is_empty()
+        || !session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("非法会话 id".to_string());
+    }
+    let base = config_path(app)?;
+    let dir = base.parent().ok_or("无法定位应用数据目录")?;
+    std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
+    let path = dir.join(format!("claude-mcp-permission-{session_id}.json"));
+    std::fs::write(&path, bridge.mcp_config_json_for_session(session_id))
+        .map_err(|error| format!("无法写入 {}：{error}", path.display()))?;
+    Ok(path)
+}
+
 /// 运行中的桥：端口、路径 token，以及给 claude 用的 MCP 配置文本。
+#[derive(Clone)]
 pub struct BridgeHandle {
     pub port: u16,
     token: String,
@@ -171,6 +211,11 @@ pub struct BridgeHandle {
 impl BridgeHandle {
     pub fn url(&self) -> String {
         format!("http://127.0.0.1:{}/mcp/{}", self.port, self.token)
+    }
+
+    /// 带会话后缀的 URL；桥以前缀匹配 token，后缀用于归属会话。
+    pub fn url_for_session(&self, session_id: &str) -> String {
+        format!("{}/{}", self.url(), session_id)
     }
 
     /// --mcp-config 接受 JSON 文件或字符串；桌宠写文件，避免命令行转义问题。
@@ -182,6 +227,15 @@ impl BridgeHandle {
         })
         .to_string()
     }
+
+    pub fn mcp_config_json_for_session(&self, session_id: &str) -> String {
+        json!({
+            "mcpServers": {
+                SERVER_NAME: { "type": "http", "url": self.url_for_session(session_id) }
+            }
+        })
+        .to_string()
+    }
 }
 
 /// 启动桥服务。绑定回环地址的随机端口，返回的句柄带 token 与端口。
@@ -189,7 +243,10 @@ pub async fn serve(answerer: Arc<dyn PermissionAnswerer>) -> Result<BridgeHandle
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(|error| format!("无法启动授权确认服务：{error}"))?;
-    let port = listener.local_addr().map_err(|error| error.to_string())?.port();
+    let port = listener
+        .local_addr()
+        .map_err(|error| error.to_string())?
+        .port();
     let token = uuid::Uuid::new_v4().to_string();
     let expected = format!("/mcp/{token}");
     let state: SharedState = Arc::new((answerer, expected));
@@ -209,53 +266,46 @@ pub async fn serve(answerer: Arc<dyn PermissionAnswerer>) -> Result<BridgeHandle
 
 type SharedState = Arc<(Arc<dyn PermissionAnswerer>, String)>;
 
+/// 读完一个请求（请求行 + 头 + 体）的最长时间：本机任意进程都能连上回环端口，
+/// 不设上限可以慢速发送、一直占住连接。只限制读取阶段——之后的 dispatch 要等用户
+/// 在授权弹窗里作答（最长 CONFIRM_TIMEOUT），不能被这个超时打断。
+const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+struct IncomingRequest {
+    method: String,
+    target: String,
+    body: Vec<u8>,
+}
+
 async fn handle_connection(mut stream: TcpStream, state: SharedState) -> Result<(), String> {
-    let mut buffer = Vec::new();
-    let mut chunk = [0u8; 4096];
-    let (header_end, content_length) = loop {
-        let count = stream.read(&mut chunk).await.map_err(|error| error.to_string())?;
-        if count == 0 {
-            return Ok(());
-        }
-        buffer.extend_from_slice(&chunk[..count]);
-        if let Some(position) = find_header_end(&buffer) {
-            let head = String::from_utf8_lossy(&buffer[..position]).to_string();
-            break (position, content_length_of(&head));
-        }
-        if buffer.len() > MAX_BODY {
-            let _ = respond(&mut stream, 413, "text/plain", "").await;
-            return Ok(());
-        }
-    };
-    let head = String::from_utf8_lossy(&buffer[..header_end]).to_string();
-    let request_line = head.lines().next().unwrap_or_default().to_string();
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or_default().to_string();
-    let target = parts.next().unwrap_or_default().to_string();
+    let request =
+        match tokio::time::timeout(REQUEST_READ_TIMEOUT, read_request(&mut stream, &state)).await {
+            Ok(Ok(Some(request))) => request,
+            // 已经回过错误码，或者对端提前关闭。
+            Ok(Ok(None)) => return Ok(()),
+            Ok(Err(error)) => return Err(error),
+            Err(_) => return Err("请求读取超时".to_string()),
+        };
 
-    let mut body = buffer[header_end + 4..].to_vec();
-    while body.len() < content_length {
-        let count = stream.read(&mut chunk).await.map_err(|error| error.to_string())?;
-        if count == 0 {
-            break;
-        }
-        body.extend_from_slice(&chunk[..count]);
-    }
-
-    if !target.starts_with(state.1.as_str()) {
-        let _ = respond(&mut stream, 404, "text/plain", "not found").await;
-        return Ok(());
-    }
-    if method != "POST" {
+    // token 前缀之后的路径段是会话后缀（claude 适配器按回合写入配置）。
+    let session_hint = request.target[state.1.len()..]
+        .split('?')
+        .next()
+        .unwrap_or("")
+        .trim_matches('/')
+        .chars()
+        .take(128)
+        .collect::<String>();
+    if request.method != "POST" {
         let _ = respond(&mut stream, 405, "text/plain", "method not allowed").await;
         return Ok(());
     }
-    let Ok(message) = serde_json::from_slice::<Value>(&body) else {
+    let Ok(message) = serde_json::from_slice::<Value>(&request.body) else {
         let _ = respond(&mut stream, 400, "text/plain", "invalid json").await;
         return Ok(());
     };
 
-    match dispatch(&state.0, message).await {
+    match dispatch(&state.0, message, &session_hint).await {
         Some(reply) => {
             let text = reply.to_string();
             let _ = respond(&mut stream, 200, "application/json", &text).await;
@@ -266,6 +316,66 @@ async fn handle_connection(mut stream: TcpStream, state: SharedState) -> Result<
         }
     }
     Ok(())
+}
+
+/// 读取请求；返回 None 表示已经回过错误码（或对端关闭），调用方直接结束。
+async fn read_request(
+    stream: &mut TcpStream,
+    state: &SharedState,
+) -> Result<Option<IncomingRequest>, String> {
+    let mut buffer = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let (header_end, content_length) = loop {
+        let count = stream
+            .read(&mut chunk)
+            .await
+            .map_err(|error| error.to_string())?;
+        if count == 0 {
+            return Ok(None);
+        }
+        buffer.extend_from_slice(&chunk[..count]);
+        if let Some(position) = find_header_end(&buffer) {
+            let head = String::from_utf8_lossy(&buffer[..position]).to_string();
+            break (position, content_length_of(&head));
+        }
+        if buffer.len() > MAX_BODY {
+            let _ = respond(stream, 413, "text/plain", "").await;
+            return Ok(None);
+        }
+    };
+    let head = String::from_utf8_lossy(&buffer[..header_end]).to_string();
+    let request_line = head.lines().next().unwrap_or_default().to_string();
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or_default().to_string();
+    let target = parts.next().unwrap_or_default().to_string();
+
+    // 先校验路径 token 和 Content-Length，再读请求体：以前先按客户端声明的长度无上限地读完
+    // body 再校验，本机任意进程不带 token 也能让桌宠分配任意大的内存。
+    if !target.starts_with(state.1.as_str()) {
+        let _ = respond(stream, 404, "text/plain", "not found").await;
+        return Ok(None);
+    }
+    if content_length > MAX_BODY {
+        let _ = respond(stream, 413, "text/plain", "").await;
+        return Ok(None);
+    }
+
+    let mut body = buffer[header_end + 4..].to_vec();
+    while body.len() < content_length {
+        let count = stream
+            .read(&mut chunk)
+            .await
+            .map_err(|error| error.to_string())?;
+        if count == 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..count]);
+    }
+    Ok(Some(IncomingRequest {
+        method,
+        target,
+        body,
+    }))
 }
 
 fn find_header_end(buffer: &[u8]) -> Option<usize> {
@@ -315,7 +425,11 @@ async fn respond(
 }
 
 /// 处理一条 JSON-RPC 消息；通知返回 None（按 MCP 约定不回包）。
-async fn dispatch(answerer: &Arc<dyn PermissionAnswerer>, message: Value) -> Option<Value> {
+async fn dispatch(
+    answerer: &Arc<dyn PermissionAnswerer>,
+    message: Value,
+    session_hint: &str,
+) -> Option<Value> {
     let id = message.get("id").cloned();
     let method = message["method"].as_str().unwrap_or_default().to_string();
     let params = message.get("params").cloned().unwrap_or(Value::Null);
@@ -333,34 +447,92 @@ async fn dispatch(answerer: &Arc<dyn PermissionAnswerer>, message: Value) -> Opt
             "serverInfo": { "name": "ai-desktop-pet", "version": env!("CARGO_PKG_VERSION") },
         })),
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({
-            "tools": [{
-                "name": TOOL_NAME,
-                "description": "Ask the desktop pet user to approve or deny a tool call. Returns {\"behavior\":\"allow\"} when the user approves and {\"behavior\":\"deny\",\"message\":...} when they do not.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "tool_name": { "type": "string", "description": "Name of the tool requesting permission." },
-                        "input": { "type": "object", "description": "The tool input as the model produced it." },
-                        "tool_use_id": { "type": "string", "description": "Identifier of the tool-use block." }
-                    },
-                    "required": ["tool_name"]
+        "tools/list" => {
+            let mut result = json!({
+                "tools": [{
+                    "name": TOOL_NAME,
+                    "description": "Ask the desktop pet user to approve or deny a tool call. Returns {\"behavior\":\"allow\"} when the user approves and {\"behavior\":\"deny\",\"message\":...} when they do not.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "tool_name": { "type": "string", "description": "Name of the tool requesting permission." },
+                            "input": { "type": "object", "description": "The tool input as the model produced it." },
+                            "tool_use_id": { "type": "string", "description": "Identifier of the tool-use block." }
+                        },
+                        "required": ["tool_name"]
+                    }
+                }]
+            });
+            if answerer.memory_db_path().is_some() {
+                let list = result["tools"].as_array_mut().unwrap();
+                for def in crate::direct_api::tools::tool_definitions() {
+                    let f = &def["function"];
+                    if matches!(
+                        f["name"].as_str(),
+                        Some("search_memory" | "save_memory" | "delete_memory")
+                    ) {
+                        list.push(json!({
+                            "name": f["name"], "description": f["description"],
+                            "inputSchema": f["parameters"],
+                            "annotations": { "readOnlyHint": f["name"] == "search_memory", "openWorldHint": false }
+                        }));
+                    }
                 }
-            }]
-        })),
+            }
+            Ok(result)
+        }
         "tools/call" => {
-            if params["name"].as_str() != Some(TOOL_NAME) {
+            let name = params["name"].as_str().unwrap_or_default();
+            if matches!(name, "search_memory" | "save_memory" | "delete_memory")
+                && answerer.memory_db_path().is_some()
+            {
+                let path = answerer.memory_db_path().unwrap();
+                let name = name.to_string();
+                let args = params.get("arguments").cloned().unwrap_or(json!({}));
+                if name == "delete_memory" {
+                    if let PermissionDecision::Deny(reason) = answerer
+                        .decide(
+                            PermissionRequest {
+                                tool_name: name.clone(),
+                                input: args.clone(),
+                                tool_use_id: None,
+                            },
+                            session_hint,
+                        )
+                        .await
+                    {
+                        return Some(json!({ "jsonrpc": "2.0", "id": id, "result": {
+                            "content": [{ "type": "text", "text": reason }], "isError": true
+                        }}));
+                    }
+                }
+                // SQLite busy_timeout 最长 5 秒，放到阻塞池，避免卡住 UI/其他会话。
+                let output = tokio::task::spawn_blocking(move || {
+                    crate::direct_api::tools::execute_memory_tool_at(&path, &name, &args)
+                })
+                .await
+                .unwrap_or_else(|e| Err(format!("记忆任务失败: {e}")));
+                let is_error = output.is_err();
+                Ok(
+                    json!({ "content": [{ "type": "text", "text": output.unwrap_or_else(|e| e) }], "isError": is_error }),
+                )
+            } else if name != TOOL_NAME {
                 Err((-32602, format!("unknown tool {}", params["name"])))
             } else {
                 let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
                 let request = PermissionRequest {
-                    tool_name: arguments["tool_name"].as_str().unwrap_or_default().to_string(),
+                    tool_name: arguments["tool_name"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
                     input: arguments.get("input").cloned().unwrap_or(json!({})),
                     tool_use_id: arguments["tool_use_id"].as_str().map(str::to_string),
                 };
-                let decision = answerer.decide(request).await;
+                // Claude 校验允许结果时要求 updatedInput，必须原样回传获批参数。
+                let approved_input = request.input.clone();
+                let decision = answerer.decide(request, session_hint).await;
                 Ok(json!({
-                    "content": [{ "type": "text", "text": decision.to_json().to_string() }],
+                    "content": [{ "type": "text", "text": decision.to_json(&approved_input).to_string() }],
                     "isError": false
                 }))
             }
@@ -380,15 +552,125 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
+    struct MemoryFixture(PathBuf);
+    #[async_trait]
+    impl PermissionAnswerer for MemoryFixture {
+        async fn decide(&self, _: PermissionRequest, _: &str) -> PermissionDecision {
+            PermissionDecision::Allow
+        }
+        fn memory_db_path(&self) -> Option<PathBuf> {
+            Some(self.0.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn memory_bridge_roundtrip_preserves_validation_and_shared_storage() {
+        let root = std::env::temp_dir().join(format!("pet-memory-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("pet.db");
+        let db = crate::storage::Database::new(&path).unwrap();
+        let protected_id = db
+            .save_memory("app_path", "managed", "C:/managed.exe")
+            .unwrap();
+        let bridge = serve(Arc::new(MemoryFixture(path.clone()))).await.unwrap();
+        let client = reqwest::Client::new();
+        let url = bridge.url_for_session("memory-test");
+        async fn call(client: &reqwest::Client, url: &str, name: &str, args: Value) -> Value {
+            client.post(url).json(&json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": { "name": name, "arguments": args } }))
+                .send().await.unwrap().json::<Value>().await.unwrap()
+        }
+        let catalog = client
+            .post(&url)
+            .json(&json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}))
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap();
+        assert_eq!(catalog["result"]["tools"].as_array().unwrap().len(), 4);
+        let save = call(
+            &client,
+            &url,
+            "save_memory",
+            json!({"category":"preference","key":"语言","value":"中文"}),
+        )
+        .await;
+        assert_eq!(save["result"]["isError"], false);
+        let first = db
+            .get_all_memories()
+            .unwrap()
+            .into_iter()
+            .find(|m| m.key == "语言")
+            .unwrap();
+        call(
+            &client,
+            &url,
+            "save_memory",
+            json!({"category":"preference","key":"语言","value":"中文，简洁"}),
+        )
+        .await;
+        let memories = db.get_all_memories().unwrap();
+        assert_eq!(
+            memories.len(),
+            2,
+            "upsert must not duplicate an existing key"
+        );
+        assert_eq!(
+            memories.iter().find(|m| m.key == "语言").unwrap().id,
+            first.id
+        );
+        let found = call(&client, &url, "search_memory", json!({"query":"简洁"})).await;
+        assert!(found["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("中文，简洁"));
+        let denied = call(
+            &client,
+            &url,
+            "save_memory",
+            json!({"category":" app_path ","key":"managed","value":"bad"}),
+        )
+        .await;
+        assert_eq!(denied["result"]["isError"], true);
+        call(&client, &url, "delete_memory", json!({"id":protected_id})).await;
+        assert!(db
+            .get_all_memories()
+            .unwrap()
+            .iter()
+            .any(|m| m.id == protected_id));
+        let deleted = call(&client, &url, "delete_memory", json!({"id":first.id})).await;
+        assert_eq!(deleted["result"]["isError"], false);
+        assert_eq!(db.get_all_memories().unwrap().len(), 1);
+        let unknown = call(
+            &client,
+            &url,
+            "run_command",
+            json!({"command":"echo forbidden"}),
+        )
+        .await;
+        assert_eq!(unknown["error"]["code"], -32602);
+        let wrong = client.post(format!("http://127.0.0.1:{}/mcp/wrong", bridge.port)).json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"save_memory","arguments":{"category":"preference","key":"wrong","value":"bad"}}})).send().await.unwrap();
+        assert_eq!(wrong.status(), 404);
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     struct Recorder {
+        memory_path: Option<PathBuf>,
         decision: PermissionDecision,
         seen: Arc<Mutex<Vec<PermissionRequest>>>,
+        sessions: Arc<Mutex<Vec<String>>>,
     }
 
     #[async_trait]
     impl PermissionAnswerer for Recorder {
-        async fn decide(&self, request: PermissionRequest) -> PermissionDecision {
+        fn memory_db_path(&self) -> Option<PathBuf> {
+            self.memory_path.clone()
+        }
+        async fn decide(&self, request: PermissionRequest, session_id: &str) -> PermissionDecision {
             self.seen.lock().unwrap().push(request);
+            self.sessions.lock().unwrap().push(session_id.to_string());
             self.decision.clone()
         }
     }
@@ -423,10 +705,10 @@ mod tests {
     #[test]
     fn serializes_the_decision_contract_claude_expects() {
         assert_eq!(
-            PermissionDecision::Allow.to_json().to_string(),
-            "{\"behavior\":\"allow\"}"
+            PermissionDecision::Allow.to_json(&json!({"command":"echo 中文"})),
+            json!({"behavior":"allow", "updatedInput":{"command":"echo 中文"}})
         );
-        let denied = PermissionDecision::Deny("不".into()).to_json();
+        let denied = PermissionDecision::Deny("不".into()).to_json(&json!({}));
         assert_eq!(denied["behavior"], "deny");
         assert_eq!(denied["message"], "不");
     }
@@ -434,9 +716,12 @@ mod tests {
     #[tokio::test]
     async fn answers_the_mcp_handshake_and_forwards_permission_calls() {
         let seen = Arc::new(Mutex::new(Vec::new()));
+        let sessions = Arc::new(Mutex::new(Vec::new()));
         let answerer = Arc::new(Recorder {
+            memory_path: None,
             decision: PermissionDecision::Allow,
             seen: seen.clone(),
+            sessions: sessions.clone(),
         });
         let bridge = serve(answerer).await.unwrap();
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
@@ -482,6 +767,25 @@ mod tests {
             .contains("allow"));
         assert_eq!(seen.lock().unwrap().len(), 1);
         assert_eq!(seen.lock().unwrap()[0].tool_name, "Bash");
+
+        // 带会话后缀的 URL：授权请求要归属到对应会话（多会话并行不串台）。
+        let scoped = client
+            .post(bridge.url_for_session("sess-abc_123"))
+            .json(&json!({
+                "jsonrpc": "2.0", "id": 6, "method": "tools/call",
+                "params": { "name": TOOL_NAME, "arguments": { "tool_name": "Write", "input": { "file_path": "C:/b.txt" } } }
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap();
+        assert!(scoped["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("allow"));
+        assert_eq!(sessions.lock().unwrap().as_slice(), ["", "sess-abc_123"]);
 
         let unknown = client
             .post(bridge.url())
@@ -536,7 +840,9 @@ mod tests {
             eprintln!("跳过：本机没有 node");
             return;
         };
-        let Some(claude) = find_on_path(&["claude.cmd", "claude.exe", "claude"]) else {
+        let Some(claude) = std::env::var_os("PET_TEST_CLAUDE_CLI").map(PathBuf::from)
+            .filter(|path| path.is_file())
+            .or_else(|| find_on_path(&["claude.cmd", "claude.exe", "claude"])) else {
             eprintln!("跳过：本机没有 claude CLI");
             return;
         };
@@ -577,11 +883,16 @@ mod tests {
         }
         let port = port.expect("mock provider did not report a port");
 
+        let memory_db_path = root.join("memory.db");
+        let memory_db = crate::storage::Database::new(&memory_db_path).unwrap();
+
         // 2) 桥：记录请求并允许
         let seen = Arc::new(Mutex::new(Vec::new()));
         let answerer = Arc::new(Recorder {
+            memory_path: Some(memory_db_path),
             decision: PermissionDecision::Allow,
             seen: seen.clone(),
+            sessions: Arc::new(Mutex::new(Vec::new())),
         });
         let bridge = serve(answerer).await.unwrap();
         let config = root.join("mcp.json");
@@ -597,18 +908,13 @@ mod tests {
             .arg("--include-partial-messages")
             .arg("--append-system-prompt")
             .arg("这是桌宠接入测试，回答简短。")
-            .arg("--max-budget-usd")
-            .arg("0.5")
             .arg("--mcp-config")
             .arg(&config)
             .arg("--permission-prompt-tool")
             .arg(PROMPT_TOOL)
-            .arg("--permission-prompts")
-            .arg("host")
-            // 测试里固定成 manual，保证任何工具调用都会询问；桌宠本身不传这个参数，
-            // 用户的权限模式（新版本默认 auto，只对危险操作询问）保持不变。
+            // 与产品兼容旧版 CLI 的手动档位一致，实际传 default。
             .arg("--permission-mode")
-            .arg("manual")
+            .arg("default")
             .env("ANTHROPIC_BASE_URL", format!("http://127.0.0.1:{port}"))
             .env("ANTHROPIC_AUTH_TOKEN", "pet-mock-token")
             .env("CLAUDE_CONFIG_DIR", &config_dir)
@@ -622,7 +928,9 @@ mod tests {
         {
             use tokio::io::AsyncWriteExt;
             let mut stdin = child.stdin.take().unwrap();
-            let prompt = format!("{marker} 请执行 echo pet-claude-check 并告诉我结果。");
+            let prompt = format!(
+                "{marker} USE_MEMORY 请执行 echo pet-claude-check，再保存中文偏好并告诉我结果。"
+            );
             let _ = stdin.write_all(prompt.as_bytes()).await;
             let _ = stdin.shutdown().await;
         }
@@ -674,26 +982,29 @@ mod tests {
                 ))
                 .collect::<Vec<_>>()
         );
-        assert!(!calls.is_empty(), "claude 必须把权限提示交给桌宠的 MCP 工具");
         assert!(
-            matches!(calls[0].tool_name.as_str(), "Bash" | "PowerShell" | "shell"),
-            "应当是 shell 工具，实际 {}",
-            calls[0].tool_name
+            !calls.is_empty(),
+            "claude 必须把权限提示交给桌宠的 MCP 工具"
         );
-        assert!(
-            calls[0].input["command"]
-                .as_str()
-                .unwrap_or("")
-                .contains("pet-claude-check"),
-            "确认弹窗要拿到真实命令：{:?}",
-            calls[0].input
-        );
+        // default 模式可自行放行只读 echo；新增 MCP 写入必须通过授权桥。
+        let memory_call = calls.iter().find(|call| call.tool_name == "mcp__pet__save_memory")
+            .expect("Claude must delegate memory-tool consent to the pet");
+        assert_eq!(memory_call.input["key"], "claude-language");
         assert!(
             collected.contains(&marker),
             "最终回答里应当有标记：{}",
             collected.chars().take(800).collect::<String>()
         );
 
+        assert!(
+            memory_db
+                .get_all_memories()
+                .unwrap()
+                .iter()
+                .any(|m| m.key == "claude-language" && m.value == "中文"),
+            "Claude must write memory through the real MCP client"
+        );
+        drop(memory_db);
         let _ = mock.kill().await;
         let _ = std::fs::remove_dir_all(&root);
     }

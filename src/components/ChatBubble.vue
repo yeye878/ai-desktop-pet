@@ -13,10 +13,12 @@ import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import BgCanvas from "./BgCanvas.vue";
 import AgentActivity from "./AgentActivity.vue";
+import SessionPermissionPicker from "./SessionPermissionPicker.vue";
 import UserQuestion from "./UserQuestion.vue";
 import { createInteractionSubmission, subscribePendingInteraction, type AskUserPayload } from "../services/pendingInteractions";
 import { isNearBottom, legacyActivity, type AgentActivityTool } from "../services/agentActivity";
 import { ArrowDown } from "@lucide/vue";
+import AppIcon from "./AppIcon.vue";
 import CollaborationBar from "./CollaborationBar.vue";
 import { subscribeCollaboration, type CollaborationReply, type CollaborationState } from "../services/collaboration";
 import {
@@ -219,6 +221,7 @@ interface PendingFile {
   size: number;
   extension: string;
   isImage: boolean;
+  isDir: boolean;
   previewUrl: string;
   status: "loading" | "ready" | "error";
   errorMessage?: string;
@@ -230,6 +233,7 @@ interface RustFileMetadata {
   extension: string;
   exists: boolean;
   is_file: boolean;
+  is_dir: boolean;
 }
 const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"];
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
@@ -668,7 +672,7 @@ async function sendMessage() {
 
   const fileAttachments: FileAttachment[] | undefined =
     files.length > 0
-      ? files.map((f) => ({ name: f.name, isImage: f.isImage, extension: f.extension }))
+      ? files.map((f) => ({ name: f.name, isImage: f.isImage, extension: f.extension, isDir: f.isDir }))
       : undefined;
   const aiAttachments =
     files.length > 0
@@ -1223,16 +1227,20 @@ async function processNormalFiles(paths: string[]) {
     const metadataList = await invoke<RustFileMetadata[]>("get_file_metadata", { paths });
 
     for (const meta of metadataList) {
-      if (!meta.exists || !meta.is_file) {
-        showFileError(`文件不存在或是目录: ${meta.name}`);
+      if (!meta.exists) {
+        showFileError(`路径不存在: ${meta.name}`);
         continue;
       }
-      if (meta.size > MAX_FILE_SIZE) {
+      if (!meta.is_file && !meta.is_dir) {
+        showFileError(`不是文件或目录: ${meta.name}`);
+        continue;
+      }
+      if (meta.is_file && meta.size > MAX_FILE_SIZE) {
         showFileError(`文件过大: ${meta.name} (最大 50MB)`);
         continue;
       }
 
-      const isImage = IMAGE_EXTENSIONS.includes(meta.extension);
+      const isImage = !meta.is_dir && IMAGE_EXTENSIONS.includes(meta.extension);
       let previewUrl = "";
 
       if (isImage) {
@@ -1246,6 +1254,7 @@ async function processNormalFiles(paths: string[]) {
         size: meta.size,
         extension: meta.extension,
         isImage,
+        isDir: meta.is_dir,
         previewUrl,
         status: "ready",
       });
@@ -1316,18 +1325,21 @@ function buildMessageWithFiles(text: string, files: PendingFile[]): string {
   if (files.length === 0) return text;
 
   const imageCount = files.filter((f) => f.isImage).length;
-  const regularFileCount = files.length - imageCount;
+  const dirCount = files.filter((f) => f.isDir).length;
+  const regularFileCount = files.length - imageCount - dirCount;
   const fileLines = files
     .map((f, i) => {
-      const typeLabel = f.isImage ? "图片" : "文件";
-      const icon = f.isImage ? "\u{1F4F7}" : getFileIcon(f.extension);
-      return `${i + 1}. ${icon} ${typeLabel}: "${f.name}" (路径: ${f.path}, 大小: ${formatFileSize(f.size)})`;
+      const typeLabel = f.isDir ? "目录" : f.isImage ? "图片" : "文件";
+      const icon = f.isDir ? "\u{1F4C2}" : f.isImage ? "\u{1F4F7}" : getFileIcon(f.extension);
+      const sizeLabel = f.isDir ? "目录" : formatFileSize(f.size);
+      return `${i + 1}. ${icon} ${typeLabel}: "${f.name}" (路径: ${f.path}, 大小: ${sizeLabel})`;
     })
     .join("\n");
 
   const hints = [
     imageCount > 0 ? "图片会随消息作为视觉输入发送，请直接观察图片内容。" : "",
     regularFileCount > 0 ? "普通文件可使用 read_file 工具读取内容。" : "",
+    dirCount > 0 ? "目录可先用 list_directory 查看结构，再用 read_file 读取其中的文件。" : "",
   ].filter(Boolean).join(" ");
   const fileBlock = `\n\n---\n[用户附加了以下本地文件]\n${fileLines}\n\n提示: ${hints}`;
 
@@ -1512,14 +1524,14 @@ function formatClipboardTime(value: string | number): string {
           :class="['tab-btn', { active: activeTab === 'chat' }]"
           @click="switchTab('chat')"
         >
-          <span class="tab-icon">&#x1F4AC;</span>
+          <span class="tab-icon"><AppIcon name="chat-cabin" :size="14" /></span>
           <span>对话</span>
         </button>
         <button
           :class="['tab-btn', { active: activeTab === 'clipboard' }]"
           @click="switchTab('clipboard')"
         >
-          <span class="tab-icon">&#x1F4CB;</span>
+          <span class="tab-icon"><AppIcon name="clipboard" :size="14" /></span>
           <span>剪切板</span>
         </button>
       </div>
@@ -1529,7 +1541,7 @@ function formatClipboardTime(value: string | number): string {
         title="新对话"
         @click="startNewConversation"
       >
-        &#x2795;
+        <AppIcon name="plus" :size="15" />
       </button>
       <button
         v-if="activeTab === 'chat'"
@@ -1537,7 +1549,7 @@ function formatClipboardTime(value: string | number): string {
         title="清空对话"
         @click="clearChat"
       >
-        &#x1F5D1;
+        <AppIcon name="trash" :size="14" />
       </button>
       <button
         v-else
@@ -1545,7 +1557,7 @@ function formatClipboardTime(value: string | number): string {
         title="清空剪切板"
         @click="clearClipboard"
       >
-        &#x1F5D1;
+        <AppIcon name="trash" :size="14" />
       </button>
       <button class="close-btn" @click="emit('close')">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
@@ -1589,12 +1601,17 @@ function formatClipboardTime(value: string | number): string {
 
           <template v-else>
           <div v-if="msg.role === 'assistant'" class="avatar bot-avatar">
-            <span>&#x1F43E;</span>
+            <AppIcon name="brand-pet" :size="16" />
           </div>
 
           <div class="msg-body">
             <div v-if="msg.agent && msg.role === 'assistant'" class="msg-agent-badge">
-              <span class="msg-agent-avatar">{{ msg.agent.avatar || "🤖" }}</span>
+              <span class="msg-agent-avatar">
+                <AppIcon v-if="msg.agent.id === 'builtin-claude' || msg.agent.name.toLowerCase() === 'claude'" name="claude" :size="12" />
+                <AppIcon v-else-if="msg.agent.id === 'builtin-codex' || msg.agent.name.toLowerCase() === 'codex'" name="codex" :size="12" />
+                <AppIcon v-else-if="msg.agent.id === 'builtin-dsh' || msg.agent.name.toLowerCase() === 'dsh'" name="dsh" :size="12" />
+                <template v-else>{{ msg.agent.avatar || "🤖" }}</template>
+              </span>
               <span class="msg-agent-name">{{ msg.agent.name }}</span>
             </div>
             <AgentActivity v-if="msg.role === 'assistant'" :items="msg.activity" :tools="msg.toolEvents" :thinking="msg.activity ? undefined : msg.thinking" compact />
@@ -1607,7 +1624,7 @@ function formatClipboardTime(value: string | number): string {
             </div>
             <div v-if="msg.files && msg.files.length > 0" class="msg-files">
               <div v-for="(file, fi) in msg.files" :key="fi" class="msg-file-tag">
-                <span>{{ file.isImage ? "\u{1F4F7}" : getFileIcon(file.extension) }}</span>
+                <span>{{ file.isDir ? "\u{1F4C2}" : file.isImage ? "\u{1F4F7}" : getFileIcon(file.extension) }}</span>
                 <span>{{ file.name }}</span>
               </div>
             </div>
@@ -1625,14 +1642,14 @@ function formatClipboardTime(value: string | number): string {
 
           <div v-if="msg.role === 'user'" class="avatar user-avatar">
             <img v-if="userAvatar" :src="userAvatar" alt="用户头像" />
-            <span v-else>&#x1F464;</span>
+            <AppIcon v-else name="user-avatar" :size="15" />
           </div>
           </template>
         </div>
 
         <div v-if="chat.isLoading" class="message assistant msg-enter">
           <div class="avatar bot-avatar">
-            <span class="avatar-thinking">&#x1F43E;</span>
+            <span class="avatar-thinking"><AppIcon name="brand-pet" :size="16" /></span>
           </div>
           <div class="msg-body">
             <AgentActivity :items="chat.activity.items" :thinking="thinkingContent" :active="true" :waiting="!!pendingConfirm || !!pendingQuestion" :awaiting-answer="!!pendingQuestion" compact @stop="abortAi" />
@@ -1645,16 +1662,16 @@ function formatClipboardTime(value: string | number): string {
 
       <template v-else>
         <div class="clipboard-search">
-          <span class="clipboard-search-icon">&#x1F50D;</span>
+          <span class="clipboard-search-icon"><AppIcon name="search" :size="14" /></span>
           <input v-model="clipboardSearch" type="search" placeholder="搜索剪切板..." />
         </div>
 
         <div v-if="clipboardItems.length === 0" class="empty-hint">
-          <div class="empty-icon">&#x1F4CB;</div>
+          <div class="empty-icon"><AppIcon name="clipboard" :size="20" /></div>
           <div>把临时内容存在这里吧~</div>
         </div>
         <div v-else-if="filteredClipboardItems.length === 0" class="empty-hint">
-          <div class="empty-icon">&#x1F50D;</div>
+          <div class="empty-icon"><AppIcon name="search" :size="20" /></div>
           <div>没有匹配的剪切板内容</div>
         </div>
         <div
@@ -1680,7 +1697,7 @@ function formatClipboardTime(value: string | number): string {
                   :aria-label="item.pinned ? '取消置顶' : '置顶'"
                   @click="toggleClipboardPinned(item)"
                 >
-                  <span class="clipboard-action-icon">{{ item.pinned ? '&#x1F4CC;' : '&#x1F4CD;' }}</span>
+                  <span class="clipboard-action-icon"><AppIcon name="pin" :size="12" /></span>
                   <span class="clipboard-action-label">{{ item.pinned ? '取消置顶' : '置顶' }}</span>
                 </button>
                 <button
@@ -1690,7 +1707,7 @@ function formatClipboardTime(value: string | number): string {
                   aria-label="复制"
                   @click="copyClipboardItem(item)"
                 >
-                  <span class="clipboard-action-icon">&#x2398;</span>
+                  <span class="clipboard-action-icon"><AppIcon name="copy" :size="12" /></span>
                   <span class="clipboard-action-label">复制</span>
                 </button>
                 <button
@@ -1700,7 +1717,7 @@ function formatClipboardTime(value: string | number): string {
                   aria-label="删除"
                   @click="deleteClipboardItem(item)"
                 >
-                  <span class="clipboard-action-icon">&#x1F5D1;</span>
+                  <span class="clipboard-action-icon"><AppIcon name="trash" :size="12" /></span>
                   <span class="clipboard-action-label">删除</span>
                 </button>
               </div>
@@ -1722,7 +1739,7 @@ function formatClipboardTime(value: string | number): string {
       <div v-if="pendingConfirm" class="floating-confirm-overlay">
         <div class="tool-confirm-card">
           <div class="confirm-card-header">
-            <span class="confirm-card-icon">⚡</span>
+            <span class="confirm-card-icon"><AppIcon name="shield-bolt" :size="16" /></span>
             <span class="confirm-card-title">请求运行敏感操作</span>
           </div>
 
@@ -1747,10 +1764,10 @@ function formatClipboardTime(value: string | number): string {
 
           <div class="confirm-card-actions">
             <button class="confirm-btn deny" :disabled="confirmSubmitting" @click="handleToolConfirm(false)">
-              ❌ 拒绝
+              拒绝
             </button>
             <button class="confirm-btn approve" :disabled="confirmSubmitting" @click="handleToolConfirm(true)">
-              ✅ 允许
+              允许
             </button>
           </div>
         </div>
@@ -1791,9 +1808,9 @@ function formatClipboardTime(value: string | number): string {
               </template>
               <template v-else>
                 <div class="preview-file-card">
-                  <span class="file-icon-lg">{{ getFileIcon(file.extension) }}</span>
+                  <span class="file-icon-lg">{{ file.isDir ? "\u{1F4C2}" : getFileIcon(file.extension) }}</span>
                   <span class="file-name" :title="file.name">{{ file.name }}</span>
-                  <span class="file-size">{{ formatFileSize(file.size) }}</span>
+                  <span class="file-size">{{ file.isDir ? "目录" : formatFileSize(file.size) }}</span>
                 </div>
               </template>
               <button class="remove-file-btn" @click="removePendingFile(file.id)">&times;</button>
@@ -1846,6 +1863,19 @@ function formatClipboardTime(value: string | number): string {
     </Transition>
 
     <CollaborationBar v-if="activeTab === 'chat'" />
+    <div
+      v-if="activeTab === 'chat' && backendType !== 'direct_api' && sessions.activeMainId"
+      class="chat-access-row"
+      title="当前后端与这条会话的权限档位"
+    >
+      <SessionPermissionPicker
+        :session-id="sessions.activeMainId"
+        :backend="backendType"
+        :disabled="chat.isLoading"
+        compact
+        placement="up"
+      />
+    </div>
     <div class="chat-input">
       <button
         v-if="activeTab === 'chat'"
@@ -1892,7 +1922,7 @@ function formatClipboardTime(value: string | number): string {
     </div>
 
     <div v-if="isFileOver" class="drop-hint">
-      <div class="drop-icon">&#x1F4CE;</div>
+      <div class="drop-icon"><AppIcon name="paperclip" :size="24" /></div>
       <div>松开添加文件</div>
     </div>
   </div>
@@ -2236,6 +2266,7 @@ function formatClipboardTime(value: string | number): string {
     radial-gradient(circle at 35% 25%, rgba(255, 255, 255, 0.58), transparent 34%),
     var(--pet-header-gradient, linear-gradient(135deg, #ff6b6b, #ff8e53));
   background-size: 180% 180%;
+  color: #ffffff;
   animation: softGradientShift 8s ease-in-out infinite;
 }
 
@@ -2778,6 +2809,7 @@ function formatClipboardTime(value: string | number): string {
   white-space: nowrap;
 }
 
+.chat-access-row { display: flex; justify-content: flex-end; align-items: center; padding: 0 12px; min-height: 24px; flex-shrink: 0; }
 .chat-input {
   position: relative;
   z-index: 2;

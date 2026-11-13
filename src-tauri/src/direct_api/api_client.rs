@@ -62,7 +62,10 @@ pub struct Delta {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct ToolCallDelta {
-    pub index: usize,
+    /// 部分 OpenAI 兼容服务（旧版 Ollama、部分 Gemini 兼容层）不下发 index：
+    /// 必填会让整块 chunk 反序列化失败而被静默丢弃（连正文一起丢）。
+    #[serde(default)]
+    pub index: Option<usize>,
     pub id: Option<String>,
     pub r#type: Option<String>,
     pub function: Option<FunctionCallDelta>,
@@ -110,6 +113,76 @@ pub struct NonStreamResult {
     pub content: Option<String>,
     pub tool_calls: Vec<NonStreamToolCall>,
     pub finish_reason: Option<String>,
+}
+
+/// 跨 chunk 的增量 UTF-8 解码。
+///
+/// HTTP 分块边界和字符边界无关：一个汉字的 3 个字节可能被拆进相邻两块。对每块单独
+/// `from_utf8_lossy` 会把被拆开的字符变成 `�`（实测"你好世界"→"���好世界"）。
+/// 这里把块尾不完整的多字节序列留到下一块再解；真正非法的字节才替换成 U+FFFD。
+#[derive(Default)]
+pub struct Utf8ChunkDecoder {
+    pending: Vec<u8>,
+}
+
+impl Utf8ChunkDecoder {
+    pub fn push(&mut self, chunk: &[u8]) -> String {
+        self.pending.extend_from_slice(chunk);
+        let mut out = String::new();
+        loop {
+            match std::str::from_utf8(&self.pending) {
+                Ok(text) => {
+                    out.push_str(text);
+                    self.pending.clear();
+                    return out;
+                }
+                Err(error) => {
+                    let valid = error.valid_up_to();
+                    out.push_str(std::str::from_utf8(&self.pending[..valid]).unwrap_or(""));
+                    match error.error_len() {
+                        // 块尾是被切断的多字节字符：残余字节留给下一块。
+                        None => {
+                            self.pending.drain(..valid);
+                            return out;
+                        }
+                        Some(len) => {
+                            out.push('\u{FFFD}');
+                            self.pending.drain(..valid + len);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// 流结束时冲出残余字节（不完整的字符按替换字符输出）。
+    pub fn finish(&mut self) -> String {
+        let text = String::from_utf8_lossy(&self.pending).into_owned();
+        self.pending.clear();
+        text
+    }
+}
+
+/// 发起流式请求失败：区分能否重试（401 / 400 这类配置错误重试多少次都一样）。
+#[derive(Debug)]
+pub struct StreamRequestError {
+    pub message: String,
+    pub retryable: bool,
+}
+
+impl std::fmt::Display for StreamRequestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+/// 只有限流、超时和服务端错误值得重试；4xx 配置类错误（密钥错、参数错、上下文超长）不重试。
+pub fn is_retryable_status(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status == reqwest::StatusCode::REQUEST_TIMEOUT
+        || status == reqwest::StatusCode::CONFLICT
+        || status.as_u16() == 425
+        || status.is_server_error()
 }
 
 pub struct SseParser {
@@ -397,10 +470,12 @@ pub fn convert_messages_to_responses_input(messages: &[Value]) -> Vec<Value> {
                             _ => false,
                         };
                         if !is_empty {
+                            // Responses API 里 assistant 的内容块类型必须是 output_text：
+                            // 用 input_text 会被官方端点以 "Invalid value: 'input_text'" 拒绝。
                             input.push(json!({
                                 "type": "message",
                                 "role": "assistant",
-                                "content": normalize_content_to_responses(content.clone())
+                                "content": normalize_assistant_content_to_responses(content.clone())
                             }));
                         }
                     }
@@ -419,9 +494,10 @@ pub fn convert_messages_to_responses_input(messages: &[Value]) -> Vec<Value> {
                             .and_then(|f| f.get("arguments"))
                             .and_then(|a| a.as_str())
                             .unwrap_or("{}");
+                        // 只传 call_id：function_call 项的 id 要求是 "fc_" 开头的条目 id，
+                        // 把 "call_..." 填进 id 会被官方端点拒绝；省略 id 是允许的。
                         input.push(json!({
                             "type": "function_call",
-                            "id": id,
                             "call_id": id,
                             "name": name,
                             "arguments": arguments
@@ -487,6 +563,60 @@ fn normalize_content_to_responses(content: Value) -> Vec<Value> {
     }
 }
 
+/// assistant 历史消息转换为 Responses 格式：文本块用 output_text（图片不会出现在 assistant 里）。
+fn normalize_assistant_content_to_responses(content: Value) -> Vec<Value> {
+    let text = match content {
+        Value::String(text) => text,
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| part.get("text").and_then(|text| text.as_str()))
+            .collect::<Vec<_>>()
+            .join(""),
+        other => other.to_string(),
+    };
+    vec![json!({ "type": "output_text", "text": text })]
+}
+
+/// 将 Chat Completions 风格的嵌套工具定义转换为 Responses API 需要的扁平结构。
+/// 兼容已扁平的定义；缺少 name 的项会被跳过；description/parameters 缺省补齐，
+/// 且不额外添加 "strict" 字段。
+fn responses_tool_definitions(tools: &[Value]) -> Vec<Value> {
+    let mut definitions = Vec::with_capacity(tools.len());
+
+    for tool in tools {
+        let nested = tool.get("function").filter(|f| f.is_object());
+        let name = nested
+            .and_then(|f| f.get("name"))
+            .and_then(Value::as_str)
+            .or_else(|| tool.get("name").and_then(Value::as_str));
+        let Some(name) = name.map(str::trim).filter(|n| !n.is_empty()) else {
+            continue;
+        };
+
+        let description = nested
+            .and_then(|f| f.get("description"))
+            .and_then(Value::as_str)
+            .or_else(|| tool.get("description").and_then(Value::as_str))
+            .unwrap_or("");
+
+        let parameters = nested
+            .and_then(|f| f.get("parameters"))
+            .or_else(|| tool.get("parameters"))
+            .filter(|p| p.is_object())
+            .cloned()
+            .unwrap_or_else(|| json!({ "type": "object", "properties": {} }));
+
+        definitions.push(json!({
+            "type": "function",
+            "name": name,
+            "description": description,
+            "parameters": parameters,
+        }));
+    }
+
+    definitions
+}
+
 /// 构建 Responses API 请求体（流式和非流式通用）
 pub fn build_responses_request_body(
     config: &DirectApiConfig,
@@ -502,17 +632,19 @@ pub fn build_responses_request_body(
         "stream": stream,
     });
 
+    // Responses API 的推理强度参数是 reasoning.effort；顶层 reasoning_effort 是 Chat Completions 的写法。
     if matches!(config.thinking_depth.as_str(), "low" | "medium" | "high") {
         body.as_object_mut()
             .unwrap()
-            .insert("reasoning_effort".to_string(), json!(config.thinking_depth));
+            .insert("reasoning".to_string(), json!({ "effort": config.thinking_depth }));
     }
 
     if let Some(t) = tools {
-        if !t.is_empty() {
+        let definitions = responses_tool_definitions(&t);
+        if !definitions.is_empty() {
             body.as_object_mut()
                 .unwrap()
-                .insert("tools".to_string(), json!(t));
+                .insert("tools".to_string(), json!(definitions));
         }
     }
 
@@ -594,7 +726,7 @@ pub async fn call_chat_completions_stream(
     config: &DirectApiConfig,
     messages: &Vec<serde_json::Value>,
     tools: Option<Vec<serde_json::Value>>,
-) -> Result<reqwest::Response, String> {
+) -> Result<reqwest::Response, StreamRequestError> {
     let url = build_chat_completions_url(&config.base_url, &config.api_mode);
 
     let body = if config.api_mode == "responses" {
@@ -633,19 +765,30 @@ pub async fn call_chat_completions_stream(
 
     let res = tokio::time::timeout(Duration::from_secs(60), req.send())
         .await
-        .map_err(|_| "API 请求超过 60 秒没有响应，请检查网络、Base URL 或代理配置。".to_string())?
-        .map_err(|e| format!("{e}"))?;
+        .map_err(|_| StreamRequestError {
+            message: "API 请求超过 60 秒没有响应，请检查网络、Base URL 或代理配置。".to_string(),
+            retryable: true,
+        })?
+        .map_err(|e| StreamRequestError {
+            message: format!("{e}"),
+            retryable: true,
+        })?;
 
-    if !res.status().is_success() {
+    let status = res.status();
+    if !status.is_success() {
         let err_text = res
             .text()
             .await
             .unwrap_or_else(|_| "无法读取错误详情".to_string());
-        return Err(format!(
-            "API 返回错误 ({}): {}",
-            url,
-            clean_api_error_text(&err_text)
-        ));
+        return Err(StreamRequestError {
+            message: format!(
+                "API 返回错误 {} ({}): {}",
+                status.as_u16(),
+                url,
+                clean_api_error_text(&err_text)
+            ),
+            retryable: is_retryable_status(status),
+        });
     }
 
     Ok(res)
@@ -693,9 +836,13 @@ pub async fn call_chat_completions_non_stream(
         req = req.header("Authorization", format!("Bearer {}", config.api_key.trim()));
     }
 
-    let res = tokio::time::timeout(Duration::from_secs(60), req.send())
+    // 非流式请求要等模型整段生成完才返回响应头：长回复、写大文件的工具调用经常超过 60 秒，
+    // 以前固定 60 秒一律判超时。这里给整个请求（含读取响应体）5 分钟。
+    const NON_STREAM_TIMEOUT: Duration = Duration::from_secs(300);
+    let started = std::time::Instant::now();
+    let res = tokio::time::timeout(NON_STREAM_TIMEOUT, req.send())
         .await
-        .map_err(|_| "API 请求超过 60 秒没有响应，请检查网络、Base URL 或代理配置。".to_string())?
+        .map_err(|_| "API 请求超过 5 分钟没有返回，请检查网络、Base URL 或代理配置；回复很长时可以改用流式模式。".to_string())?
         .map_err(|e| format!("{e}"))?;
 
     if !res.status().is_success() {
@@ -711,9 +858,10 @@ pub async fn call_chat_completions_non_stream(
     }
 
     // 先读取响应体为文本，以便调试和兼容多种格式
-    let response_text = res
-        .text()
+    let remaining = NON_STREAM_TIMEOUT.saturating_sub(started.elapsed()).max(Duration::from_secs(10));
+    let response_text = tokio::time::timeout(remaining, res.text())
         .await
+        .map_err(|_| "读取响应内容超时，可以改用流式模式。".to_string())?
         .map_err(|e| format!("读取响应内容失败: {e}"))?;
 
     // 空响应体检测
@@ -791,7 +939,7 @@ pub async fn call_chat_completions_non_stream(
                     if let Some(ref tc_deltas) = choice.delta.tool_calls {
                         for tc in tc_deltas {
                             let entry =
-                                accumulated_tool_calls.entry(tc.index).or_insert_with(|| {
+                                accumulated_tool_calls.entry(tc.index.unwrap_or(0)).or_insert_with(|| {
                                     NonStreamToolCall {
                                         id: None,
                                         r#type: "function".to_string(),
@@ -820,12 +968,10 @@ pub async fn call_chat_completions_non_stream(
         }
 
         if !combined_content.is_empty() || !accumulated_tool_calls.is_empty() {
-            let mut tool_calls: Vec<NonStreamToolCall> = accumulated_tool_calls
-                .into_iter()
-                .map(|(_, tc)| tc)
-                .collect();
-            // 按 id 排序（如果有的话）
-            tool_calls.sort_by(|a, b| a.id.cmp(&b.id));
+            // 按模型给出的 index 排序：以前按 id（随机串）排序，"先建文件再修改"会被打乱顺序执行。
+            let mut indexed: Vec<(usize, NonStreamToolCall)> = accumulated_tool_calls.into_iter().collect();
+            indexed.sort_by_key(|(index, _)| *index);
+            let tool_calls: Vec<NonStreamToolCall> = indexed.into_iter().map(|(_, tc)| tc).collect();
 
             return Ok(NonStreamResult {
                 content: if combined_content.is_empty() {
@@ -937,6 +1083,194 @@ data: [DONE]
 "#;
 
         assert!(api_error_message_from_sse_text(sse).is_none());
+    }
+
+    #[test]
+    fn responses_tool_definitions_flatten_nested_chat_completions_shape() {
+        let nested = vec![json!({
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "读取本地文件",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "path": { "type": "string" } },
+                    "required": ["path"]
+                }
+            }
+        })];
+
+        let definitions = responses_tool_definitions(&nested);
+
+        assert_eq!(definitions.len(), 1);
+        let def = &definitions[0];
+        assert_eq!(def["type"], "function");
+        assert_eq!(def["name"], "read_file");
+        assert!(
+            def.get("function").is_none(),
+            "Responses tools 不能保留 Chat Completions 的 function 嵌套键"
+        );
+        assert_eq!(def["description"], "读取本地文件");
+        assert_eq!(def["parameters"]["type"], "object");
+        assert!(def["parameters"]["properties"]["path"].is_object());
+        assert!(def.get("strict").is_none(), "不要擅自添加 strict 字段");
+    }
+
+    #[test]
+    fn responses_tool_definitions_accept_flat_tools_and_skip_unnamed() {
+        let input = vec![
+            json!({
+                "type": "function",
+                "name": "flat_tool",
+                "parameters": { "type": "object", "properties": {} }
+            }),
+            json!({ "type": "function", "function": { "description": "缺少 name" } }),
+            json!({ "type": "web_search_preview" }),
+        ];
+
+        let definitions = responses_tool_definitions(&input);
+
+        assert_eq!(definitions.len(), 1);
+        assert_eq!(definitions[0]["name"], "flat_tool");
+        assert_eq!(definitions[0]["description"], "");
+        assert_eq!(definitions[0]["parameters"]["type"], "object");
+        assert!(definitions[0]["parameters"]["properties"].is_object());
+
+        // 缺省 description/parameters 时补默认值
+        let defaults = responses_tool_definitions(&[json!({ "name": "only_name" })]);
+        assert_eq!(defaults.len(), 1);
+        assert_eq!(defaults[0]["type"], "function");
+        assert_eq!(defaults[0]["description"], "");
+        assert_eq!(defaults[0]["parameters"]["type"], "object");
+        assert!(defaults[0]["parameters"]["properties"].is_object());
+    }
+
+    #[test]
+    fn responses_request_body_uses_flat_tool_definitions() {
+        let tools = crate::direct_api::tools::tool_definitions();
+        let source_names: Vec<String> = tools
+            .iter()
+            .filter_map(|tool| {
+                tool.get("function")?
+                    .get("name")?
+                    .as_str()
+                    .map(str::to_string)
+            })
+            .collect();
+
+        let body = build_responses_request_body(
+            &DirectApiConfig::default(),
+            &[],
+            Some(tools.clone()),
+            true,
+        );
+        let body_tools = body["tools"]
+            .as_array()
+            .expect("responses 请求体应包含 tools 数组");
+
+        assert_eq!(body_tools.len(), tools.len());
+        for def in body_tools {
+            assert!(
+                def.get("function").is_none(),
+                "Responses tools 项必须是扁平结构: {def}"
+            );
+            assert!(
+                def.get("name")
+                    .and_then(|n| n.as_str())
+                    .is_some_and(|n| !n.is_empty()),
+                "工具名称缺失: {def}"
+            );
+        }
+
+        // 工具名称齐全，一个都不能少
+        let body_names: Vec<&str> = body_tools
+            .iter()
+            .filter_map(|def| def.get("name").and_then(|n| n.as_str()))
+            .collect();
+        for name in &source_names {
+            assert!(
+                body_names.contains(&name.as_str()),
+                "responses 请求体缺少工具: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn utf8_decoder_keeps_multibyte_characters_split_across_chunks() {
+        let bytes = "data: 你好世界\n".as_bytes();
+        let split = bytes.iter().position(|&b| b >= 0x80).unwrap() + 1;
+        let mut decoder = Utf8ChunkDecoder::default();
+        let mut text = decoder.push(&bytes[..split]);
+        text.push_str(&decoder.push(&bytes[split..]));
+        text.push_str(&decoder.finish());
+        assert_eq!(text, "data: 你好世界\n", "逐块 lossy 解码会得到 \"���好世界\"");
+
+        // 极端情况：每个字节单独一块。
+        let mut decoder = Utf8ChunkDecoder::default();
+        let one_by_one: String = bytes
+            .iter()
+            .map(|byte| decoder.push(std::slice::from_ref(byte)))
+            .collect();
+        assert_eq!(one_by_one, "data: 你好世界\n");
+    }
+
+    #[test]
+    fn utf8_decoder_replaces_only_truly_invalid_bytes() {
+        let mut decoder = Utf8ChunkDecoder::default();
+        let mut input = b"ok \xFF ".to_vec();
+        input.extend_from_slice(&"中".as_bytes()[..1]);
+        assert_eq!(decoder.push(&input), "ok \u{FFFD} ");
+        assert_eq!(decoder.push(&"中".as_bytes()[1..]), "中");
+    }
+
+    #[test]
+    fn only_rate_limits_and_server_errors_are_retryable() {
+        assert!(is_retryable_status(reqwest::StatusCode::TOO_MANY_REQUESTS));
+        assert!(is_retryable_status(reqwest::StatusCode::BAD_GATEWAY));
+        assert!(is_retryable_status(reqwest::StatusCode::SERVICE_UNAVAILABLE));
+        assert!(!is_retryable_status(reqwest::StatusCode::UNAUTHORIZED));
+        assert!(!is_retryable_status(reqwest::StatusCode::BAD_REQUEST));
+        assert!(!is_retryable_status(reqwest::StatusCode::PAYLOAD_TOO_LARGE));
+    }
+
+    #[test]
+    fn responses_input_uses_output_text_for_assistant_and_omits_call_item_id() {
+        let messages = vec![
+            json!({
+                "role": "assistant",
+                "content": "我先读一下文件",
+                "tool_calls": [{ "id": "call_1", "type": "function", "function": { "name": "read_file", "arguments": "{}" } }]
+            }),
+            json!({ "role": "tool", "tool_call_id": "call_1", "content": "ok" }),
+        ];
+        let input = convert_messages_to_responses_input(&messages);
+        assert_eq!(input[0]["content"][0]["type"], "output_text");
+        assert_eq!(input[1]["type"], "function_call");
+        assert!(input[1].get("id").is_none(), "call_ 开头的 id 不能当作条目 id 发送");
+        assert_eq!(input[1]["call_id"], "call_1");
+        assert_eq!(input[2]["type"], "function_call_output");
+    }
+
+    #[test]
+    fn responses_body_puts_effort_under_reasoning() {
+        let config = DirectApiConfig {
+            thinking_depth: "high".into(),
+            ..DirectApiConfig::default()
+        };
+        let body = build_responses_request_body(&config, &[], None, true);
+        assert_eq!(body["reasoning"]["effort"], "high");
+        assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn tool_call_delta_without_index_still_parses() {
+        let chunk: ChatCompletionChunk = serde_json::from_str(
+            r#"{"choices":[{"delta":{"content":"hi","tool_calls":[{"id":"call_1","function":{"name":"read_file","arguments":"{}"}}]}}]}"#,
+        )
+        .expect("缺少 index 的 chunk 不能整块丢弃");
+        let delta = &chunk.choices[0].delta;
+        assert_eq!(delta.content.as_deref(), Some("hi"));
+        assert_eq!(delta.tool_calls.as_ref().unwrap()[0].index, None);
     }
 }
 

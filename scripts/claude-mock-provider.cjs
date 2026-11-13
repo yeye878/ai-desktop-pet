@@ -104,15 +104,19 @@ const server = http.createServer((request, response) => {
       }
     })
 
-    if (!hasToolResult) {
+    const memoryRequested = userText.includes('USE_MEMORY')
+    const memoryCalled = messages.some(message => Array.isArray(message.content) && message.content.some(block => block.type === 'tool_use' && block.name?.endsWith('__save_memory')))
+    const useMemory = hasToolResult && memoryRequested && !memoryCalled
+    const memoryTool = (parsed.tools || []).find(tool => tool.name?.endsWith('__save_memory'))?.name
+    if (!hasToolResult || useMemory) {
       // 请求一次 Bash 调用：这正是需要授权、会走 --permission-prompt-tool 的场景。
       sse(response, 'content_block_start', {
         type: 'content_block_start',
         index: 0,
         content_block: {
           type: 'tool_use',
-          id: 'toolu_pet_1',
-          name: pickShellTool(parsed.tools),
+          id: useMemory ? 'toolu_pet_memory' : 'toolu_pet_1',
+          name: useMemory ? (memoryTool || 'missing_memory_tool') : pickShellTool(parsed.tools),
           input: {}
         }
       })
@@ -121,7 +125,7 @@ const server = http.createServer((request, response) => {
         index: 0,
         delta: {
           type: 'input_json_delta',
-          partial_json: JSON.stringify({ command: 'echo pet-claude-check', description: 'Echo the pet check marker' })
+          partial_json: JSON.stringify(useMemory ? { category: 'preference', key: 'claude-language', value: '中文' } : { command: 'echo pet-claude-check', description: 'Echo the pet check marker' })
         }
       })
       sse(response, 'content_block_stop', { type: 'content_block_stop', index: 0 })

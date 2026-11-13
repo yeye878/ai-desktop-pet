@@ -68,7 +68,7 @@ pub async fn run(
         if cancel.is_cancelled() || !owns_run(&state, &run_id) {
             break;
         }
-        state.approved_tool_types.lock().await.clear();
+        crate::clear_tool_approvals(&state, Some(&session_id)).await;
         if let Ok(mut active) = state.active_chat.lock() {
             if let Some(active) = active.by_session.get_mut(&session_id) {
                 active.thinking.clear();
@@ -91,6 +91,7 @@ pub async fn run(
                     "{} 正在处理来自 {} 的任务",
                     job.agent.name, job.requested_by
                 ),
+                session_id: session_id.clone(),
             },
         );
         let result =
@@ -183,13 +184,27 @@ pub(crate) async fn finish(
     message: String,
 ) {
     let state = app.state::<AppState>();
+    let session_id = crate::current_turn_session(&state);
     if !owns_run(&state, run_id) {
+        // 这一轮已被新的协同取代：不再发布状态，但至少释放本会话的取消令牌和进行中状态，
+        // 否则这个会话会一直卡在"思考中"，只能手动点停止。
+        crate::unregister_turn_cancel(&state, &session_id);
+        crate::clear_active_chat_for(&state, &session_id);
         return;
     }
-    let session_id = crate::current_turn_session(&state);
-    state.pending_confirms.lock().await.clear();
-    state.pending_questions.lock().await.clear();
-    state.approved_tool_types.lock().await.clear();
+    // 只撤销本会话的待确认弹窗 / 提问：以前整表清空，会把其它会话里正在等待的授权
+    // 一并作废（对方收到"授权通道失效"并被自动拒绝）。
+    state
+        .pending_confirms
+        .lock()
+        .await
+        .retain(|_, request| request.payload.session_id != session_id);
+    state
+        .pending_questions
+        .lock()
+        .await
+        .retain(|_, request| request.payload.session_id != session_id);
+    crate::clear_tool_approvals(&state, Some(&session_id)).await;
     if let Ok(mut pids) = state.active_ai_pids.lock() {
         if let Some(pid) = pids.remove(&session_id) {
             crate::kill_process_tree(pid);
@@ -206,6 +221,7 @@ pub(crate) async fn finish(
             turn: turns,
             max_turns: MAX_TURNS,
             message,
+            session_id: session_id.clone(),
         },
     );
     // Release the request gate last, after all async cleanup and final events.
@@ -230,7 +246,7 @@ async fn execute_job(
     session_id: &str,
 ) -> Result<TurnOutput, TurnError> {
     let state = app.state::<AppState>();
-    let (history, skills, skill, custom_prompt, profile) = {
+    let (history, skills, skill, custom_prompt, profile, memory_block) = {
         let db = state.db.lock().await;
         // 协同角色看到的是本会话的完整共享记录。
         let history = db
@@ -263,15 +279,28 @@ async fn execute_job(
                 .unwrap_or(None)
                 .unwrap_or_default(),
             profile,
+            crate::memory_context_block(&db),
         )
     };
-    let message = format!("【完整共享会话记录（按时间顺序，作为上下文）】\n{}\n\n【当前交给你的任务】\n请求者：{}\n{}",
-        transcript(&history), job.requested_by, job.task);
+    // 共享记录同样受上下文预算约束：整段会话塞进一条消息，长会话会让每个角色都超出上下文。
+    let (history, omitted) = direct_api::trim_history_for_context(history, 100_000);
+    let omitted_note = if omitted > 0 {
+        format!("（更早的 {omitted} 条消息因长度限制未附上）\n")
+    } else {
+        String::new()
+    };
+    let message = format!("【共享会话记录（按时间顺序，作为上下文）】\n{}{}\n\n【当前交给你的任务】\n请求者：{}\n{}",
+        omitted_note, transcript(&history), job.requested_by, job.task);
     let personality = state.personality.lock().await.clone();
     let profession = state.profession.lock().await.clone();
     let mut system = crate::openclaw::build_system_prompt(&personality, &profession);
-    system = crate::attach_memory_prompt(system);
-    system = crate::attach_registered_apps_prompt(system, &state).await;
+    // CLI 通过本机桥访问记忆；应用启动能力仍只属于直连后端。
+    if profile.is_some() {
+        system = crate::attach_memory_prompt(system, &memory_block);
+        system = crate::attach_registered_apps_prompt(system, &state).await;
+    } else {
+        system = crate::attach_cli_memory_prompt(system, &memory_block, &state);
+    }
     system = crate::attach_custom_prompt(system, &custom_prompt);
     system = crate::attach_skill_prompt(system, skill.as_ref(), &skills, profile.is_some()).await;
     system.push_str("\n\n");
@@ -291,11 +320,10 @@ async fn execute_job(
         system = crate::attach_weather_prompt(system);
         let grants =
             crate::collect_turn_tool_grants(std::slice::from_ref(&job.agent), skill.as_ref());
-        return tokio::select! {
-            _ = cancel.cancelled() => Err(TurnError::aborted("", "")),
-            result = direct_api::execute_direct_api_turn(app.clone(), message, config, system, vec![], attachments.to_vec(), None,
-                Some(crate::AgentContext { agents: vec![job.agent.clone()] }), grants, cancel.clone(), job.agent.api_profile_id.is_empty()) => result,
-        };
+        // 取消由回合内部处理（会带回部分结果），不再在外层 select 里抢先丢弃。
+        return direct_api::execute_direct_api_turn(app.clone(), message, config, system, vec![], attachments.to_vec(), None,
+            Some(crate::AgentContext { agents: vec![job.agent.clone()] }), grants, cancel.clone(), job.agent.api_profile_id.is_empty())
+            .await;
     }
     execute_cli(app, &job.agent, &message, &system, cancel).await
 }
@@ -311,23 +339,38 @@ async fn execute_cli(
     let model = Some(agent.model.as_str())
         .map(str::trim)
         .filter(|model| !model.is_empty());
+    // 角色调用没有独立会话行，权限档位直接取设置页里的后端默认值。
+    let permission_key = match backend {
+        "codex" => crate::cli_permission::CODEX_SANDBOX_MODE_KEY,
+        "dsh" => crate::cli_permission::DSH_PERMISSION_MODE_KEY,
+        _ => crate::cli_permission::CLAUDE_PERMISSION_MODE_KEY,
+    };
+    let permission = crate::cli_permission::read_setting(app, permission_key).await;
     // Each role invocation has its own CLI context. Reconstruct it from the full
     // transcript instead of borrowing the ordinary pet's CLI session.
     let mut child = match backend {
         "claude_code" => {
             crate::openclaw::ClaudeAdapter::new()
-                .spawn_streaming_with(app, message, system, None, model, None)
+                .spawn_streaming_with(
+                    app,
+                    message,
+                    system,
+                    None,
+                    model,
+                    None,
+                    &permission,
+                )
                 .await
         }
         "codex" => {
             crate::codex::CodexAdapter::default()
-                .spawn_streaming_with(app, message, system, None, model, None)
+                .spawn_streaming_with(app, message, system, None, model, None, &permission)
                 .await
         }
         "dsh" => {
             // 角色调用不复用桌宠的 dsh 会话：上下文由完整共享记录重建。
             crate::dsh::DshAdapter::default()
-                .spawn_streaming_with(app, message, &[], system, None, model, None, None)
+                .spawn_streaming_with(app, message, &[], system, None, model, None, None, &permission)
                 .await
         }
         _ => {
@@ -361,7 +404,12 @@ async fn execute_cli(
     let read = async {
         if backend == "dsh" {
             let approvals: Option<Box<dyn crate::dsh::ApprovalAnswerer>> = Some(Box::new(
-                crate::dsh::UiApproval::new(app.clone(), cancel.clone()),
+                crate::dsh::UiApproval::for_session(
+                    app.clone(),
+                    cancel.clone(),
+                    session_id.clone(),
+                    crate::cli_permission::dsh_permission(&permission).auto_approve,
+                ),
             ));
             crate::dsh::read_stream_with_activity(
                 &mut child,
@@ -437,12 +485,10 @@ async fn execute_cli(
         || !exit.map(|exit| exit.success()).unwrap_or(false)
         || parsed.full_text.trim().is_empty()
     {
-        return Err(TurnError::failed(
-            parsed
-                .error_msg
-                .unwrap_or_else(|| "CLI 未正常完成回复，请检查本机登录或配置。".into()),
-            &parsed.full_thinking,
-        ));
+        let message = parsed
+            .error_msg
+            .unwrap_or_else(|| "CLI 未正常完成回复，请检查本机登录或配置。".into());
+        return Err(TurnError::failed(message, &parsed.full_thinking));
     }
     Ok(TurnOutput {
         text: parsed.full_text,

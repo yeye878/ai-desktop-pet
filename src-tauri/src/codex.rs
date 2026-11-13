@@ -47,11 +47,20 @@ fn find_cli() -> Result<PathBuf, String> {
 }
 
 fn cli_command(path: &std::path::Path) -> Command {
-    let mut command = Command::new(path);
+    let mut command = crate::cli_launch::command(path);
     #[cfg(target_os = "windows")]
     command.creation_flags(CREATE_NO_WINDOW);
     command.kill_on_drop(true);
     command
+}
+
+/// 仅对子进程注入临时 MCP 配置，不改用户 config.toml。
+fn configure_memory_mcp(command: &mut Command, url: Option<&str>) -> Result<(), serde_json::Error> {
+    if let Some(url) = url {
+        command.args(["-c", &format!("mcp_servers.desktop_pet_memory.url={}", serde_json::to_string(url)?)])
+            .args(["-c", "mcp_servers.desktop_pet_memory.enabled_tools=[\"search_memory\",\"save_memory\",\"delete_memory\"]"]);
+    }
+    Ok(())
 }
 
 pub fn workspace_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -67,12 +76,22 @@ pub struct CodexAdapter {
 }
 
 fn exec_args(session_id: Option<&str>, model: Option<&str>, effort: Option<&str>) -> Vec<String> {
+    exec_args_with_sandbox(session_id, model, effort, "workspace-write")
+}
+
+fn exec_args_with_sandbox(
+    session_id: Option<&str>,
+    model: Option<&str>,
+    effort: Option<&str>,
+    sandbox: &str,
+) -> Vec<String> {
     // exec cannot ask for approval in the desktop chat. Keep a bounded writable
-    // workspace and fail commands that would need additional permission.
+    // workspace by default and fail commands that would need additional
+    // permission; the user can opt into danger-full-access in settings.
     let mut args: Vec<String> = [
         "exec",
         "--sandbox",
-        "workspace-write",
+        sandbox,
         "-c",
         "approval_policy=\"never\"",
         // 默认配置下 reasoning 事件常常为空，detailed 摘要才能展示"思考过程"。
@@ -108,11 +127,12 @@ impl CodexAdapter {
         system_prompt: &str,
     ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
         let session = self.session_id.lock().unwrap().clone();
-        self.spawn_streaming_with(app, message, system_prompt, session.as_deref(), None, None)
+        self.spawn_streaming_with(app, message, system_prompt, session.as_deref(), None, None, "")
             .await
     }
 
-    /// 显式会话 / 模型 / 思考强度版本：不依赖适配器内部状态，供多会话与协作调用。
+    /// 显式会话 / 模型 / 思考强度 / 沙箱档位版本：不依赖适配器内部状态，供多会话与协作调用。
+    /// permission 为空串时回到默认的 `workspace-write`。
     pub async fn spawn_streaming_with(
         &self,
         app: &tauri::AppHandle,
@@ -121,10 +141,27 @@ impl CodexAdapter {
         session: Option<&str>,
         model: Option<&str>,
         effort: Option<&str>,
+        permission: &str,
     ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
         let workspace = workspace_dir(app)?;
-        self.spawn_in_workspace_with(&workspace, message, system_prompt, session, model, effort)
-            .await
+        // 会话级 / 设置页选定的沙箱档位：只在显式的 danger-full-access 时放开
+        // 工作区外的写入，其余情况保持默认的 workspace-write。
+        let sandbox = crate::cli_permission::codex_sandbox_mode(permission);
+        let state = app.state::<crate::AppState>();
+        let memory_url = state.permission_bridge.lock().ok().and_then(|bridge| {
+            bridge.as_ref().map(|b| b.url_for_session(&crate::current_turn_session(&state)))
+        });
+        self.spawn_in_workspace_with(
+            &workspace,
+            message,
+            system_prompt,
+            session,
+            model,
+            effort,
+            sandbox,
+            memory_url.as_deref(),
+        )
+        .await
     }
 
     #[cfg(test)]
@@ -135,8 +172,17 @@ impl CodexAdapter {
         system_prompt: &str,
     ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
         let session = self.session_id.lock().unwrap().clone();
-        self.spawn_in_workspace_with(workspace, message, system_prompt, session.as_deref(), None, None)
-            .await
+        self.spawn_in_workspace_with(
+            workspace,
+            message,
+            system_prompt,
+            session.as_deref(),
+            None,
+            None,
+            "workspace-write",
+            None,
+        )
+        .await
     }
 
     async fn spawn_in_workspace_with(
@@ -147,10 +193,13 @@ impl CodexAdapter {
         session: Option<&str>,
         model: Option<&str>,
         effort: Option<&str>,
+        sandbox: &str,
+        memory_url: Option<&str>,
     ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
         std::fs::create_dir_all(&workspace)?;
-        let mut child = cli_command(&find_cli()?)
-            .args(exec_args(session, model, effort))
+        let mut command = cli_command(&find_cli()?);
+        configure_memory_mcp(&mut command, memory_url)?;
+        let mut child = command.args(exec_args_with_sandbox(session, model, effort, sandbox))
             .current_dir(workspace)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -719,6 +768,32 @@ fn toml_value(value: &str) -> String {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    #[ignore = "runs the installed Codex CLI sandbox diagnostic"]
+    async fn local_cli_sandbox_without_desktop_identity() {
+        let executable = find_cli().expect("local Codex CLI");
+        let output = tokio::time::timeout(Duration::from_secs(30), cli_command(&executable)
+            .args(["sandbox", "-P", ":workspace", "--", "powershell.exe", "-NoProfile", "-Command", "Write-Output PET_CLI_OK"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .stdin(Stdio::null()).output())
+            .await.expect("sandbox command timeout").expect("start sandbox command");
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("PET_CLI_OK"));
+    }
+
+    #[tokio::test]
+    #[ignore = "reads temporary MCP overrides with the installed Codex CLI; no model request"]
+    async fn local_cli_memory_configuration() {
+        let mut command = cli_command(&find_cli().expect("local Codex CLI"));
+        let url = "http://127.0.0.1:43210/mcp/config-test/session-test";
+        configure_memory_mcp(&mut command, Some(url)).unwrap();
+        let output = tokio::time::timeout(Duration::from_secs(15), command.args(["mcp", "get", "desktop_pet_memory", "--json"]).output()).await.unwrap().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let config: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(config["transport"]["url"], url);
+        assert_eq!(config["enabled_tools"], serde_json::json!(["search_memory","save_memory","delete_memory"]));
+    }
+
     #[test]
     fn parses_chinese_messages_without_repeating_completed_items() {
         let mut parser = EventParser::default();
@@ -909,6 +984,19 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "approval_policy=\"never\""));
         assert!(args.iter().any(|arg| arg == "--json"));
         assert!(args.iter().any(|arg| arg == "--skip-git-repo-check"));
+    }
+
+    #[test]
+    fn codex_sandbox_mode_comes_from_the_permission_setting() {
+        for sandbox in ["read-only", "workspace-write", "danger-full-access"] {
+            let args = exec_args_with_sandbox(None, None, None, sandbox);
+            let index = args.iter().position(|arg| arg == "--sandbox").unwrap();
+            assert_eq!(args[index + 1], sandbox);
+            assert!(
+                args.iter().any(|arg| arg == "approval_policy=\"never\""),
+                "exec 无法应答审批，审批策略必须保持 never"
+            );
+        }
     }
 
     #[test]

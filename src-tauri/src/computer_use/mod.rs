@@ -1341,6 +1341,9 @@ async fn run_powershell(
     timeout_secs: u64,
 ) -> Result<String, String> {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    // 隐藏控制台默认按系统 OEM 代码页（中文系统为 GBK）输出：先切到 UTF-8，
+    // 否则窗口标题等中文会被解成乱码（"微信" → "΢��"），按标题聚焦窗口随之失败。
+    let script = format!("{}{script}", crate::text_decode::POWERSHELL_UTF8_PREAMBLE);
     let mut cmd = tokio::process::Command::new("powershell.exe");
     cmd.args([
         "-NoProfile",
@@ -1348,12 +1351,14 @@ async fn run_powershell(
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
-        script,
+        script.as_str(),
     ]);
     for (key, value) in envs {
         cmd.env(key, value);
     }
     cmd.creation_flags(CREATE_NO_WINDOW);
+    // 超时时 output() 的 future 被丢弃：没有 kill_on_drop 的话 powershell 进程会留在后台。
+    cmd.kill_on_drop(true);
 
     let output = tokio::time::timeout(Duration::from_secs(timeout_secs), cmd.output())
         .await
@@ -1361,16 +1366,18 @@ async fn run_powershell(
         .map_err(|e| format!("Failed to run PowerShell action: {e}"))?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        // 诊断日志: PowerShell 失败时打印前 500 字符 (UTF-8)
+        let stderr = crate::text_decode::decode_process_output(&output.stderr).trim().to_string();
+        let stdout = crate::text_decode::decode_process_output(&output.stdout).trim().to_string();
+        // 诊断日志: PowerShell 失败时打印前 500 字符。必须按字符截断：stderr 常含中文，
+        // 按字节下标切（旧写法 `&s[..len.min(500)]`）会落在多字节字符中间直接 panic，
+        // 整轮 agent 回合随之崩成"内部错误"。
         eprintln!(
             "[powershell] FAIL exit={:?} stdout_len={} stderr_len={} stdout={:?} stderr={:?}",
             output.status.code(),
             stdout.len(),
             stderr.len(),
-            &stdout[..stdout.len().min(500)],
-            &stderr[..stderr.len().min(500)]
+            stdout.chars().take(500).collect::<String>(),
+            stderr.chars().take(500).collect::<String>()
         );
         let detail = if stderr.is_empty() { stdout } else { stderr };
         return Err(if detail.is_empty() {
@@ -1380,7 +1387,7 @@ async fn run_powershell(
         });
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    Ok(crate::text_decode::decode_process_output(&output.stdout).trim().to_string())
 }
 
 #[cfg(test)]

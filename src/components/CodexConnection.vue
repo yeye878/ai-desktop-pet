@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import AgentPermissionControl from "./AgentPermissionControl.vue";
 
-defineProps<{ modelSaved: boolean }>();
+// showPermission=false：权限档位改在「系统设置 › 执行权限」统一展示，这里不再重复。
+withDefaults(defineProps<{ modelSaved: boolean; showPermission?: boolean }>(), { showPermission: true });
 defineEmits<{ reset: [] }>();
 
 interface CodexStatus {
@@ -71,7 +73,8 @@ onUnmounted(() => window.removeEventListener("focus", refreshStatus));
       <div><dt>程序路径</dt><dd>{{ status.executable }}</dd></div>
       <div><dt>工作目录</dt><dd>{{ status.workspace }}</dd></div>
     </dl>
-    <p class="codex-hint">自动保持对话上下文，复用本机登录，无需在桌宠中填写 API Key。使用工作目录写入沙箱；需要额外权限的命令会被拒绝。</p>
+    <p class="codex-hint">自动保持对话上下文，复用本机登录，无需在桌宠中填写 API Key。默认使用工作目录写入沙箱；需要额外权限的命令会被拒绝。{{ showPermission ? "可在下方切换到完全访问。" : "沙箱档位在「执行权限」页调整。" }}</p>
+    <AgentPermissionControl v-if="showPermission" backend="codex" />
     <p v-if="status && !status.installed" class="codex-hint">安装命令：<code>npm install -g @openai/codex</code></p>
     <div class="codex-actions">
       <button type="button" @click="$emit('reset')">{{ modelSaved ? "已重置" : "重置会话" }}</button>

@@ -7,7 +7,9 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import CustomPixelPetWorkshop from "./CustomPixelPetWorkshop.vue";
 import CodexConnection from "./CodexConnection.vue";
 import DshConnection from "./DshConnection.vue";
+import AgentPermissionControl from "./AgentPermissionControl.vue";
 import PetCanvas from "./PetCanvas.vue";
+import AppIcon from "./AppIcon.vue";
 import { usePetStore, THEMES, FONT_COLORS, resolveSkinId } from "../stores/pet";
 import {
   PET_CHARACTERS,
@@ -1003,7 +1005,7 @@ onUnmounted(() => {
   <div class="settings-panel">
     <div class="header-decor"></div>
     <div class="settings-header">
-      <span>&#x2699;&#xFE0F; 设置</span>
+      <span class="settings-header-title"><AppIcon name="sliders" :size="15" /><span>设置</span></span>
       <button class="close-btn" @click="emit('close')">
         <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
           <path d="M1 1L13 13M13 1L1 13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
@@ -1014,13 +1016,13 @@ onUnmounted(() => {
     <!-- Tab navigation -->
     <div class="settings-tabs">
       <button :class="['tab-btn', { active: activeTab === 'appearance' }]" @click="activeTab = 'appearance'">
-        <span>🎨</span><span>外观</span>
+        <AppIcon name="wardrobe" :size="14" /><span>外观</span>
       </button>
       <button :class="['tab-btn', { active: activeTab === 'voice' }]" @click="activeTab = 'voice'">
-        <span>🎙️</span><span>语音</span>
+        <AppIcon name="voice-station" :size="14" /><span>语音</span>
       </button>
       <button :class="['tab-btn', { active: activeTab === 'system' }]" @click="activeTab = 'system'">
-        <span>⚙️</span><span>系统</span>
+        <AppIcon name="sliders" :size="14" /><span>系统</span>
       </button>
     </div>
 
@@ -1060,7 +1062,7 @@ onUnmounted(() => {
 
         <!-- 主题皮肤 -->
         <div class="section">
-          <h3>&#x1F3A8; 主题皮肤</h3>
+          <h3>主题皮肤</h3>
           <div class="skin-grid">
             <div
               v-for="t in themes"
@@ -1070,7 +1072,7 @@ onUnmounted(() => {
               @click="selectSkin(t.id)"
             >
               <div class="skin-preview" :style="{ background: t.headerGradient }">
-                <span class="skin-check" v-if="currentSkin === t.id">&#x2714;</span>
+                <span class="skin-check" v-if="currentSkin === t.id"><AppIcon name="check" :size="12" /></span>
               </div>
               <span>{{ t.name }}</span>
               <small v-if="t.animated">随时间变色</small>
@@ -1080,7 +1082,7 @@ onUnmounted(() => {
 
         <!-- 字体颜色 -->
         <div class="section">
-          <h3>&#x1F58A;&#xFE0F; 字体颜色</h3>
+          <h3>字体颜色</h3>
           <div class="font-color-grid">
             <div
               v-for="fc in FONT_COLORS"
@@ -1104,33 +1106,33 @@ onUnmounted(() => {
 
         <!-- 对话背景 -->
         <div class="section">
-          <h3>&#x1F5BC;&#xFE0F; 对话背景</h3>
+          <h3>对话背景</h3>
           <div class="bg-grid">
             <button :class="['bg-opt', { active: chatBg === 'none' }]" @click="selectBg('none')">
-              <div class="bg-opt-preview bg-prev-none">&#x2716;</div>
+              <div class="bg-opt-preview bg-prev-none"><AppIcon name="bg-none" :size="16" /></div>
               <span>无</span>
             </button>
             <button :class="['bg-opt', { active: chatBg === 'cute' }]" @click="selectBg('cute')">
-              <div class="bg-opt-preview bg-prev-cute">&#x1F43E;</div>
+              <div class="bg-opt-preview bg-prev-cute"><AppIcon name="bg-cute" :size="16" /></div>
               <span>可爱</span>
             </button>
             <button :class="['bg-opt', { active: chatBg === 'scifi' }]" @click="selectBg('scifi')">
-              <div class="bg-opt-preview bg-prev-scifi">&#x1F680;</div>
+              <div class="bg-opt-preview bg-prev-scifi"><AppIcon name="bg-scifi" :size="16" /></div>
               <span>科幻</span>
             </button>
             <button :class="['bg-opt', { active: chatBg === 'minimal' }]" @click="selectBg('minimal')">
-              <div class="bg-opt-preview bg-prev-minimal">&#x25CB;</div>
+              <div class="bg-opt-preview bg-prev-minimal"><AppIcon name="bg-minimal" :size="16" /></div>
               <span>简洁</span>
             </button>
             <button :class="['bg-opt', { active: chatBg === 'custom' }]" @click="chooseBgImage">
               <div class="bg-opt-preview bg-prev-custom">
                 <img v-if="customBgImage" :src="customBgImage" alt="" />
-                <span v-else>&#x1F4F7;</span>
+                <AppIcon v-else name="bg-upload" :size="16" />
               </div>
               <span>自定义</span>
             </button>
             <button v-if="chatBg === 'custom' && customBgImage" class="bg-opt danger" @click="clearCustomBg">
-              <div class="bg-opt-preview bg-prev-none">&#x1F5D1;</div>
+              <div class="bg-opt-preview bg-prev-none"><AppIcon name="trash" :size="15" /></div>
               <span>清除</span>
             </button>
           </div>
@@ -1139,11 +1141,11 @@ onUnmounted(() => {
 
         <!-- 用户头像 -->
         <div class="section">
-          <h3>&#x1F464; 用户头像</h3>
+          <h3>用户头像</h3>
           <div class="avatar-setting">
             <div class="avatar-preview">
               <img v-if="pet.userAvatar" :src="pet.userAvatar" alt="用户头像" />
-              <span v-else>&#x1F464;</span>
+              <AppIcon v-else name="user-avatar" :size="20" />
             </div>
             <div class="avatar-actions">
               <button class="avatar-btn primary" @click="chooseAvatar">选择图片</button>
@@ -1167,7 +1169,7 @@ onUnmounted(() => {
 
         <!-- 性格 -->
         <div class="section">
-          <h3>&#x2728; 性格</h3>
+          <h3>性格</h3>
           <div class="option-grid personality-grid">
             <button
               v-for="item in personalities"
@@ -1185,7 +1187,7 @@ onUnmounted(() => {
 
         <!-- 职业 -->
         <div class="section">
-          <h3>&#x1F9ED; 职业</h3>
+          <h3>职业</h3>
           <div class="option-grid profession-grid">
             <button
               v-for="item in professions"
@@ -1414,7 +1416,7 @@ onUnmounted(() => {
       <template v-else-if="activeTab === 'system'">
         <!-- 自定义系统提示 -->
         <div class="section">
-          <h3>📝 自定义系统提示</h3>
+          <h3>自定义系统提示</h3>
           <p class="hint">
             追加到系统提示末尾，对所有对话与两个后端生效。留空则不追加。
           </p>
@@ -1426,7 +1428,7 @@ onUnmounted(() => {
           />
           <div class="action-row">
             <button class="action-btn" @click="saveCustomPrompt">
-              {{ customPromptSaved ? "✅ 已保存" : "💾 保存" }}
+              {{ customPromptSaved ? "已保存" : "保存提示" }}
             </button>
             <span v-if="customPromptDraft.trim().length === 0" class="muted-hint">
               （留空将不追加任何内容）
@@ -1436,7 +1438,7 @@ onUnmounted(() => {
 
         <!-- 技能 -->
         <div class="section">
-          <h3>🧩 技能</h3>
+          <h3>技能</h3>
           <p class="hint">
             把一组“提示追加 + 免确认工具 + 触发关键词”打包成可复用技能。
             手动激活后会持续生效；未激活时，用户消息含关键词会自动激活本轮。
@@ -1569,7 +1571,7 @@ onUnmounted(() => {
 
         <!-- 系统状态 -->
         <div class="section">
-          <h3>&#x1F4CA; 系统状态</h3>
+          <h3>系统状态</h3>
           <div class="stat-row">
             <span class="stat-label">CPU</span>
             <div class="stat-bar">
@@ -1594,7 +1596,7 @@ onUnmounted(() => {
 
         <!-- AI 后端与模型 -->
         <div class="section">
-          <h3>&#x1F916; AI 后端与模型</h3>
+          <h3>AI 后端与模型</h3>
           
           <div class="backend-selector">
             <button 
@@ -1602,41 +1604,42 @@ onUnmounted(() => {
               :class="{ active: backendType === 'claude_code' }"
               @click="selectBackend('claude_code')"
             >
-              <span>🐚</span> Claude Code
+              <AppIcon name="claude" :size="14" /> Claude Code
             </button>
             <button
               class="backend-btn"
               :class="{ active: backendType === 'codex' }"
               @click="selectBackend('codex')"
             >
-              <span>⌘</span> Codex
+              <AppIcon name="codex" :size="14" /> Codex
             </button>
             <button
               class="backend-btn"
               :class="{ active: backendType === 'dsh' }"
               @click="selectBackend('dsh')"
             >
-              <span>◈</span> DeepSeek Harness
+              <AppIcon name="dsh" :size="14" /> DeepSeek Harness
             </button>
             <button 
               class="backend-btn" 
               :class="{ active: backendType === 'direct_api' }"
               @click="selectBackend('direct_api')"
             >
-              <span>🌐</span> 直连 API Agent
+              <AppIcon name="api" :size="14" /> 直连 API Agent
             </button>
           </div>
 
           <!-- Claude Code 模式 -->
           <template v-if="backendType === 'claude_code'">
             <p class="current-model">{{ currentModel || '加载中...' }}</p>
-            <p class="hint">使用本地 Claude Code CLI 子进程，会话自动保持上下文；需要授权的工具会弹出与直连 API 相同的确认窗口。</p>
+            <p class="hint">使用本地 Claude Code CLI 子进程，会话自动保持上下文；需要授权的工具会按下方权限模式弹出确认窗口（或自动放行）。</p>
+            <AgentPermissionControl backend="claude_code" />
             <div class="model-actions">
               <button class="action-btn" @click="resetModel">
-                {{ modelSaved ? "&#x2705; 已重置" : "&#x1F504; 重置会话" }}
+                {{ modelSaved ? "已重置" : "重置会话" }}
               </button>
               <button class="action-btn config-btn" @click="startClaudeConfig">
-                &#x1F527; 配置/登录 Claude Code
+                配置/登录 Claude Code
               </button>
             </div>
           </template>
@@ -1863,7 +1866,7 @@ onUnmounted(() => {
                 class="test-result" 
                 :class="testResult.success ? 'success' : 'error'"
               >
-                {{ testResult.success ? '✅ 连接成功！' : '❌ ' + testResult.message }}
+                {{ testResult.success ? '连接成功！' : testResult.message }}
               </div>
 
               <div class="api-actions">
@@ -1872,14 +1875,14 @@ onUnmounted(() => {
                   @click="testConnection" 
                   :disabled="isTestingConnection || !apiConfig.base_url || !apiConfig.model"
                 >
-                  {{ isTestingConnection ? '⏳ 测试中...' : '🔌 测试连接' }}
+                  {{ isTestingConnection ? '测试中...' : '测试连接' }}
                 </button>
                 <button 
                   class="action-btn" 
                   @click="saveApiConfig()"
                   :disabled="isSavingConfig"
                 >
-                  {{ configSaved ? '✅ 保存成功' : (isSavingConfig ? '⏳ 保存中...' : '💾 保存配置') }}
+                  {{ configSaved ? '保存成功' : (isSavingConfig ? '保存中...' : '保存配置') }}
                 </button>
               </div>
 
@@ -1889,7 +1892,8 @@ onUnmounted(() => {
                   @click="testCompatibility" 
                   :disabled="isTestingCompatibility || !apiConfig.base_url || !apiConfig.model"
                 >
-                  {{ isTestingCompatibility ? '🔬 检测中...' : '🔬 深度测试兼容性' }}
+                  <AppIcon name="activity-flask" :size="13" />
+                  <span>{{ isTestingCompatibility ? '检测中...' : '深度测试兼容性' }}</span>
                 </button>
               </div>
 
@@ -2007,6 +2011,12 @@ onUnmounted(() => {
   animation: softGradientShift 10s ease-in-out infinite;
 }
 
+.settings-header-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
 .close-btn {
   display: flex;
   align-items: center;
@@ -2054,10 +2064,22 @@ onUnmounted(() => {
 }
 
 .section h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 13px;
-  color: var(--pet-font-color, #475569);
+  color: var(--pet-font-color, #334155);
   margin-bottom: 10px;
-  font-weight: 600;
+  font-weight: 700;
+}
+
+.section h3::before {
+  content: "";
+  width: 3px;
+  height: 13px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgb(var(--pet-primary-rgb, 255, 107, 107)), rgba(var(--pet-accent-rgb, 255, 142, 83), 0.65));
+  flex-shrink: 0;
 }
 
 .current-model {

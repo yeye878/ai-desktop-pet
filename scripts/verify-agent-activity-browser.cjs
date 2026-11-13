@@ -7,7 +7,7 @@ const output = path.join(process.env.TEMP || process.cwd(), 'pet-activity-browse
 fs.mkdirSync(output, { recursive: true });
 
 (async () => {
-  const browser = await chromium.launch({ headless: true, channel: 'chromium' });
+  const browser = await chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL || 'chromium' });
   try {
     for (const [name, viewport, suffix] of [
       ['desktop', { width: 1280, height: 820 }, ''],
@@ -33,6 +33,23 @@ fs.mkdirSync(output, { recursive: true });
       await send('ai-answer-delta', { text: '先检查入口和测试配置。' });
       await page.getByText('先检查入口和测试配置。', { exact: true }).waitFor();
       await send('ai-thinking', '从入口确认调用关系');
+      const liveActivity = page.locator('.agent-activity').last();
+      const processToggle = liveActivity.locator('.activity-toggle');
+      assert.equal(await processToggle.getAttribute('aria-expanded'), 'true');
+      await processToggle.click();
+      assert.equal(await liveActivity.locator('.activity-list').isVisible(), false);
+      await send('ai-thinking', '，继续检查依赖');
+      await page.clock.fastForward(2_000);
+      assert.equal(await processToggle.getAttribute('aria-expanded'), 'false', 'streamed thinking and elapsed updates must retain the collapsed state');
+      assert.equal(await liveActivity.locator('.activity-list').isVisible(), false);
+      assert.equal(await liveActivity.getByRole('button', { name: '停止生成' }).isVisible(), true, 'stop stays available while the process is collapsed');
+      await processToggle.focus();
+      await processToggle.press('Enter');
+      assert.equal(await liveActivity.locator('.activity-list').isVisible(), true, 'keyboard activation expands the process');
+      assert.equal(await liveActivity.locator('.activity-reasoning p').textContent(), '从入口确认调用关系，继续检查依赖');
+      await processToggle.press('Space');
+      assert.equal(await liveActivity.locator('.activity-list').isVisible(), false);
+      await processToggle.click();
       const event = { id: 'qa-read', tool_name: 'read_file', summary: '读取 src/main.ts', status: 'running', path: 'src/main.ts', arguments: '{"path":"src/main.ts"}' };
       await send('ai-tool-event', event);
       await page.locator('.activity-tool.running').waitFor();
@@ -59,6 +76,11 @@ fs.mkdirSync(output, { recursive: true });
       assert.equal(await page.locator('.activity-tool.completed').count(), 2);
       assert.equal(await page.getByText('先检查入口和测试配置。', { exact: true }).count(), 1);
       assert.equal(await page.locator('.activity-reasoning').count(), 1);
+      const historyActivity = page.locator('.agent-activity').last();
+      await historyActivity.locator('.activity-toggle').click();
+      assert.equal(await historyActivity.locator('.activity-list').isVisible(), false, 'completed process can also be collapsed');
+      assert.equal(await page.getByText('检查完成，测试通过。', { exact: true }).isVisible(), true, 'collapsing the process leaves the final answer visible');
+      await historyActivity.locator('.activity-toggle').click();
       await page.clock.resume();
       await page.waitForTimeout(500);
       await page.screenshot({ path: path.join(output, name + '-completed.png') });

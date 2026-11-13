@@ -1,7 +1,7 @@
 use crate::direct_api::api_client::{
     api_error_message_from_sse_text, api_error_message_from_value,
     call_chat_completions_non_stream, call_chat_completions_stream, ChatCompletionChunk,
-    DirectApiConfig, SseParser, UserAttachment,
+    DirectApiConfig, SseParser, UserAttachment, Utf8ChunkDecoder,
 };
 use crate::direct_api::tools::{execute_tool, tool_definitions};
 use crate::storage::ChatMessage;
@@ -30,6 +30,8 @@ pub struct ToolConfirmPayload {
     pub summary: String,
     pub command: Option<String>,
     pub path: Option<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub session_id: String,
 }
 
 /// ask_user 工具弹窗里的单个候选项。
@@ -45,6 +47,8 @@ pub struct AskUserPayload {
     id: String,
     question: String,
     options: Vec<AskUserOption>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub(crate) session_id: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -60,6 +64,7 @@ struct ToolEventPayload {
     approved: Option<bool>,
 }
 
+#[derive(Default)]
 struct AccumulatedToolCall {
     id: String,
     name: String,
@@ -85,24 +90,40 @@ pub async fn run_direct_api_agent(
     cancel: tokio_util::sync::CancellationToken,
 ) {
     let state = app_handle.state::<AppState>();
-    let result = tokio::select! {
-        _ = cancel.cancelled() => Err(crate::agent_turn::TurnError::aborted("", "")),
-        result = execute_direct_api_turn(app_handle.clone(), message, config, system_prompt, chat_history, attachments, quote, agent.clone(), turn_tool_grants, cancel.clone(), true) => result,
-    };
+    let single_agent = agent.as_ref().and_then(|ctx| ctx.single()).cloned();
+    let agent_meta = single_agent
+        .as_ref()
+        .map(|a| (a.id.as_str(), a.name.as_str(), a.avatar.as_str()));
+    // 取消不再由外层 select 抢先返回：那样内层累计的正文、思考和工具进度会随 future 一起
+    // 被丢弃，"已中止"时什么都存不下，"继续"时模型也不知道刚才做过什么。
+    // 现在由回合内部每个等待点响应取消，并把已有的部分结果带回来。
+    let result = execute_direct_api_turn(
+        app_handle.clone(),
+        message,
+        config,
+        system_prompt,
+        chat_history,
+        attachments,
+        quote,
+        agent.clone(),
+        turn_tool_grants,
+        cancel.clone(),
+        true,
+    )
+    .await;
     let output = match result {
         Ok(output) => output,
         Err(error) => {
             if error.aborted {
-                send_aborted(&app_handle, &error.partial_text, &error.thinking).await;
+                send_aborted(&app_handle, &error.partial_text, &error.thinking, agent_meta).await;
             } else {
-                send_error(&app_handle, error.message, &error.thinking).await;
+                send_error(&app_handle, error.message, &error.thinking, &error.partial_text, agent_meta).await;
             }
             return;
         }
     };
     let full_text = output.text;
     let full_thinking = output.thinking;
-    let single_agent = agent.as_ref().and_then(|ctx| ctx.single());
     crate::save_assistant_message(
         &app_handle,
         &full_text,
@@ -111,7 +132,7 @@ pub async fn run_direct_api_agent(
         } else {
             Some(full_thinking.as_str())
         },
-        single_agent.map(|a| (a.id.as_str(), a.name.as_str(), a.avatar.as_str())),
+        agent_meta,
     )
     .await;
 
@@ -132,11 +153,129 @@ pub async fn run_direct_api_agent(
             } else {
                 Some(full_thinking)
             },
-            agent_id: single_agent.map(|a| a.id.clone()),
-            agent_name: single_agent.map(|a| a.name.clone()),
-            agent_avatar: single_agent.map(|a| a.avatar.clone()),
+            agent_id: single_agent.as_ref().map(|a| a.id.clone()),
+            agent_name: single_agent.as_ref().map(|a| a.name.clone()),
+            agent_avatar: single_agent.as_ref().map(|a| a.avatar.clone()),
         },
     );
+}
+
+/// 首包超时：推理模型（o 系列、部分中转的 thinking 模型）可能先静默思考很久才吐第一个字节。
+const STREAM_FIRST_CHUNK_TIMEOUT: Duration = Duration::from_secs(120);
+/// 包间隔超时：已经开始输出后，超过这个时间没有新数据视为断流。
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// 流式请求最多尝试次数（含第一次）：用户的中转服务经常中途断流。
+const MAX_STREAM_ATTEMPTS: u32 = 5;
+/// 一次尝试里新收到的内容少于这个字节数就断流时，回滚后整轮重试比保留半截更有价值。
+const RETRY_CONTENT_THRESHOLD: usize = 100;
+/// 送进上下文的历史消息总字符上限（约 6 万 token）：超出时丢弃最早的消息，
+/// 否则长会话一旦超过模型上下文，之后每一轮都会失败，只能新建对话。
+const HISTORY_CHAR_BUDGET: usize = 120_000;
+
+fn aborted_error(full_text: &str, full_thinking: &str) -> crate::agent_turn::TurnError {
+    crate::agent_turn::TurnError::aborted(full_text, full_thinking)
+}
+
+/// 两次流式尝试之间的退避等待（2s、4s、8s、16s），期间可以被取消。
+async fn wait_before_retry(
+    app_handle: &tauri::AppHandle,
+    cancel: &tokio_util::sync::CancellationToken,
+    attempt: u32,
+    reason: &str,
+    full_text: &str,
+    full_thinking: &str,
+) -> Result<(), crate::agent_turn::TurnError> {
+    let delay = Duration::from_secs(2u64.pow(attempt.min(4)));
+    let notice = format!(
+        "\n[连接中断：{}。{} 秒后重试（{}/{}）]\n",
+        reason,
+        delay.as_secs(),
+        attempt,
+        MAX_STREAM_ATTEMPTS - 1
+    );
+    let _ = app_handle.emit("ai-thinking", &notice);
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(aborted_error(full_text, full_thinking)),
+        _ = tokio::time::sleep(delay) => Ok(()),
+    }
+}
+
+/// 按字符预算保留最近的历史消息（至少保留最后两条），返回 (保留的消息, 被省略的条数)。
+pub fn trim_history_for_context(history: Vec<ChatMessage>, budget_chars: usize) -> (Vec<ChatMessage>, usize) {
+    let mut used = 0usize;
+    let mut keep = 0usize;
+    for message in history.iter().rev() {
+        let cost = message.content.chars().count() + 32;
+        if keep >= 2 && used + cost > budget_chars {
+            break;
+        }
+        used += cost;
+        keep += 1;
+    }
+    let omitted = history.len() - keep;
+    (history.into_iter().skip(omitted).collect(), omitted)
+}
+
+/// 流式 tool_calls 的槽位：带 index 的照用；不带 index 的服务商，出现新的 id 表示新的一次调用，
+/// 否则续写上一次调用。
+fn resolve_tool_call_index(
+    calls: &HashMap<usize, AccumulatedToolCall>,
+    delta: &crate::direct_api::api_client::ToolCallDelta,
+    last_index: &mut Option<usize>,
+) -> usize {
+    let index = match delta.index {
+        Some(index) => index,
+        None => {
+            let incoming_id = delta.id.as_deref().filter(|id| !id.is_empty());
+            match (*last_index, incoming_id) {
+                (Some(last), Some(id))
+                    if calls
+                        .get(&last)
+                        .is_some_and(|call| !call.id.is_empty() && call.id != id) =>
+                {
+                    calls.keys().max().map_or(0, |max| max + 1)
+                }
+                (Some(last), _) => last,
+                (None, _) => 0,
+            }
+        }
+    };
+    *last_index = Some(index);
+    index
+}
+
+/// 解析工具参数：空串 / null 视为无参数，其它必须是 JSON 对象。
+fn parse_tool_arguments(raw: &str) -> Result<serde_json::Value, String> {
+    if raw.trim().is_empty() {
+        return Ok(json!({}));
+    }
+    match serde_json::from_str::<serde_json::Value>(raw) {
+        Ok(serde_json::Value::Null) => Ok(json!({})),
+        Ok(value) if value.is_object() => Ok(value),
+        Ok(_) => Err("参数必须是 JSON 对象".to_string()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// 把一个流式 tool_call 增量合并进累积结果。
+/// 有的中转每块都重复下发完整的 id / name：直接拼接会得到 `call_xcall_x`、`read_fileread_file`。
+fn merge_tool_call_delta(entry: &mut AccumulatedToolCall, delta: &crate::direct_api::api_client::ToolCallDelta) {
+    if let Some(id) = delta.id.as_deref().filter(|id| !id.is_empty()) {
+        if entry.id.is_empty() {
+            entry.id = id.to_string();
+        }
+    }
+    if let Some(function) = &delta.function {
+        if let Some(name) = function.name.as_deref().filter(|name| !name.is_empty()) {
+            if entry.name != name {
+                entry.name.push_str(name);
+            }
+        }
+        if let Some(arguments) = &function.arguments {
+            entry.arguments.push_str(arguments);
+        }
+    }
 }
 
 pub async fn execute_direct_api_turn(
@@ -154,6 +293,15 @@ pub async fn execute_direct_api_turn(
 ) -> Result<crate::agent_turn::TurnOutput, crate::agent_turn::TurnError> {
     let state = app_handle.state::<AppState>();
 
+    let (chat_history, omitted_history) = trim_history_for_context(chat_history, HISTORY_CHAR_BUDGET);
+    let system_prompt = if omitted_history > 0 {
+        format!(
+            "{system_prompt}\n\n（为控制上下文长度，本会话更早的 {omitted_history} 条消息没有附上；如果需要更早的信息，请让用户补充。）"
+        )
+    } else {
+        system_prompt
+    };
+
     let mut api_messages = Vec::new();
     api_messages.push(json!({
         "role": "system",
@@ -161,13 +309,15 @@ pub async fn execute_direct_api_turn(
     }));
 
     for msg in chat_history {
-        let content = if msg.role == "assistant" {
-            assistant_history_content_for_context(&msg, agent.as_ref())
-        } else {
-            msg.content
+        let (role, content) = match msg.role.as_str() {
+            "assistant" => ("assistant", assistant_history_content_for_context(&msg, agent.as_ref())),
+            // 定时提醒等系统通知以 system 角色落库；对话中途的 system 消息不少服务商不接受，
+            // 转成带标记的用户消息。
+            "system" => ("user", format!("[系统通知] {}", msg.content)),
+            _ => ("user", msg.content),
         };
         api_messages.push(json!({
-            "role": msg.role,
+            "role": role,
             "content": content
         }));
     }
@@ -180,6 +330,8 @@ pub async fn execute_direct_api_turn(
     let mut current_turn = 0;
     let mut full_text = String::new();
     let mut full_thinking = String::new();
+    // 整个回合里是否解析到过模型事件：用来区分"接口不是 SSE"与"模型没给正文"。
+    let mut saw_model_event = false;
 
     loop {
         current_turn += 1;
@@ -193,10 +345,7 @@ pub async fn execute_direct_api_turn(
         }
 
         if cancel.is_cancelled() {
-            return Err(crate::agent_turn::TurnError::aborted(
-                &full_text,
-                &full_thinking,
-            ));
+            return Err(aborted_error(&full_text, &full_thinking));
         }
 
         let tools = if config.execution_mode == "plan" {
@@ -207,20 +356,21 @@ pub async fn execute_direct_api_turn(
 
         let mut accumulated_tool_calls: HashMap<usize, AccumulatedToolCall> = HashMap::new();
         let mut turn_text = String::new();
+        // 模型给出的结束原因："length" 表示达到输出长度上限，回复被截断。
+        let mut finish_reason: Option<String> = None;
 
         // 根据stream_mode选择不同的调用方式
         match config.stream_mode.as_str() {
             "non_stream" => {
-                // 非流式解析：直接调用non-stream函数
-                match call_chat_completions_non_stream(
-                    &state.http_client,
-                    &config,
-                    &api_messages,
-                    tools,
-                )
-                .await
-                {
+                let result = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return Err(aborted_error(&full_text, &full_thinking)),
+                    result = call_chat_completions_non_stream(&state.http_client, &config, &api_messages, tools) => result,
+                };
+                match result {
                     Ok(result) => {
+                        saw_model_event = true;
+                        finish_reason = result.finish_reason.clone();
                         // 处理文本内容
                         if let Some(ref content) = result.content {
                             if !content.is_empty() {
@@ -235,8 +385,7 @@ pub async fn execute_direct_api_turn(
                             }
                         }
 
-                        // 处理工具调用 - 填充 accumulated_tool_calls
-                        // 这样现有的工具执行循环会处理它们
+                        // 工具调用填进 accumulated_tool_calls，交给下面的统一执行循环
                         for (i, tc) in result.tool_calls.iter().enumerate() {
                             accumulated_tool_calls.insert(
                                 i,
@@ -252,130 +401,104 @@ pub async fn execute_direct_api_turn(
                         return Err(crate::agent_turn::TurnError::failed(
                             format!("API 请求失败: {e}"),
                             &full_thinking,
-                        ));
+                        )
+                        .with_partial_text(&full_text));
                     }
                 }
             }
             "auto" | _ => {
-                // 自动模式或流式模式：使用流式调用，支持重试
-                // 重试上限提高到 5 次：用户的中转服务 (xiaomimimo 等) 经常中途断流
-                const MAX_STREAM_RETRIES: u32 = 5;
-                let mut stream_success = false;
                 let mut raw_buffer = String::new();
+                let mut attempt: u32 = 0;
 
-                for attempt in 0..MAX_STREAM_RETRIES {
-                    if attempt > 0 {
-                        let delay = Duration::from_secs(2u64.pow(attempt as u32));
-                        let _ = app_handle.emit(
-                            "ai-thinking",
-                            format!(
-                                "\n[连接中断，{}秒后重试 ({}/{})]\n",
-                                delay.as_secs(),
-                                attempt,
-                                MAX_STREAM_RETRIES
-                            ),
-                        );
-                        tokio::time::sleep(delay).await;
-                    }
+                loop {
+                    attempt += 1;
+                    // 回滚点：重试时撤回本次尝试写入的半截正文 / 思考 / 工具调用，
+                    // 否则新响应会接在旧内容后面（"好的，好的，我来…"、"read_fileread_file"）。
+                    let text_mark = full_text.len();
+                    let thinking_mark = full_thinking.len();
+                    turn_text.clear();
+                    finish_reason = None;
+                    accumulated_tool_calls.clear();
+                    raw_buffer.clear();
 
-                    let res = match call_chat_completions_stream(
-                        &state.http_client,
-                        &config,
-                        &api_messages,
-                        tools.clone(),
-                    )
-                    .await
-                    {
+                    let request = tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => return Err(aborted_error(&full_text, &full_thinking)),
+                        request = call_chat_completions_stream(&state.http_client, &config, &api_messages, tools.clone()) => request,
+                    };
+                    let res = match request {
                         Ok(res) => res,
-                        Err(e) => {
-                            if attempt < MAX_STREAM_RETRIES - 1 {
+                        Err(error) => {
+                            // 401 / 400 / 413 这类配置错误重试多少次都一样，直接报错，不再白等 30 秒。
+                            if error.retryable && attempt < MAX_STREAM_ATTEMPTS {
+                                wait_before_retry(&app_handle, &cancel, attempt, &error.message, &full_text, &full_thinking).await?;
                                 continue;
                             }
                             return Err(crate::agent_turn::TurnError::failed(
-                                format!("API 请求失败: {e}"),
+                                format!("API 请求失败: {}", error.message),
                                 &full_thinking,
-                            ));
+                            )
+                            .with_partial_text(&full_text));
                         }
                     };
 
                     let mut stream = res.bytes_stream();
                     let mut sse = SseParser::new();
-                    raw_buffer.clear(); // 清空上次重试的缓冲区
+                    // 跨 chunk 增量解码：被分块边界切开的汉字不再变成 "���"。
+                    let mut utf8 = Utf8ChunkDecoder::default();
                     let mut done = false;
-                    let mut stream_eof = false;
+                    let mut stream_finished = false;
+                    let mut received_any = false;
+                    let mut interruption: Option<String> = None;
+                    let mut last_tool_index: Option<usize> = None;
 
                     loop {
-                        if cancel.is_cancelled() {
-                            return Err(crate::agent_turn::TurnError::aborted(
-                                &full_text,
-                                &full_thinking,
-                            ));
-                        }
-
-                        let chunk_res = match tokio::time::timeout(
-                            Duration::from_secs(25),
-                            stream.next(),
-                        )
-                        .await
-                        {
-                            Ok(Some(chunk_res)) => chunk_res,
-                            Ok(None) => break,
-                            Err(_) => {
-                                // 超时：如果有部分内容，保留它而非丢弃
-                                if !turn_text.trim().is_empty() || !full_thinking.trim().is_empty()
-                                {
-                                    break;
-                                }
-                                return Err(crate::agent_turn::TurnError::failed(
-                                    "API 超过 25 秒没有返回新内容，已停止等待。".to_string(),
-                                    &full_thinking,
-                                ));
-                            }
+                        let idle_limit = if received_any {
+                            STREAM_IDLE_TIMEOUT
+                        } else {
+                            STREAM_FIRST_CHUNK_TIMEOUT
                         };
-
-                        let chunk_bytes = match chunk_res {
-                            Ok(bytes) => bytes,
-                            Err(e) => {
-                                let message = e.to_string();
-                                let content_len =
-                                    turn_text.trim().len() + full_thinking.trim().len();
+                        let next = tokio::select! {
+                            biased;
+                            _ = cancel.cancelled() => return Err(aborted_error(&full_text, &full_thinking)),
+                            next = tokio::time::timeout(idle_limit, stream.next()) => next,
+                        };
+                        let events = match next {
+                            Ok(Some(Ok(bytes))) => {
+                                received_any = true;
+                                let text = utf8.push(&bytes);
+                                raw_buffer.push_str(&text);
+                                sse.push(&text)
+                            }
+                            Ok(None) => {
+                                // 正常结束：冲出残余字节，并用换行收尾最后一行没有换行符的数据。
+                                stream_finished = true;
+                                let mut text = utf8.finish();
+                                raw_buffer.push_str(&text);
+                                text.push('\n');
+                                sse.push(&text)
+                            }
+                            Ok(Some(Err(error))) => {
+                                let message = error.to_string();
                                 eprintln!(
-                                    "[stream-error] content={}B recoverable={} err={}",
-                                    content_len,
+                                    "[stream-error] attempt={} recoverable={} err={}",
+                                    attempt,
                                     is_recoverable_stream_error(&message),
                                     message
                                 );
-                                if is_recoverable_stream_error(&message) {
-                                    // 早期流中断（总内容 < 100 字符）：
-                                    // 重试比保留部分响应更有价值——中转服务经常在
-                                    // 模型刚输出几个 token 时切断连接
-                                    if content_len < 100 {
-                                        eprintln!(
-                                            "[stream-retry] early stream termination, will retry"
-                                        );
-                                        stream_eof = true;
-                                        break;
-                                    }
-                                    // 已有较多内容 -> 保留
-                                    break;
-                                }
-                                // 非可恢复错误：如果有部分内容，保留它而非丢弃
-                                if !turn_text.trim().is_empty() || !full_thinking.trim().is_empty()
-                                {
-                                    break;
-                                }
-                                return Err(crate::agent_turn::TurnError::failed(
-                                    format!("流式读取失败: {message}"),
-                                    &full_thinking,
+                                interruption = Some(format!("流式读取失败: {message}"));
+                                break;
+                            }
+                            Err(_) => {
+                                interruption = Some(format!(
+                                    "超过 {} 秒没有收到新数据",
+                                    idle_limit.as_secs()
                                 ));
+                                break;
                             }
                         };
 
-                        let chunk_str = String::from_utf8_lossy(&chunk_bytes);
-                        raw_buffer.push_str(&chunk_str);
-                        let data_lines = sse.push(&chunk_str);
-
-                        for (event_type, data) in data_lines {
+                        for (event_type, data) in events {
                             if data == "[DONE]" {
                                 done = true;
                                 break;
@@ -386,7 +509,8 @@ pub async fn execute_direct_api_turn(
                                     return Err(crate::agent_turn::TurnError::failed(
                                         message,
                                         &full_thinking,
-                                    ));
+                                    )
+                                    .with_partial_text(&full_text));
                                 }
                             }
 
@@ -397,10 +521,8 @@ pub async fn execute_direct_api_turn(
                                         Ok(v) => v,
                                         Err(_) => continue,
                                     };
+                                saw_model_event = true;
                                 match event_type.as_str() {
-                                    "response.output_item.added" => {
-                                        // 记录输出项类型（保留用于后续扩展）
-                                    }
                                     "response.output_text.delta" => {
                                         if let Some(text) =
                                             data_value.get("delta").and_then(|d| d.as_str())
@@ -437,14 +559,11 @@ pub async fn execute_direct_api_turn(
                                         if let Some(delta) =
                                             data_value.get("delta").and_then(|d| d.as_str())
                                         {
-                                            let entry = accumulated_tool_calls
+                                            accumulated_tool_calls
                                                 .entry(idx)
-                                                .or_insert(AccumulatedToolCall {
-                                                    id: String::new(),
-                                                    name: String::new(),
-                                                    arguments: String::new(),
-                                                });
-                                            entry.arguments.push_str(delta);
+                                                .or_default()
+                                                .arguments
+                                                .push_str(delta);
                                         }
                                     }
                                     "response.function_call_arguments.done" => {
@@ -456,15 +575,9 @@ pub async fn execute_direct_api_turn(
                                         if let Some(args) =
                                             data_value.get("arguments").and_then(|a| a.as_str())
                                         {
-                                            let entry = accumulated_tool_calls
-                                                .entry(idx)
-                                                .or_insert(AccumulatedToolCall {
-                                                    id: String::new(),
-                                                    name: String::new(),
-                                                    arguments: String::new(),
-                                                });
                                             // done 事件包含完整参数，覆盖累积值
-                                            entry.arguments = args.to_string();
+                                            accumulated_tool_calls.entry(idx).or_default().arguments =
+                                                args.to_string();
                                         }
                                     }
                                     "response.output_item.done" => {
@@ -479,13 +592,8 @@ pub async fn execute_direct_api_turn(
                                                 .and_then(|t| t.as_str())
                                                 .unwrap_or("");
                                             if item_type == "function_call" {
-                                                let entry = accumulated_tool_calls
-                                                    .entry(idx)
-                                                    .or_insert(AccumulatedToolCall {
-                                                        id: String::new(),
-                                                        name: String::new(),
-                                                        arguments: String::new(),
-                                                    });
+                                                let entry =
+                                                    accumulated_tool_calls.entry(idx).or_default();
                                                 if let Some(id) = item
                                                     .get("call_id")
                                                     .and_then(|c| c.as_str())
@@ -508,8 +616,22 @@ pub async fn execute_direct_api_turn(
                                             }
                                         }
                                     }
-                                    "response.completed" | "response.done" | "response.failed" => {
+                                    "response.completed" | "response.done" => {
                                         done = true;
+                                    }
+                                    "response.failed" | "response.incomplete" => {
+                                        // 失败 / 被截断的响应不能当成功收尾：带上原因报错。
+                                        let reason = data_value
+                                            .pointer("/response/error/message")
+                                            .or_else(|| data_value.pointer("/response/incomplete_details/reason"))
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("上游返回 response.failed")
+                                            .to_string();
+                                        return Err(crate::agent_turn::TurnError::failed(
+                                            format!("上游 API 错误：{reason}"),
+                                            &full_thinking,
+                                        )
+                                        .with_partial_text(&full_text));
                                     }
                                     _ => {}
                                 }
@@ -518,7 +640,11 @@ pub async fn execute_direct_api_turn(
                                 if let Ok(parsed) =
                                     serde_json::from_str::<ChatCompletionChunk>(&data)
                                 {
+                                    saw_model_event = true;
                                     if let Some(choice) = parsed.choices.first() {
+                                        if let Some(reason) = choice.finish_reason.as_deref() {
+                                            finish_reason = Some(reason.to_string());
+                                        }
                                         if let Some(reasoning) = reasoning_delta_text(&choice.delta)
                                         {
                                             full_thinking.push_str(&reasoning);
@@ -537,25 +663,15 @@ pub async fn execute_direct_api_turn(
 
                                         if let Some(ref tool_calls) = choice.delta.tool_calls {
                                             for tc in tool_calls {
-                                                let entry = accumulated_tool_calls
-                                                    .entry(tc.index)
-                                                    .or_insert(AccumulatedToolCall {
-                                                        id: String::new(),
-                                                        name: String::new(),
-                                                        arguments: String::new(),
-                                                    });
-
-                                                if let Some(ref id) = tc.id {
-                                                    entry.id.push_str(id);
-                                                }
-                                                if let Some(ref func) = tc.function {
-                                                    if let Some(ref name) = func.name {
-                                                        entry.name.push_str(name);
-                                                    }
-                                                    if let Some(ref args) = func.arguments {
-                                                        entry.arguments.push_str(args);
-                                                    }
-                                                }
+                                                let index = resolve_tool_call_index(
+                                                    &accumulated_tool_calls,
+                                                    tc,
+                                                    &mut last_tool_index,
+                                                );
+                                                merge_tool_call_delta(
+                                                    accumulated_tool_calls.entry(index).or_default(),
+                                                    tc,
+                                                );
                                             }
                                         }
                                     }
@@ -563,26 +679,50 @@ pub async fn execute_direct_api_turn(
                             }
                         }
 
-                        if done {
+                        if done || stream_finished {
                             break;
                         }
                     }
 
-                    if done || !stream_eof {
-                        stream_success = true;
-                        break;
+                    if let Some(reason) = interruption {
+                        let attempt_content =
+                            (full_text.len() - text_mark) + (full_thinking.len() - thinking_mark);
+                        let partial_tool_calls = !accumulated_tool_calls.is_empty();
+                        // 内容太少，或者工具调用参数被截断：回滚本次尝试，整轮重来。
+                        if (attempt_content < RETRY_CONTENT_THRESHOLD || partial_tool_calls)
+                            && attempt < MAX_STREAM_ATTEMPTS
+                        {
+                            full_text.truncate(text_mark);
+                            full_thinking.truncate(thinking_mark);
+                            turn_text.clear();
+                            accumulated_tool_calls.clear();
+                            wait_before_retry(&app_handle, &cancel, attempt, &reason, &full_text, &full_thinking).await?;
+                            continue;
+                        }
+                        if partial_tool_calls {
+                            return Err(crate::agent_turn::TurnError::failed(
+                                format!("{reason}：工具调用参数不完整，重试 {attempt} 次后仍失败，已停止"),
+                                &full_thinking,
+                            )
+                            .with_partial_text(&full_text));
+                        }
+                        if turn_text.trim().is_empty() {
+                            return Err(crate::agent_turn::TurnError::failed(
+                                format!("{reason}，重试 {attempt} 次后仍没有收到回复"),
+                                &full_thinking,
+                            )
+                            .with_partial_text(&full_text));
+                        }
+                        // 已经收到较多正文：保留下来，并明确标注可能不完整（以前是悄悄当成完整回复）。
+                        let note = format!("\n\n[⚠️ {reason}，以上回复可能不完整，可以发送「继续」]");
+                        turn_text.push_str(&note);
+                        full_text.push_str(&note);
+                        let _ = app_handle.emit("ai-answer-delta", AnswerDeltaPayload { text: note });
                     }
-                    // stream_eof 且无内容 -> 继续重试
+                    break;
                 }
 
-                if !stream_success && turn_text.is_empty() && accumulated_tool_calls.is_empty() {
-                    return Err(crate::agent_turn::TurnError::failed(
-                        "流式连接多次中断，无法获取响应".to_string(),
-                        &full_thinking,
-                    ));
-                }
-
-                // auto fallback: 如果 SSE 解析无内容，尝试将原始响应当作 JSON 解析
+                // 兜底：SSE 解析没有拿到正文和工具调用时，尝试把原始响应当作其他格式解析
                 if turn_text.is_empty()
                     && accumulated_tool_calls.is_empty()
                     && !raw_buffer.is_empty()
@@ -591,7 +731,8 @@ pub async fn execute_direct_api_turn(
                         return Err(crate::agent_turn::TurnError::failed(
                             message,
                             &full_thinking,
-                        ));
+                        )
+                        .with_partial_text(&full_text));
                     }
                     // HTML 响应检测
                     let buf_trimmed = raw_buffer.trim();
@@ -600,82 +741,52 @@ pub async fn execute_direct_api_turn(
                         || buf_trimmed.starts_with("<html")
                         || buf_trimmed.starts_with("<HTML")
                     {
-                        return Err(crate::agent_turn::TurnError::failed("API 返回了 HTML 页面而非 JSON 响应。请检查 Base URL 是否指向了正确的 API 端点（而非网关首页），以及 API Key 是否有效。".to_string(), &full_thinking));
+                        return Err(crate::agent_turn::TurnError::failed("API 返回了 HTML 页面而非 JSON 响应。请检查 Base URL 是否指向了正确的 API 端点（而非网关首页），以及 API Key 是否有效。".to_string(), &full_thinking).with_partial_text(&full_text));
                     }
 
-                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw_buffer) {
-                        use crate::direct_api::api_client::ContentExtractor;
+                    // 已经按 SSE 解析到过模型事件（只是这一轮没有正文，比如只有思考）时，
+                    // 不能再走下面的兜底：以前会把整段 "data: {...}" 原始协议文本当成回复显示并落库。
+                    if !saw_model_event {
+                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw_buffer) {
+                            use crate::direct_api::api_client::ContentExtractor;
 
-                        // 提取内容
-                        if let Some(content) = ContentExtractor::extract_content(&value) {
-                            turn_text.push_str(&content);
-                            full_text.push_str(&content);
-                            let _ = app_handle
-                                .emit("ai-answer-delta", AnswerDeltaPayload { text: content });
-                        }
-
-                        // 提取工具调用
-                        let tool_calls = ContentExtractor::extract_tool_calls(&value);
-                        for (i, tc) in tool_calls.iter().enumerate() {
-                            accumulated_tool_calls.insert(
-                                i,
-                                AccumulatedToolCall {
-                                    id: tc.id.clone().unwrap_or_default(),
-                                    name: tc.function.name.clone(),
-                                    arguments: tc.function.arguments.clone(),
-                                },
-                            );
-                        }
-
-                        // 提取 reasoning
-                        if turn_text.is_empty() && accumulated_tool_calls.is_empty() {
-                            if let Some(reasoning) = ContentExtractor::extract_reasoning(&value) {
-                                full_thinking.push_str(&reasoning);
+                            if let Some(content) = ContentExtractor::extract_content(&value) {
+                                turn_text.push_str(&content);
+                                full_text.push_str(&content);
+                                let _ = app_handle
+                                    .emit("ai-answer-delta", AnswerDeltaPayload { text: content });
                             }
-                        }
-                    }
 
-                    // 如果 JSON 解析也失败了，尝试从 raw_buffer 中提取 SSE data 行的文本内容
-                    if turn_text.is_empty() && accumulated_tool_calls.is_empty() {
-                        let mut extracted_text = String::new();
-                        for line in raw_buffer.lines() {
-                            let line = line.trim();
-                            if let Some(data) = line.strip_prefix("data:") {
-                                let data = data.trim();
-                                if data == "[DONE]" {
-                                    continue;
-                                }
-                                // 尝试解析 JSON，如果失败则跳过
-                                if let Ok(parsed) =
-                                    serde_json::from_str::<ChatCompletionChunk>(data)
-                                {
-                                    if let Some(choice) = parsed.choices.first() {
-                                        if let Some(ref text) = choice.delta.content {
-                                            extracted_text.push_str(text);
-                                        }
-                                    }
+                            let tool_calls = ContentExtractor::extract_tool_calls(&value);
+                            for (i, tc) in tool_calls.iter().enumerate() {
+                                accumulated_tool_calls.insert(
+                                    i,
+                                    AccumulatedToolCall {
+                                        id: tc.id.clone().unwrap_or_default(),
+                                        name: tc.function.name.clone(),
+                                        arguments: tc.function.arguments.clone(),
+                                    },
+                                );
+                            }
+
+                            if turn_text.is_empty() && accumulated_tool_calls.is_empty() {
+                                if let Some(reasoning) = ContentExtractor::extract_reasoning(&value) {
+                                    full_thinking.push_str(&reasoning);
                                 }
                             }
                         }
-                        if !extracted_text.is_empty() {
-                            turn_text = extracted_text.clone();
-                            full_text.push_str(&extracted_text);
-                            let _ = app_handle.emit(
-                                "ai-answer-delta",
-                                AnswerDeltaPayload {
-                                    text: extracted_text,
-                                },
-                            );
-                        }
-                    }
 
-                    // 策略4: 纯文本 fallback（raw_buffer 非空、非 HTML、非 JSON、且前面所有策略都没提取到内容）
-                    if turn_text.is_empty() && accumulated_tool_calls.is_empty() {
-                        let buf_trimmed = raw_buffer.trim();
-                        if !buf_trimmed.is_empty()
-                            && !buf_trimmed.starts_with('<')
-                            && !buf_trimmed.starts_with('{')
-                            && !buf_trimmed.starts_with('[')
+                        // 纯文本兜底：只接受明显不是 SSE / JSON / HTML 的响应体。
+                        let looks_like_protocol = buf_trimmed.starts_with("data:")
+                            || buf_trimmed.starts_with("event:")
+                            || buf_trimmed.starts_with(':')
+                            || buf_trimmed.starts_with('<')
+                            || buf_trimmed.starts_with('{')
+                            || buf_trimmed.starts_with('[');
+                        if turn_text.is_empty()
+                            && accumulated_tool_calls.is_empty()
+                            && !buf_trimmed.is_empty()
+                            && !looks_like_protocol
                         {
                             turn_text = buf_trimmed.to_string();
                             full_text.push_str(buf_trimmed);
@@ -691,6 +802,17 @@ pub async fn execute_direct_api_turn(
             } // end of "auto" | _ branch
         }
 
+        // 只有正文、但结束原因是 length：回复被输出长度上限截断了，明确标注而不是当成完整回答。
+        if finish_reason.as_deref() == Some("length")
+            && accumulated_tool_calls.is_empty()
+            && !turn_text.trim().is_empty()
+        {
+            let note = "\n\n[⚠️ 回复达到模型的输出长度上限被截断，可以发送「继续」]";
+            turn_text.push_str(note);
+            full_text.push_str(note);
+            let _ = app_handle.emit("ai-answer-delta", AnswerDeltaPayload { text: note.to_string() });
+        }
+
         if !turn_text.is_empty() && !accumulated_tool_calls.is_empty() {
             full_thinking.push_str(&turn_text);
             full_thinking.push('\n');
@@ -702,15 +824,30 @@ pub async fn execute_direct_api_turn(
 
         let mut ordered_tool_calls = accumulated_tool_calls.into_iter().collect::<Vec<_>>();
         ordered_tool_calls.sort_by_key(|(index, _)| *index);
+        // 缺 id 的调用先补上：assistant 消息里的 tool_calls[].id 必须和后面 tool 消息的
+        // tool_call_id 一致。以前只在 tool 消息里补，两边对不上，下一轮请求会被接口拒绝。
+        let generated_at = crate::unix_now();
+        for (index, tc) in ordered_tool_calls.iter_mut() {
+            if tc.id.is_empty() {
+                tc.id = format!("tool_{}_{}_{}", tc.name, generated_at, index);
+            }
+        }
 
         let mut assistant_tool_calls_json = Vec::new();
         for (_, tc) in &ordered_tool_calls {
+            // 参数不是合法 JSON（多半被输出长度上限截断）时，历史里记成 "{}"：
+            // 原样回传非法 JSON，部分接口会直接以 400 拒绝下一轮请求。
+            let arguments = if parse_tool_arguments(&tc.arguments).is_ok() {
+                tc.arguments.clone()
+            } else {
+                "{}".to_string()
+            };
             assistant_tool_calls_json.push(json!({
                 "id": tc.id,
                 "type": "function",
                 "function": {
                     "name": tc.name,
-                    "arguments": tc.arguments
+                    "arguments": arguments
                 }
             }));
         }
@@ -721,16 +858,40 @@ pub async fn execute_direct_api_turn(
             "tool_calls": assistant_tool_calls_json
         }));
 
+        // 截图类工具附带的图片消息要等本轮所有 tool 结果都推完再追加：
+        // assistant(tool_calls) 之后必须紧跟各个 tool 消息，中间插入 user 消息会被
+        // OpenAI / DeepSeek 等接口以 400 拒绝（并行调用"截图 + 列窗口"时必现）。
+        let mut visual_messages: Vec<serde_json::Value> = Vec::new();
+
         for (_, tc) in ordered_tool_calls {
-            let tc_id = if tc.id.is_empty() {
-                format!("tool_{}_{}", tc.name, crate::unix_now())
-            } else {
-                tc.id
-            };
+            let tc_id = tc.id;
             let tc_name = tc.name;
             let tc_args_str = tc.arguments;
-            let tc_args: serde_json::Value =
-                serde_json::from_str(&tc_args_str).unwrap_or_else(|_| json!({}));
+            let tc_args = match parse_tool_arguments(&tc_args_str) {
+                Ok(args) => args,
+                Err(error) => {
+                    // 以前解析失败就按 {} 执行：截断的参数跑出来只会是错误或半截文件。
+                    // 现在不执行，把原因作为工具结果告诉模型，让它补全后重新调用。
+                    let tool_output = format!(
+                        "工具参数不是完整的 JSON（{error}），没有执行。常见原因是参数太长、被模型的输出长度上限截断：请重新调用并给出完整参数；内容很长时分多次写入，或改用 edit_file 做局部修改。"
+                    );
+                    emit_tool_event(
+                        &app_handle,
+                        &tc_id,
+                        &tc_name,
+                        "skipped",
+                        &json!({}),
+                        Some(&tool_output),
+                        Some(false),
+                    );
+                    let display = format!("\n[调用工具] {tc_name}（参数不完整，未执行）\n");
+                    full_thinking.push_str(&display);
+                    append_active_thinking(&state, &display);
+                    let _ = app_handle.emit("ai-thinking", &display);
+                    push_tool_message(&mut api_messages, &tc_id, &tc_name, &tool_output);
+                    continue;
+                }
+            };
             let pretty_args =
                 serde_json::to_string_pretty(&tc_args).unwrap_or_else(|_| tc_args_str.clone());
 
@@ -752,7 +913,9 @@ pub async fn execute_direct_api_turn(
             append_active_thinking(&state, &starting_msg);
             let _ = app_handle.emit("ai-thinking", &starting_msg);
 
-            let already_approved = state.approved_tool_types.lock().await.contains(&tc_name);
+            // 授权缓存按会话隔离：只看本会话批准过的工具。
+            let already_approved =
+                crate::is_tool_approved(&state, &crate::current_turn_session(&state), &tc_name).await;
             let latest_config = if follow_global_config {
                 state.direct_api_config.lock().await.clone()
             } else {
@@ -783,12 +946,15 @@ pub async fn execute_direct_api_turn(
                 continue;
             }
 
-            // 🔥 ask_user 特殊分支: 不走确认/执行流程, 直接弹内嵌询问弹窗等用户作答。
+            // ask_user 特殊分支: 不走确认/执行流程, 直接弹内嵌询问弹窗等用户作答。
             // 用户的回答会作为工具结果回传给模型, 让它据此决定后续方向。
             if tc_name == "ask_user" {
                 let tool_output =
                     request_user_answer(&state, &app_handle, &mut full_thinking, &tc_id, &tc_args, &cancel)
                         .await;
+                if cancel.is_cancelled() {
+                    return Err(aborted_error(&full_text, &full_thinking));
+                }
 
                 let output_for_log = tool_output_for_log(&tool_output);
                 let output_display = format!("[执行结果]\n{}\n", output_for_log);
@@ -796,7 +962,6 @@ pub async fn execute_direct_api_turn(
                 append_active_thinking(&state, &output_display);
                 let _ = app_handle.emit("ai-thinking", &output_display);
                 push_tool_message(&mut api_messages, &tc_id, &tc_name, &tool_output);
-                append_visual_tool_message(&mut api_messages, &tc_name, &tool_output);
                 continue;
             }
 
@@ -826,7 +991,7 @@ pub async fn execute_direct_api_turn(
             };
 
             if cancel.is_cancelled() {
-                return Err(crate::agent_turn::TurnError::aborted(&full_text, &full_thinking));
+                return Err(aborted_error(&full_text, &full_thinking));
             }
             let tool_output = if approved {
                 if focus_snapshot.is_some() {
@@ -841,7 +1006,15 @@ pub async fn execute_direct_api_turn(
                     None,
                     Some(true),
                 );
-                let output = execute_tool(&tc_name, &tc_args, &config.search_provider).await;
+                // 工具执行期间也要响应停止：被丢弃的 run_command future 会通过进程树守卫回收子进程。
+                let output = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => {
+                        emit_tool_event(&app_handle, &tc_id, &tc_name, "interrupted", &tc_args, Some("操作已被用户中止。"), Some(false));
+                        return Err(aborted_error(&full_text, &full_thinking));
+                    }
+                    output = execute_tool(&tc_name, &tc_args, &config.search_provider) => output,
+                };
                 let output_for_event = tool_output_for_log(&output);
                 emit_tool_event(
                     &app_handle,
@@ -875,25 +1048,26 @@ pub async fn execute_direct_api_turn(
             append_active_thinking(&state, &output_display);
             let _ = app_handle.emit("ai-thinking", &output_display);
             push_tool_message(&mut api_messages, &tc_id, &tc_name, &output_for_message);
-            append_visual_tool_message(&mut api_messages, &tc_name, &tool_output);
+            append_visual_tool_message(&mut visual_messages, &tc_name, &tool_output);
         }
+
+        api_messages.extend(visual_messages);
     }
 
     // 保存前再次检查是否已取消
     if cancel.is_cancelled() {
-        return Err(crate::agent_turn::TurnError::aborted(
-            &full_text,
-            &full_thinking,
-        ));
+        return Err(aborted_error(&full_text, &full_thinking));
     }
 
     if full_text.trim().is_empty() {
         // 根据配置和响应情况提供更具体的错误信息
         let error_msg = if config.stream_mode == "non_stream" {
-            // 非流式模式已经经过ContentExtractor，错误信息已经具体化
             "API 请求结束了，但没有返回可显示的回复内容。请检查模型配置和接口返回。".to_string()
+        } else if saw_model_event && !full_thinking.trim().is_empty() {
+            "模型只输出了思考过程，没有给出正文回复（可能是输出长度上限截断了思考）。可以直接发送「继续」。".to_string()
+        } else if saw_model_event {
+            "模型这一轮没有返回任何正文，可以重试或换个说法。".to_string()
         } else {
-            // 流式/auto模式：可能是SSE格式问题
             "接口返回了HTTP 200，但响应不是OpenAI SSE格式。如果使用的是Auto Code等非标准接口，请在设置中将流式模式改为non_stream。".to_string()
         };
 
@@ -1231,6 +1405,7 @@ async fn request_tool_confirmation(
     let payload = ToolConfirmPayload {
         id: confirm_id.clone(), tool_name: tool_name.to_string(), arguments: pretty_args.to_string(),
         summary: tool_summary(tool_name, args), command: tool_command(tool_name, args), path: tool_path(tool_name, args),
+        session_id: crate::current_turn_session(state),
     };
     {
         let mut confirms = state.pending_confirms.lock().await;
@@ -1265,11 +1440,8 @@ async fn request_tool_confirmation(
             full_thinking.push_str(&approved_msg);
             append_active_thinking(state, &approved_msg);
             let _ = app_handle.emit("ai-thinking", &approved_msg);
-            {
-                let mut approved_tool_types = state.approved_tool_types.lock().await;
-                if !is_high_risk_tool(tool_name) {
-                    approved_tool_types.insert(tool_name.to_string());
-                }
+            if !is_high_risk_tool(tool_name) {
+                crate::remember_tool_approval(state, &crate::current_turn_session(state), tool_name).await;
             }
             emit_tool_event(
                 app_handle,
@@ -1399,7 +1571,7 @@ async fn request_user_answer(
 
     let (tx, rx) = tokio::sync::oneshot::channel::<String>();
     let question_id = format!("ask_{}", uuid::Uuid::new_v4());
-    let payload = AskUserPayload { id: question_id.clone(), question: question.clone(), options: options.clone() };
+    let payload = AskUserPayload { id: question_id.clone(), question: question.clone(), options: options.clone(), session_id: crate::current_turn_session(state) };
     {
         let mut questions = state.pending_questions.lock().await;
         questions.insert(question_id.clone(), crate::interactions::PendingRequest { sender: tx, payload: payload.clone() });
@@ -1661,19 +1833,14 @@ fn mode_requires_confirmation(
     ) {
         return true;
     }
-    // read_file、web_search、get_weather 和 list_scheduled_tasks 为安全/只读工具，在任何模式下均不需要弹窗确认；
-    // 敏感工具如 run_command 和 open_app 需要等待确认（open_app 启动本地应用，具有敏感性）。
-    // ask_user 本身就是询问用户，弹窗即是它的功能，无需再叠加确认流程。
-    // code_search 是只读的内容搜索，与 read_file 同级。
-    // edit_file 不在此列（写操作需确认一次），但也不在 is_high_risk_tool 中——确认一次后会话内免重复弹窗，保证调试循环流畅。
-    if tool_name == "read_file"
-        || tool_name == "web_search"
+    // 本地内容读取默认需确认；凭据路径在执行器中还会被硬拦截。
+    // 联网查询和普通记忆写入保留原有策略。显式 custom/unreviewed 授权仍有效。
+    if tool_name == "web_search"
         || tool_name == "get_weather"
         || tool_name == "list_scheduled_tasks"
         || tool_name == "search_memory"
         || tool_name == "save_memory"
         || tool_name == "ask_user"
-        || tool_name == "code_search"
     {
         return false;
     }
@@ -1728,7 +1895,11 @@ fn compact_for_event(input: &str, max_chars: usize) -> String {
 /// 高风险（命令执行、文件写入、外部程序）默认不缓存：每次都让用户看一遍。
 /// 低风险（鼠标键盘、读取）可缓存：避免连续操作时弹窗淹没自动化。
 fn is_high_risk_tool(tool_name: &str) -> bool {
-    matches!(tool_name, "run_command" | "write_file" | "open_app")
+    // create_agent / update_agent 会改写角色设定和授权名单：每次都要确认，不能批准一次就整个会话放行。
+    matches!(
+        tool_name,
+        "run_command" | "write_file" | "open_app" | "create_agent" | "update_agent" | "read_file" | "code_search"
+    )
 }
 
 fn tool_command(tool_name: &str, args: &serde_json::Value) -> Option<String> {
@@ -1890,7 +2061,13 @@ fn tool_summary(tool_name: &str, args: &serde_json::Value) -> String {
     }
 }
 
-async fn send_error(app_handle: &tauri::AppHandle, err_msg: String, full_thinking: &str) {
+async fn send_error(
+    app_handle: &tauri::AppHandle,
+    err_msg: String,
+    full_thinking: &str,
+    partial_text: &str,
+    agent: Option<(&str, &str, &str)>,
+) {
     let state = app_handle.state::<AppState>();
     crate::clear_active_chat(&state);
     let mut behavior = state.behavior.lock().await;
@@ -1898,8 +2075,13 @@ async fn send_error(app_handle: &tauri::AppHandle, err_msg: String, full_thinkin
     drop(behavior);
 
     {
-        let saved_text =
-            interrupted_message_with_progress(&format!("[执行中断] {err_msg}"), full_thinking);
+        // 出错前已经输出的正文一起落库，切回会话时看得到；错误原因放在末尾。
+        let base = if partial_text.trim().is_empty() {
+            format!("[执行中断] {err_msg}")
+        } else {
+            format!("{}\n\n[执行中断] {err_msg}", partial_text.trim_end())
+        };
+        let saved_text = interrupted_message_with_progress(&base, full_thinking);
         crate::save_assistant_message(
             app_handle,
             &saved_text,
@@ -1908,7 +2090,7 @@ async fn send_error(app_handle: &tauri::AppHandle, err_msg: String, full_thinkin
             } else {
                 Some(full_thinking)
             },
-            None,
+            agent,
         )
         .await;
     }
@@ -1923,12 +2105,22 @@ async fn send_error(app_handle: &tauri::AppHandle, err_msg: String, full_thinkin
     );
 }
 
-async fn send_aborted(app_handle: &tauri::AppHandle, full_text: &str, full_thinking: &str) {
+async fn send_aborted(
+    app_handle: &tauri::AppHandle,
+    full_text: &str,
+    full_thinking: &str,
+    agent: Option<(&str, &str, &str)>,
+) {
     let state = app_handle.state::<AppState>();
     crate::clear_active_chat(&state);
     if !crate::has_any_active_chat(&state) {
         let mut behavior = state.behavior.lock().await;
         behavior.set_state(crate::behavior::PetState::Idle);
+    }
+    // 被重置 / 切换后端 / 删除会话取消的回合：会话已被清空或删除，部分输出不落库，
+    // 也不再发事件（否则会把"已中止"写进刚清空的界面）。
+    if crate::turn_output_discarded(&state) {
+        return;
     }
 
     // 有部分内容时保存到数据库，使"继续"时 AI 能接续
@@ -1936,7 +2128,11 @@ async fn send_aborted(app_handle: &tauri::AppHandle, full_text: &str, full_think
         let saved_text = if full_text.trim().is_empty() {
             interrupted_message_with_progress("[思考中，已被中止]", full_thinking)
         } else {
-            interrupted_message_with_progress(full_text, full_thinking)
+            // 标注中止，免得重新打开会话时把半截回复当成完整回答。
+            interrupted_message_with_progress(
+                &format!("{}\n\n[已中止]", full_text.trim_end()),
+                full_thinking,
+            )
         };
         crate::save_assistant_message(
             app_handle,
@@ -1946,7 +2142,7 @@ async fn send_aborted(app_handle: &tauri::AppHandle, full_text: &str, full_think
             } else {
                 Some(full_thinking)
             },
-            None,
+            agent,
         )
         .await;
     }
@@ -2120,6 +2316,21 @@ mod tests {
     }
 
     #[test]
+    fn local_content_reads_require_consent_unless_explicitly_preapproved() {
+        let mut config = DirectApiConfig::default();
+        for tool in ["read_file", "code_search"] {
+            assert!(mode_requires_confirmation(&config, tool, false));
+            assert!(is_high_risk_tool(tool), "approval must not silently authorize another path");
+        }
+        config.execution_mode = "custom".into();
+        config.auto_approved_tools = vec!["read_file".into()];
+        assert!(!mode_requires_confirmation(&config, "read_file", false));
+        assert!(mode_requires_confirmation(&config, "code_search", false));
+        config.execution_mode = "plan".into();
+        assert_eq!(tool_permission(&config, None, &HashSet::new(), "read_file", true), ToolPermission::Skip);
+    }
+
+    #[test]
     fn role_grants_survive_live_config_refresh_in_normal_and_custom_modes() {
         let initial = DirectApiConfig::default();
         let grants = HashSet::from(["write_file".into(), "browser_click".into()]);
@@ -2237,6 +2448,124 @@ private reasoning that should not be replayed
         assert!(message.contains("Screenshot captured"));
     }
 
+    fn tool_delta(
+        index: Option<usize>,
+        id: Option<&str>,
+        name: Option<&str>,
+        arguments: Option<&str>,
+    ) -> crate::direct_api::api_client::ToolCallDelta {
+        crate::direct_api::api_client::ToolCallDelta {
+            index,
+            id: id.map(str::to_string),
+            r#type: None,
+            function: Some(crate::direct_api::api_client::FunctionCallDelta {
+                name: name.map(str::to_string),
+                arguments: arguments.map(str::to_string),
+            }),
+        }
+    }
+
+    fn merge_all(deltas: &[crate::direct_api::api_client::ToolCallDelta]) -> Vec<(usize, String, String, String)> {
+        let mut calls: HashMap<usize, AccumulatedToolCall> = HashMap::new();
+        let mut last = None;
+        for delta in deltas {
+            let index = resolve_tool_call_index(&calls, delta, &mut last);
+            merge_tool_call_delta(calls.entry(index).or_default(), delta);
+        }
+        let mut merged: Vec<_> = calls
+            .into_iter()
+            .map(|(index, call)| (index, call.id, call.name, call.arguments))
+            .collect();
+        merged.sort();
+        merged
+    }
+
+    #[test]
+    fn repeated_tool_call_ids_and_names_are_not_concatenated() {
+        // 有的中转每块都重复下发完整 id / name：以前拼成 "call_1call_1"、"read_fileread_file"。
+        let merged = merge_all(&[
+            tool_delta(Some(0), Some("call_1"), Some("read_file"), Some("{\"pa")),
+            tool_delta(Some(0), Some("call_1"), Some("read_file"), Some("th\":\"a.txt\"}")),
+        ]);
+        assert_eq!(
+            merged,
+            vec![(0, "call_1".into(), "read_file".into(), "{\"path\":\"a.txt\"}".into())]
+        );
+    }
+
+    #[test]
+    fn standard_split_names_still_concatenate() {
+        let merged = merge_all(&[
+            tool_delta(Some(0), Some("call_1"), Some("read_"), Some("")),
+            tool_delta(Some(0), None, Some("file"), Some("{}")),
+        ]);
+        assert_eq!(merged[0].2, "read_file");
+    }
+
+    #[test]
+    fn truncated_tool_arguments_are_rejected_instead_of_running_with_empty_args() {
+        assert_eq!(parse_tool_arguments("").unwrap(), json!({}));
+        assert_eq!(parse_tool_arguments("null").unwrap(), json!({}));
+        assert_eq!(
+            parse_tool_arguments("{\"path\":\"a.txt\"}").unwrap()["path"],
+            "a.txt"
+        );
+        // 被输出长度上限截断的参数：以前按 {} 执行。
+        assert!(parse_tool_arguments("{\"path\":\"a.txt\",\"content\":\"很长的内").is_err());
+        assert!(parse_tool_arguments("[1,2]").is_err());
+    }
+
+    #[test]
+    fn index_less_parallel_calls_get_separate_slots() {
+        let merged = merge_all(&[
+            tool_delta(None, Some("call_a"), Some("window_list"), Some("{")),
+            tool_delta(None, None, None, Some("}")),
+            tool_delta(None, Some("call_b"), Some("computer_screenshot"), Some("{}")),
+        ]);
+        assert_eq!(merged.len(), 2, "{merged:?}");
+        assert_eq!(merged[0].1, "call_a");
+        assert_eq!(merged[0].3, "{}");
+        assert_eq!(merged[1].1, "call_b");
+    }
+
+    fn history_message(role: &str, content: &str) -> ChatMessage {
+        ChatMessage {
+            id: 0,
+            session_id: String::new(),
+            role: role.to_string(),
+            content: content.to_string(),
+            thinking: None,
+            created_at: 0,
+            quoted_role: None,
+            quoted_content: None,
+            agent_id: None,
+            agent_name: None,
+            agent_avatar: None,
+        }
+    }
+
+    #[test]
+    fn trimming_history_drops_the_oldest_messages_first() {
+        let history: Vec<ChatMessage> = (0..10)
+            .map(|i| history_message(if i % 2 == 0 { "user" } else { "assistant" }, &format!("{i}{}", "长".repeat(1000))))
+            .collect();
+        let (kept, omitted) = trim_history_for_context(history, 3_500);
+        assert_eq!(omitted, 7);
+        assert_eq!(kept.len(), 3);
+        assert!(kept[0].content.starts_with('7'));
+        assert!(kept[2].content.starts_with('9'));
+    }
+
+    #[test]
+    fn trimming_history_always_keeps_the_last_two_messages() {
+        let history = vec![
+            history_message("user", &"问".repeat(5_000)),
+            history_message("assistant", &"答".repeat(5_000)),
+        ];
+        let (kept, omitted) = trim_history_for_context(history, 10);
+        assert_eq!((kept.len(), omitted), (2, 0));
+    }
+
     #[test]
     fn is_high_risk_tool_classifies_correctly() {
         // 高风险：每次都要弹窗
@@ -2246,7 +2575,7 @@ private reasoning that should not be replayed
 
         // 低风险：一次批准后可缓存
         assert!(!is_high_risk_tool("computer_mouse"));
-        assert!(!is_high_risk_tool("read_file"));
+        assert!(is_high_risk_tool("read_file"));
         assert!(!is_high_risk_tool("read_webpage"));
         assert!(!is_high_risk_tool("search_web"));
     }

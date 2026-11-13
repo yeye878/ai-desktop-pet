@@ -23,6 +23,9 @@ const emit = defineEmits<{ stop: [] }>();
 /** 单次输出超过这个字符数就先截断，避免一屏塞满日志。 */
 const OUTPUT_LIMIT = 800;
 
+// 保留用户的展开选择；后续流式增量和计时刷新不会重新展开过程。
+const isProcessExpanded = ref(true);
+
 const entries = computed<AgentActivityItem[]>(() => {
   if (props.items !== undefined) return props.items;
   const legacy = legacyActivity(props.thinking);
@@ -260,7 +263,12 @@ onBeforeUnmount(() => { if (timer !== undefined) clearInterval(timer); });
       <span v-if="elapsedLabel" class="activity-elapsed">{{ elapsedLabel }}</span>
       <button type="button" class="activity-stop" title="停止生成" aria-label="停止生成" @click.stop="emit('stop')"><Square :size="12" fill="currentColor" /></button>
     </div>
-    <ol class="activity-list">
+    <button v-if="rows.length" type="button" class="activity-toggle" :aria-expanded="isProcessExpanded" @click="isProcessExpanded = !isProcessExpanded">
+      <ChevronRight :size="14" class="activity-chevron" />
+      <span>思考过程</span>
+      <span class="activity-toggle-action">{{ isProcessExpanded ? '收起' : '展开' }}</span>
+    </button>
+    <ol v-show="isProcessExpanded" class="activity-list">
       <li v-for="row in rows" :key="row.key" :class="['activity-entry', row.kind]">
         <span class="activity-node" :class="row.kind === 'tool' ? row.status : row.kind" aria-hidden="true"></span>
         <div v-if="row.kind === 'text'" class="activity-commentary md-body" v-html="row.html"></div>
@@ -324,6 +332,11 @@ onBeforeUnmount(() => { if (timer !== undefined) clearInterval(timer); });
 .activity-elapsed { color: var(--dash-text-secondary, #686b73); font-variant-numeric: tabular-nums; font-size: 11px; }
 .activity-stop { margin-left: auto; width: 28px; height: 28px; display: grid; place-items: center; border: 1px solid #d5d8de; background: transparent; color: inherit; border-radius: 4px; cursor: pointer; flex: 0 0 28px; }
 .activity-stop:hover { background: #eceef1; }
+
+.activity-toggle { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 30px; margin: 0 0 5px; padding: 3px 5px; border: 0; border-radius: 4px; background: transparent; color: var(--dash-text-primary, #30343b); font: inherit; text-align: left; cursor: pointer; }
+.activity-toggle:hover { background: rgba(100, 110, 128, .08); }
+.activity-toggle[aria-expanded="true"] > .activity-chevron { transform: rotate(90deg); }
+.activity-toggle-action { margin-left: auto; color: var(--dash-text-secondary, #686b73); font-size: 11px; }
 
 /* 时间线：左侧竖线 + 每个条目一个节点，节点颜色跟随状态。 */
 .activity-list { list-style: none; padding: 0; margin: 0; position: relative; }

@@ -262,13 +262,16 @@ fn spawn_reader<R>(
 {
     tokio::spawn(async move {
         let mut reader = BufReader::new(stream);
-        let mut buf = String::new();
+        // 按字节读行再解码：read_line(&mut String) 遇到非 UTF-8（中文系统下 cmd / python
+        // 的 GBK 输出）会返回 InvalidData，旧逻辑随即 break 不再读管道，子进程写满缓冲区后卡死。
+        let mut buf = Vec::new();
         loop {
             buf.clear();
-            match reader.read_line(&mut buf).await {
+            match reader.read_until(b'\n', &mut buf).await {
                 Ok(0) => break,
                 Ok(_) => {
-                    let line = buf.trim_end_matches(['\r', '\n']).to_string();
+                    let decoded = crate::text_decode::decode_process_output(&buf);
+                    let line = decoded.trim_end_matches(['\r', '\n']).to_string();
                     {
                         let mut h = handle.lock().await;
                         h.buffer_bytes = h.buffer_bytes.saturating_add(line.len());

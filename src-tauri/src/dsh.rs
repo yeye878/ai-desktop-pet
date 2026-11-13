@@ -8,7 +8,8 @@
 //!   * 推理增量与正文增量实时流式返回（官方 headless 只打印最后一条文本）；
 //!   * 工具调用与工具结果作为事件上报，进入桌宠的工具轨迹面板；
 //!   * 支持 --resume 续接同一会话，对话连续性不再依赖每轮重放历史；
-//!   * 任务文本走提示词文件，不再受 Windows 命令行长度限制。
+//!   * 任务文本走提示词文件，不再受 Windows 命令行长度限制；runner 读完即删，
+//!     文件只在这一轮的启动窗口里存在，Rust 侧 sweep 仅作兜底。
 //!
 //! runner 是桌宠 profile 的一部分，登录信息、模型/provider、权限预设，以及机器级
 //! 的 $DSH_HOME/cordis.patch.yml 仍然来自用户的 DSH 配置，没有任何凭据被复制到
@@ -53,9 +54,11 @@ const RUNNER_SOURCE: &str = include_str!("../dsh/pet-runner.mjs");
 const PATCH_MARKER: &str = "pet-runner-patch";
 const PATCH_FILENAME: &str = "cordis.patch.yml";
 /// 提示词文件目录（在 DSH 沙箱根之外，模型不会把它当成工作区文件）。
+/// 文件由 runner 读完即删，正常轮次不会长期留存；sweep 只清理兜底残留。
 const PROMPT_DIR: &str = "dsh-prompts";
-/// 超过这个时间的提示词文件视为残留，启动新一轮时顺手清理。
-const PROMPT_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+/// 兜底 TTL：提示词文件正常由 runner 读完即删，只有启动失败/进程崩溃留下的
+/// 残留才需要清理；写新提示词时顺手扫一遍。
+const PROMPT_TTL: Duration = Duration::from_secs(60 * 60);
 
 /// 启动方式：优先直接调用 Node 入口，退回 npm 的 .cmd 包装脚本。
 ///
@@ -104,8 +107,61 @@ fn find_cli() -> Result<PathBuf, String> {
             }
         }
     }
-    Err("未找到本机 DeepSeek Harness CLI。请先运行 npm install -g @deepseek-ai/dsh，再刷新状态。".into())
+    if let Some(cli) = find_desktop_cli(&desktop_install_dirs()) {
+        return Ok(cli);
+    }
+    Err("未找到本机 DeepSeek Harness CLI。请安装桌面版，或运行 npm install -g @deepseek-ai/dsh，再刷新状态。".into())
 }
+
+/// 桌面版附带自己的 CLI；它不一定已通过 Manage dsh Command 注册到 PATH。
+fn find_desktop_cli(install_dirs: &[PathBuf]) -> Option<PathBuf> {
+    install_dirs.iter().filter(|root| root.is_absolute())
+        .map(|root| root.join("resources").join("runtime").join("cli").join("bin").join("dsh.cmd"))
+        .find(|path| path.is_file())
+}
+
+#[cfg(target_os = "windows")]
+fn desktop_install_dirs() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(executable) = std::env::var_os("DSH_DESKTOP_NODE_EXECUTABLE") {
+        if let Some(parent) = Path::new(&executable).parent() { roots.push(parent.to_path_buf()); }
+    }
+    for variable in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
+        if let Some(base) = std::env::var_os(variable) {
+            let base = PathBuf::from(base);
+            roots.push(base.join("DeepSeek Harness"));
+            roots.push(base.join("Programs").join("DeepSeek Harness"));
+        }
+    }
+    // 开始菜单快捷方式保留真实安装位置，也适用于用户选择的其它盘符。
+    // 只读取已安装应用的快捷方式，不改注册表、不扫描磁盘、不注册全局命令。
+    let powershell = std::env::var_os("SystemRoot").map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+        .join("System32").join("WindowsPowerShell").join("v1.0").join("powershell.exe");
+    let script = r#"[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+$shell = New-Object -ComObject WScript.Shell
+foreach ($root in @([Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('CommonPrograms'))) {
+  if ($root -and (Test-Path -LiteralPath $root)) {
+    Get-ChildItem -LiteralPath $root -Filter 'DeepSeek Harness.lnk' -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+      $target = $shell.CreateShortcut($_.FullName).TargetPath
+      if ($target -and [IO.Path]::GetFileName($target) -ieq 'DeepSeek Harness.exe') { [IO.Path]::GetDirectoryName($target) }
+    }
+  }
+}"#;
+    let mut probe = std::process::Command::new(powershell);
+    use std::os::windows::process::CommandExt;
+    probe.creation_flags(CREATE_NO_WINDOW);
+    if let Ok(output) = probe.args(["-NoProfile", "-NonInteractive", "-Command", script]).output() {
+        if output.status.success() {
+            roots.extend(String::from_utf8_lossy(&output.stdout).lines()
+                .map(str::trim).filter(|line| !line.is_empty()).map(PathBuf::from));
+        }
+    }
+    roots
+}
+
+#[cfg(not(target_os = "windows"))]
+fn desktop_install_dirs() -> Vec<PathBuf> { Vec::new() }
 
 /// 在包装脚本同级目录、PATH、常见安装位置里查找 node.exe。
 fn find_node(shim_dir: &Path) -> Option<PathBuf> {
@@ -196,6 +252,13 @@ fn patch_layer() -> String {
     format!(
         "# {PATCH_MARKER} v2 — 由 ai-desktop-pet 生成并维护，覆盖旧版本时请保留本标记行。\n\
          # 桌宠用自带 runner 替换随包的 headless 应用：流式输出推理/正文/工具事件，并支持会话续接。\n\
+         # 桌宠沿用 DSH 本机凭据与账号登录，不使用 headless 的无状态凭据模式。\n\
+         - id: credentials\n\
+         \x20\x20disabled: false\n\
+         - id: authorization\n\
+         \x20\x20disabled: false\n\
+         - id: deepseek-account\n\
+         \x20\x20disabled: false\n\
          - id: headless-startup\n\
          \x20\x20disabled: true\n\
          - id: headless-runner\n\
@@ -522,6 +585,9 @@ pub fn assemble_task(
 }
 
 /// 提示词落盘：内容再长也只是一次文件写入，不受命令行长度限制。
+///
+/// runner 启动后第一件事就是读取并删除它（用后即删），正常情况下文件只存在很短
+/// 时间；写入前先 sweep，清掉启动失败/进程崩溃留下的旧残留。
 fn write_prompt(dir: &Path, task: &str) -> Result<PathBuf, String> {
     std::fs::create_dir_all(dir)
         .map_err(|error| format!("无法创建 {}：{error}", dir.display()))?;
@@ -531,7 +597,8 @@ fn write_prompt(dir: &Path, task: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// 清理被取消的轮次留下的提示词文件（尽力而为，失败不影响本轮）。
+/// 兜底清理：正常轮次由 runner 读完即删；这里只清启动失败/进程崩溃等留下的残留
+/// （超过 [`PROMPT_TTL`]）。尽力而为，失败不影响本轮。
 fn sweep_stale_prompts(dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -592,13 +659,13 @@ fn runner_args(
 fn launcher_command(launcher: &Launcher, args: &[String]) -> Command {
     match launcher {
         Launcher::Node { node, entry } => {
-            let mut command = Command::new(node);
+            let mut command = crate::cli_launch::command(node);
             command.arg(entry);
             command.args(args);
             command
         }
         Launcher::Shim(path) => {
-            let mut command = Command::new(path);
+            let mut command = crate::cli_launch::command(path);
             command.args(args);
             command
         }
@@ -654,11 +721,13 @@ impl DshAdapter {
             None,
             None,
             None,
+            "",
         )
         .await
     }
 
-    /// 显式会话 / 模型 / 渠道 / 思考强度版本：不依赖适配器内部状态，供多会话与协作调用。
+    /// 显式会话 / 模型 / 渠道 / 思考强度 / 权限档位版本：不依赖适配器内部状态，供多会话与协作调用。
+    /// permission 为空串时不覆写 `DSH_PERMISSION_MODE`，沿用本机 DSH 配置。
     #[allow(clippy::too_many_arguments)]
     pub async fn spawn_streaming_with(
         &self,
@@ -670,9 +739,16 @@ impl DshAdapter {
         model: Option<&str>,
         provider: Option<&str>,
         effort: Option<&str>,
+        permission: &str,
     ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
         let workspace = workspace_dir(app)?;
         let prompts = prompt_dir(app)?;
+        // 会话级 / 设置页选定的权限档位：空串不覆写 DSH 环境，保持本机配置。
+        let permission = crate::cli_permission::dsh_permission(permission);
+        let state = app.state::<crate::AppState>();
+        let memory_url = state.permission_bridge.lock().ok().and_then(|bridge| {
+            bridge.as_ref().map(|b| b.url_for_session(&crate::current_turn_session(&state)))
+        });
         self.spawn_in_workspace_with(
             &workspace,
             &prompts,
@@ -683,6 +759,8 @@ impl DshAdapter {
             model,
             provider,
             effort,
+            permission,
+            memory_url.as_deref(),
         )
         .await
     }
@@ -707,11 +785,13 @@ impl DshAdapter {
             None,
             None,
             None,
+            crate::cli_permission::DshPermission::default(),
+            None,
         )
         .await
     }
 
-    /// 显式会话 / 模型 / 渠道 / 思考强度 / 目录版本。
+    /// 显式会话 / 模型 / 渠道 / 思考强度 / 权限档位版本。
     #[allow(clippy::too_many_arguments)]
     pub async fn spawn_in_workspace_with(
         &self,
@@ -724,6 +804,8 @@ impl DshAdapter {
         model: Option<&str>,
         provider: Option<&str>,
         effort: Option<&str>,
+        permission: crate::cli_permission::DshPermission,
+        memory_url: Option<&str>,
     ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
         let session = session.map(str::to_string);
         let task = if session.is_some() {
@@ -749,6 +831,13 @@ impl DshAdapter {
             &launcher,
             &runner_args(&prompt_file, session.as_deref(), model, provider, effort),
         );
+        command.env_remove("PET_MEMORY_MCP_URL");
+        if let Some(url) = memory_url { command.env("PET_MEMORY_MCP_URL", url); }
+        // dsh-base 用 DSH_PERMISSION_MODE 决定默认沙箱与审批策略；不设置时沿用
+        // 用户环境里的值，这是 DSH 官方支持的部署覆盖方式。
+        if let Some(mode) = permission.env_mode {
+            command.env("DSH_PERMISSION_MODE", mode);
+        }
         command
             .current_dir(workspace)
             // stdin 是授权往返的回程通道：runner 把请求写在 stdout，桌宠把决定写回来。
@@ -818,14 +907,30 @@ pub trait ApprovalAnswerer: Send + Sync {
 pub struct UiApproval {
     app: tauri::AppHandle,
     cancel: CancellationToken,
+    session_id: String,
+    /// 本会话解析出的 DSH 权限档位是否允许自动批准升权请求。
+    auto_approve: bool,
     timeout: Duration,
 }
 
 impl UiApproval {
     pub fn new(app: tauri::AppHandle, cancel: CancellationToken) -> Self {
+        Self::for_session(app, cancel, String::new(), false)
+    }
+
+    /// `auto_approve` 来自本会话解析出的 DSH 权限档位（`workspace-write-auto`）：
+    /// 为 true 时升权请求直接放行，不再弹窗。
+    pub fn for_session(
+        app: tauri::AppHandle,
+        cancel: CancellationToken,
+        session_id: String,
+        auto_approve: bool,
+    ) -> Self {
         Self {
             app,
             cancel,
+            session_id,
+            auto_approve,
             timeout: Duration::from_secs(120),
         }
     }
@@ -834,7 +939,19 @@ impl UiApproval {
 
 #[async_trait]
 impl ApprovalAnswerer for UiApproval {
-    async fn decide(&self, _request: &DshApprovalRequest, payload: ToolConfirmPayload) -> DshDecision {
+    async fn decide(&self, _request: &DshApprovalRequest, mut payload: ToolConfirmPayload) -> DshDecision {
+        if payload.session_id.is_empty() {
+            payload.session_id = self.session_id.clone();
+        }
+        // “工作区可写 + 自动批准”档位：保留 DSH 沙箱，但桌宠不再为升权弹窗。
+        // 允许只作用于当前这一次请求，后续请求仍会重新询问这里。
+        if self.auto_approve {
+            // 用户已经按下停止时不再放行，避免取消后仍执行越界命令。
+            if self.cancel.is_cancelled() {
+                return DshDecision::Cancel;
+            }
+            return DshDecision::Allow;
+        }
         match crate::interactions::confirm_with_ui(&self.app, &self.cancel, payload, self.timeout)
             .await
         {
@@ -1042,6 +1159,8 @@ impl RunnerParser {
             summary,
             command: known.and_then(|tool| tool.command.clone()),
             path: known.and_then(|tool| tool.path.clone()),
+            // 授权决定在子进程读取循环中同步进行，这里读到的回合会话即当前 DSH 任务归属。
+            session_id: String::new(),
         }
     }
 
@@ -1321,7 +1440,7 @@ async fn probe_version(launcher: &Launcher) -> Option<String> {
 }
 
 async fn probe_shim_version(shim: &Path) -> Option<String> {
-    let mut command = Command::new(shim);
+    let mut command = crate::cli_launch::command(shim);
     command.arg("--version").stdin(Stdio::null());
     #[cfg(target_os = "windows")]
     command.creation_flags(CREATE_NO_WINDOW);
@@ -1642,6 +1761,26 @@ mod tests {
     }
 
     #[test]
+    fn desktop_cli_detects_custom_install_path_without_path_registration() {
+        let root = std::env::temp_dir().join(format!("dsh 桌面版 {}", uuid::Uuid::new_v4()));
+        let shim = root.join("resources/runtime/cli/bin/dsh.cmd");
+        std::fs::create_dir_all(shim.parent().unwrap()).unwrap();
+        std::fs::write(&shim, "@echo off").unwrap();
+        assert_eq!(find_desktop_cli(&[root.join("missing"), root.clone()]), Some(shim));
+        assert_eq!(find_desktop_cli(&[PathBuf::from("relative-install")]), None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "probes the installed desktop or npm DSH CLI without a model call"]
+    async fn local_cli_detected_launcher_reports_version() {
+        let launcher = resolve_launcher().expect("detect installed DSH CLI");
+        let version = probe_version(&launcher).await.expect("DSH version probe");
+        assert!(!version.trim().is_empty());
+        eprintln!("Detected {}: {}", launcher.display_path().display(), version);
+    }
+
+    #[test]
     fn assembles_role_rules_history_and_current_message() {
         let history = vec![
             message("user", "帮我看看报错"),
@@ -1674,6 +1813,28 @@ mod tests {
         assert!(task.starts_with("【桌宠角色与规则】\n规则"));
         assert!(task.contains("…（此处省略了较早的中间内容）…"));
         assert!(task.ends_with("结尾"));
+    }
+
+    #[test]
+    fn writes_unique_prompt_files_that_runner_deletes_after_read() {
+        // 文件名唯一、扩展名 .txt、内容原样落盘；刚写入的文件不算残留，不会被 sweep 清掉。
+        let dir = std::env::temp_dir().join(format!("dsh-prompts-test-{}", uuid::Uuid::new_v4()));
+        let first = write_prompt(&dir, "任务一").expect("写入提示词失败");
+        let second = write_prompt(&dir, "任务二").expect("写入提示词失败");
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "任务一");
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), "任务二");
+        assert_ne!(first, second, "每轮提示词文件必须唯一");
+        assert_eq!(first.extension().and_then(|ext| ext.to_str()), Some("txt"));
+        assert!(
+            first.exists() && second.exists(),
+            "TTL 内的提示词文件不应被 sweep 清掉"
+        );
+        assert_eq!(
+            PROMPT_TTL,
+            Duration::from_secs(60 * 60),
+            "runner 读完即删，TTL 只需兜底并保持 1 小时"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2329,8 +2490,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(home);
     }
 
+    /// 检查现有本机账号的模型目录，不发送模型对话请求。
+    #[tokio::test]
+    #[ignore = "reads the installed DSH profile and its configured provider model directory"]
+    async fn local_cli_current_profile_model_catalog() {
+        let catalog = model_catalog().await.expect("读取本机 DSH 模型目录");
+        assert!(!catalog.local_provider.is_empty(), "本机默认渠道不能为空");
+        assert!(!catalog.local_model.is_empty(), "本机默认模型不能为空");
+        assert!(catalog.models.iter().any(|model| model.provider.as_deref() == Some(catalog.local_provider.as_str())
+            && model.id == catalog.local_model), "本机默认模型必须可以由当前登录配置使用：{} / {}", catalog.local_provider, catalog.local_model);
+        println!("DSH 本机默认渠道 {}，模型 {}；可用模型 {} 个", catalog.local_provider, catalog.local_model, catalog.models.len());
+    }
+
     /// 离线端到端验证：本地假模型 + 工作区内的 DSH 主目录，不碰用户凭据。
-    ///
     /// cargo test --lib dsh::tests::mock_provider_streaming_resume_and_tools -- --ignored --nocapture
     #[tokio::test]
     #[ignore = "spawns the local dsh CLI plus a mock model server"]
@@ -2384,11 +2556,11 @@ mod tests {
         }
         let port = port.expect("mock provider did not report a port");
 
-        // 2) 工作区内的 DSH 主目录：设置文档把默认模型指向假模型。
+        // 2) 使用机器级补丁配置假模型，兼容新版已移除 settings.yaml 的 DSH。
         std::fs::write(
-            home.join("settings.yaml"),
+            home.join("cordis.patch.yml"),
             format!(
-                "agent-default-model:\n  provider: pet-mock\n  model: pet-mock-model\nllm-pi-ai:\n  providers:\n    pet-mock:\n      displayName: Pet Mock\n      apiKeyEnv: PET_MOCK_API_KEY\n      api: openai-completions\n      baseURL: http://127.0.0.1:{port}/v1\n      compat:\n        thinkingFormat: deepseek\n        maxTokensField: max_tokens\n      models:\n        - id: pet-mock-model\n          name: Pet Mock Model\n          contextWindow: 200000\n          maxTokens: 8192\n"
+                "- id: agent-default-model\n  config:\n    provider: pet-mock\n    model: pet-mock-model\n- id: llm-pi-ai\n  config:\n    providers:\n      pet-mock:\n        displayName: Pet Mock\n        apiKeyEnv: PET_MOCK_API_KEY\n        api: openai-completions\n        baseURL: http://127.0.0.1:{port}/v1\n        compat:\n          thinkingFormat: deepseek\n          maxTokensField: max_tokens\n        models:\n          - id: pet-mock-model\n            name: Pet Mock Model\n            contextWindow: 200000\n            maxTokens: 8192\n"
             ),
         )
         .unwrap();
@@ -2492,6 +2664,29 @@ mod tests {
             "工具结果必须回流到下一轮回答：{}",
             third.full_text
         );
+
+        // 第四轮：真实 DSH 工具注册 / 参数校验 / 执行 → 本地记忆桥 → 共享 SQLite。
+        struct MemoryFixture(PathBuf);
+        #[async_trait]
+        impl crate::mcp_permission::PermissionAnswerer for MemoryFixture {
+            async fn decide(&self, _: crate::mcp_permission::PermissionRequest, _: &str) -> crate::mcp_permission::PermissionDecision {
+                crate::mcp_permission::PermissionDecision::Deny("test does not approve destructive calls".into())
+            }
+            fn memory_db_path(&self) -> Option<PathBuf> { Some(self.0.clone()) }
+        }
+        let memory_path = root.join("memory.db");
+        let memory_db = crate::storage::Database::new(&memory_path).unwrap();
+        let bridge = crate::mcp_permission::serve(std::sync::Arc::new(MemoryFixture(memory_path))).await.unwrap();
+        let memory_url = bridge.url_for_session("dsh-memory-test");
+        let mut child = adapter.spawn_in_workspace_with(&workspace, &prompts,
+            "USE_MEMORY 请记住我使用中文。", &[], system, None, None, None, None,
+            crate::cli_permission::DshPermission::default(), Some(&memory_url)).await.unwrap();
+        let fourth = tokio::time::timeout(Duration::from_secs(45),
+            read_stream_with_activity(&mut child, |_| {}, |_| {}, |_| {}, None)).await.unwrap().unwrap();
+        assert!(!fourth.is_error, "memory turn failed: {:?}", fourth.error_msg);
+        assert!(fourth.full_text.contains("记忆已保存"), "memory result must return to model: {}", fourth.full_text);
+        assert!(memory_db.get_all_memories().unwrap().iter().any(|m| m.key == "mock-language" && m.value == "中文"));
+        drop(memory_db);
 
         let _ = mock.kill().await;
         let _ = std::fs::remove_dir_all(&root);
