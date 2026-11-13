@@ -359,7 +359,45 @@ function mockWeatherInfo(location = weatherConfig.location) {
   };
 }
 
-const mockPetState = { state: "idle", happiness: 0.2, energy: 64 };
+const mockPetState = {
+  state: "idle" as string,
+  happiness: 0.2,
+  energy: 64,
+  personality: "gentle",
+  profession: "companion",
+  skin: "default",
+};
+
+/**
+ * 预览环境的技能库。
+ * 必须有默认值：skills store 的 activeSkill 计算属性直接对返回结果 .find，
+ * 后端返回 null 会让整个系统设置页渲染失败（Vue 全局错误）。
+ */
+let mockSkills: Array<{
+  id: string;
+  name: string;
+  description: string;
+  system_prompt: string;
+  allowed_tools: string[];
+  keywords: string[];
+  is_active: boolean;
+  created_at: number;
+  updated_at: number;
+}> = [
+  {
+    id: "preview-skill-1",
+    name: "预览技能 · 代码审查",
+    description: "在预览环境中演示技能列表的展示形态",
+    system_prompt: "你是代码审查助手，指出风险并给出修改建议。",
+    allowed_tools: [],
+    keywords: [],
+    is_active: false,
+    created_at: 0,
+    updated_at: 0,
+  },
+];
+
+let mockCustomPrompt = "";
 
 // === 多会话 / 三个 agent 窗口的内存版数据（浏览器、无 Tauri 环境用） ===
 const MOCK_AGENT_SLOTS: Array<Exclude<MockChatSlot, "main">> = ["claude", "codex", "dsh"];
@@ -1416,6 +1454,38 @@ function handleMockCommand(cmd: string, args: MockPayload) {
         allowed_tools: [] as string[],
       };
     }
+    case "list_skills":
+      // 预览环境没有真实技能库；返回空数组而不是 null，
+      // 否则 skills store 的 activeSkill 计算属性会在 null 上调用 .find 崩掉，
+      // 整个系统设置页都渲染不出来。
+      return mockSkills;
+    case "set_active_skill": {
+      const id = readArg(args, "skillId", "skillId", "").trim();
+      mockSkills = mockSkills.map((s) => ({ ...s, is_active: !!id && s.id === id }));
+      return null;
+    }
+    case "get_custom_system_prompt":
+      return mockCustomPrompt;
+    case "set_custom_system_prompt": {
+      mockCustomPrompt = String(args?.prompt ?? args?.value ?? "");
+      return null;
+    }
+    // 预览环境只做视觉验收：这些「写入型」命令记下值即可，不持久化
+    case "set_personality":
+      mockPetState.personality = String(args?.personality || "gentle");
+      return null;
+    case "set_profession":
+      mockPetState.profession = String(args?.profession || "companion");
+      return null;
+    case "set_skin":
+      mockPetState.skin = String(args?.skin || "default");
+      return null;
+    case "set_font_color":
+      return null;
+    case "set_user_avatar":
+      return null;
+    case "tts_cache_stats":
+      return { count: 0, bytes: 0 };
     default:
       return null;
   }

@@ -2158,6 +2158,22 @@ const followingActivity = ref(true);
 function trackChatScroll() {
   if (dashChatMessagesRef.value) followingActivity.value = isNearBottom(dashChatMessagesRef.value);
 }
+
+/**
+ * 系统设置页的分类快速跳转。
+ * 用 scrollIntoView + closest 找滚动容器，而不是 window：
+ * 控制台的内容区是 .dashboard-content 自己在滚，window 不滚。
+ */
+function scrollToLabSection(anchor: string) {
+  const target = document.getElementById(anchor);
+  if (!target) return;
+  target.scrollIntoView({ behavior: "smooth", block: "start" });
+  // 滚到位后再闪一下标题，明确告诉用户「就是这里」
+  target.classList.remove("lab-section-flash");
+  void target.offsetWidth;
+  target.classList.add("lab-section-flash");
+  window.setTimeout(() => target.classList.remove("lab-section-flash"), 1200);
+}
 function jumpToLatest() {
   followingActivity.value = true;
   scrollDashChatToBottom();
@@ -5293,6 +5309,24 @@ ttsPlayer.stop();
               <div class="page-kicker">System</div>
               <h1 class="page-title">系统设置</h1>
               <p class="page-subtitle">配置 AI 后端、性格和职业定位</p>
+              <nav class="lab-jump">
+                <a href="#system-conversation" @click.prevent="scrollToLabSection('system-conversation')">
+                  <AppIcon name="prompt-terminal" :size="14" /><span>对话设定</span>
+                </a>
+                <a href="#system-connection" @click.prevent="scrollToLabSection('system-connection')">
+                  <AppIcon name="sliders" :size="14" /><span>AI 连接</span>
+                </a>
+                <a href="#system-service" @click.prevent="scrollToLabSection('system-service')">
+                  <AppIcon name="weather-sun" :size="14" /><span>服务与提醒</span>
+                </a>
+              </nav>
+            </div>
+
+            <!-- ===== 对话设定 ===== -->
+            <div class="lab-section-head" id="system-conversation">
+              <div class="lab-section-kicker">Conversation</div>
+              <h2 class="lab-section-title">对话设定</h2>
+              <p class="lab-section-desc">决定 AI 怎么说话：系统提示、技能、性格与职业</p>
             </div>
 
             <!-- 自定义系统提示 -->
@@ -5350,6 +5384,46 @@ ttsPlayer.stop();
                   </div>
                 </div>
               </div>
+            </div>
+
+            <!-- 性格 -->
+            <div class="system-role-grid">
+            <div class="dash-card role-card personality-panel">
+              <div class="dash-card-title"><span class="card-icon"><AppIcon name="persona-heart" :size="15" /></span> 性格</div>
+              <div class="dash-option-grid">
+                <button
+                  v-for="item in personalities" :key="item.id"
+                  :class="['dash-option-item', { active: currentPersonality === item.id }]"
+                  @click="selectPersonality(item.id)"
+                >
+                  <span class="dash-option-name">{{ item.name }}</span>
+                  <span class="dash-option-desc">{{ item.desc }}</span>
+                </button>
+              </div>
+              <p class="dash-hint" style="margin-top:12px;">切换后会重置本地 AI 会话，让新设定立即生效</p>
+            </div>
+
+            <!-- 职业 -->
+            <div class="dash-card role-card profession-panel">
+              <div class="dash-card-title"><span class="card-icon"><AppIcon name="role-compass" :size="15" /></span> 职业</div>
+              <div class="dash-option-grid">
+                <button
+                  v-for="item in professions" :key="item.id"
+                  :class="['dash-option-item', { active: currentProfession === item.id }]"
+                  @click="selectProfession(item.id)"
+                >
+                  <span class="dash-option-name">{{ item.name }}</span>
+                  <span class="dash-option-desc">{{ item.desc }}</span>
+                </button>
+              </div>
+            </div>
+            </div>
+
+            <!-- ===== AI 连接 ===== -->
+            <div class="lab-section-head" id="system-connection">
+              <div class="lab-section-kicker">Connection</div>
+              <h2 class="lab-section-title">AI 连接</h2>
+              <p class="lab-section-desc">决定接到哪个 AI：本地 CLI 后端或直连 API，含模型与连通性探测</p>
             </div>
 
             <!-- AI 后端 -->
@@ -5711,6 +5785,13 @@ ttsPlayer.stop();
               </template>
             </div>
 
+            <!-- ===== 服务与提醒 ===== -->
+            <div class="lab-section-head" id="system-service">
+              <div class="lab-section-kicker">Service</div>
+              <h2 class="lab-section-title">服务与提醒</h2>
+              <p class="lab-section-desc">外部服务与定时提醒：天气栏、每日问候</p>
+            </div>
+
             <div class="dash-card weather-settings-panel">
               <div class="dash-card-title"><span class="card-icon"><AppIcon name="weather-sun" :size="15" /></span> 天气 API 与提醒</div>
               <div class="dash-toggle-group">
@@ -5774,39 +5855,6 @@ ttsPlayer.stop();
                   {{ isSavingWeatherConfig ? '保存中...' : '保存天气设置' }}
                 </button>
               </div>
-            </div>
-
-            <!-- 性格 -->
-            <div class="system-role-grid">
-            <div class="dash-card role-card personality-panel">
-              <div class="dash-card-title"><span class="card-icon"><AppIcon name="persona-heart" :size="15" /></span> 性格</div>
-              <div class="dash-option-grid">
-                <button
-                  v-for="item in personalities" :key="item.id"
-                  :class="['dash-option-item', { active: currentPersonality === item.id }]"
-                  @click="selectPersonality(item.id)"
-                >
-                  <span class="dash-option-name">{{ item.name }}</span>
-                  <span class="dash-option-desc">{{ item.desc }}</span>
-                </button>
-              </div>
-              <p class="dash-hint" style="margin-top:12px;">切换后会重置本地 AI 会话，让新设定立即生效</p>
-            </div>
-
-            <!-- 职业 -->
-            <div class="dash-card role-card profession-panel">
-              <div class="dash-card-title"><span class="card-icon"><AppIcon name="role-compass" :size="15" /></span> 职业</div>
-              <div class="dash-option-grid">
-                <button
-                  v-for="item in professions" :key="item.id"
-                  :class="['dash-option-item', { active: currentProfession === item.id }]"
-                  @click="selectProfession(item.id)"
-                >
-                  <span class="dash-option-name">{{ item.name }}</span>
-                  <span class="dash-option-desc">{{ item.desc }}</span>
-                </button>
-              </div>
-            </div>
             </div>
           </div>
 
