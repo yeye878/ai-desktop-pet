@@ -195,6 +195,64 @@ function readStoredWindowPreference(slot: AgentWindowSlot): AgentWindowPreferenc
 }
 
 const chatSlot = ref<ChatSlot>(readStoredChatSlot());
+
+/**
+ * 系统设置的三个分类。
+ * 用左侧栏子项承载，而不是页内锚点：设置项多的时候一路滚下去找不到北，
+ * 子项导航能直接跳到某一类，而且和自己已熟悉的「对话互动」分组是同一种交互。
+ */
+type SystemSection = "conversation" | "connection" | "service";
+const SYSTEM_SECTIONS: Array<{
+  id: SystemSection;
+  label: string;
+  kicker: string;
+  icon: string;
+  desc: string;
+}> = [
+  {
+    id: "conversation",
+    label: "对话设定",
+    kicker: "Conversation",
+    icon: "prompt-terminal",
+    desc: "决定 AI 怎么说话：系统提示、技能、性格与职业",
+  },
+  {
+    id: "connection",
+    label: "AI 连接",
+    kicker: "Connection",
+    icon: "sliders",
+    desc: "决定接到哪个 AI：本地 CLI 后端或直连 API，含模型与连通性探测",
+  },
+  {
+    id: "service",
+    label: "服务与提醒",
+    kicker: "Service",
+    icon: "weather-sun",
+    desc: "外部服务与定时提醒：天气栏、每日问候",
+  },
+];
+const SYSTEM_SECTION_STORAGE_KEY = "dash.system-section";
+function readStoredSystemSection(): SystemSection {
+  const raw = readStoredValue(SYSTEM_SECTION_STORAGE_KEY);
+  return SYSTEM_SECTIONS.some((item) => item.id === raw) ? (raw as SystemSection) : "conversation";
+}
+const systemSection = ref<SystemSection>(readStoredSystemSection());
+const systemNavExpanded = ref(true);
+const currentSystemSection = computed(
+  () => SYSTEM_SECTIONS.find((item) => item.id === systemSection.value) ?? SYSTEM_SECTIONS[0],
+);
+function openSystemSection(section: SystemSection) {
+  activePage.value = "system";
+  systemSection.value = section;
+  systemNavExpanded.value = true;
+}
+function toggleSystemSubnav() {
+  systemNavExpanded.value = !systemNavExpanded.value;
+}
+watch(systemSection, (section) => {
+  writeStoredValue(SYSTEM_SECTION_STORAGE_KEY, section);
+});
+
 const chatNavExpanded = ref(chatSlot.value !== "main");
 const agentWindowPrefs = reactive<Record<AgentWindowSlot, AgentWindowPreference>>({
   claude: readStoredWindowPreference("claude"),
@@ -2159,21 +2217,6 @@ function trackChatScroll() {
   if (dashChatMessagesRef.value) followingActivity.value = isNearBottom(dashChatMessagesRef.value);
 }
 
-/**
- * 系统设置页的分类快速跳转。
- * 用 scrollIntoView + closest 找滚动容器，而不是 window：
- * 控制台的内容区是 .dashboard-content 自己在滚，window 不滚。
- */
-function scrollToLabSection(anchor: string) {
-  const target = document.getElementById(anchor);
-  if (!target) return;
-  target.scrollIntoView({ behavior: "smooth", block: "start" });
-  // 滚到位后再闪一下标题，明确告诉用户「就是这里」
-  target.classList.remove("lab-section-flash");
-  void target.offsetWidth;
-  target.classList.add("lab-section-flash");
-  window.setTimeout(() => target.classList.remove("lab-section-flash"), 1200);
-}
 function jumpToLatest() {
   followingActivity.value = true;
   scrollDashChatToBottom();
@@ -3862,13 +3905,37 @@ ttsPlayer.stop();
             <span class="sidebar-item-icon"><Mic :size="15" /></span>
             <span>语音设置</span>
           </button>
-          <button
-            :class="['sidebar-item', { active: activePage === 'system' }]"
-            @click="activePage = 'system'"
-          >
-            <span class="sidebar-item-icon"><SettingsIcon :size="15" /></span>
-            <span>系统设置</span>
-          </button>
+          <div :class="['sidebar-group', { expanded: systemNavExpanded }]">
+            <div :class="['sidebar-item', 'sidebar-item-parent', { active: activePage === 'system' }]">
+              <button type="button" class="sidebar-item-main" title="进入系统设置" @click="openSystemSection(systemSection)">
+                <span class="sidebar-item-icon"><SettingsIcon :size="15" /></span>
+                <span class="sidebar-item-label">系统设置</span>
+              </button>
+              <button
+                type="button"
+                :class="['sidebar-item-caret', { open: systemNavExpanded }]"
+                :aria-expanded="systemNavExpanded"
+                aria-label="展开/收起系统设置分类"
+                title="展开/收起系统设置分类"
+                @click.stop="toggleSystemSubnav"
+              >
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+                  <path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </button>
+            </div>
+            <div v-show="systemNavExpanded" class="sidebar-subnav">
+              <button
+                v-for="item in SYSTEM_SECTIONS"
+                :key="item.id"
+                :class="['sidebar-subitem', { active: activePage === 'system' && systemSection === item.id }]"
+                @click="openSystemSection(item.id)"
+              >
+                <span class="sidebar-subitem-avatar" aria-hidden="true"><AppIcon :name="item.icon" :size="13" /></span>
+                <span class="sidebar-subitem-label">{{ item.label }}</span>
+              </button>
+            </div>
+          </div>
 
           <div class="sidebar-divider" />
 
@@ -5309,20 +5376,18 @@ ttsPlayer.stop();
               <div class="page-kicker">System</div>
               <h1 class="page-title">系统设置</h1>
               <p class="page-subtitle">配置 AI 后端、性格和职业定位</p>
-              <nav class="lab-jump">
-                <a href="#system-conversation" @click.prevent="scrollToLabSection('system-conversation')">
-                  <AppIcon name="prompt-terminal" :size="14" /><span>对话设定</span>
-                </a>
-                <a href="#system-connection" @click.prevent="scrollToLabSection('system-connection')">
-                  <AppIcon name="sliders" :size="14" /><span>AI 连接</span>
-                </a>
-                <a href="#system-service" @click.prevent="scrollToLabSection('system-service')">
-                  <AppIcon name="weather-sun" :size="14" /><span>服务与提醒</span>
-                </a>
-              </nav>
+              <div class="lab-current">
+                <span class="lab-current-icon"><AppIcon :name="currentSystemSection.icon" :size="16" /></span>
+                <div class="lab-current-text">
+                  <div class="lab-current-kicker">{{ currentSystemSection.kicker }}</div>
+                  <h2 class="lab-current-title">{{ currentSystemSection.label }}</h2>
+                  <p class="lab-current-desc">{{ currentSystemSection.desc }}</p>
+                </div>
+              </div>
             </div>
 
             <!-- ===== 对话设定 ===== -->
+            <template v-if="systemSection === 'conversation'">
             <div class="lab-section-head" id="system-conversation">
               <div class="lab-section-kicker">Conversation</div>
               <h2 class="lab-section-title">对话设定</h2>
@@ -5418,8 +5483,10 @@ ttsPlayer.stop();
               </div>
             </div>
             </div>
+            </template>
 
             <!-- ===== AI 连接 ===== -->
+            <template v-if="systemSection === 'connection'">
             <div class="lab-section-head" id="system-connection">
               <div class="lab-section-kicker">Connection</div>
               <h2 class="lab-section-title">AI 连接</h2>
@@ -5784,8 +5851,10 @@ ttsPlayer.stop();
                 </div>
               </template>
             </div>
+            </template>
 
             <!-- ===== 服务与提醒 ===== -->
+            <template v-if="systemSection === 'service'">
             <div class="lab-section-head" id="system-service">
               <div class="lab-section-kicker">Service</div>
               <h2 class="lab-section-title">服务与提醒</h2>
@@ -5856,9 +5925,10 @@ ttsPlayer.stop();
                 </button>
               </div>
             </div>
+            </template>
+
           </div>
 
-          <!-- ========== 关于 ========== -->
           <div v-else-if="activePage === 'about'" key="about">
             <div class="page-header">
               <div class="page-kicker">About</div>
