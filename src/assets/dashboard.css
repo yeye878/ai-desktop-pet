@@ -6995,3 +6995,946 @@ button {
 .dash-workspace-grid.layout-four { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
 .dash-workspace-grid.layout-master { grid-template-columns: 1.5fr 1fr; grid-template-rows: 1fr 1fr; }
 .dash-workspace-grid.layout-master > :first-child { grid-row: span 2; }
+
+/* ========== 系统设置：侧边栏子列表 + 分区子页（docs/settings-redesign.md） ========== */
+
+/* 侧边栏子项右侧的小标签（AI 后端当前值） */
+.sidebar-subitem-hint {
+  margin-left: auto;
+  flex-shrink: 0;
+  max-width: 64px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(33, 48, 74, 0.06);
+  color: var(--dash-text-muted);
+  font-size: 10.5px;
+  font-weight: 650;
+  line-height: 1.6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-subitem.active .sidebar-subitem-hint {
+  background: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.12);
+  color: rgb(var(--pet-primary-rgb, 204, 112, 82));
+}
+
+.sys-page {
+  max-width: 920px;
+  margin: 0 auto;
+}
+
+.sys-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.sys-header-copy {
+  min-width: 0;
+}
+
+/* .system-lab-page 是 grid，.page-header 的 margin:0 auto 会让表头缩成内容宽并居中；
+   设置页里让表头和下方卡片同宽、左对齐 */
+.sys-page .sys-header {
+  width: auto;
+  max-width: none;
+  margin: 0;
+  align-items: center;
+}
+
+.sys-mono {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+}
+
+/* 侧边栏子列表展开时淡出底部装饰插画，避免压住子项文字 */
+.dashboard-sidebar::before {
+  transition: opacity var(--dash-dur-base) var(--dash-ease-out);
+}
+
+.dashboard-sidebar.sidebar-art-hidden::before {
+  opacity: 0;
+}
+
+.sys-header-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+  padding: 7px 13px;
+  border: 1px solid var(--dash-control-border);
+  border-radius: 999px;
+  background: var(--dash-control-bg);
+  color: var(--dash-text-secondary);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 650;
+  cursor: pointer;
+  transition:
+    border-color var(--dash-dur-fast) var(--dash-ease-out),
+    background var(--dash-dur-fast) var(--dash-ease-out),
+    color var(--dash-dur-fast) var(--dash-ease-out);
+}
+
+.sys-header-badge:hover {
+  border-color: var(--dash-control-border-strong);
+  background: var(--dash-control-bg-hover);
+  color: var(--dash-text-primary);
+}
+
+.sys-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* --- 分区卡片 --- */
+.sys-page .sys-section {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* 设置卡片不跟随鼠标上浮：表单里频繁移动指针时会抖 */
+.sys-page .sys-section:hover {
+  transform: none;
+  box-shadow: var(--dash-shadow-sm);
+}
+
+.sys-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sys-section-head.compact {
+  align-items: center;
+}
+
+.sys-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--dash-text-primary);
+  font-size: 15px;
+  font-weight: 760;
+  line-height: 1.35;
+}
+
+.sys-section-desc {
+  margin: 4px 0 0;
+  color: var(--dash-text-secondary);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.sys-section-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 14px;
+  border-top: 1px solid var(--dash-divider);
+}
+
+.sys-foot-note {
+  margin-right: auto;
+  color: var(--dash-text-muted);
+  font-size: 12px;
+}
+
+.sys-link-btn {
+  margin-right: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: rgb(var(--pet-primary-rgb, 204, 112, 82));
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.sys-link-btn:hover {
+  text-decoration: underline;
+}
+
+/* --- 设置行：左标签 + 右控件 --- */
+.sys-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.sys-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  padding: 12px 0;
+  border-top: 1px solid var(--dash-divider);
+}
+
+.sys-rows > .sys-row:first-child {
+  padding-top: 2px;
+  border-top: 0;
+}
+
+.sys-rows > .sys-row:last-child {
+  padding-bottom: 2px;
+}
+
+.sys-row-label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.sys-row-label > span,
+.sys-row-label > label {
+  color: var(--dash-text-primary);
+  font-size: 13.5px;
+  font-weight: 650;
+}
+
+.sys-row-label small {
+  color: var(--dash-text-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.sys-row-select {
+  min-width: 180px;
+}
+
+/* --- 表单字段：标签在上，控件占满 --- */
+.sys-fields {
+  display: grid;
+  gap: 14px;
+}
+
+.sys-fields-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.sys-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.sys-field-label {
+  color: var(--dash-text-secondary);
+  font-size: 12.5px;
+  font-weight: 650;
+}
+
+.sys-field-hint {
+  color: var(--dash-text-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.sys-field-hint.ok {
+  color: #15803d;
+}
+
+.sys-field-hint.error {
+  color: #b91c1c;
+}
+
+.sys-field .dash-input,
+.sys-field .dash-select {
+  width: 100%;
+}
+
+.sys-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sys-inline > .dash-input,
+.sys-inline > .dash-select {
+  flex: 1;
+  min-width: 0;
+}
+
+.sys-inline > .dash-btn {
+  flex-shrink: 0;
+}
+
+.sys-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.sys-chips-label {
+  margin-right: 2px;
+  color: var(--dash-text-muted);
+  font-size: 12px;
+}
+
+.sys-chip {
+  padding: 3px 11px;
+  border: 1px solid var(--dash-control-border);
+  border-radius: 999px;
+  background: var(--dash-control-bg);
+  color: var(--dash-text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color var(--dash-dur-fast) var(--dash-ease-out), color var(--dash-dur-fast) var(--dash-ease-out);
+}
+
+.sys-chip:hover {
+  border-color: var(--dash-control-border-strong);
+  color: var(--dash-text-primary);
+}
+
+/* --- 分段控件（少量互斥选项） --- */
+.sys-segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--dash-control-border);
+  border-radius: 10px;
+  background: rgba(33, 48, 74, 0.04);
+}
+
+.sys-segmented button {
+  padding: 5px 12px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--dash-text-secondary);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--dash-dur-fast) var(--dash-ease-out), color var(--dash-dur-fast) var(--dash-ease-out);
+}
+
+.sys-segmented button:hover {
+  color: var(--dash-text-primary);
+}
+
+.sys-segmented button.active {
+  background: #fff;
+  color: rgb(var(--pet-primary-rgb, 204, 112, 82));
+  box-shadow:
+    0 1px 3px rgba(33, 48, 74, 0.12),
+    inset 0 0 0 1px rgba(var(--pet-primary-rgb, 204, 112, 82), 0.22);
+}
+
+/* --- 卡片式单选（后端 / 执行模式 / 性格 / 职业） --- */
+.sys-backend-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.sys-backend-card,
+.sys-choice {
+  position: relative;
+  border: 1px solid var(--dash-control-border);
+  border-radius: 12px;
+  background: var(--dash-control-bg);
+  color: var(--dash-text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--dash-dur-fast) var(--dash-ease-out),
+    background var(--dash-dur-fast) var(--dash-ease-out),
+    box-shadow var(--dash-dur-fast) var(--dash-ease-out);
+}
+
+.sys-backend-card:hover,
+.sys-choice:hover {
+  border-color: var(--dash-control-border-strong);
+  background: var(--dash-control-bg-hover);
+}
+
+.sys-backend-card.active,
+.sys-choice.active {
+  border-color: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.5);
+  background:
+    linear-gradient(135deg, rgba(var(--pet-primary-rgb, 204, 112, 82), 0.08), rgba(102, 200, 255, 0.07)),
+    #fff;
+  box-shadow: 0 0 0 3px var(--dash-focus);
+}
+
+.sys-backend-card:focus-visible,
+.sys-choice:focus-visible,
+.sys-segmented button:focus-visible,
+.sys-header-badge:focus-visible,
+.sys-profile-main:focus-visible {
+  outline: 2px solid rgb(var(--pet-primary-rgb, 204, 112, 82));
+  outline-offset: 2px;
+}
+
+.sys-backend-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 13px 14px;
+}
+
+.sys-backend-icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  border-radius: 10px;
+  background: rgba(33, 48, 74, 0.05);
+  color: var(--dash-text-secondary);
+}
+
+.sys-backend-card.active .sys-backend-icon {
+  background: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.14);
+  color: rgb(var(--pet-primary-rgb, 204, 112, 82));
+}
+
+.sys-backend-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding-right: 20px;
+}
+
+.sys-backend-copy strong,
+.sys-choice strong {
+  font-size: 13.5px;
+  font-weight: 700;
+}
+
+.sys-backend-copy small,
+.sys-choice small {
+  color: var(--dash-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.sys-backend-check {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: rgb(var(--pet-primary-rgb, 204, 112, 82));
+  color: #fff;
+}
+
+.sys-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.sys-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+}
+
+.sys-choice.active strong {
+  color: rgb(var(--pet-primary-rgb, 204, 112, 82));
+}
+
+.sys-choice.risky.active {
+  border-color: rgba(217, 119, 6, 0.55);
+  box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.14);
+}
+
+.sys-choice.risky.active strong {
+  color: #b45309;
+}
+
+/* --- 状态胶囊 / 事实列表 / 提示条 / 结果 --- */
+.sys-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(33, 48, 74, 0.06);
+  color: var(--dash-text-secondary);
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.sys-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.sys-status.ok {
+  background: rgba(21, 128, 61, 0.1);
+  color: #15803d;
+}
+
+.sys-facts {
+  margin: 0;
+  display: grid;
+  border: 1px solid var(--dash-divider);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.sys-facts > div {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: 12px;
+  padding: 9px 12px;
+  border-top: 1px solid var(--dash-divider);
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.sys-facts > div:first-child {
+  border-top: 0;
+}
+
+.sys-facts dt {
+  color: var(--dash-text-muted);
+  font-size: 12.5px;
+}
+
+.sys-facts dd {
+  margin: 0;
+  color: var(--dash-text-primary);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.sys-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid rgba(217, 119, 6, 0.28);
+  border-radius: 12px;
+  background: rgba(255, 216, 92, 0.18);
+  color: #92400e;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.sys-notice > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.sys-notice > .dash-mini-btn {
+  flex-shrink: 0;
+}
+
+.sys-result {
+  padding: 9px 12px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.sys-result.ok {
+  background: rgba(21, 128, 61, 0.08);
+  color: #166534;
+}
+
+.sys-result.error {
+  background: rgba(185, 28, 28, 0.07);
+  color: #991b1b;
+}
+
+.sys-result.warn {
+  background: rgba(255, 216, 92, 0.2);
+  color: #92400e;
+}
+
+.sys-result.info {
+  background: rgba(102, 200, 255, 0.12);
+  color: #0c4a6e;
+}
+
+.sys-pill {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.12);
+  color: rgb(var(--pet-primary-rgb, 204, 112, 82));
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.sys-tag {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(33, 48, 74, 0.07);
+  color: var(--dash-text-muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+/* --- 模型接口：配置列表 + 编辑器 --- */
+.sys-models-layout {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.sys-page .sys-profile-pane {
+  position: sticky;
+  top: 0;
+  gap: 10px;
+  padding: 14px;
+}
+
+.sys-profile-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sys-profile {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px 2px 2px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  transition: background var(--dash-dur-fast) var(--dash-ease-out), border-color var(--dash-dur-fast) var(--dash-ease-out);
+}
+
+.sys-profile:hover {
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.sys-profile.is-current {
+  border-color: rgba(var(--pet-primary-rgb, 204, 112, 82), 0.3);
+  background:
+    linear-gradient(135deg, rgba(var(--pet-primary-rgb, 204, 112, 82), 0.09), rgba(102, 200, 255, 0.08)),
+    rgba(255, 255, 255, 0.85);
+}
+
+.sys-profile.is-draft {
+  border-style: dashed;
+}
+
+.sys-profile-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sys-profile.is-draft .sys-profile-main {
+  cursor: default;
+}
+
+.sys-profile-name,
+.sys-profile-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sys-profile-name {
+  color: var(--dash-text-primary);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.sys-profile-meta {
+  color: var(--dash-text-muted);
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 11.5px;
+}
+
+.sys-profile-delete {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--dash-text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--dash-dur-fast) var(--dash-ease-out), background var(--dash-dur-fast) var(--dash-ease-out);
+}
+
+.sys-profile:hover .sys-profile-delete,
+.sys-profile-delete:focus-visible {
+  opacity: 1;
+}
+
+.sys-profile-delete:hover:not(:disabled) {
+  background: rgba(185, 28, 28, 0.08);
+  color: #b91c1c;
+}
+
+/* 只剩一个配置时不能删：直接隐藏，不给一个点了没反应的按钮 */
+.sys-profile-delete:disabled {
+  visibility: hidden;
+}
+
+.sys-pane-note {
+  margin: 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--dash-divider);
+  color: var(--dash-text-muted);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.sys-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+/* --- 可折叠分区（接口协议） --- */
+.sys-collapsible > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.sys-collapsible > summary::-webkit-details-marker {
+  display: none;
+}
+
+.sys-page .sys-collapsible:not([open]) {
+  gap: 0;
+}
+
+.sys-collapse-caret {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  color: var(--dash-text-muted);
+  transition: transform var(--dash-dur-fast) var(--dash-ease-out), background var(--dash-dur-fast) var(--dash-ease-out);
+}
+
+.sys-collapsible[open] .sys-collapse-caret {
+  transform: rotate(180deg);
+}
+
+.sys-collapsible > summary:hover .sys-collapse-caret {
+  background: rgba(33, 48, 74, 0.06);
+  color: var(--dash-text-primary);
+}
+
+.sys-collapsible > summary:focus-visible {
+  outline: 2px solid rgb(var(--pet-primary-rgb, 204, 112, 82));
+  outline-offset: 4px;
+  border-radius: 8px;
+}
+
+.sys-page .sys-compat {
+  margin: 0;
+}
+
+/* --- 卡片内的子分区（免确认工具） --- */
+.sys-subsection {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--dash-divider);
+}
+
+.sys-subsection-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.sys-subsection-title {
+  color: var(--dash-text-primary);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.sys-subsection-desc {
+  color: var(--dash-text-muted);
+  font-size: 12px;
+}
+
+.sys-check-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 4px 12px;
+}
+
+.sys-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  color: var(--dash-text-secondary);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.sys-check:hover {
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--dash-text-primary);
+}
+
+.sys-check input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: rgb(var(--pet-primary-rgb, 204, 112, 82));
+}
+
+/* AgentPermissionControl 自带 12px 上下外边距，堆叠时由 gap 统一控制 */
+.sys-page .sys-permission-stack .permission-control {
+  margin: 0;
+}
+
+.sys-permission-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* --- 技能列表 --- */
+.sys-skill-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sys-skill {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 11px 2px;
+  border-top: 1px solid var(--dash-divider);
+}
+
+.sys-skill:first-child {
+  border-top: 0;
+  padding-top: 2px;
+}
+
+.sys-skill-copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.sys-skill-name {
+  color: var(--dash-text-primary);
+  font-size: 13.5px;
+  font-weight: 650;
+}
+
+.sys-skill.active .sys-skill-name {
+  color: rgb(var(--pet-primary-rgb, 204, 112, 82));
+}
+
+.sys-skill-desc {
+  color: var(--dash-text-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.sys-empty {
+  margin: 0;
+  padding: 18px 0;
+  color: var(--dash-text-muted);
+  font-size: 12.5px;
+  text-align: center;
+}
+
+.sys-page .sys-textarea {
+  width: 100%;
+  min-height: 112px;
+  resize: vertical;
+}
+
+/* --- 窄窗口 --- */
+@media (max-width: 1180px) {
+  .sys-models-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sys-page .sys-profile-pane {
+    position: static;
+  }
+}
+
+@media (max-width: 960px) {
+  .sys-backend-grid,
+  .sys-fields-2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sys-row {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    gap: 10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sys-collapse-caret,
+  .sys-backend-card,
+  .sys-choice,
+  .sys-segmented button {
+    transition: none;
+  }
+}

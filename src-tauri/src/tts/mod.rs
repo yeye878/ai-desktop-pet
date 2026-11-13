@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod edge_tts;
+mod edge_token;
 pub mod playback;
 
 use base64::{engine::general_purpose, Engine as _};
@@ -203,6 +204,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    #[ignore = "requires the live Microsoft Edge speech service"]
     async fn edge_synthesis_decodes_to_wav() {
         let req = TtsRequest {
             text: "你好，这是一次试听测试。".to_string(),

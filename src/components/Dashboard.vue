@@ -236,6 +236,67 @@ watch(chatSlot, (slot) => {
   if (slot !== "main") chatNavExpanded.value = true;
 });
 
+// === 系统设置：侧边栏子列表（与「对话互动」同一套展开交互） ===
+type SystemSection = "backend" | "models" | "permissions" | "persona" | "skills" | "weather";
+interface SystemSectionItem { id: SystemSection; label: string; icon: string; desc: string }
+const SYSTEM_SECTION_STORAGE_KEY = "dash.system-section";
+const SYSTEM_SECTIONS: SystemSectionItem[] = [
+  { id: "backend", label: "AI 后端", icon: "sliders", desc: "选择由谁来回答，查看连接状态" },
+  { id: "models", label: "模型接口", icon: "api", desc: "直连 API 的模型配置、密钥与接口协议" },
+  { id: "permissions", label: "执行权限", icon: "shield-bolt", desc: "工具执行前要不要先问你" },
+  { id: "persona", label: "角色设定", icon: "persona-heart", desc: "性格、职业，以及追加到每次对话的系统提示" },
+  { id: "skills", label: "技能", icon: "skill-puzzle", desc: "激活一个技能，改变它处理任务的方式" },
+  { id: "weather", label: "天气提醒", icon: "weather-sun", desc: "天气栏与每日天气问候" },
+];
+function isSystemSection(value: unknown): value is SystemSection {
+  return SYSTEM_SECTIONS.some((item) => item.id === value);
+}
+function readStoredSystemSection(): SystemSection {
+  const raw = readStoredValue(SYSTEM_SECTION_STORAGE_KEY);
+  return isSystemSection(raw) ? raw : "backend";
+}
+const systemSection = ref<SystemSection>(readStoredSystemSection());
+const systemNavExpanded = ref(false);
+const currentSystemSection = computed(
+  () => SYSTEM_SECTIONS.find((item) => item.id === systemSection.value) ?? SYSTEM_SECTIONS[0],
+);
+
+/** 进入系统设置的某个子页（缺省回到上次停留的子页），并展开侧边栏子列表。 */
+function openSystemSection(section: SystemSection = systemSection.value) {
+  systemSection.value = section;
+  activePage.value = "system";
+  systemNavExpanded.value = true;
+}
+
+function toggleSystemSubnav() {
+  systemNavExpanded.value = !systemNavExpanded.value;
+}
+
+watch(systemSection, (section) => {
+  writeStoredValue(SYSTEM_SECTION_STORAGE_KEY, section);
+  // 子页切换不经过页面级 Transition，手动回到顶部，避免停在上个子页的滚动位置。
+  void nextTick(() => document.querySelector(".dashboard-content")?.scrollTo({ top: 0 }));
+});
+watch(activePage, (page) => {
+  if (page === "system") systemNavExpanded.value = true;
+});
+
+const backendOptions = [
+  { id: "claude_code", label: "Claude Code", short: "Claude", icon: "claude", desc: "本机 Claude Code CLI，可读写文件、执行命令" },
+  { id: "codex", label: "Codex", short: "Codex", icon: "codex", desc: "本机 Codex CLI，默认在工作目录沙箱内执行" },
+  { id: "dsh", label: "DeepSeek Harness", short: "DSH", icon: "dsh", desc: "本机 DeepSeek Harness，复用本机登录与模型" },
+  { id: "direct_api", label: "直连 API", short: "API", icon: "api", desc: "OpenAI 兼容接口，内置文件、搜索、记忆等工具" },
+] as const;
+function backendLabel(id: string) {
+  return backendOptions.find((item) => item.id === id)?.label ?? id;
+}
+function backendShortLabel(id: string) {
+  return backendOptions.find((item) => item.id === id)?.short ?? id;
+}
+function backendIcon(id: string) {
+  return backendOptions.find((item) => item.id === id)?.icon ?? "sliders";
+}
+
 // === 同屏多窗格工作区 ===
 // 窗格身份（paneId）与会话身份（sessionId）分离；布局与绑定持久化到 localStorage。
 const workspaceLayout = ref<WorkspaceLayout>(readWorkspaceLayout());
@@ -770,8 +831,12 @@ const currentExecutionModeLabel = computed(() => {
   if (backendType.value === "codex") return "Codex";
   if (backendType.value === "dsh") return "DeepSeek Harness";
   if (backendType.value !== "direct_api") return "Claude Code";
-  return executionModeOptions.find((item) => item.value === apiConfig.value.execution_mode)?.label || "普通模式";
+  return apiExecutionModeLabel.value;
 });
+/** 直连 API 当前模型配置的执行模式（不随后端切换变化，供系统设置页展示）。 */
+const apiExecutionModeLabel = computed(
+  () => executionModeOptions.find((item) => item.value === apiConfig.value.execution_mode)?.label || "普通模式",
+);
 
 const contextUsageLabel = computed(() => {
   const chars = chat.messages.reduce((sum, msg) => {
@@ -1038,14 +1103,6 @@ async function completeAgentDraft() {
   }
 }
 
-function thinkingDepthLabel(value: string) {
-  return thinkingDepthOptions.find((item) => item.value === value)?.label || "自动";
-}
-
-function searchProviderLabel(value: string) {
-  return searchProviderOptions.find((item) => item.value === value)?.label || "Bing";
-}
-
 // 陪伴动作：只改桌宠状态，点在舞台上当场演出来
 const companionActions = [
   { id: "wave", icon: "wave", label: "打招呼", desc: "挥挥手" },
@@ -1076,6 +1133,33 @@ const PRESETS: Record<string, { base_url: string; model: string }> = {
   qwen: { base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-plus" },
   ollama: { base_url: "http://localhost:11434/v1", model: "qwen2.5:7b" },
 };
+const presetOptions = [
+  { id: "openai", label: "OpenAI" },
+  { id: "deepseek", label: "DeepSeek" },
+  { id: "qwen", label: "通义千问" },
+  { id: "ollama", label: "Ollama 本地" },
+];
+const streamModeOptions = [
+  { value: "auto", label: "自动检测" },
+  { value: "stream", label: "流式 SSE" },
+  { value: "non_stream", label: "非流式 JSON" },
+];
+const apiModeOptions = [
+  { value: "chat_completions", label: "Chat Completions" },
+  { value: "responses", label: "Responses" },
+];
+const streamModeLabel = computed(
+  () => streamModeOptions.find((item) => item.value === apiConfig.value.stream_mode)?.label || "自动检测",
+);
+const apiModeLabel = computed(
+  () => apiModeOptions.find((item) => item.value === apiConfig.value.api_mode)?.label || "Chat Completions",
+);
+
+async function confirmDeleteApiProfile(profile: ApiProfile) {
+  const name = profile.name || profile.model;
+  if (!window.confirm(`删除模型配置「${name}」？保存的 API 密钥也会一起移除。`)) return;
+  await deleteApiProfile(profile.id);
+}
 
 // === 加载函数 ===
 async function loadSystemInfo() {
@@ -1579,15 +1663,18 @@ function newApiProfileDraft() {
   clearFetchedModels();
 }
 
-async function activateApiProfile(id: string) {
+async function activateApiProfile(id: string, options: { switchBackend?: boolean } = {}) {
   if (!id) return;
   try {
     const profile = await invoke<ApiProfile>("set_active_api_profile", { id });
     applyApiConfig(profile);
     clearFetchedModels();
+    testResult.value = { success: false, message: "" };
+    compatibilityResult.value = null;
     currentModel.value = `直连 API: ${apiConfig.value.model}`;
     await currentWindow.emit("api-config-changed");
-    if (backendType.value !== "direct_api") {
+    // 聊天栏切模型 = 要用它聊天，顺手切到直连 API；设置页里点配置只是编辑，不改后端。
+    if (options.switchBackend !== false && backendType.value !== "direct_api") {
       await selectBackend("direct_api");
     }
   } catch (e) {
@@ -1613,6 +1700,8 @@ async function deleteApiProfile(id: string) {
 }
 
 async function resetModel() {
+  // switch_model 会清空当前主对话的消息并断开 CLI 续接，属于不可恢复操作。
+  if (!window.confirm("重置会清空当前主对话的全部消息，并让本机 CLI 重新开始一段会话。确定继续吗？")) return;
   try {
     await invoke("switch_model");
     resetDashChatUi();
@@ -3014,7 +3103,7 @@ async function runDashSlashCommand(command: SlashCommand) {
       await clearDashboardChatWithConfirm();
       break;
     case "skills":
-      activePage.value = "system";
+      openSystemSection("skills");
       await skillsStore.load();
       break;
     case "chat":
@@ -3199,11 +3288,18 @@ function questionAnswered(id: string) {
   if (pendingQuestion.value?.id === id) pendingQuestion.value = null;
 }
 
-function toggleAutoApprovedTool(toolId: string, enabled: boolean) {
+async function toggleAutoApprovedTool(toolId: string, enabled: boolean) {
   const current = new Set(apiConfig.value.auto_approved_tools);
   if (enabled) current.add(toolId);
   else current.delete(toolId);
   apiConfig.value.auto_approved_tools = Array.from(current).sort();
+  // 与执行模式一致：改了立即保存；新建中的配置等用户点「保存配置」时一起保存。
+  if (!apiConfig.value.id || !apiConfig.value.base_url || !apiConfig.value.model) return;
+  try {
+    await saveApiConfig({ quiet: true });
+  } catch (e) {
+    testResult.value = { success: false, message: "免确认工具保存失败: " + e };
+  }
 }
 
 function isToolAutoApproved(toolId: string) {
@@ -3647,7 +3743,8 @@ ttsPlayer.stop();
 
     <div class="dashboard-body">
       <!-- 侧边栏 -->
-      <div class="dashboard-sidebar">
+      <!-- 子列表展开后导航变长，会压到底部的装饰插画：展开时先把插画淡出 -->
+      <div :class="['dashboard-sidebar', { 'sidebar-art-hidden': chatNavExpanded || systemNavExpanded }]">
         <div class="sidebar-header">
           <div class="sidebar-brand">
             <span class="brand-logo"><AppIcon name="brand-pet" :size="22" /></span>
@@ -3726,13 +3823,43 @@ ttsPlayer.stop();
             <span class="sidebar-item-icon"><Mic :size="15" /></span>
             <span>语音设置</span>
           </button>
-          <button
-            :class="['sidebar-item', { active: activePage === 'system' }]"
-            @click="activePage = 'system'"
-          >
-            <span class="sidebar-item-icon"><SettingsIcon :size="15" /></span>
-            <span>系统设置</span>
-          </button>
+          <div :class="['sidebar-group', { expanded: systemNavExpanded }]">
+            <div :class="['sidebar-item', 'sidebar-item-parent', { active: activePage === 'system' }]">
+              <button type="button" class="sidebar-item-main" title="进入系统设置" @click="openSystemSection()">
+                <span class="sidebar-item-icon"><SettingsIcon :size="15" /></span>
+                <span class="sidebar-item-label">系统设置</span>
+              </button>
+              <button
+                type="button"
+                :class="['sidebar-item-caret', { open: systemNavExpanded }]"
+                :aria-expanded="systemNavExpanded"
+                aria-label="展开/收起系统设置分区"
+                title="展开/收起系统设置分区"
+                @click.stop="toggleSystemSubnav"
+              >
+                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+                  <path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </button>
+            </div>
+            <div v-show="systemNavExpanded" class="sidebar-subnav">
+              <button
+                v-for="item in SYSTEM_SECTIONS"
+                :key="item.id"
+                :class="['sidebar-subitem', { active: activePage === 'system' && systemSection === item.id }]"
+                :aria-current="activePage === 'system' && systemSection === item.id ? 'page' : undefined"
+                @click="openSystemSection(item.id)"
+              >
+                <span class="sidebar-subitem-avatar" aria-hidden="true"><AppIcon :name="item.icon" :size="13" /></span>
+                <span class="sidebar-subitem-label">{{ item.label }}</span>
+                <span
+                  v-if="item.id === 'backend'"
+                  class="sidebar-subitem-hint"
+                  :title="'当前 AI 后端：' + backendLabel(backendType)"
+                >{{ backendShortLabel(backendType) }}</span>
+              </button>
+            </div>
+          </div>
 
           <div class="sidebar-divider" />
 
@@ -4260,7 +4387,7 @@ ttsPlayer.stop();
                     placement="up"
                   />
                   <button type="button" class="dash-meta-btn" @click="activePage = 'memory'">记忆</button>
-                  <button type="button" class="dash-meta-btn" @click="activePage = 'system'">设置</button>
+                  <button type="button" class="dash-meta-btn" @click="openSystemSection('backend')">设置</button>
                 </template>
               </div>
             </div>
@@ -5047,527 +5174,662 @@ ttsPlayer.stop();
             </div>
           </div>
 
-          <!-- ========== 系统 ========== -->
-          <div v-else-if="activePage === 'system'" key="system" class="system-lab-page">
-            <div class="page-header lab-header">
-              <div class="page-kicker">System</div>
-              <h1 class="page-title">系统设置</h1>
-              <p class="page-subtitle">配置 AI 后端、性格和职业定位</p>
-            </div>
-
-            <!-- 自定义系统提示 -->
-            <div class="dash-card lab-module">
-              <div class="dash-card-title"><span class="card-icon"><AppIcon name="prompt-terminal" :size="15" /></span> 自定义系统提示</div>
-              <p class="dash-card-subtitle">追加到系统提示末尾，对所有对话生效。留空则不追加。</p>
-              <textarea
-                class="dash-textarea"
-                rows="3"
-                v-model="customPromptDraft"
-                placeholder="例如：你每次回复都以『汪！』开头..."
-              />
-              <div class="dash-card-actions">
-                <button class="dash-mini-btn primary" @click="saveCustomPrompt">
-                  {{ customPromptSaved ? "已保存" : "保存提示" }}
-                </button>
-                <span v-if="skillsStore.activeSkill" class="dash-card-subtitle">
-                  当前激活技能：<b>{{ skillsStore.activeSkill.name }}</b>
-                </span>
+          <!-- ========== 系统设置（侧边栏子列表分区，见 docs/settings-redesign.md） ========== -->
+          <div v-else-if="activePage === 'system'" key="system" class="system-lab-page sys-page">
+            <div class="page-header lab-header sys-header">
+              <div class="sys-header-copy">
+                <div class="page-kicker">系统设置</div>
+                <h1 class="page-title">{{ currentSystemSection.label }}</h1>
+                <p class="page-subtitle">{{ currentSystemSection.desc }}</p>
               </div>
-            </div>
-
-            <!-- 技能（只读摘要） -->
-            <div class="dash-card lab-module">
-              <div class="dash-card-title"><span class="card-icon"><AppIcon name="skill-puzzle" :size="15" /></span> 技能</div>
-              <p class="dash-card-subtitle">
-                编辑请到设置页。这里只展示摘要与激活切换。
-              </p>
-              <div v-if="skillsStore.skills.length === 0" class="dash-card-subtitle">
-                还没有任何技能。
-              </div>
-              <div v-else class="dash-skill-list">
-                <div
-                  v-for="s in skillsStore.skills"
-                  :key="s.id"
-                  class="dash-skill-row"
-                  :class="{ active: s.is_active }"
-                >
-                  <div class="dash-skill-info">
-                    <span class="dash-skill-name">{{ s.name }}</span>
-                    <span v-if="s.is_active" class="dash-skill-badge">已激活</span>
-                  </div>
-                  <div class="dash-skill-desc">{{ s.description || "(无描述)" }}</div>
-                  <div class="dash-card-actions">
-                    <button
-                      v-if="!s.is_active"
-                      class="dash-mini-btn"
-                      @click="activateSkill(s.id)"
-                    >激活</button>
-                    <button
-                      v-else
-                      class="dash-mini-btn"
-                      @click="activateSkill(null)"
-                    >取消激活</button>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <!-- AI 后端 -->
-            <div class="dash-card lab-module agent-backend-panel">
-              <div class="dash-card-title"><span class="card-icon"><AppIcon name="sliders" :size="15" /></span> AI 后端与模型</div>
-
-              <div class="dash-backend-selector">
-                <button :class="['dash-backend-btn', { active: backendType === 'claude_code' }]" @click="selectBackend('claude_code')">
-                  <span><AppIcon name="claude" :size="16" /></span> Claude Code
-                </button>
-                <button :class="['dash-backend-btn', { active: backendType === 'codex' }]" @click="selectBackend('codex')">
-                  <span><AppIcon name="codex" :size="16" /></span> Codex
-                </button>
-                <button :class="['dash-backend-btn', { active: backendType === 'dsh' }]" @click="selectBackend('dsh')">
-                  <span><AppIcon name="dsh" :size="16" /></span> DeepSeek Harness
-                </button>
-                <button :class="['dash-backend-btn', { active: backendType === 'direct_api' }]" @click="selectBackend('direct_api')">
-                  <span><AppIcon name="api" :size="16" /></span> 直连 API Agent
-                </button>
-              </div>
-
-              <template v-if="backendType === 'claude_code'">
-                <!-- 连接状态展示 -->
-                <div class="connection-status-row">
-                  <span class="status-label">本地连接状态：</span>
-                  <span :class="['status-value', claudeStatus.logged_in ? 'connected' : 'disconnected']">
-                    <span class="status-dot"></span>
-                    {{ claudeStatus.logged_in ? '已连接 (Local Connected)' : '未连接 (Unconnected)' }}
-                  </span>
-                </div>
-
-                <div v-if="claudeStatus.logged_in" class="connection-detail-box">
-                  <div class="detail-item">
-                    <span class="detail-label">AI 驱动模型:</span>
-                    <span class="detail-value font-mono">{{ claudeStatus.model || 'Claude 3.5 Sonnet' }}</span>
-                  </div>
-                  <div class="detail-item">
-                    <span class="detail-label">授权凭证:</span>
-                    <span class="detail-value font-mono">{{ claudeStatus.token_preview }}</span>
-                  </div>
-                  <div v-if="claudeStatus.base_url" class="detail-item">
-                    <span class="detail-label">API 接入点:</span>
-                    <span class="detail-value font-mono text-truncate">{{ claudeStatus.base_url }}</span>
-                  </div>
-                </div>
-
-                <div class="dash-current-model" style="margin-top: 14px;">当前会话模型：{{ currentModel || '加载中...' }}</div>
-                <p class="dash-hint">使用本地 Claude Code CLI 子进程，会话自动保持上下文与本地执行能力；需要授权的工具会按下方权限模式弹出确认窗口（或自动放行）。</p>
-                <AgentPermissionControl backend="claude_code" />
-                
-                <div style="display:flex;gap:12px;margin-top:12px;">
-                  <button class="dash-btn primary" @click="resetModel">{{ modelSaved ? "已重置" : "重置会话" }}</button>
-                  <button class="dash-btn secondary" @click="startClaudeConfig">
-                    登录/配置 Claude Code
-                  </button>
-                </div>
-              </template>
-
-              <CodexConnection v-else-if="backendType === 'codex'" :model-saved="modelSaved" @reset="resetModel" />
-
-              <DshConnection v-else-if="backendType === 'dsh'" :model-saved="modelSaved" @reset="resetModel" />
-
-              <template v-else>
-                <div class="dash-profile-toolbar">
-                  <div>
-                    <div class="dash-profile-toolbar-title">已保存模型配置</div>
-                    <div class="dash-profile-toolbar-subtitle">保存后可在聊天输入框右下角一键切换</div>
-                  </div>
-                  <button class="dash-btn secondary" @click="newApiProfileDraft">新建模型</button>
-                </div>
-                <div v-if="apiProfiles.length > 0" class="dash-profile-list">
-                  <div
-                    v-for="profile in apiProfiles"
-                    :key="profile.id"
-                    :class="['dash-profile-item', { active: profile.id === activeApiProfileId }]"
-                  >
-                    <button class="dash-profile-main" @click="activateApiProfile(profile.id)">
-                      <span class="dash-profile-name">{{ profile.name || profile.model }}</span>
-                      <span class="dash-profile-meta">{{ profile.model }} · {{ profile.base_url }}</span>
-                      <span class="dash-profile-badges">
-                        <span>思考 {{ thinkingDepthLabel(profile.thinking_depth) }}</span>
-                        <span>搜索 {{ searchProviderLabel(profile.search_provider) }}</span>
-                        <span>{{ profile.has_api_key ? 'API Key 已隐藏' : '无 API Key' }}</span>
-                      </span>
-                    </button>
-                    <button
-                      class="dash-icon-btn danger"
-                      title="删除模型配置"
-                      :disabled="profileDeletingId === profile.id || apiProfiles.length <= 1"
-                      @click="deleteApiProfile(profile.id)"
-                    >
-                      <AppIcon name="close" :size="13" />
-                    </button>
-                  </div>
-                </div>
-                <div class="dash-form-group">
-                  <label>配置名称</label>
-                  <input type="text" v-model="apiConfig.name" placeholder="例如：OpenAI 工作模型" />
-                </div>
-                <div class="dash-form-group">
-                  <label>接口地址 (Base URL)</label>
-                  <div class="dash-inline-control">
-                    <input type="text" v-model="apiConfig.base_url" placeholder="https://api.openai.com/v1" @input="clearFetchedModels" />
-                    <button
-                      type="button"
-                      class="dash-btn secondary"
-                      :disabled="isFetchingModels || !apiConfig.base_url.trim()"
-                      @click="fetchApiModels"
-                    >
-                      {{ isFetchingModels ? '获取中...' : '获取模型' }}
-                    </button>
-                  </div>
-                </div>
-                <div class="dash-form-group">
-                  <label>API 密钥 (API Key)</label>
-                  <input 
-                    type="password" 
-                    v-model="apiConfig.api_key" 
-                    :placeholder="apiConfig.has_api_key ? '•••••••••••••••• (已保存)' : '请输入 sk-... 格式的 API Key'" 
-                    autocomplete="new-password" 
-                    @input="clearFetchedModels" 
-                  />
-                  <p class="dash-hint compact">已保存配置只显示“API Key 已隐藏”，不会在模型列表里明文展示。</p>
-                </div>
-                <div class="dash-form-group">
-                  <label>模型名称 (Model)</label>
-                  <input type="text" v-model="apiConfig.model" placeholder="gpt-4o-mini" />
-                </div>
-                <div v-if="modelFetchResult.message" :class="['dash-test-result', 'compact', modelFetchResult.success ? 'success' : 'error']">
-                  {{ modelFetchResult.message }}
-                </div>
-                <div v-if="fetchedModels.length > 0" class="dash-model-picker">
-                  <div class="dash-field-row">
-                    <span class="dash-field-label">选择模型</span>
-                    <select
-                      class="dash-select"
-                      :value="selectedFetchedModel"
-                      @change="selectFetchedModel(($event.target as HTMLSelectElement).value)"
-                    >
-                      <option v-for="model in fetchedModels" :key="model" :value="model">{{ model }}</option>
-                    </select>
-                  </div>
-                  <button class="dash-btn primary" :disabled="isAddingFetchedModel || !selectedFetchedModel" @click="addFetchedModelProfile">
-                    {{ isAddingFetchedModel ? '加入中...' : '加入模型列表' }}
-                  </button>
-                </div>
-                <div class="dash-form-group">
-                  <label>思考深度</label>
-                  <div class="dash-thinking-switch">
-                    <button
-                      v-for="item in thinkingDepthOptions"
-                      :key="item.value"
-                      type="button"
-                      :class="['dash-thinking-option', { active: apiConfig.thinking_depth === item.value }]"
-                      @click="updateThinkingDepth(item.value)"
-                    >
-                      {{ item.label }}
-                    </button>
-                  </div>
-                  <p class="dash-hint compact">切换后会立即保存到当前模型配置，并在下一次直连 API 请求中生效。</p>
-                </div>
-                <div class="dash-form-group">
-                  <label>优先搜索源</label>
-                  <select
-                    class="dash-select"
-                    :value="apiConfig.search_provider"
-                    @change="updateSearchProvider(($event.target as HTMLSelectElement).value)"
-                  >
-                    <option v-for="item in searchProviderOptions" :key="item.value" :value="item.value">
-                      {{ item.label }} - {{ item.desc }}
-                    </option>
-                  </select>
-                  <p class="dash-hint compact">国内网络推荐使用 Bing；DuckDuckGo 在国内网络下容易超时。</p>
-                </div>
-                <div class="dash-form-group">
-                  <label>执行模式</label>
-                  <div class="dash-mode-grid">
-                    <button
-                      v-for="mode in executionModeOptions"
-                      :key="mode.value"
-                      type="button"
-                      :class="['dash-mode-option', { active: apiConfig.execution_mode === mode.value }]"
-                      @click="apiConfig.execution_mode = mode.value"
-                    >
-                      <span>{{ mode.label }}</span>
-                      <small>{{ mode.desc }}</small>
-                    </button>
-                  </div>
-                </div>
-                <div class="dash-toggle-group">
-                  <label>Computer Use 桌面控制</label>
-                  <input
-                    type="checkbox"
-                    class="dash-toggle"
-                    :checked="computerUseEnabled"
-                    @change="updateComputerUseEnabled(($event.target as HTMLInputElement).checked)"
-                  />
-                </div>
-                <p class="dash-hint" style="margin-top:-4px;">
-                  开启后 AI 可使用查看屏幕、聚焦窗口、打开浏览器、鼠标和键盘工具。仅在需要桌面自动化时开启。
-                  <span v-if="computerUseSaved"> 已保存。</span>
-                </p>
-                <div v-if="apiConfig.execution_mode === 'custom'" class="dash-form-group">
-                  <label>自定义免确认操作</label>
-                  <div class="dash-tool-permission-grid">
-                    <label v-for="tool in toolPermissionOptions" :key="tool.id" class="dash-tool-permission">
-                      <input
-                        type="checkbox"
-                        :checked="isToolAutoApproved(tool.id)"
-                        @change="toggleAutoApprovedTool(tool.id, ($event.target as HTMLInputElement).checked)"
-                      />
-                      <span>{{ tool.label }}</span>
-                    </label>
-                  </div>
-                </div>
-                <div class="dash-form-group">
-                  <label>流式模式</label>
-                  <div class="dash-mode-grid">
-                    <button
-                      type="button"
-                      :class="['dash-mode-option', { active: apiConfig.stream_mode === 'auto' }]"
-                      @click="updateStreamMode('auto')"
-                    >
-                      <span>自动检测</span>
-                      <small>先 SSE 后 JSON</small>
-                    </button>
-                    <button
-                      type="button"
-                      :class="['dash-mode-option', { active: apiConfig.stream_mode === 'stream' }]"
-                      @click="updateStreamMode('stream')"
-                    >
-                      <span>流式 SSE</span>
-                      <small>OpenAI 标准</small>
-                    </button>
-                    <button
-                      type="button"
-                      :class="['dash-mode-option', { active: apiConfig.stream_mode === 'non_stream' }]"
-                      @click="updateStreamMode('non_stream')"
-                    >
-                      <span>非流式 JSON</span>
-                      <small>Auto Code 等</small>
-                    </button>
-                  </div>
-                  <p class="dash-hint">自动：先尝试 SSE，失败则回退到 JSON。Auto Code 等非标准接口选"非流式"。</p>
-                </div>
-                <div class="dash-form-group">
-                  <label>API 格式</label>
-                  <div class="dash-mode-grid">
-                    <button
-                      type="button"
-                      :class="['dash-mode-option', { active: apiConfig.api_mode === 'chat_completions' }]"
-                      @click="updateApiMode('chat_completions')"
-                    >
-                      <span>Chat Completions</span>
-                      <small>传统兼容格式 /v1/chat/completions</small>
-                    </button>
-                    <button
-                      type="button"
-                      :class="['dash-mode-option', { active: apiConfig.api_mode === 'responses' }]"
-                      @click="updateApiMode('responses')"
-                    >
-                      <span>Responses</span>
-                      <small>OpenAI 新格式 /v1/responses</small>
-                    </button>
-                  </div>
-                  <p class="dash-hint">Chat Completions 是主流兼容格式，Responses 是 OpenAI 2025 年推出的新格式。大多数情况选 Chat Completions。</p>
-                </div>
-                <div class="dash-form-group">
-                  <label>预设一键填充</label>
-                  <div class="dash-presets">
-                    <button class="dash-preset-badge" @click="applyPreset('openai')">OpenAI</button>
-                    <button class="dash-preset-badge" @click="applyPreset('deepseek')">DeepSeek</button>
-                    <button class="dash-preset-badge" @click="applyPreset('qwen')">通义千问</button>
-                    <button class="dash-preset-badge" @click="applyPreset('ollama')">Ollama本地</button>
-                  </div>
-                </div>
-
-                <div class="dash-toggle-group">
-                  <label>工具调用二次确认 (推荐)</label>
-                  <input
-                    type="checkbox"
-                    class="dash-toggle"
-                    :checked="apiConfig.execution_mode !== 'unreviewed'"
-                    @change="apiConfig.execution_mode = ($event.target as HTMLInputElement).checked ? 'normal' : 'unreviewed'"
-                  />
-                </div>
-                <p class="dash-hint" style="margin-top:-4px;">普通模式会在每类操作首次执行前请求确认；自定义模式按上方免确认列表执行。</p>
-
-                <div v-if="testResult.message" :class="['dash-test-result', testResult.success ? 'success' : 'error']">
-                  {{ testResult.success ? '连接成功' : testResult.message }}
-                </div>
-                <div class="dash-api-actions">
-                  <button class="dash-btn" @click="testConnection" :disabled="isTestingConnection || !apiConfig.base_url || !apiConfig.model">
-                    {{ isTestingConnection ? '测试中...' : '测试连接' }}
-                  </button>
-                  <button class="dash-btn primary" @click="saveApiConfig()" :disabled="isSavingConfig">
-                    {{ configSaved ? '保存成功' : (isSavingConfig ? '保存中...' : '保存配置') }}
-                  </button>
-                </div>
-                <div class="dash-api-actions" style="margin-top: 8px;">
-                  <button class="dash-btn deep-test-btn" @click="testCompatibility" :disabled="isTestingCompatibility || !apiConfig.base_url || !apiConfig.model">
-                    {{ isTestingCompatibility ? '检测中...' : '深度测试兼容性' }}
-                  </button>
-                </div>
-
-                <!-- 深度测试结果 -->
-                <div
-                  v-if="compatibilityResult"
-                  class="dash-compat-result"
-                  :class="compatibilityResult.http_ok ? 'success' : 'error'"
-                >
-                  <h4>兼容性检测报告</h4>
-                  <div class="compat-grid">
-                    <div class="compat-item">
-                      <span class="compat-label">HTTP 状态:</span>
-                      <span :class="compatibilityResult.http_ok ? 'pass' : 'fail'">
-                        {{ compatibilityResult.http_ok ? '通过' : '失败' }} ({{ compatibilityResult.http_status }})
-                      </span>
-                    </div>
-                    <div class="compat-item">
-                      <span class="compat-label">SSE 格式:</span>
-                      <span :class="compatibilityResult.is_sse_format ? 'pass' : 'fail'">
-                        {{ compatibilityResult.is_sse_format ? '支持' : '不支持' }}
-                      </span>
-                    </div>
-                    <div class="compat-item">
-                      <span class="compat-label">JSON 格式:</span>
-                      <span :class="compatibilityResult.is_json_format ? 'pass' : 'fail'">
-                        {{ compatibilityResult.is_json_format ? '支持' : '不支持' }}
-                      </span>
-                    </div>
-                    <div class="compat-item">
-                      <span class="compat-label">内容提取:</span>
-                      <span :class="compatibilityResult.content_extracted ? 'pass' : 'fail'">
-                        {{ compatibilityResult.content_extracted ? '成功' : '失败' }}
-                      </span>
-                    </div>
-                    <div class="compat-item" v-if="compatibilityResult.content_extracted">
-                      <span class="compat-label">提取内容:</span>
-                      <span class="compat-content">{{ compatibilityResult.content_extracted }}</span>
-                    </div>
-                    <div class="compat-item" v-if="compatibilityResult.recommended_mode">
-                      <span class="compat-label">推荐模式:</span>
-                      <span class="compat-recommend">{{ compatibilityResult.recommended_mode === 'stream' ? '流式 (SSE)' : compatibilityResult.recommended_mode === 'non_stream' ? '非流式 (JSON)' : '自动' }}</span>
-                    </div>
-                    <div class="compat-item" v-if="compatibilityResult.errors && compatibilityResult.errors.length > 0">
-                      <span class="compat-label">错误:</span>
-                      <ul class="compat-errors">
-                        <li v-for="(err, idx) in compatibilityResult.errors" :key="idx">{{ err }}</li>
-                      </ul>
-                    </div>
-                  </div>
-                  <details v-if="compatibilityResult.raw_preview" class="compat-raw">
-                    <summary>查看原始响应 (前500字符)</summary>
-                    <pre>{{ compatibilityResult.raw_preview }}</pre>
-                  </details>
-                  <p class="compat-time">响应时间: {{ compatibilityResult.response_time_ms }} ms</p>
-                </div>
-              </template>
-            </div>
-
-            <div class="dash-card weather-settings-panel">
-              <div class="dash-card-title"><span class="card-icon"><AppIcon name="weather-sun" :size="15" /></span> 天气 API 与提醒</div>
-              <div class="dash-toggle-group">
-                <label>启用天气栏与每日天气问候</label>
-                <input
-                  type="checkbox"
-                  class="dash-toggle"
-                  v-model="weatherConfig.enabled"
-                />
-              </div>
-              <div class="weather-settings-grid">
-                <div class="dash-form-group">
-                  <label>城市/地区</label>
-                  <input
-                    type="text"
-                    v-model="weatherConfig.location"
-                    placeholder="建议填写中文城市；例如 上海 / 北京"
-                  />
-                </div>
-                <div class="dash-form-group">
-                  <label>wttr.in 兼容 API 地址</label>
-                  <input
-                    type="text"
-                    v-model="weatherConfig.api_url"
-                    placeholder="http://wttr.in 或 https://example.com/{location}?format=j1"
-                  />
-                </div>
-              </div>
-              <div v-if="weatherInfo" class="weather-settings-preview">
-                当前天气：{{ formatWeatherDisplay(weatherInfo) }} · {{ weatherInfo.description }}
-              </div>
-              <div
-                v-if="weatherConfigResult.message"
-                :class="['dash-test-result', 'compact', weatherConfigResult.success ? 'success' : 'error']"
+              <button
+                type="button"
+                class="sys-header-badge"
+                :title="'当前 AI 后端：' + backendLabel(backendType)"
+                @click="openSystemSection('backend')"
               >
-                {{ weatherConfigResult.message }}
-              </div>
-              <div class="dash-api-actions">
-                <button
-                  class="dash-btn"
-                  type="button"
-                  :disabled="isTestingWeatherConfig || !weatherConfig.api_url.trim()"
-                  @click="testWeatherConfig"
-                >
-                  {{ isTestingWeatherConfig ? '测试中...' : '测试天气 API' }}
-                </button>
-                <button
-                  class="dash-btn secondary"
-                  type="button"
-                  :disabled="isWeatherLoading || !weatherConfig.enabled"
-                  @click="refreshWeather"
-                >
-                  {{ isWeatherLoading ? '刷新中...' : '立即刷新' }}
-                </button>
-                <button
-                  class="dash-btn primary"
-                  type="button"
-                  :disabled="isSavingWeatherConfig"
-                  @click="saveWeatherConfig"
-                >
-                  {{ isSavingWeatherConfig ? '保存中...' : '保存天气设置' }}
-                </button>
-              </div>
+                <AppIcon :name="backendIcon(backendType)" :size="14" />
+                <span>{{ backendLabel(backendType) }}</span>
+              </button>
             </div>
 
-            <!-- 性格 -->
-            <div class="system-role-grid">
-            <div class="dash-card role-card personality-panel">
-              <div class="dash-card-title"><span class="card-icon"><AppIcon name="persona-heart" :size="15" /></span> 性格</div>
-              <div class="dash-option-grid">
-                <button
-                  v-for="item in personalities" :key="item.id"
-                  :class="['dash-option-item', { active: currentPersonality === item.id }]"
-                  @click="selectPersonality(item.id)"
-                >
-                  <span class="dash-option-name">{{ item.name }}</span>
-                  <span class="dash-option-desc">{{ item.desc }}</span>
-                </button>
-              </div>
-              <p class="dash-hint" style="margin-top:12px;">切换后会重置本地 AI 会话，让新设定立即生效</p>
-            </div>
+            <Transition name="page-fade" mode="out-in">
+              <div :key="systemSection" class="sys-body">
+                <!-- ===== AI 后端 ===== -->
+                <template v-if="systemSection === 'backend'">
+                  <section class="dash-card sys-section">
+                    <header class="sys-section-head">
+                      <div>
+                        <h2 class="sys-section-title">选择 AI 后端</h2>
+                        <p class="sys-section-desc">主对话和桌宠聊天使用这里选中的后端；Claude Code / Codex / DSH 三个 agent 窗口固定使用各自的本机 CLI，不受这里影响。</p>
+                      </div>
+                    </header>
+                    <div class="sys-backend-grid" role="radiogroup" aria-label="AI 后端">
+                      <button
+                        v-for="item in backendOptions"
+                        :key="item.id"
+                        type="button"
+                        role="radio"
+                        :aria-checked="backendType === item.id"
+                        :class="['sys-backend-card', { active: backendType === item.id }]"
+                        @click="backendType !== item.id && selectBackend(item.id)"
+                      >
+                        <span class="sys-backend-icon"><AppIcon :name="item.icon" :size="18" /></span>
+                        <span class="sys-backend-copy">
+                          <strong>{{ item.label }}</strong>
+                          <small>{{ item.desc }}</small>
+                        </span>
+                        <span v-if="backendType === item.id" class="sys-backend-check" aria-hidden="true"><AppIcon name="check" :size="12" :stroke-width="2.4" /></span>
+                      </button>
+                    </div>
+                  </section>
 
-            <!-- 职业 -->
-            <div class="dash-card role-card profession-panel">
-              <div class="dash-card-title"><span class="card-icon"><AppIcon name="role-compass" :size="15" /></span> 职业</div>
-              <div class="dash-option-grid">
-                <button
-                  v-for="item in professions" :key="item.id"
-                  :class="['dash-option-item', { active: currentProfession === item.id }]"
-                  @click="selectProfession(item.id)"
-                >
-                  <span class="dash-option-name">{{ item.name }}</span>
-                  <span class="dash-option-desc">{{ item.desc }}</span>
-                </button>
+                  <section v-if="backendType === 'claude_code'" class="dash-card sys-section">
+                    <header class="sys-section-head">
+                      <div>
+                        <h2 class="sys-section-title">Claude Code 连接</h2>
+                        <p class="sys-section-desc">使用本机 Claude Code CLI 子进程，复用本机登录，会话自动保持上下文。</p>
+                      </div>
+                      <span :class="['sys-status', claudeStatus.logged_in ? 'ok' : 'off']">
+                        <span class="sys-status-dot" />{{ claudeStatus.logged_in ? '已连接' : '未连接' }}
+                      </span>
+                    </header>
+                    <dl class="sys-facts">
+                      <div><dt>驱动模型</dt><dd class="sys-mono">{{ claudeStatus.model || '跟随本机配置' }}</dd></div>
+                      <div v-if="claudeStatus.token_preview"><dt>授权凭证</dt><dd class="sys-mono">{{ claudeStatus.token_preview }}</dd></div>
+                      <div v-if="claudeStatus.base_url"><dt>API 接入点</dt><dd class="sys-mono">{{ claudeStatus.base_url }}</dd></div>
+                      <div><dt>当前会话模型</dt><dd>{{ currentModel || '加载中…' }}</dd></div>
+                    </dl>
+                    <footer class="sys-section-foot">
+                      <button type="button" class="sys-link-btn" @click="openSystemSection('permissions')">权限模式在「执行权限」里设置 →</button>
+                      <button type="button" class="dash-btn secondary" @click="startClaudeConfig">登录 / 配置</button>
+                      <button type="button" class="dash-btn" @click="resetModel">{{ modelSaved ? '已重置' : '重置会话' }}</button>
+                    </footer>
+                  </section>
+
+                  <section v-else-if="backendType === 'codex'" class="dash-card sys-section">
+                    <header class="sys-section-head">
+                      <div>
+                        <h2 class="sys-section-title">Codex 连接</h2>
+                        <p class="sys-section-desc">本机 Codex CLI 的安装、登录与工作目录。</p>
+                      </div>
+                    </header>
+                    <CodexConnection :model-saved="modelSaved" :show-permission="false" @reset="resetModel" />
+                  </section>
+
+                  <section v-else-if="backendType === 'dsh'" class="dash-card sys-section">
+                    <header class="sys-section-head">
+                      <div>
+                        <h2 class="sys-section-title">DeepSeek Harness 连接</h2>
+                        <p class="sys-section-desc">本机 DSH 的安装状态、模型与桌宠专属 profile。</p>
+                      </div>
+                    </header>
+                    <DshConnection :model-saved="modelSaved" :show-permission="false" @reset="resetModel" />
+                  </section>
+
+                  <section v-else class="dash-card sys-section">
+                    <header class="sys-section-head">
+                      <div>
+                        <h2 class="sys-section-title">直连 API</h2>
+                        <p class="sys-section-desc">通过 OpenAI 兼容接口直接调用模型，内置文件、命令、搜索、记忆等工具。</p>
+                      </div>
+                      <span :class="['sys-status', apiConfig.has_api_key ? 'ok' : 'off']">
+                        <span class="sys-status-dot" />{{ apiConfig.has_api_key ? '密钥已保存' : '未填密钥' }}
+                      </span>
+                    </header>
+                    <dl class="sys-facts">
+                      <div><dt>当前配置</dt><dd>{{ apiConfig.name || apiConfig.model || '未选择' }}</dd></div>
+                      <div><dt>模型</dt><dd class="sys-mono">{{ apiConfig.model || '—' }}</dd></div>
+                      <div><dt>接口地址</dt><dd class="sys-mono">{{ apiConfig.base_url || '—' }}</dd></div>
+                      <div><dt>执行模式</dt><dd>{{ apiExecutionModeLabel }}</dd></div>
+                    </dl>
+                    <footer class="sys-section-foot">
+                      <button type="button" class="dash-btn secondary" @click="openSystemSection('permissions')">执行权限</button>
+                      <button type="button" class="dash-btn primary" @click="openSystemSection('models')">管理模型配置</button>
+                    </footer>
+                  </section>
+                </template>
+
+                <!-- ===== 模型接口（直连 API） ===== -->
+                <template v-else-if="systemSection === 'models'">
+                  <div v-if="backendType !== 'direct_api'" class="sys-notice" role="status">
+                    <AppIcon name="alert" :size="15" />
+                    <span>当前 AI 后端是 {{ backendLabel(backendType) }}，这里的模型配置只在「直连 API」后端下生效。</span>
+                    <button type="button" class="dash-mini-btn primary" @click="selectBackend('direct_api')">切换到直连 API</button>
+                  </div>
+
+                  <div class="sys-models-layout">
+                    <aside class="dash-card sys-section sys-profile-pane" aria-label="已保存的模型配置">
+                      <header class="sys-section-head compact">
+                        <h2 class="sys-section-title">模型配置</h2>
+                        <button type="button" class="dash-mini-btn" @click="newApiProfileDraft">
+                          <AppIcon name="plus" :size="12" /> 新建
+                        </button>
+                      </header>
+                      <ul class="sys-profile-list">
+                        <li v-if="!apiConfig.id" class="sys-profile is-draft is-current">
+                          <span class="sys-profile-main">
+                            <span class="sys-profile-name">{{ apiConfig.name.trim() || '新建配置' }}</span>
+                            <span class="sys-profile-meta">尚未保存</span>
+                          </span>
+                        </li>
+                        <li
+                          v-for="profile in apiProfiles"
+                          :key="profile.id"
+                          :class="['sys-profile', { 'is-current': profile.id === apiConfig.id }]"
+                        >
+                          <button
+                            type="button"
+                            class="sys-profile-main"
+                            :title="profile.base_url"
+                            @click="activateApiProfile(profile.id, { switchBackend: false })"
+                          >
+                            <span class="sys-profile-name">{{ profile.name || profile.model }}</span>
+                            <span class="sys-profile-meta">{{ profile.model }}</span>
+                          </button>
+                          <span v-if="profile.id === activeApiProfileId" class="sys-pill">使用中</span>
+                          <button
+                            type="button"
+                            class="sys-profile-delete"
+                            title="删除模型配置"
+                            :aria-label="'删除模型配置 ' + (profile.name || profile.model)"
+                            :disabled="profileDeletingId === profile.id || apiProfiles.length <= 1"
+                            @click="confirmDeleteApiProfile(profile)"
+                          >
+                            <AppIcon name="close" :size="12" />
+                          </button>
+                        </li>
+                      </ul>
+                      <p class="sys-pane-note">点一下即切换为使用中的配置；聊天输入框右下角也能一键切换。</p>
+                    </aside>
+
+                    <div class="sys-editor">
+                      <section class="dash-card sys-section">
+                        <header class="sys-section-head">
+                          <div>
+                            <h2 class="sys-section-title">{{ apiConfig.id ? '连接' : '新建模型配置' }}</h2>
+                            <p class="sys-section-desc">名称、地址、密钥、模型改完后点「保存配置」；下方其他选项修改后会自动保存。</p>
+                          </div>
+                        </header>
+                        <div class="sys-fields">
+                          <label class="sys-field">
+                            <span class="sys-field-label">配置名称</span>
+                            <input v-model="apiConfig.name" class="dash-input" type="text" placeholder="例如：DeepSeek 工作模型" />
+                          </label>
+                          <div class="sys-field">
+                            <label class="sys-field-label" for="sys-api-base-url">接口地址 (Base URL)</label>
+                            <div class="sys-inline">
+                              <input
+                                id="sys-api-base-url"
+                                v-model="apiConfig.base_url"
+                                class="dash-input"
+                                type="text"
+                                placeholder="https://api.openai.com/v1"
+                                @input="clearFetchedModels"
+                              />
+                              <button
+                                type="button"
+                                class="dash-btn secondary"
+                                :disabled="isFetchingModels || !apiConfig.base_url.trim()"
+                                @click="fetchApiModels"
+                              >
+                                {{ isFetchingModels ? '获取中…' : '获取模型' }}
+                              </button>
+                            </div>
+                            <div class="sys-chips" role="group" aria-label="常用服务商预设">
+                              <span class="sys-chips-label">快速填充</span>
+                              <button v-for="preset in presetOptions" :key="preset.id" type="button" class="sys-chip" @click="applyPreset(preset.id)">{{ preset.label }}</button>
+                            </div>
+                          </div>
+                          <label class="sys-field">
+                            <span class="sys-field-label">API 密钥</span>
+                            <input
+                              v-model="apiConfig.api_key"
+                              class="dash-input"
+                              type="password"
+                              autocomplete="new-password"
+                              :placeholder="apiConfig.has_api_key ? '已保存（留空表示不修改）' : 'sk-...'"
+                              @input="clearFetchedModels"
+                            />
+                            <span class="sys-field-hint">保存后只显示掩码，不会明文回显；本地 Ollama 等不需要密钥的接口可以留空。</span>
+                          </label>
+                          <div class="sys-field">
+                            <label class="sys-field-label" for="sys-api-model">模型名称</label>
+                            <input id="sys-api-model" v-model="apiConfig.model" class="dash-input" type="text" placeholder="gpt-4o-mini" />
+                            <div v-if="fetchedModels.length > 0" class="sys-inline">
+                              <select
+                                class="dash-select"
+                                :value="selectedFetchedModel"
+                                aria-label="从接口获取到的模型"
+                                @change="selectFetchedModel(($event.target as HTMLSelectElement).value)"
+                              >
+                                <option v-for="model in fetchedModels" :key="model" :value="model">{{ model }}</option>
+                              </select>
+                              <button
+                                type="button"
+                                class="dash-btn secondary"
+                                :disabled="isAddingFetchedModel || !selectedFetchedModel"
+                                @click="addFetchedModelProfile"
+                              >
+                                {{ isAddingFetchedModel ? '加入中…' : '加入模型列表' }}
+                              </button>
+                            </div>
+                            <span v-if="modelFetchResult.message" :class="['sys-field-hint', modelFetchResult.success ? 'ok' : 'error']">{{ modelFetchResult.message }}</span>
+                          </div>
+                        </div>
+                        <footer class="sys-section-foot">
+                          <button
+                            type="button"
+                            class="dash-btn"
+                            :disabled="isTestingConnection || !apiConfig.base_url || !apiConfig.model"
+                            @click="testConnection"
+                          >
+                            {{ isTestingConnection ? '测试中…' : '测试连接' }}
+                          </button>
+                          <button type="button" class="dash-btn primary" :disabled="isSavingConfig" @click="saveApiConfig()">
+                            {{ configSaved ? '已保存' : (isSavingConfig ? '保存中…' : '保存配置') }}
+                          </button>
+                        </footer>
+                        <div v-if="testResult.message" :class="['sys-result', testResult.success ? 'ok' : 'error']" role="status">
+                          {{ testResult.success ? '连接成功' : testResult.message }}
+                        </div>
+                      </section>
+
+                      <section class="dash-card sys-section">
+                        <header class="sys-section-head">
+                          <div>
+                            <h2 class="sys-section-title">推理与搜索</h2>
+                            <p class="sys-section-desc">修改后立即保存到当前配置，下一次请求生效。</p>
+                          </div>
+                        </header>
+                        <div class="sys-rows">
+                          <div class="sys-row">
+                            <div class="sys-row-label">
+                              <span id="sys-thinking-label">思考深度</span>
+                              <small>「自动」不额外指定；低、中、高需要模型本身支持推理强度参数。</small>
+                            </div>
+                            <div class="sys-segmented" role="radiogroup" aria-labelledby="sys-thinking-label">
+                              <button
+                                v-for="item in thinkingDepthOptions"
+                                :key="item.value"
+                                type="button"
+                                role="radio"
+                                :aria-checked="apiConfig.thinking_depth === item.value"
+                                :class="{ active: apiConfig.thinking_depth === item.value }"
+                                @click="updateThinkingDepth(item.value)"
+                              >{{ item.label }}</button>
+                            </div>
+                          </div>
+                          <div class="sys-row">
+                            <div class="sys-row-label">
+                              <label for="sys-search-provider">优先搜索源</label>
+                              <small>国内网络推荐 Bing；DuckDuckGo 在国内网络下容易超时。</small>
+                            </div>
+                            <select
+                              id="sys-search-provider"
+                              class="dash-select sys-row-select"
+                              :value="apiConfig.search_provider"
+                              @change="updateSearchProvider(($event.target as HTMLSelectElement).value)"
+                            >
+                              <option v-for="item in searchProviderOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
+                            </select>
+                          </div>
+                        </div>
+                      </section>
+
+                      <details class="dash-card sys-section sys-collapsible">
+                        <summary class="sys-section-head">
+                          <div>
+                            <h2 class="sys-section-title">接口协议<span class="sys-tag">高级</span></h2>
+                            <p class="sys-section-desc">只有接口不完全兼容 OpenAI 时才需要改。当前：{{ streamModeLabel }} · {{ apiModeLabel }}</p>
+                          </div>
+                          <span class="sys-collapse-caret" aria-hidden="true"><AppIcon name="chevron-down" :size="14" /></span>
+                        </summary>
+                        <div class="sys-rows">
+                          <div class="sys-row">
+                            <div class="sys-row-label">
+                              <span id="sys-stream-label">流式模式</span>
+                              <small>自动：先按 SSE 解析，失败再按 JSON。Auto Code 等非标准接口选「非流式」。</small>
+                            </div>
+                            <div class="sys-segmented" role="radiogroup" aria-labelledby="sys-stream-label">
+                              <button
+                                v-for="item in streamModeOptions"
+                                :key="item.value"
+                                type="button"
+                                role="radio"
+                                :aria-checked="apiConfig.stream_mode === item.value"
+                                :class="{ active: apiConfig.stream_mode === item.value }"
+                                @click="updateStreamMode(item.value)"
+                              >{{ item.label }}</button>
+                            </div>
+                          </div>
+                          <div class="sys-row">
+                            <div class="sys-row-label">
+                              <span id="sys-apimode-label">API 格式</span>
+                              <small>大多数服务选 Chat Completions（/v1/chat/completions）；Responses 是 OpenAI 的新格式（/v1/responses）。</small>
+                            </div>
+                            <div class="sys-segmented" role="radiogroup" aria-labelledby="sys-apimode-label">
+                              <button
+                                v-for="item in apiModeOptions"
+                                :key="item.value"
+                                type="button"
+                                role="radio"
+                                :aria-checked="apiConfig.api_mode === item.value"
+                                :class="{ active: apiConfig.api_mode === item.value }"
+                                @click="updateApiMode(item.value)"
+                              >{{ item.label }}</button>
+                            </div>
+                          </div>
+                        </div>
+                        <footer class="sys-section-foot">
+                          <span class="sys-foot-note">不确定选哪种时，跑一次深度检测看推荐模式。</span>
+                          <button
+                            type="button"
+                            class="dash-btn"
+                            :disabled="isTestingCompatibility || !apiConfig.base_url || !apiConfig.model"
+                            @click="testCompatibility"
+                          >
+                            {{ isTestingCompatibility ? '检测中…' : '深度测试兼容性' }}
+                          </button>
+                        </footer>
+                        <div
+                          v-if="compatibilityResult"
+                          class="dash-compat-result sys-compat"
+                          :class="compatibilityResult.http_ok ? 'success' : 'error'"
+                        >
+                          <h4>兼容性检测报告</h4>
+                          <div class="compat-grid">
+                            <div class="compat-item">
+                              <span class="compat-label">HTTP 状态:</span>
+                              <span :class="compatibilityResult.http_ok ? 'pass' : 'fail'">
+                                {{ compatibilityResult.http_ok ? '通过' : '失败' }} ({{ compatibilityResult.http_status }})
+                              </span>
+                            </div>
+                            <div class="compat-item">
+                              <span class="compat-label">SSE 格式:</span>
+                              <span :class="compatibilityResult.is_sse_format ? 'pass' : 'fail'">
+                                {{ compatibilityResult.is_sse_format ? '支持' : '不支持' }}
+                              </span>
+                            </div>
+                            <div class="compat-item">
+                              <span class="compat-label">JSON 格式:</span>
+                              <span :class="compatibilityResult.is_json_format ? 'pass' : 'fail'">
+                                {{ compatibilityResult.is_json_format ? '支持' : '不支持' }}
+                              </span>
+                            </div>
+                            <div class="compat-item">
+                              <span class="compat-label">内容提取:</span>
+                              <span :class="compatibilityResult.content_extracted ? 'pass' : 'fail'">
+                                {{ compatibilityResult.content_extracted ? '成功' : '失败' }}
+                              </span>
+                            </div>
+                            <div v-if="compatibilityResult.content_extracted" class="compat-item">
+                              <span class="compat-label">提取内容:</span>
+                              <span class="compat-content">{{ compatibilityResult.content_extracted }}</span>
+                            </div>
+                            <div v-if="compatibilityResult.recommended_mode" class="compat-item">
+                              <span class="compat-label">推荐模式:</span>
+                              <span class="compat-recommend">{{ compatibilityResult.recommended_mode === 'stream' ? '流式 (SSE)' : compatibilityResult.recommended_mode === 'non_stream' ? '非流式 (JSON)' : '自动' }}</span>
+                            </div>
+                            <div v-if="compatibilityResult.errors && compatibilityResult.errors.length > 0" class="compat-item">
+                              <span class="compat-label">错误:</span>
+                              <ul class="compat-errors">
+                                <li v-for="(err, idx) in compatibilityResult.errors" :key="idx">{{ err }}</li>
+                              </ul>
+                            </div>
+                          </div>
+                          <details v-if="compatibilityResult.raw_preview" class="compat-raw">
+                            <summary>查看原始响应（前 500 字符）</summary>
+                            <pre>{{ compatibilityResult.raw_preview }}</pre>
+                          </details>
+                          <p class="compat-time">响应时间: {{ compatibilityResult.response_time_ms }} ms</p>
+                        </div>
+                      </details>
+                    </div>
+                  </div>
+                </template>
+
+                <!-- ===== 执行权限 ===== -->
+                <template v-else-if="systemSection === 'permissions'">
+                  <section class="dash-card sys-section">
+                    <header class="sys-section-head">
+                      <div>
+                        <h2 class="sys-section-title">直连 API 执行模式</h2>
+                        <p class="sys-section-desc">
+                          作用于模型配置「{{ apiConfig.name || apiConfig.model || '未命名' }}」，修改后立即保存。
+                          <template v-if="backendType !== 'direct_api'">当前后端是 {{ backendLabel(backendType) }}，切换到直连 API 后生效。</template>
+                        </p>
+                      </div>
+                    </header>
+                    <div class="sys-choice-grid" role="radiogroup" aria-label="直连 API 执行模式">
+                      <button
+                        v-for="mode in executionModeOptions"
+                        :key="mode.value"
+                        type="button"
+                        role="radio"
+                        :aria-checked="apiConfig.execution_mode === mode.value"
+                        :class="['sys-choice', { active: apiConfig.execution_mode === mode.value, risky: mode.value === 'unreviewed' }]"
+                        @click="updateExecutionMode(mode.value)"
+                      >
+                        <strong>{{ mode.label }}</strong>
+                        <small>{{ mode.desc }}</small>
+                      </button>
+                    </div>
+                    <div v-if="apiConfig.execution_mode === 'custom'" class="sys-subsection">
+                      <div class="sys-subsection-head">
+                        <span class="sys-subsection-title">免确认工具</span>
+                        <span class="sys-subsection-desc">勾选的工具执行前不再弹窗确认，勾选后立即保存。</span>
+                      </div>
+                      <div class="sys-check-grid">
+                        <label v-for="tool in toolPermissionOptions" :key="tool.id" class="sys-check">
+                          <input
+                            type="checkbox"
+                            :checked="isToolAutoApproved(tool.id)"
+                            @change="toggleAutoApprovedTool(tool.id, ($event.target as HTMLInputElement).checked)"
+                          />
+                          <span>{{ tool.label }}</span>
+                        </label>
+                      </div>
+                    </div>
+                    <div v-if="!apiConfig.id" class="sys-result warn">当前是还没保存的新建配置：执行模式会在你保存这份配置时一起保存。</div>
+                  </section>
+
+                  <section class="dash-card sys-section">
+                    <header class="sys-section-head">
+                      <div>
+                        <h2 class="sys-section-title">桌面控制</h2>
+                        <p class="sys-section-desc">只对直连 API 后端生效。</p>
+                      </div>
+                    </header>
+                    <div class="sys-rows">
+                      <div class="sys-row">
+                        <div class="sys-row-label">
+                          <label for="sys-computer-use">Computer Use</label>
+                          <small>开启后 AI 可以截屏、聚焦窗口、打开浏览器、操作鼠标和键盘；只在需要桌面自动化时开启。<template v-if="computerUseSaved"> 已保存。</template></small>
+                        </div>
+                        <input
+                          id="sys-computer-use"
+                          type="checkbox"
+                          class="dash-toggle"
+                          :checked="computerUseEnabled"
+                          @change="updateComputerUseEnabled(($event.target as HTMLInputElement).checked)"
+                        />
+                      </div>
+                    </div>
+                  </section>
+
+                  <section class="dash-card sys-section">
+                    <header class="sys-section-head">
+                      <div>
+                        <h2 class="sys-section-title">本机 CLI 默认权限</h2>
+                        <p class="sys-section-desc">主对话使用对应后端时、以及三个 agent 窗口的默认档位；单个会话可以在聊天栏里单独覆盖。</p>
+                      </div>
+                    </header>
+                    <div class="sys-permission-stack">
+                      <AgentPermissionControl backend="claude_code" />
+                      <AgentPermissionControl backend="codex" />
+                      <AgentPermissionControl backend="dsh" />
+                    </div>
+                  </section>
+                </template>
+
+                <!-- ===== 角色设定 ===== -->
+                <template v-else-if="systemSection === 'persona'">
+                  <section class="dash-card sys-section">
+                    <header class="sys-section-head">
+                      <div>
+                        <h2 class="sys-section-title">性格</h2>
+                        <p class="sys-section-desc">决定它说话的语气，从下一条消息开始生效。</p>
+                      </div>
+                    </header>
+                    <div class="sys-choice-grid" role="radiogroup" aria-label="性格">
+                      <button
+                        v-for="item in personalities"
+                        :key="item.id"
+                        type="button"
+                        role="radio"
+                        :aria-checked="currentPersonality === item.id"
+                        :class="['sys-choice', { active: currentPersonality === item.id }]"
+                        @click="selectPersonality(item.id)"
+                      >
+                        <strong>{{ item.name }}</strong>
+                        <small>{{ item.desc }}</small>
+                      </button>
+                    </div>
+                  </section>
+
+                  <section class="dash-card sys-section">
+                    <header class="sys-section-head">
+                      <div>
+                        <h2 class="sys-section-title">职业</h2>
+                        <p class="sys-section-desc">决定它擅长帮你做哪类事。</p>
+                      </div>
+                    </header>
+                    <div class="sys-choice-grid" role="radiogroup" aria-label="职业">
+                      <button
+                        v-for="item in professions"
+                        :key="item.id"
+                        type="button"
+                        role="radio"
+                        :aria-checked="currentProfession === item.id"
+                        :class="['sys-choice', { active: currentProfession === item.id }]"
+                        @click="selectProfession(item.id)"
+                      >
+                        <strong>{{ item.name }}</strong>
+                        <small>{{ item.desc }}</small>
+                      </button>
+                    </div>
+                  </section>
+
+                  <section class="dash-card sys-section">
+                    <header class="sys-section-head">
+                      <div>
+                        <h2 class="sys-section-title">自定义系统提示</h2>
+                        <p class="sys-section-desc">追加到系统提示末尾，对所有对话生效；留空则不追加。</p>
+                      </div>
+                    </header>
+                    <textarea
+                      v-model="customPromptDraft"
+                      class="dash-textarea sys-textarea"
+                      rows="5"
+                      aria-label="自定义系统提示"
+                      placeholder="例如：你每次回复都以『汪！』开头..."
+                    />
+                    <footer class="sys-section-foot">
+                      <span class="sys-foot-note">{{ customPromptDraft.trim().length }} 字</span>
+                      <button type="button" class="dash-btn primary" @click="saveCustomPrompt">
+                        {{ customPromptSaved ? '已保存' : '保存提示' }}
+                      </button>
+                    </footer>
+                  </section>
+                </template>
+
+                <!-- ===== 技能 ===== -->
+                <template v-else-if="systemSection === 'skills'">
+                  <section class="dash-card sys-section">
+                    <header class="sys-section-head">
+                      <div>
+                        <h2 class="sys-section-title">技能</h2>
+                        <p class="sys-section-desc">同一时间只能激活一个技能；新建和编辑技能请到「设置」窗口。</p>
+                      </div>
+                      <span v-if="skillsStore.activeSkill" class="sys-pill">已激活：{{ skillsStore.activeSkill.name }}</span>
+                    </header>
+                    <p v-if="skillsStore.skills.length === 0" class="sys-empty">还没有任何技能。</p>
+                    <ul v-else class="sys-skill-list">
+                      <li v-for="s in skillsStore.skills" :key="s.id" :class="['sys-skill', { active: s.is_active }]">
+                        <div class="sys-skill-copy">
+                          <span class="sys-skill-name">{{ s.name }}</span>
+                          <span class="sys-skill-desc">{{ s.description || '（无描述）' }}</span>
+                        </div>
+                        <button
+                          type="button"
+                          :class="['dash-mini-btn', { primary: !s.is_active }]"
+                          @click="activateSkill(s.is_active ? null : s.id)"
+                        >
+                          {{ s.is_active ? '取消激活' : '激活' }}
+                        </button>
+                      </li>
+                    </ul>
+                  </section>
+                </template>
+
+                <!-- ===== 天气提醒 ===== -->
+                <template v-else>
+                  <section class="dash-card sys-section">
+                    <header class="sys-section-head">
+                      <div>
+                        <h2 class="sys-section-title">天气栏与每日问候</h2>
+                        <p class="sys-section-desc">开启后首页显示天气，并每天发送一次天气问候。</p>
+                      </div>
+                    </header>
+                    <div class="sys-rows">
+                      <div class="sys-row">
+                        <div class="sys-row-label">
+                          <label for="sys-weather-enabled">启用天气</label>
+                          <small>关闭后不再请求天气接口。</small>
+                        </div>
+                        <input id="sys-weather-enabled" v-model="weatherConfig.enabled" type="checkbox" class="dash-toggle" />
+                      </div>
+                    </div>
+                    <div class="sys-fields sys-fields-2">
+                      <label class="sys-field">
+                        <span class="sys-field-label">城市 / 地区</span>
+                        <input v-model="weatherConfig.location" class="dash-input" type="text" placeholder="建议填中文城市，例如 上海" />
+                      </label>
+                      <label class="sys-field">
+                        <span class="sys-field-label">wttr.in 兼容接口</span>
+                        <input v-model="weatherConfig.api_url" class="dash-input" type="text" placeholder="http://wttr.in 或 https://example.com/{location}?format=j1" />
+                      </label>
+                    </div>
+                    <div v-if="weatherInfo" class="sys-result info">当前天气：{{ formatWeatherDisplay(weatherInfo) }} · {{ weatherInfo.description }}</div>
+                    <div v-if="weatherConfigResult.message" :class="['sys-result', weatherConfigResult.success ? 'ok' : 'error']">
+                      {{ weatherConfigResult.message }}
+                    </div>
+                    <footer class="sys-section-foot">
+                      <button
+                        type="button"
+                        class="dash-btn"
+                        :disabled="isTestingWeatherConfig || !weatherConfig.api_url.trim()"
+                        @click="testWeatherConfig"
+                      >
+                        {{ isTestingWeatherConfig ? '测试中…' : '测试接口' }}
+                      </button>
+                      <button
+                        type="button"
+                        class="dash-btn secondary"
+                        :disabled="isWeatherLoading || !weatherConfig.enabled"
+                        @click="refreshWeather"
+                      >
+                        {{ isWeatherLoading ? '刷新中…' : '立即刷新' }}
+                      </button>
+                      <button type="button" class="dash-btn primary" :disabled="isSavingWeatherConfig" @click="saveWeatherConfig">
+                        {{ isSavingWeatherConfig ? '保存中…' : '保存天气设置' }}
+                      </button>
+                    </footer>
+                  </section>
+                </template>
               </div>
-            </div>
-            </div>
+            </Transition>
           </div>
 
           <!-- ========== 关于 ========== -->

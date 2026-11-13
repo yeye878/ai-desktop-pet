@@ -21,6 +21,12 @@ impl TurnError {
             aborted: false,
         }
     }
+    /// 失败时附带已经输出的正文：出错前模型已经回答的部分不该随错误一起丢掉。
+    pub fn with_partial_text(mut self, text: &str) -> Self {
+        self.partial_text = text.to_string();
+        self
+    }
+
     pub fn aborted(text: &str, thinking: &str) -> Self {
         Self {
             message: "已停止协同".into(),

@@ -92,6 +92,33 @@ fn base36(mut value: u64) -> String {
     String::from_utf8(out).expect("base36 digits are ascii")
 }
 
+/// AI 通过 create_agent / update_agent 能授予角色的"免确认工具"白名单：只放只读或无副作用的工具。
+///
+/// 角色的 allowed_tools 会变成回合级授权，直接跳过确认（连 is_high_risk_tool 都管不到）。
+/// 以前不限制工具名：模型只要让用户批准一次 create_agent（之后会话内免确认），就能造出一个
+/// 免确认执行 run_command / write_file 的角色，再在协同里 @ 它执行。
+/// 高风险工具只能由用户在智能体工坊里手动勾选（走前端 save_agent，不经过这里）。
+const AI_GRANTABLE_TOOLS: &[&str] = &[
+    "read_file",
+    "list_directory",
+    "file_search",
+    "code_search",
+    "web_search",
+    "read_webpage",
+    "get_weather",
+    "search_memory",
+    "save_memory",
+    "list_scheduled_tasks",
+    "ask_user",
+    "list_agents",
+    "computer_screenshot",
+    "computer_wait",
+    "window_list",
+    "browser_snapshot",
+    "browser_extract",
+    "browser_status",
+];
+
 fn clean_allowed_tools(raw: Option<&Value>) -> Result<Vec<String>, String> {
     let Some(items) = raw.and_then(|value| value.as_array()) else {
         return Ok(Vec::new());
@@ -108,6 +135,12 @@ fn clean_allowed_tools(raw: Option<&Value>) -> Result<Vec<String>, String> {
         }
         if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
             return Err(format!("工具名只能包含字母、数字和 '_'：{name}"));
+        }
+        if !AI_GRANTABLE_TOOLS.contains(&name) {
+            return Err(format!(
+                "不能把「{name}」设为免确认工具：AI 只能授予只读工具（{}）。写文件、执行命令、打开应用、操作桌面等高风险工具需要用户在智能体工坊里手动勾选。",
+                AI_GRANTABLE_TOOLS.join("、")
+            ));
         }
         if !tools.iter().any(|existing| existing == name) {
             tools.push(name.to_string());
@@ -404,5 +437,16 @@ mod tests {
             .unwrap();
         assert_eq!(tools, vec!["read_file", "web_search"]);
         assert!(clean_allowed_tools(Some(&json!(["run-command"]))).is_err());
+    }
+
+    #[test]
+    fn ai_cannot_grant_high_risk_tools_to_agents() {
+        for tool in ["run_command", "write_file", "edit_file", "open_app", "computer_keyboard", "create_agent"] {
+            assert!(
+                clean_allowed_tools(Some(&json!([tool]))).is_err(),
+                "{tool} 不应能被 AI 设为免确认工具"
+            );
+        }
+        assert!(clean_allowed_tools(Some(&json!(["read_file", "browser_snapshot"]))).is_ok());
     }
 }

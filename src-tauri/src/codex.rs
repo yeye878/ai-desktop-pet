@@ -47,11 +47,20 @@ fn find_cli() -> Result<PathBuf, String> {
 }
 
 fn cli_command(path: &std::path::Path) -> Command {
-    let mut command = Command::new(path);
+    let mut command = crate::cli_launch::command(path);
     #[cfg(target_os = "windows")]
     command.creation_flags(CREATE_NO_WINDOW);
     command.kill_on_drop(true);
     command
+}
+
+/// 仅对子进程注入临时 MCP 配置，不改用户 config.toml。
+fn configure_memory_mcp(command: &mut Command, url: Option<&str>) -> Result<(), serde_json::Error> {
+    if let Some(url) = url {
+        command.args(["-c", &format!("mcp_servers.desktop_pet_memory.url={}", serde_json::to_string(url)?)])
+            .args(["-c", "mcp_servers.desktop_pet_memory.enabled_tools=[\"search_memory\",\"save_memory\",\"delete_memory\"]"]);
+    }
+    Ok(())
 }
 
 pub fn workspace_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -138,6 +147,10 @@ impl CodexAdapter {
         // 会话级 / 设置页选定的沙箱档位：只在显式的 danger-full-access 时放开
         // 工作区外的写入，其余情况保持默认的 workspace-write。
         let sandbox = crate::cli_permission::codex_sandbox_mode(permission);
+        let state = app.state::<crate::AppState>();
+        let memory_url = state.permission_bridge.lock().ok().and_then(|bridge| {
+            bridge.as_ref().map(|b| b.url_for_session(&crate::current_turn_session(&state)))
+        });
         self.spawn_in_workspace_with(
             &workspace,
             message,
@@ -146,6 +159,7 @@ impl CodexAdapter {
             model,
             effort,
             sandbox,
+            memory_url.as_deref(),
         )
         .await
     }
@@ -166,6 +180,7 @@ impl CodexAdapter {
             None,
             None,
             "workspace-write",
+            None,
         )
         .await
     }
@@ -179,10 +194,12 @@ impl CodexAdapter {
         model: Option<&str>,
         effort: Option<&str>,
         sandbox: &str,
+        memory_url: Option<&str>,
     ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
         std::fs::create_dir_all(&workspace)?;
-        let mut child = cli_command(&find_cli()?)
-            .args(exec_args_with_sandbox(session, model, effort, sandbox))
+        let mut command = cli_command(&find_cli()?);
+        configure_memory_mcp(&mut command, memory_url)?;
+        let mut child = command.args(exec_args_with_sandbox(session, model, effort, sandbox))
             .current_dir(workspace)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -750,6 +767,32 @@ fn toml_value(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "runs the installed Codex CLI sandbox diagnostic"]
+    async fn local_cli_sandbox_without_desktop_identity() {
+        let executable = find_cli().expect("local Codex CLI");
+        let output = tokio::time::timeout(Duration::from_secs(30), cli_command(&executable)
+            .args(["sandbox", "-P", ":workspace", "--", "powershell.exe", "-NoProfile", "-Command", "Write-Output PET_CLI_OK"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .stdin(Stdio::null()).output())
+            .await.expect("sandbox command timeout").expect("start sandbox command");
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("PET_CLI_OK"));
+    }
+
+    #[tokio::test]
+    #[ignore = "reads temporary MCP overrides with the installed Codex CLI; no model request"]
+    async fn local_cli_memory_configuration() {
+        let mut command = cli_command(&find_cli().expect("local Codex CLI"));
+        let url = "http://127.0.0.1:43210/mcp/config-test/session-test";
+        configure_memory_mcp(&mut command, Some(url)).unwrap();
+        let output = tokio::time::timeout(Duration::from_secs(15), command.args(["mcp", "get", "desktop_pet_memory", "--json"]).output()).await.unwrap().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let config: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(config["transport"]["url"], url);
+        assert_eq!(config["enabled_tools"], serde_json::json!(["search_memory","save_memory","delete_memory"]));
+    }
 
     #[test]
     fn parses_chinese_messages_without_repeating_completed_items() {

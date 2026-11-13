@@ -14,7 +14,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// PATH 上的全局 Claude CLI：内置资源找不到时的回退。
 const PATH_CLAUDE_CMD: &str = "claude.cmd";
 /// 内置 node 目录相对 `<resource_dir>` 的候选路径；Tauri 的打包布局不同，逐个尝试。
-const BUNDLED_NODE_DIRS: [&str; 3] = ["node", "_up/resources/node", "resources/node"];
+const BUNDLED_NODE_DIRS: [&str; 4] = ["node", "_up_/resources/node", "_up/resources/node", "resources/node"];
 /// npm 包里的原生 CLI：优先 spawn 它，绕开 `.cmd` 的 8191 命令行长度上限与转义问题。
 const NATIVE_CLAUDE_RELATIVE: &str = "node_modules/@anthropic-ai/claude-code/bin/claude.exe";
 /// `--help` 能力探测的超时；超时按“不支持新 flag”处理，避免阻塞 spawn。
@@ -756,7 +756,7 @@ mod tests {
         // Tauri 把 `../resources` 打成 `_up_/resources`，旧布局的 `<resource_dir>/node`
         // 实际不存在；同一 node 目录下应优先命中原生 exe。
         let root = std::env::temp_dir().join(format!("pet-claude-cli-{}", uuid::Uuid::new_v4()));
-        let node_dir = root.join("_up").join("resources").join("node");
+        let node_dir = root.join("_up_").join("resources").join("node");
         let native = node_dir
             .join("node_modules")
             .join("@anthropic-ai")
@@ -770,7 +770,7 @@ mod tests {
         std::fs::write(node_dir.join("claude.cmd"), b"").expect("写入 claude.cmd");
 
         let resolved = resolve_claude_cli(Some(root.as_path()));
-        assert_eq!(resolved.program, native, "应命中 _up/resources/node 下的原生 exe");
+        assert_eq!(resolved.program, native, "应命中 _up_/resources/node 下的原生 exe");
         assert!(
             resolved.node_dir.is_none(),
             "原生 exe 不依赖 bundled node，不应注入 PATH"
