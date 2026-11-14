@@ -21,7 +21,6 @@ let customImg: HTMLImageElement | null = null;
 const photoImages: Record<string, HTMLImageElement> = {};
 let photoLoadStarted = false;
 /** 漂移相位：让照片极缓地平移/缩放，静止的贴图感会消失 */
-let photoPhase = 0;
 
 let ro: ResizeObserver | null = null;
 
@@ -1550,126 +1549,79 @@ function drawRain(ctx: CanvasRenderingContext2D) {
  * 照片模式下保留的交互层：鼠标涟漪 + 点击光点。
  * 这些是「桌面宠物应用」该有的活气，照片本身是静的。
  */
-function drawSharedInteraction(ctx: CanvasRenderingContext2D) {
-  const k = strength();
-
-  // 鼠标涟漪
-  for (const r of ripples) {
-    ctx.save();
-    ctx.globalAlpha = r.alpha * 0.5;
-    ctx.strokeStyle = "rgba(255, 255, 255, 1)";
-    ctx.lineWidth = r.lw;
-    ctx.beginPath();
-    ctx.arc(r.x, r.y, r.r, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  // 点击光点
-  for (const p of particles) {
-    const life = Math.max(0, p.life);
-    if (life <= 0) continue;
-    ctx.save();
-    ctx.globalCompositeOperation = "lighter";
-    ctx.globalAlpha = p.alpha * life * k * 0.7;
-    const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.size * 4);
-    g.addColorStop(0, "rgba(255, 255, 255, 0.7)");
-    g.addColorStop(0.4, p.color.replace(/,\s*[\d.]+\)$/, ", 0.3)"));
-    g.addColorStop(1, "rgba(255, 255, 255, 0)");
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, p.size * 4, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  }
-}
-
 function drawPhotoBackground(ctx: CanvasRenderingContext2D, k: number) {
   const cfg = photoBackground(props.mode);
   if (!cfg) return false;
   ensurePhotoLoaded();
 
-  // 底色兜底：照片未加载完时先铺一层同色调深色，避免闪白
-  ctx.fillStyle = "rgba(20, 26, 34, 1)";
+  // 底色兜底：照片未加载完时先铺一层同色调，避免闪白
+  ctx.fillStyle = "rgba(44, 50, 58, 1)";
   ctx.fillRect(0, 0, W, H);
 
   const img = photoImages[cfg.id];
   if (!img) return true; // 已画兜底色，等图加载
 
-  // ---------- cover 铺满 + ken-burns ----------
+  /*
+   * 完全静态的 cover 铺满。
+   *
+   * 这里删掉了 ken-burns 缩放、鼠标视差、光标光斑、涟漪、粒子。
+   * 用户明确要求「所有的动态效果都删了」—— 照片本身是完整画面，
+   * 加任何运动或叠加都会干扰阅读，静止反而是最好的效果。
+   */
   const ir = img.width / img.height;
   const cr = W / H;
-  // 基础缩放：让图片完全覆盖画布
-  const baseScale = ir > cr ? H / img.height : W / img.width;
-  // 漂移：缓慢的缩放与位移，幅度很小
-  const driftT = photoPhase;
-  const zoom = 1.05 + Math.sin(driftT * 0.7) * 0.028 * (cfg.drift / 0.014);
-  const dx = Math.sin(driftT * 0.43) * W * cfg.drift;
-  const dy = Math.cos(driftT * 0.31) * H * cfg.drift;
-
-  /*
-   * 鼠标视差：照片按光标位置做小幅反向位移。
-   * 这个是"鼠标移动有动态变化"最直接的来源 —— 静态照片立刻有了纵深。
-   * 幅度控制在 1.6%，太大就会晕。
-   */
-  const parallaxX = mx > -900 ? (mx / W - 0.5) * -W * 0.016 : 0;
-  const parallaxY = my > -900 ? (my / H - 0.5) * -H * 0.016 : 0;
-
-  const dw = img.width * baseScale * zoom;
-  const dh = img.height * baseScale * zoom;
-  const ox = (W - dw) / 2 + dx + parallaxX;
-  const oy = (H - dh) / 2 + dy + parallaxY;
+  const scale = ir > cr ? H / img.height : W / img.width;
+  const dw = img.width * scale;
+  const dh = img.height * scale;
+  const ox = (W - dw) / 2;
+  const oy = (H - dh) / 2;
 
   ctx.save();
-  ctx.globalAlpha = cfg.opacity * Math.min(1, 0.55 + 0.45 * k);
+  ctx.globalAlpha = cfg.opacity;
   ctx.drawImage(img, ox, oy, dw, dh);
   ctx.restore();
 
-  // ---------- 色调统一 ----------
+  /*
+   * 提亮。
+   *
+   * 之前这块是"压暗"（暗角 + 上下黑渐变），用户反馈画面太暗。
+   * 改成 screen 提亮：把整张照片往亮部推，做出通透感，
+   * 亮度随背景浓度档位线性变化（浓度越高提亮越多）。
+   */
+  ctx.save();
+  ctx.globalCompositeOperation = "screen";
+  const lift = ctx.createLinearGradient(0, 0, W * 0.4, H);
+  lift.addColorStop(0, `rgba(255, 253, 247, ${(0.34 * k).toFixed(3)})`);
+  lift.addColorStop(0.55, `rgba(252, 253, 255, ${(0.24 * k).toFixed(3)})`);
+  lift.addColorStop(1, `rgba(246, 250, 255, ${(0.14 * k).toFixed(3)})`);
+  ctx.fillStyle = lift;
+  ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+
+  // ---------- 色调统一（很淡，只把照片和界面拉到一个色温） ----------
   ctx.save();
   ctx.fillStyle = cfg.tint;
   ctx.fillRect(0, 0, W, H);
   ctx.restore();
 
-  // ---------- 光标光斑：一缕光跟着鼠标照在照片上 ----------
-  if (mx > -900) {
-    ctx.save();
-    ctx.globalCompositeOperation = "screen";
-    const poolR = Math.max(W, H) * 0.26;
-    const pool = ctx.createRadialGradient(mx, my, 0, mx, my, poolR);
-    const pa = 0.13 * k;
-    pool.addColorStop(0, `rgba(255, 253, 244, ${pa.toFixed(3)})`);
-    pool.addColorStop(0.45, `rgba(255, 250, 238, ${(pa * 0.42).toFixed(3)})`);
-    pool.addColorStop(1, "rgba(255, 255, 255, 0)");
-    ctx.fillStyle = pool;
-    ctx.fillRect(0, 0, W, H);
-    ctx.restore();
-  }
-
-  // ---------- 暗角 ----------
-  const vig = ctx.createRadialGradient(
-    W * 0.5, H * 0.42, Math.min(W, H) * 0.28,
-    W * 0.5, H * 0.42, Math.max(W, H) * 0.82,
-  );
-  vig.addColorStop(0, "rgba(0, 0, 0, 0)");
-  vig.addColorStop(0.62, `rgba(0, 0, 0, ${(cfg.vignette * 0.35).toFixed(3)})`);
-  vig.addColorStop(1, `rgba(0, 0, 0, ${cfg.vignette.toFixed(3)})`);
-  ctx.fillStyle = vig;
-  ctx.fillRect(0, 0, W, H);
-
-  // ---------- 底部压暗：输入框区域必须清晰 ----------
-  const bottom = ctx.createLinearGradient(0, H * 0.72, 0, H);
-  bottom.addColorStop(0, "rgba(0, 0, 0, 0)");
-  bottom.addColorStop(1, "rgba(0, 0, 0, 0.28)");
-  ctx.fillStyle = bottom;
-  ctx.fillRect(0, H * 0.72, W, H * 0.28);
-
-  // ---------- 顶部压暗：让标题栏区域不被照片细节干扰 ----------
-  const top = ctx.createLinearGradient(0, 0, 0, H * 0.24);
-  top.addColorStop(0, "rgba(0, 0, 0, 0.3)");
-  top.addColorStop(1, "rgba(0, 0, 0, 0)");
+  /*
+   * 上下只留极轻的过渡。
+   *
+   * 原来是顶部 0.3 / 底部 0.28 的黑渐变，为了让标题栏和输入框"压得住"，
+   * 但那正是"画面闷"的主因（codex: "the large dark header reduces the
+   * visible scene"）。现在压到 0.06/0.09，只留一丝层次，不再吃掉亮部。
+   */
+  const top = ctx.createLinearGradient(0, 0, 0, H * 0.15);
+  top.addColorStop(0, "rgba(24, 28, 34, 0.06)");
+  top.addColorStop(1, "rgba(24, 28, 34, 0)");
   ctx.fillStyle = top;
-  ctx.fillRect(0, 0, W, H * 0.24);
+  ctx.fillRect(0, 0, W, H * 0.15);
+
+  const bottom = ctx.createLinearGradient(0, H * 0.84, 0, H);
+  bottom.addColorStop(0, "rgba(24, 28, 34, 0)");
+  bottom.addColorStop(1, "rgba(24, 28, 34, 0.09)");
+  ctx.fillStyle = bottom;
+  ctx.fillRect(0, H * 0.84, W, H * 0.16);
 
   return true;
 }
@@ -1794,8 +1746,14 @@ function draw() {
 
   // 照片背景优先：极光/水墨/细雨/科幻/樱花 现在都是真实摄影
   if (drawPhotoBackground(ctx, strength())) {
-    // 照片模式下只保留交互层（涟漪/光点），不再叠加程序化图案
-    drawSharedInteraction(ctx);
+    /*
+     * 照片模式完全静态。
+     *
+     * 这里曾经画过涟漪 + 光点 + 视差 + 光标光斑，用户明确要求
+     * 「所有的动态效果都删了」。照片本身就是完整画面，
+     * 加任何叠加层都只是干扰；静止反而更像一张高级壁纸。
+     * 程序化背景（水墨/极光的手绘分支）保留它们自己的动画。
+     */
     return;
   }
 
@@ -2108,8 +2066,6 @@ function draw() {
 }
 
 function animate() {
-  // 照片漂移相位：每帧推进一点点，约 40 秒一个周期
-  photoPhase += 0.0025;
   update();
   draw();
   animId = requestAnimationFrame(animate);
@@ -2126,23 +2082,6 @@ function resize() {
   initParticles();
 }
 
-/**
- * 照片背景的鼠标交互配色。
- *
- * 照片本身是静态的，鼠标动起来需要有"活气"，否则和贴图没区别。
- * 每个背景给一组符合自身色调的粒子色与涟漪色。
- */
-const PHOTO_INTERACTION: Record<string, { particle: string[]; ripple: string }> = {
-  rain: { particle: ["rgba(198, 226, 240, 0.85)", "rgba(226, 242, 250, 0.7)"], ripple: "rgba(200, 228, 242," },
-  "spring-willow": { particle: ["rgba(186, 226, 160, 0.85)", "rgba(246, 232, 150, 0.75)"], ripple: "rgba(198, 226, 168," },
-  "summer-lotus": { particle: ["rgba(178, 220, 196, 0.85)", "rgba(240, 200, 216, 0.72)"], ripple: "rgba(186, 222, 200," },
-  "autumn-chrys": { particle: ["rgba(246, 214, 196, 0.85)", "rgba(250, 232, 190, 0.72)"], ripple: "rgba(246, 220, 202," },
-  "winter-plum": { particle: ["rgba(226, 234, 246, 0.88)", "rgba(240, 232, 246, 0.72)"], ripple: "rgba(228, 236, 248," },
-  sakura: { particle: ["rgba(244, 214, 226, 0.85)", "rgba(252, 240, 246, 0.72)"], ripple: "rgba(244, 218, 230," },
-  aurora: { particle: ["rgba(94, 234, 212, 0.9)", "rgba(167, 139, 250, 0.85)"], ripple: "rgba(120, 240, 210," },
-  ink: { particle: ["rgba(120, 128, 140, 0.6)", "rgba(160, 168, 178, 0.5)"], ripple: "rgba(130, 138, 150," },
-};
-
 function onMouseMove(x: number, y: number) {
   mx = x; my = y;
   if (props.mode === 'sakura') trail.push({ x, y, t: 1 });
@@ -2158,24 +2097,6 @@ function onMouseMove(x: number, y: number) {
   }
   if (props.mode === 'ink' && Math.random() < 0.08) { addRipple(x, y); }
 
-  /*
-   * 照片背景的交互。
-   * 照片是静帧，光标划过时必须有反馈，否则用户会觉得"没反应"。
-   * 用低频的涟漪 + 微粒子 —— 密度和水墨一致，不会吵。
-   */
-  const photoTone = PHOTO_INTERACTION[props.mode];
-  if (photoTone) {
-    if (Math.random() < 0.09) addRipple(x, y);
-    if (Math.random() < 0.22) {
-      particles.push({
-        x: x + rnd(-7, 7), y: y + rnd(-5, 5),
-        vx: rnd(-0.12, 0.12), vy: rnd(-0.42, -0.1),
-        size: rnd(1, 2.3), alpha: rnd(0.3, 0.62),
-        life: 1, decay: rnd(0.014, 0.03), temp: true,
-        color: photoTone.particle[Math.random() < 0.5 ? 0 : 1],
-      });
-    }
-  }
 }
 
 function clearPointer() {
