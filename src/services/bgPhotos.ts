@@ -1,16 +1,16 @@
 /**
  * 真实照片背景注册表。
  *
- * 这些是从 wallhaven.cc 挑的真实摄影壁纸（都用 codex 视觉模型验证过写真度）：
- *   极光  aurora  3840x2160  photo 10/10  湖面上的极光帘幕与雪山
- *   水墨  ink     4592x2584  photo  9/10  云雾中的层叠山脊
- *   细雨  rain    2560x1600  photo  9/10  玻璃上的雨滴与窗外散景
- *   科幻  scifi   5288x2975  photo  9/10  长曝光车流光轨
- *   樱花  sakura  7360x4912  photo 10/10  压暗的樱花枝
+ * 素材来源分两类：
+ *   1. wallhaven.cc 实拍壁纸（极光 / 水墨 / 夏荷）—— 都用 codex 验证过写真度
+ *   2. 用户提供的参考图（春柳 / 秋菊 / 冬梅 / 细雨 / 樱花）—— 按用户指定直接采用
+ *
+ * ⚠️ 后一组是**手机截图**，上下带黑 UI 条。处理时必须先按行扫描
+ *    "接近黑像素占比 > 85%" 的连续带把它裁掉，否则背景里会露出播放器/按钮。
  *
  * 处理流程（离线做，见 docs/verification/photo-bg/README.md）：
- *   原图 → 缩到 2560 宽 → 高斯模糊（部分）→ 压暗到适合做背景 → webp q80
- * 目标是把照片压到「能看出是什么，但不抢文字」的程度。
+ *   截图 → 裁掉 UI 黑带 → 裁成 16:10（竖直方向偏上取，保主体）
+ *   → 缩到 2560 宽 → 轻度调亮/降对比 → webp q84
  */
 import auroraPhoto from "../assets/bg/aurora.webp";
 import inkPhoto from "../assets/bg/ink.webp";
@@ -68,11 +68,11 @@ export const PHOTO_BACKGROUNDS: Record<string, PhotoBackground> = {
   rain: {
     id: "rain",
     src: rainPhoto,
-    source: "2560x1600",
-    credit: "wallhaven / 实拍雨窗散景",
+    source: "1200x2670",
+    credit: "用户参考图 / 湿伞望竹",
     opacity: 1,
-    tint: "rgba(240, 250, 252, 0.10)",
-    vignette: 0.28,
+    tint: "rgba(248, 253, 255, 0.06)",
+    vignette: 0.30,
     drift: 0.008,
   },
   scifi: {
@@ -103,10 +103,10 @@ export const PHOTO_BACKGROUNDS: Record<string, PhotoBackground> = {
   "spring-willow": {
     id: "spring-willow",
     src: springWillowPhoto,
-    source: "6000x4000",
-    credit: "wallhaven / 雾中垂柳",
+    source: "1200x2670",
+    credit: "用户参考图 / 雨中园林垂柳",
     opacity: 1,
-    tint: "rgba(252, 255, 246, 0.14)",
+    tint: "rgba(255, 253, 246, 0.16)",
     vignette: 0.10,
     drift: 0.012,
   },
@@ -123,20 +123,20 @@ export const PHOTO_BACKGROUNDS: Record<string, PhotoBackground> = {
   "autumn-chrys": {
     id: "autumn-chrys",
     src: autumnChrysPhoto,
-    source: "4608x3072",
-    credit: "wallhaven / 秋菊特写",
+    source: "1200x2670",
+    credit: "用户参考图 / 白菊侧光",
     opacity: 1,
-    tint: "rgba(255, 252, 248, 0.18)",
-    vignette: 0.08,
+    tint: "rgba(255, 252, 246, 0.10)",
+    vignette: 0.16,
     drift: 0.012,
   },
   "winter-plum": {
     id: "winter-plum",
     src: winterPlumPhoto,
-    source: "4928x3264",
-    credit: "wallhaven / 腊月梅枝",
+    source: "1200x2670",
+    credit: "用户参考图 / 雪压梅枝",
     opacity: 1,
-    tint: "rgba(250, 253, 255, 0.14)",
+    tint: "rgba(252, 254, 255, 0.20)",
     vignette: 0.10,
     drift: 0.01,
   },
