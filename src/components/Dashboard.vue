@@ -43,7 +43,6 @@ import {
   CHAT_BG_INTENSITY_STORAGE_KEY,
   CHAT_BG_STORAGE_KEY,
   CHAT_BG_CUSTOM_STORAGE_KEY,
-  SELECTABLE_CHAT_BACKGROUNDS,
   applyChatBackground,
   applyChatBgIntensity,
   applyCustomChatBackground,
@@ -56,17 +55,6 @@ import {
   readCustomChatBackground,
   type ChatBackgroundId,
 } from "../services/chatBackgrounds";
-import tileNone from "../assets/bg/tile-none.webp";
-import tileAurora from "../assets/bg/tile-aurora.webp";
-import tileInk from "../assets/bg/tile-ink.webp";
-import tileRain from "../assets/bg/tile-rain.webp";
-import tileScifi from "../assets/bg/tile-scifi.webp";
-import tileSakura from "../assets/bg/tile-sakura.webp";
-import tileMinimal from "../assets/bg/tile-minimal.webp";
-import tileSpringWillow from "../assets/bg/tile-spring-willow.webp";
-import tileSummerLotus from "../assets/bg/tile-summer-lotus.webp";
-import tileAutumnChrys from "../assets/bg/tile-autumn-chrys.webp";
-import tileWinterPlum from "../assets/bg/tile-winter-plum.webp";
 import { usePetStore, THEMES, FONT_COLORS, resolveSkinId, type PetState } from "../stores/pet";
 import { useSkillsStore, type Skill } from "../stores/skills";
 import { useChatStore, messageAgentFromPayload, type AiFinishedPayload, type Message, type MessageAgent, type QuotedMessage, type ToolEventItem } from "../stores/chat";
@@ -653,7 +641,6 @@ const bgInputRef = ref<HTMLInputElement | null>(null);
 const dashBgCanvasRef = ref<InstanceType<typeof BgCanvas> | null>(null);
 const chatBgSwitching = ref(false);
 /** 「个性外观」卡片 + 对话页快捷条共用这份预设清单 */
-const chatBackgroundOptions = SELECTABLE_CHAT_BACKGROUNDS;
 const chatBackgroundCards = CHAT_BACKGROUNDS;
 const currentChatBgPreset = computed(() => chatBackgroundPreset(chatBg.value));
 const hasCustomBg = computed(() => Boolean(customBgImage.value));
@@ -1826,55 +1813,6 @@ function readFile(file: File): Promise<string> {
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });
-}
-
-/**
- * 切换对话背景：走共享服务写入 + 广播，本窗口（外观页 + 对话页快捷条）
- * 和其他窗口（浮动聊天窗）一起响应，同时给一个短暂的“切换中”提示条。
- */
-/**
- * 背景选择器里 tile 的样式。
- *
- * 照片类预设直接用对应的真实照片当缩略图（cover 裁切），
- * 这样一排看过去就是七张不同的「摄影缩略图」，而不是七个渐变色块。
- * 无 / 简洁 / 自定义 退回 swatch 渐变。
- */
-/**
- * 背景选择器里 tile 的样式。
- *
- * 直接用 preset.swatch —— 那是一组非对称的 radial-gradient「色云」，
- * 刻意不统一高光方向，这样七个 tile 各有各的形态，
- * 而不是七个长一样的渐变按钮。
- */
-/**
- * 背景选择器的 tile 缩略图。
- *
- * 这些是用 PIL 离线生成的 128x128 PNG（见 docs/verification/icons-v1/README.md）：
- * 基底渐变 + 2~3 个高斯模糊色斑 + 轻微噪点。
- *
- * 为什么不用 CSS 渐变：CSS 的 radial-gradient 在小尺寸下色带过渡太硬，
- * 七个 tile 会被看成"七个渐变按钮"。PIL 做出来的才是参考图那种柔边色云。
- */
-const TILE_IMAGES: Record<string, string> = {
-  none: tileNone,
-  aurora: tileAurora,
-  ink: tileInk,
-  rain: tileRain,
-  scifi: tileScifi,
-  sakura: tileSakura,
-  minimal: tileMinimal,
-  "spring-willow": tileSpringWillow,
-  "summer-lotus": tileSummerLotus,
-  "autumn-chrys": tileAutumnChrys,
-  "winter-plum": tileWinterPlum,
-};
-
-function bgTileStyle(preset: { id: string; swatch: string }): Record<string, string> {
-  const tile = TILE_IMAGES[preset.id];
-  if (tile) {
-    return { backgroundImage: `url(${tile})`, backgroundSize: "cover", backgroundPosition: "center" };
-  }
-  return { background: preset.swatch };
 }
 
 function selectBg(bg: ChatBackgroundId) {
@@ -4347,48 +4285,6 @@ ttsPlayer.stop();
                 <button type="button" class="weather-refresh-btn" title="重试" @click="refreshWeather"><AppIcon name="refresh" :size="13" /></button>
               </template>
             </div>
-            <!-- 背景快捷切换条：不用进设置就能换，切换后消息区立刻可见 -->
-            <div class="dash-chat-bgbar">
-              <span class="dash-chat-bgbar-label">对话背景</span>
-              <div class="dash-chat-bgbar-chips">
-                <button
-                  v-for="preset in chatBackgroundOptions"
-                  :key="preset.id"
-                  type="button"
-                  :class="['dash-chat-bgbar-chip', { active: chatBg === preset.id }]"
-                  :title="preset.description"
-                  @click="selectBg(preset.id)"
-                >
-                  <span
-                    :class="['dash-chat-bgbar-dot', { 'is-light': preset.id === 'none' || preset.id === 'minimal' }]"
-                    :style="bgTileStyle(preset)"
-                  ></span>
-                  <span>{{ preset.name }}</span>
-                </button>
-                <button
-                  v-if="hasCustomBg"
-                  type="button"
-                  :class="['dash-chat-bgbar-chip', { active: chatBg === 'custom' }]"
-                  title="使用你的自定义图片"
-                  @click="selectBg('custom')"
-                >
-                  <span class="dash-chat-bgbar-dot" :style="{ backgroundImage: `url(${customBgImage})`, backgroundSize: 'cover' }"></span>
-                  <span>自定义</span>
-                </button>
-              </div>
-              <button type="button" class="dash-chat-bgbar-import" title="从本地选择背景图片" @click="chooseBgImage">导入图片</button>
-              <div class="dash-chat-bgbar-intensity" title="背景浓度：越淡越像纸面上的光晕">
-                <button
-                  v-for="level in chatBgIntensityOptions"
-                  :key="level.id"
-                  type="button"
-                  :class="['dash-chat-bgbar-level', { active: Math.abs(chatBgIntensity - level.value) < 0.01 }]"
-                  :title="level.description"
-                  @click="selectBgIntensity(level.value)"
-                >{{ level.name }}</button>
-              </div>
-              <input ref="bgInputRef" class="hidden-input" type="file" accept="image/*" @change="onBgImageSelected" />
-            </div>
             <!-- 对话背景舞台：canvas 固定在消息区背后，不随滚动一起走 -->
             <div
               :class="['dash-chat-stage', chatBg !== 'none' ? 'has-bg' : '', chatBgSwitching ? 'bg-switching' : '']"
@@ -5318,6 +5214,7 @@ ttsPlayer.stop();
                     :key="preset.id"
                     type="button"
                     :class="['dash-bg-card', { active: chatBg === preset.id, custom: preset.id === 'custom' }]"
+                    :data-light="preset.id === 'none' || preset.id === 'minimal'"
                     :title="preset.description"
                     @click="preset.id === 'custom' ? chooseBgImage() : selectBg(preset.id)"
                   >
@@ -5326,7 +5223,9 @@ ttsPlayer.stop();
                         <img v-if="customBgImage" :src="customBgImage" alt="" />
                         <template v-else>＋</template>
                       </span>
-                      <span v-else class="dash-bg-card-thumb-icon">{{ preset.icon }}</span>
+                      <span v-else class="dash-bg-card-thumb-icon">
+                        <AppIcon :name="preset.icon" :size="26" :stroke-width="2.1" />
+                      </span>
                       <span v-if="chatBg === preset.id" class="dash-bg-card-check">✓</span>
                     </span>
                     <div class="dash-bg-card-name">{{ preset.name }}</div>

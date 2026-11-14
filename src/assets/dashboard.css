@@ -8910,8 +8910,23 @@ button {
 
 /* 背景预设卡的图标：让符号有对比，而不是白底白字 */
 .dash-bg-card-thumb-icon {
-  color: var(--dash-text-secondary);
-  text-shadow: 0 1px 2px rgba(255, 255, 255, 0.8);
+  /*
+   * 图标压在深色 tile 上，需要足够亮才看得清。
+   * 原来用 text-secondary（偏灰），实测被评"some are faint"，
+   * 改成在深底上用浅色 + 一点发光，在浅底上用深色。
+   */
+  color: rgba(255, 255, 255, 0.92);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.35));
+}
+
+/* 浅色 tile（无 / 简洁）上的图标反过来用深色 */
+.dash-bg-card.custom .dash-bg-card-thumb-icon,
+.dash-bg-card[data-light="true"] .dash-bg-card-thumb-icon {
+  color: rgba(var(--dash-ink-rgb), 0.72);
+  filter: none;
 }
 
 .dash-bg-card.active .dash-bg-card-thumb-icon {

@@ -15,7 +15,6 @@ export type ChatBackgroundId =
   | "ink"
   | "rain"
   | "sakura"
-  | "scifi"
   | "minimal"
   | "spring-willow"
   | "summer-lotus"
@@ -103,7 +102,7 @@ export const CHAT_BACKGROUNDS: ChatBackgroundPreset[] = [
     id: "none",
     name: "无",
     description: "保留原本的纸张质感，不叠加任何背景",
-    icon: "∅",
+    icon: "bg-none",
     swatch:
       "radial-gradient(75% 70% at 26% 22%, #ffffff, transparent 58%)," +
       "radial-gradient(60% 55% at 76% 72%, #eceef0, transparent 62%)," +
@@ -117,7 +116,7 @@ export const CHAT_BACKGROUNDS: ChatBackgroundPreset[] = [
     id: "aurora",
     name: "极光",
     description: "真实摄影：湖面之上的极光帘幕与雪山剪影",
-    icon: "☾",
+    icon: "bg-aurora",
     swatch:
       "radial-gradient(70% 65% at 30% 22%, rgba(96,142,132,0.9), transparent 58%)," +
       "radial-gradient(55% 50% at 78% 34%, rgba(52,74,108,0.85), transparent 62%)," +
@@ -131,7 +130,7 @@ export const CHAT_BACKGROUNDS: ChatBackgroundPreset[] = [
     id: "ink",
     name: "水墨",
     description: "真实摄影：云雾中的山脊层层退远，像一幅淡墨山水",
-    icon: "墨",
+    icon: "bg-ink",
     swatch:
       "radial-gradient(80% 70% at 22% 16%, #e4e8ea, transparent 60%)," +
       "radial-gradient(60% 55% at 72% 40%, #b5bec2, transparent 62%)," +
@@ -144,8 +143,8 @@ export const CHAT_BACKGROUNDS: ChatBackgroundPreset[] = [
   {
     id: "rain",
     name: "细雨",
-    description: "真实摄影：雨痕划过玻璃，窗外的红与青灯光被拉成光带",
-    icon: "雨",
+    description: "真实摄影：隔着雨珠看园林，水汽把绿意揉成一片",
+    icon: "bg-rain",
     swatch:
       "radial-gradient(65% 60% at 32% 26%, rgba(72,96,112,0.95), transparent 60%)," +
       "radial-gradient(50% 45% at 76% 30%, rgba(138,74,72,0.75), transparent 62%)," +
@@ -159,7 +158,7 @@ export const CHAT_BACKGROUNDS: ChatBackgroundPreset[] = [
     id: "sakura",
     name: "樱花",
     description: "真实摄影：近黑背景前的樱花枝，浅粉花瓣与暗色枝干",
-    icon: "樱",
+    icon: "bg-sakura",
     swatch:
       "radial-gradient(70% 62% at 32% 24%, rgba(196,170,182,0.9), transparent 58%)," +
       "radial-gradient(52% 48% at 72% 44%, rgba(140,116,128,0.75), transparent 62%)," +
@@ -172,8 +171,8 @@ export const CHAT_BACKGROUNDS: ChatBackgroundPreset[] = [
   {
     id: "spring-willow",
     name: "春·柳",
-    description: "真实摄影：雾中垂柳，初春的嫩绿垂条",
-    icon: "柳",
+    description: "真实摄影：暖阳穿过初春柳烟，金色光斑落在垂条上",
+    icon: "bg-spring",
     swatch: "linear-gradient(165deg, #3d4a38, #26301f)",
     opacity: 1,
     tone: "paper",
@@ -183,7 +182,7 @@ export const CHAT_BACKGROUNDS: ChatBackgroundPreset[] = [
     id: "summer-lotus",
     name: "夏·荷",
     description: "真实摄影：夏日荷塘，睡莲浮在静水上",
-    icon: "荷",
+    icon: "bg-summer",
     swatch: "linear-gradient(165deg, #2f4438, #1a2a22)",
     opacity: 1,
     tone: "paper",
@@ -193,7 +192,7 @@ export const CHAT_BACKGROUNDS: ChatBackgroundPreset[] = [
     id: "autumn-chrys",
     name: "秋·菊",
     description: "真实摄影：秋日菊影，暖粉花簇虚在暗底上",
-    icon: "菊",
+    icon: "bg-autumn",
     swatch: "linear-gradient(165deg, #4a3a34, #2a201c)",
     opacity: 1,
     tone: "paper",
@@ -202,32 +201,18 @@ export const CHAT_BACKGROUNDS: ChatBackgroundPreset[] = [
   {
     id: "winter-plum",
     name: "冬·梅",
-    description: "真实摄影：腊月梅枝，冷调背景前的白梅",
-    icon: "梅",
+    description: "真实摄影：霜雪压枝，冷蓝调里的一点朱红",
+    icon: "bg-winter",
     swatch: "linear-gradient(165deg, #3a3a44, #202028)",
     opacity: 1,
     tone: "paper",
     accent: "#b6b0c4",
   },
   {
-    id: "scifi",
-    name: "科幻",
-    description: "真实摄影：雾中的摩天楼群，冷灰蓝调的未来都市",
-    icon: "◇",
-    swatch:
-      "radial-gradient(65% 60% at 30% 22%, rgba(78,116,150,0.95), transparent 60%)," +
-      "radial-gradient(55% 50% at 74% 38%, rgba(148,152,160,0.7), transparent 62%)," +
-      "radial-gradient(58% 50% at 48% 86%, rgba(34,44,58,0.92), transparent 60%)," +
-      "linear-gradient(170deg, #1a2430, #111a24 58%, #0a1119)",
-    opacity: 1,
-    tone: "paper",
-    accent: "#79b1b3",
-  },
-  {
     id: "minimal",
     name: "简洁",
     description: "会跟随鼠标亮起的点阵星图，克制又灵巧",
-    icon: "○",
+    icon: "bg-minimal",
     swatch:
       "radial-gradient(85% 75% at 24% 18%, #fbfcfe, transparent 62%)," +
       "radial-gradient(55% 50% at 74% 46%, #e5eaf3, transparent 60%)," +
@@ -262,7 +247,6 @@ export function backgroundThumbPhoto(id: string): string | null {
     case "aurora":
     case "ink":
     case "rain":
-    case "scifi":
     case "sakura":
     case "spring-willow":
     case "summer-lotus":

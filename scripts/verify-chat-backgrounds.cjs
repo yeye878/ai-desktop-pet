@@ -60,7 +60,6 @@ test("预设清单包含重设计后的全部模式且 id 唯一", () => {
       "minimal",
       "none",
       "rain",
-      "scifi",
       // 四季意象
       "spring-willow",
       "summer-lotus",
@@ -99,7 +98,9 @@ test("未知取值回落到 none，避免旧数据把界面打空", () => {
   assert.equal(api.normalizeChatBackgroundId("aurora"), "aurora");
   assert.equal(api.normalizeChatBackgroundId("legacy-thing"), "none");
   assert.equal(api.normalizeChatBackgroundId(null), "none");
-  assert.equal(api.chatBackgroundPreset("scifi").id, "scifi");
+  // 科幻已下线：旧用户存过的 "scifi" 必须安全回落到 none，不能把界面打空
+  assert.equal(api.normalizeChatBackgroundId("scifi"), "none");
+  assert.equal(api.chatBackgroundPreset("scifi").id, "none");
   assert.equal(api.chatBackgroundPreset("??? ").id, "none");
 });
 

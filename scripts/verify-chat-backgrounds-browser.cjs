@@ -15,7 +15,7 @@ fs.mkdirSync(OUT, { recursive: true });
 const PRESETS = [
   'none', 'aurora', 'ink', 'rain', 'sakura',
   'spring-willow', 'summer-lotus', 'autumn-chrys', 'winter-plum',
-  'scifi', 'minimal', 'custom',
+  'minimal', 'custom',
 ];
 
 (async () => {
@@ -43,7 +43,7 @@ const PRESETS = [
     }
 
     // 2. 逐个点预设：卡片高亮、预览标记一致、canvas 生效、localStorage 落盘
-    for (const id of ['aurora', 'ink', 'rain', 'sakura', 'spring-willow', 'summer-lotus', 'autumn-chrys', 'winter-plum', 'scifi', 'minimal']) {
+    for (const id of ['aurora', 'ink', 'rain', 'sakura', 'spring-willow', 'summer-lotus', 'autumn-chrys', 'winter-plum', 'minimal']) {
       await page.locator('.dash-bg-card').nth(PRESETS.indexOf(id)).click();
       await page.waitForTimeout(420);
       const stored = await page.evaluate(() => localStorage.getItem('ai-desktop-pet.chat-bg'));
@@ -59,39 +59,58 @@ const PRESETS = [
     }
     await page.locator('.bg-panel').screenshot({ path: path.join(OUT, 'appearance-panel.png') });
 
-    // 3. 对话互动页：背景真的渲染在消息区背后，快捷条可切换且有可见反馈
+    // 3. 背景现在只能在「个性外观」里调：在那边选，切到对话页验证生效
+    //    （对话页顶部的快捷条已按要求移除）
     await page.getByText('对话互动', { exact: true }).first().click();
     await page.waitForSelector('.dash-chat-stage', { timeout: 15000 });
     const stage = page.locator('.dash-chat-stage');
 
-    await page.locator('.dash-chat-bgbar-chip').filter({ hasText: '极光' }).click();
-    await page.waitForTimeout(800);
-    if ((await stage.getAttribute('data-chat-bg')) !== 'aurora') {
-      throw new Error('quick chip did not switch the chat stage to aurora');
+    // 确认快捷条确实不存在了
+    if (await page.locator('.dash-chat-bgbar').count()) {
+      throw new Error('对话页不应再有背景快捷条（只能在个性外观里调）');
     }
-    if ((await stage.locator('canvas').count()) !== 1) {
-      throw new Error('chat stage canvas missing after switching to aurora');
-    }
-    if (!(await page.locator('.dash-chat-bg-hint').count())) {
-      throw new Error('background switch hint did not appear');
-    }
-    await page.screenshot({ path: path.join(OUT, 'chat-aurora-full.png') });
-    await stage.screenshot({ path: path.join(OUT, 'chat-aurora-stage.png') });
 
-    for (const [label, file] of [
-      ['水墨', 'chat-ink-stage.png'],
-      ['细雨', 'chat-rain-stage.png'],
-      ['科幻', 'chat-scifi-stage.png'],
-      ['简洁', 'chat-minimal-stage.png'],
-      ['樱花', 'chat-sakura-stage.png'],
-    ]) {
-      await page.locator('.dash-chat-bgbar-chip').filter({ hasText: label }).click();
-      await page.waitForTimeout(900);
+    // 回外观页，逐个选背景，再回对话页核对
+    const CASES = [
+      ['极光', 'aurora', 'chat-aurora-stage.png'],
+      ['水墨', 'ink', 'chat-ink-stage.png'],
+      ['细雨', 'rain', 'chat-rain-stage.png'],
+      ['简洁', 'minimal', 'chat-minimal-stage.png'],
+      ['樱花', 'sakura', 'chat-sakura-stage.png'],
+      ['春·柳', 'spring-willow', 'chat-spring-stage.png'],
+      ['夏·荷', 'summer-lotus', 'chat-summer-stage.png'],
+      ['秋·菊', 'autumn-chrys', 'chat-autumn-stage.png'],
+      ['冬·梅', 'winter-plum', 'chat-winter-stage.png'],
+    ];
+
+    for (const [label, id, file] of CASES) {
+      await page.getByText('个性外观', { exact: true }).first().click();
+      await page.waitForSelector('.bg-panel', { timeout: 15000 });
+      await page.locator('.dash-bg-card').filter({ hasText: label }).first().click();
+      await page.waitForTimeout(420);
+
+      const stored = await page.evaluate(() => localStorage.getItem('ai-desktop-pet.chat-bg'));
+      if (stored !== id) throw new Error(`${label} 没写进 localStorage，实际 ${stored}`);
+
+      await page.getByText('对话互动', { exact: true }).first().click();
+      await page.waitForSelector('.dash-chat-stage', { timeout: 15000 });
+      await page.waitForTimeout(700);
+
+      const applied = await stage.getAttribute('data-chat-bg');
+      if (applied !== id) throw new Error(`${label} 没应用到对话页，实际 ${applied}`);
+      if ((await stage.locator('canvas').count()) !== 1) {
+        throw new Error(`${label} 的 canvas 缺失`);
+      }
       await stage.screenshot({ path: path.join(OUT, file) });
     }
 
     // 4. 关掉背景：canvas 消失，舞台去掉 has-bg
-    await page.locator('.dash-chat-bgbar-chip').filter({ hasText: '无' }).click();
+    await page.getByText('个性外观', { exact: true }).first().click();
+    await page.waitForSelector('.bg-panel', { timeout: 15000 });
+    await page.locator('.dash-bg-card').filter({ hasText: '无' }).first().click();
+    await page.waitForTimeout(420);
+    await page.getByText('对话互动', { exact: true }).first().click();
+    await page.waitForSelector('.dash-chat-stage', { timeout: 15000 });
     await page.waitForTimeout(600);
     if ((await stage.locator('canvas').count()) !== 0) {
       throw new Error('canvas should be removed when the background is off');
@@ -100,9 +119,10 @@ const PRESETS = [
       throw new Error('has-bg class should be removed when the background is off');
     }
 
-    // 5. 自定义图片：写入后刷新，快捷条应多出「自定义」并渲染图片
+
+    // 5. 自定义图片：写入后刷新，外观页的「自定义」卡片可选中，对话页渲染图片
     await page.evaluate(() => {
-      const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="#223355"/></svg>';
+      const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="#2b6cb0"/></svg>';
       localStorage.setItem('ai-desktop-pet.chat-bg-custom', 'data:image/svg+xml;base64,' + btoa(svg));
       localStorage.setItem('ai-desktop-pet.chat-bg', 'custom');
     });
@@ -111,10 +131,20 @@ const PRESETS = [
     await page.getByText('对话互动', { exact: true }).first().click();
     await page.waitForSelector('.dash-chat-stage', { timeout: 20000 });
     await page.waitForTimeout(700);
-    if (!(await page.locator('.dash-chat-bgbar-chip').filter({ hasText: '自定义' }).count())) {
-      throw new Error('custom background chip should appear once an image is stored');
+
+    const customApplied = await page.locator('.dash-chat-stage').getAttribute('data-chat-bg');
+    if (customApplied !== 'custom') {
+      throw new Error(`自定义背景没应用到对话页，实际 ${customApplied}`);
     }
-    await page.screenshot({ path: path.join(OUT, 'chat-custom-full.png') });
+
+    await page.getByText('个性外观', { exact: true }).first().click();
+    await page.waitForSelector('.bg-panel', { timeout: 15000 });
+    const customActive = await page.locator('.dash-bg-card.active').filter({ hasText: '自定义' }).count();
+    if (!customActive) {
+      throw new Error('外观页的「自定义」卡片应为选中态');
+    }
+    await page.screenshot({ path: path.join(OUT, 'appearance-custom.png') });
+
 
     // 清理，别污染用户真实设置
     await page.evaluate(() => {
