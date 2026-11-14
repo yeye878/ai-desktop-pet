@@ -1,4 +1,4 @@
-// 配色 v4 的离线回归：色阶完整性、色相收敛、对比度达标、语义映射一致。
+// 配色回归：色阶完整性、色相收敛、对比度达标、语义映射一致。
 // 用 typescript 转译 src/services/palette.ts 后在 vm 里跑，不需要浏览器。
 const fs = require("node:fs");
 const vm = require("node:vm");
@@ -102,17 +102,37 @@ test("青瓷主色相收敛在参考图的 198°±6°（高级感的来源）", 
   }
 });
 
-test("彩度全部压到参考图量级（C≤0.10），没有高饱和色块", () => {
-  const all = [
-    ...Object.values(P.CELADON_SCALE),
+test("彩度按角色分开约束：中性色近中性、强调色允许鲜艳", () => {
+  /*
+   * 参考图（UI 截图）实测规律：
+   *   - 63% 像素是纯白，中性区 C≈0.001
+   *   - 只有一条高饱和彩虹带，C 0.10~0.23
+   *
+   * 所以「所有颜色都 C<=0.10」是上一张柔和照片的纪律，不适用于现在。
+   * 真正该守住的是：纸面/文字保持近中性（否则整页发黄发脏），
+   * 强调色放开到 0.13（够鲜艳，又不至于变荧光）。
+   */
+  const neutral = [
     ...Object.values(P.SAND_SCALE),
     ...Object.values(P.INK_SCALE),
+  ];
+  for (const hex of neutral) {
+    const { C } = hexToOklch(hex);
+    assert.ok(C <= 0.03, `中性色 ${hex} 彩度 ${C.toFixed(3)} 偏高，纸面/文字必须近中性`);
+  }
+
+  const accent = [
+    ...Object.values(P.CELADON_SCALE),
     ...Object.values(P.CLAY_SCALE),
   ];
-  for (const hex of all) {
+  for (const hex of accent) {
     const { C } = hexToOklch(hex);
-    assert.ok(C <= 0.1, `${hex} 彩度 ${C.toFixed(3)} 超出低饱和纪律`);
+    assert.ok(C <= 0.13, `强调色 ${hex} 彩度 ${C.toFixed(3)} 超出上限，会变荧光`);
   }
+
+  // 强调色要"看得出颜色"：最饱和的那一档不能低于 0.09
+  const maxAccentC = Math.max(...accent.map((hex) => hexToOklch(hex).C));
+  assert.ok(maxAccentC >= 0.09, `强调色最饱和档只有 ${maxAccentC.toFixed(3)}，太灰`);
 });
 
 test("所有表面色都是高亮纸面（L≥0.85），深色只用于文字", () => {

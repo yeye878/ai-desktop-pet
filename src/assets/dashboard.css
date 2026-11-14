@@ -54,53 +54,55 @@
   color-scheme: light;
 
   /* 色阶：青瓷（主）/ 暖砂（纸面）/ 墨（文字）/ 陶土（唯一强调） */
-  --celadon-50: #f3fbfb;
-  --celadon-100: #e5f5f5;
-  --celadon-200: #d0ebec;
-  --celadon-300: #b6dcdd;
-  --celadon-400: #97c8ca;
-  --celadon-500: #79b1b3;
-  --celadon-600: #609497;
-  --celadon-700: #4a7577;
-  --celadon-800: #365658;
-  --celadon-900: #23393a;
+  /* 色阶：青瓷（主）/ 暖砂（纸面）/ 墨（文字）/ 陶土（唯一强调） */
+  --celadon-50: #f5fefe;
+  --celadon-100: #dff8f9;
+  --celadon-200: #bcedee;
+  --celadon-300: #99e1e4;
+  --celadon-400: #75d4d8;
+  --celadon-500: #3cc2c7;
+  --celadon-600: #04b1b7;
+  --celadon-700: #04a1a6;
+  --celadon-800: #148286;
+  --celadon-900: #20787c;
 
-  --sand-50: #fcfaf5;
-  --sand-100: #f7f3eb;
-  --sand-200: #eee9dc;
-  --sand-300: #e4ddcc;
-  --sand-400: #d6ceba;
-  --sand-500: #c2baa5;
-  --sand-600: #aaa18d;
-  --sand-700: #8b8370;
+  --sand-50: #fefefd;
+  --sand-100: #fcfbfa;
+  --sand-200: #eeece9;
+  --sand-300: #e0deda;
+  --sand-400: #d3cfc9;
+  --sand-500: #c5c1b9;
+  --sand-600: #b8b3a9;
+  --sand-700: #a49e93;
 
-  --ink-50: #f6f8fb;
-  --ink-100: #edeff3;
-  --ink-200: #dfe2e8;
-  --ink-300: #caced6;
-  --ink-400: #adb2bb;
-  --ink-500: #8b909a;
-  --ink-600: #6b707a;
-  --ink-700: #4e535c;
-  --ink-800: #34383f;
-  --ink-900: #1e2127;
+  --ink-50: #faf9f8;
+  --ink-100: #f3f1ef;
+  --ink-200: #e6e3e1;
+  --ink-300: #d4cfcc;
+  --ink-400: #b9b3af;
+  --ink-500: #97918c;
+  --ink-600: #78706a;
+  --ink-650: #68615b;
+  --ink-700: #58524d;
+  --ink-800: #3c3733;
+  --ink-900: #24201d;
 
-  --clay-100: #f8ede8;
-  --clay-200: #f2dad0;
-  --clay-300: #e3beae;
-  --clay-400: #cf9e89;
-  --clay-500: #bb8166;
-  --clay-600: #9f684f;
-  --clay-700: #7b4e3a;
+  --clay-100: #feeee8;
+  --clay-200: #fdd9cb;
+  --clay-300: #f6bda8;
+  --clay-400: #e79d80;
+  --clay-500: #d9815e;
+  --clay-600: #ac5b3b;
+  --clay-700: #82452c;
 
   /* 青纸：介于青瓷与暖砂之间的中性纸面。参考图的底色其实是"极淡的青色白"，
      不是米黄；之前用 sand 打底会把整页色相拉到 95°（偏黄），和参考图的 198° 对不上。 */
-  --paper-50: #f6fbfb;
-  --paper-100: #f0f8f6;
-  --paper-150: #e9f4f2;
-  --paper-200: #e1efec;
-  --paper-300: #d5e6e2;
-  --paper-400: #c7dbd7;
+  --paper-50: #fefefd;
+  --paper-100: #fbfcfb;
+  --paper-150: #f6f9f9;
+  --paper-200: #eff4f4;
+  --paper-300: #e4eded;
+  --paper-400: #d6e4e4;
 
   /* surfaces：以青纸为主，暖砂只做「暖点缀」 */
   --dash-sidebar-bg: var(--paper-tint-100);
@@ -111,11 +113,11 @@
   --dash-panel-solid: var(--paper-50);
   --dash-panel-soft: var(--paper-tint-150);
   --dash-card-secondary: var(--sand-200);
-  --dash-card-border: rgba(52, 56, 63, 0.10);
-  --dash-divider: rgba(52, 56, 63, 0.085);
+  --dash-card-border: rgba(60, 55, 51, 0.09);
+  --dash-divider: rgba(60, 55, 51, 0.08);
 
   /*
-    语义色：取代原来那套高饱和「糖果色」（#79b1b3 / #d6ceba / #bb8166 …）。
+    语义色：取代原来那套高饱和「糖果色」（#3cc2c7 / #d3cfc9 / #d9815e …）。
     那套颜色在低饱和的纸面上像贴纸，是"看起来不高级"的主因。
     现在统一收敛：主色走青瓷、唯一暖色走陶土、状态色复用它俩。
   */
@@ -124,9 +126,11 @@
     这一组会被 stores/pet.ts 的 applyCssVars() 覆盖成「当前皮肤派生色」；
     下面的值是默认皮肤（青瓷）的兜底，保证没有 JS 参与时也好看。
   */
-  --dash-accent: #609497;
-  --dash-accent-soft: #d0ebec;
-  --dash-accent-strong: #4a7577;
+  --dash-accent: #04b1b7;
+  --dash-accent-soft: #bcedee;
+  --dash-accent-strong: #148286;
+  --dash-accent-text: #20787c;
+  --dash-on-accent: #24201d;
   --dash-warm: var(--clay-500);
   --dash-warm-strong: var(--clay-600);
   --dash-success: var(--celadon-600);
@@ -142,36 +146,37 @@
   --dash-candy-lavender: var(--celadon-300);
 
   /* 纸面色阶：由主题主色派生（JS 会覆写），默认是青瓷版 */
-  --paper-tint-50: #f8fafa;
-  --paper-tint-100: #f1f6f6;
-  --paper-tint-150: #eaf1f1;
-  --paper-tint-200: #e0eaeb;
-  --paper-tint-300: #d3e1e2;
+  --paper-tint-50: #fdfefe;
+  --paper-tint-100: #f7fbfb;
+  --paper-tint-150: #eff7f7;
+  --paper-tint-200: #e2f0f0;
+  --paper-tint-300: #d0e6e6;
 
   /* rgb 三元组，供 rgba(var(--dash-accent-rgb), a) 使用 */
-  --dash-accent-rgb: 96, 148, 151;
-  --dash-accent-strong-rgb: 74, 117, 119;
-  --paper-tint-150-rgb: 234, 241, 241;
-  --paper-tint-200-rgb: 224, 234, 235;
-  --paper-tint-300-rgb: 211, 225, 226;
-  --dash-warm-rgb: 187, 129, 102;
-  --dash-ink-rgb: 52, 56, 63;
-  --dash-surface-rgb: 252, 250, 245;
+  --dash-accent-rgb: 4, 177, 183;
+  --dash-accent-strong-rgb: 20, 130, 134;
+  --paper-tint-100-rgb: 247, 251, 251;
+  --paper-tint-150-rgb: 239, 247, 247;
+  --paper-tint-200-rgb: 226, 240, 240;
+  --paper-tint-300-rgb: 208, 230, 230;
+  --dash-warm-rgb: 217, 129, 94;
+  --dash-ink-rgb: 60, 55, 51;
+  --dash-surface-rgb: 252, 251, 250;
 
   /* shadows：把色相从原来偏蓝的 (33,48,74) 换成偏暖中性的墨色 */
   --dash-shadow-sm:
-    0 1px 0 rgba(252, 250, 245, 0.9),
-    0 8px 24px rgba(52, 56, 63, 0.055);
+    0 1px 0 rgba(255, 255, 255, 0.95),
+    0 8px 24px rgba(60, 55, 51, 0.05);
   --dash-shadow-md:
-    0 1px 0 rgba(252, 250, 245, 0.85),
-    0 14px 38px rgba(52, 56, 63, 0.075);
+    0 1px 0 rgba(255, 255, 255, 0.9),
+    0 14px 38px rgba(60, 55, 51, 0.065);
   --dash-shadow-hover:
-    0 1px 0 rgba(252, 250, 245, 0.92),
-    0 18px 42px rgba(52, 56, 63, 0.09);
+    0 1px 0 rgba(255, 255, 255, 0.96),
+    0 18px 42px rgba(60, 55, 51, 0.075);
   --dash-shadow-glow:
-    0 0 0 4px rgba(96, 148, 151, 0.13),
-    0 8px 0 rgba(96, 148, 151, 0.06),
-    0 14px 30px rgba(96, 148, 151, 0.1);
+    0 0 0 4px rgba(4, 177, 183, 0.16),
+    0 8px 0 rgba(4, 177, 183, 0.07),
+    0 14px 30px rgba(4, 177, 183, 0.12);
 
   /* radii */
   --dash-radius-xl: 16px;
@@ -246,12 +251,12 @@ button {
   flex-direction: column;
   background:
     url("./art/paper-grain-cool.webp"),
-    radial-gradient(115% 85% at 10% 0%, rgba(var(--paper-tint-300-rgb), 0.5), transparent 56%),
-    radial-gradient(105% 80% at 90% 100%, rgba(var(--paper-tint-200-rgb), 0.42), transparent 58%),
-    var(--paper-tint-150);
+    radial-gradient(115% 85% at 6% 0%, rgba(var(--dash-accent-rgb), 0.07), transparent 58%),
+    radial-gradient(105% 80% at 94% 100%, rgba(var(--paper-tint-300-rgb), 0.26), transparent 60%),
+    var(--paper-tint-50);
   background-size: 520px 520px, auto, auto, auto;
-  /* 纸面纹理本身偏暖，和青纸底色叠起来会重新偏黄，这里把纹理层压淡 */
-  background-blend-mode: multiply, normal, normal, normal;
+  /* 纹理用 soft-light：只增加肌理，不压暗整体（multiply 会让白底变灰） */
+  background-blend-mode: soft-light, normal, normal, normal;
   color: var(--dash-text-primary);
   font-family: "Nunito", "Inter", "SF Pro Display", ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   letter-spacing: 0;
@@ -451,10 +456,10 @@ button {
   padding: 20px 14px 16px;
   background:
     url("./art/paper-grain-cool.webp"),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(var(--paper-tint-150-rgb), 0.82)),
-    repeating-linear-gradient(135deg, rgba(52, 56, 63, 0.035) 0 1px, transparent 1px 18px),
-    linear-gradient(180deg, var(--dash-sidebar-bg), var(--dash-sidebar-bg-2) 92%);
-  background-size: 460px 460px, auto, auto, auto;
+    linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(var(--paper-tint-100-rgb, 251, 252, 251), 0.9)),
+    linear-gradient(180deg, var(--dash-sidebar-bg), var(--dash-sidebar-bg-2) 96%);
+  background-size: 460px 460px, auto, auto;
+  background-blend-mode: soft-light, normal, normal;
   border-right: 1px solid rgba(52, 56, 63, 0.08);
   box-shadow:
     1px 0 0 rgba(255, 255, 255, 0.80),
@@ -474,7 +479,7 @@ button {
   background: url("./art/sidebar-mascot.png") center bottom / contain no-repeat;
   opacity: 0.92;
   pointer-events: none;
-  filter: drop-shadow(0 10px 18px rgba(52, 56, 63, 0.10));
+  filter: drop-shadow(0 10px 18px rgba(60, 55, 51, 0.09));
   transform: rotate(-2deg);
 }
 
@@ -638,7 +643,7 @@ button {
 .sidebar-divider {
   height: 1px;
   margin: 14px 10px;
-  background: linear-gradient(90deg, transparent, rgba(52, 56, 63, 0.10), transparent);
+  background: linear-gradient(90deg, transparent, rgba(60, 55, 51, 0.09), transparent);
 }
 
 /* --- sidebar footer --- */
@@ -709,7 +714,7 @@ button {
 .sidebar-action-btn.danger:hover {
   background: rgba(159, 104, 79, 0.10);
   border-color: rgba(159, 104, 79, 0.22);
-  color: #4a7577;
+  color: #148286;
   transform: translateY(-1px);
 }
 
@@ -719,15 +724,21 @@ button {
   min-width: 0;
   overflow-y: auto;
   padding: 34px 48px 52px;
+  /*
+   * 内容区背景。原来叠了 4 层：
+   *   - 两处旧配色的粉/紫色斜向渐变（残留，会把白底染灰）
+   *   - 两组 32px 网格线（视觉噪点）
+   *   - 纹理用 multiply（整体压暗）
+   * 参考图是 63% 纯白，所以这里只留「白底 + 极淡青调 + 几乎看不见的肌理」。
+   */
   background:
     url("./art/paper-grain-cool.webp"),
-    linear-gradient(135deg, rgba(96, 148, 151, 0.16) 0 18%, transparent 18% 100%),
-    linear-gradient(225deg, rgba(151, 200, 202, 0.20) 0 14%, transparent 14% 100%),
-    repeating-linear-gradient(90deg, rgba(52, 56, 63, 0.035) 0 1px, transparent 1px 32px),
-    repeating-linear-gradient(0deg, rgba(52, 56, 63, 0.03) 0 1px, transparent 1px 32px),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0) 320px),
+    radial-gradient(120% 80% at 8% 0%, rgba(var(--dash-accent-rgb), 0.055), transparent 62%),
+    radial-gradient(110% 75% at 96% 100%, rgba(var(--paper-tint-300-rgb), 0.18), transparent 65%),
+    repeating-linear-gradient(90deg, rgba(60, 55, 51, 0.012) 0 1px, transparent 1px 34px),
     var(--dash-content-bg);
-  background-size: 620px 620px, auto, auto, auto, auto, auto, auto;
+  background-size: 620px 620px, auto, auto, auto, auto;
+  background-blend-mode: soft-light, normal, normal, normal, normal;
   scrollbar-width: thin;
   scrollbar-color: rgba(35, 31, 28, 0.18) transparent;
 
@@ -777,91 +788,97 @@ button {
   z-index: 1;
 }
 
+/*
+ * 页面专属背景。
+ *
+ * 这些规则的优先级高于 .dashboard-content 基础规则，之前改基础规则没生效就是这个原因。
+ * 现在统一：白底（var(--dash-content-bg) 已是 #fefefd）+ 极淡主色光晕，
+ * 用 background-blend-mode: soft-light 让纹理只做肌理、不压暗。
+ */
 .dashboard-content.page-home {
   background:
     url("./art/paper-grain-cool.webp"),
-    radial-gradient(circle at 16% 18%, rgba(151, 200, 202, 0.24), transparent 28%),
-    radial-gradient(circle at 86% 12%, rgba(96, 148, 151, 0.18), transparent 30%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(255, 255, 255, 0.12) 360px),
+    radial-gradient(circle at 14% 16%, rgba(var(--dash-accent-rgb), 0.10), transparent 30%),
+    radial-gradient(circle at 88% 10%, rgba(var(--pet-accent-rgb, 60, 194, 199), 0.08), transparent 32%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.4) 380px),
     var(--dash-content-bg);
   background-size: 620px 620px, auto, auto, auto, auto;
+  background-blend-mode: soft-light, normal, normal, normal, normal;
 }
 
 .dashboard-content.page-memory {
   background:
     url("./art/paper-grain-cool.webp"),
-    linear-gradient(90deg, rgba(151, 200, 202, 0.16) 0 1px, transparent 1px 34px),
-    linear-gradient(180deg, rgba(96, 148, 151, 0.10), transparent 42%),
-    linear-gradient(180deg, rgba(255, 253, 248, 0.86), rgba(255, 253, 248, 0.30)),
-    #f8fbff;
-  background-size: 620px 620px, 34px 34px, auto, auto, auto;
+    repeating-linear-gradient(90deg, rgba(var(--dash-accent-rgb), 0.05) 0 1px, transparent 1px 36px),
+    radial-gradient(circle at 82% 18%, rgba(var(--dash-accent-rgb), 0.09), transparent 32%),
+    var(--dash-content-bg);
+  background-size: 620px 620px, 36px 36px, auto, auto;
+  background-blend-mode: soft-light, normal, normal, normal;
 }
 
 .dashboard-content.page-memory::before {
-  opacity: 0.38;
-  filter: sepia(0.08) saturate(0.95);
+  opacity: 0.2;
 }
 
 .dashboard-content.page-appearance {
   background:
     url("./art/paper-grain-cool.webp"),
-    radial-gradient(circle at 18% 24%, rgba(194, 156, 173, 0.18), transparent 26%),
-    radial-gradient(circle at 82% 16%, rgba(123, 132, 159, 0.18), transparent 28%),
-    radial-gradient(circle at 74% 88%, rgba(151, 200, 202, 0.18), transparent 30%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(255, 255, 255, 0.20)),
-    #f7fbff;
-  background-size: 620px 620px, auto, auto, auto, auto, auto;
+    radial-gradient(circle at 16% 20%, rgba(var(--dash-accent-rgb), 0.13), transparent 30%),
+    radial-gradient(circle at 84% 14%, rgba(var(--pet-accent-rgb, 60, 194, 199), 0.10), transparent 32%),
+    radial-gradient(circle at 76% 86%, rgba(var(--dash-warm-rgb), 0.07), transparent 34%),
+    var(--dash-content-bg);
+  background-size: 620px 620px, auto, auto, auto, auto;
+  background-blend-mode: soft-light, normal, normal, normal, normal;
 }
 
 .dashboard-content.page-appearance::before {
-  opacity: 0.34;
-  filter: hue-rotate(12deg) saturate(1.12);
+  opacity: 0.2;
+  filter: none;
 }
 
 .dashboard-content.page-voice {
   background:
     url("./art/paper-grain-cool.webp"),
-    repeating-linear-gradient(90deg, transparent 0 22px, rgba(96, 148, 151, 0.14) 22px 24px, transparent 24px 48px),
-    radial-gradient(circle at 12% 78%, rgba(134, 168, 138, 0.20), transparent 28%),
-    linear-gradient(135deg, rgba(96, 148, 151, 0.12), rgba(255, 255, 255, 0.76) 44%, rgba(123, 132, 159, 0.10)),
-    #f7fbff;
-  background-size: 620px 620px, 48px 100%, auto, auto, auto;
+    repeating-linear-gradient(90deg, transparent 0 24px, rgba(var(--dash-accent-rgb), 0.055) 24px 26px, transparent 26px 50px),
+    radial-gradient(circle at 10% 80%, rgba(var(--dash-accent-rgb), 0.10), transparent 30%),
+    var(--dash-content-bg);
+  background-size: 620px 620px, 50px 100%, auto, auto;
+  background-blend-mode: soft-light, normal, normal, normal;
 }
 
 .dashboard-content.page-voice::before {
-  opacity: 0.30;
-  filter: hue-rotate(105deg) saturate(0.96);
+  opacity: 0.18;
+  filter: none;
 }
 
 .dashboard-content.page-system {
   background:
     url("./art/paper-grain-cool.webp"),
-    linear-gradient(90deg, rgba(52, 56, 63, 0.05) 0 1px, transparent 1px 30px),
-    linear-gradient(0deg, rgba(52, 56, 63, 0.045) 0 1px, transparent 1px 30px),
-    radial-gradient(circle at 90% 14%, rgba(96, 148, 151, 0.14), transparent 28%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(245, 250, 255, 0.30)),
-    #f7fbff;
-  background-size: 620px 620px, 30px 30px, 30px 30px, auto, auto, auto;
+    linear-gradient(90deg, rgba(60, 55, 51, 0.018) 0 1px, transparent 1px 32px),
+    linear-gradient(0deg, rgba(60, 55, 51, 0.016) 0 1px, transparent 1px 32px),
+    radial-gradient(circle at 92% 12%, rgba(var(--dash-accent-rgb), 0.09), transparent 30%),
+    var(--dash-content-bg);
+  background-size: 620px 620px, 32px 32px, 32px 32px, auto, auto;
+  background-blend-mode: soft-light, normal, normal, normal, normal;
 }
 
 .dashboard-content.page-system::before {
-  opacity: 0.24;
-  filter: saturate(0.72);
+  opacity: 0.16;
+  filter: none;
 }
 
 .dashboard-content.page-about {
   background:
     url("./art/paper-grain-cool.webp"),
-    radial-gradient(circle at 50% 26%, rgba(151, 200, 202, 0.23), transparent 24%),
-    radial-gradient(circle at 16% 74%, rgba(194, 156, 173, 0.16), transparent 28%),
-    radial-gradient(circle at 88% 70%, rgba(96, 148, 151, 0.16), transparent 30%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(var(--paper-tint-150-rgb), 0.45)),
-    #f7fbff;
-  background-size: 620px 620px, auto, auto, auto, auto, auto;
+    radial-gradient(circle at 50% 24%, rgba(var(--dash-accent-rgb), 0.11), transparent 28%),
+    radial-gradient(circle at 14% 76%, rgba(var(--dash-warm-rgb), 0.06), transparent 30%),
+    var(--dash-content-bg);
+  background-size: 620px 620px, auto, auto, auto;
+  background-blend-mode: soft-light, normal, normal, normal;
 }
 
 .dashboard-content.page-about::before {
-  opacity: 0.42;
+  opacity: 0.24;
   width: min(36vw, 440px);
 }
 
@@ -930,7 +947,7 @@ button {
   min-height: 34px;
   padding: 8px 14px;
   border-radius: 999px;
-  border: 2px solid rgba(52, 56, 63, 0.10);
+  border: 2px solid rgba(60, 55, 51, 0.09);
   background: rgba(255, 255, 255, 0.82);
   color: var(--dash-text-secondary);
   box-shadow: var(--dash-shadow-sm);
@@ -1038,12 +1055,12 @@ button {
     linear-gradient(135deg, rgba(96, 148, 151, 0.16), rgba(255, 255, 255, 0.56) 52%, rgba(134, 168, 138, 0.12));
   background-size: 460px 460px, auto;
   box-shadow:
-    0 4px 0 rgba(96, 148, 151, 0.06),
+    0 4px 0 rgba(4, 177, 183, 0.07),
     0 20px 40px rgba(52, 56, 63, 0.08);
 }
 
 .dashboard-content.page-system .dash-card {
-  border-color: rgba(52, 56, 63, 0.10);
+  border-color: rgba(60, 55, 51, 0.09);
   background:
     url("./art/paper-grain-cool.webp"),
     linear-gradient(180deg, rgba(255, 255, 255, 0.70), rgba(245, 250, 255, 0.48));
@@ -1117,13 +1134,13 @@ button {
 }
 
 .dash-mini-btn.primary {
-  background: var(--pet-primary, #609497);
+  background: var(--pet-primary, #04b1b7);
   color: white;
   border-color: transparent;
 }
 
 .dash-mini-btn.primary:hover {
-  background: var(--pet-primary-dark, #4a7577);
+  background: var(--pet-primary-dark, #148286);
 }
 
 .dash-skill-list {
@@ -1143,7 +1160,7 @@ button {
 }
 
 .dash-skill-row.active {
-  border-color: var(--pet-primary, #609497);
+  border-color: var(--pet-primary, #04b1b7);
   background: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.08);
 }
 
@@ -1161,7 +1178,7 @@ button {
 
 .dash-skill-badge {
   font-size: 10px;
-  background: var(--pet-primary, #609497);
+  background: var(--pet-primary, #04b1b7);
   color: white;
   padding: 1px 6px;
   border-radius: 6px;
@@ -1391,7 +1408,7 @@ button {
 .dash-aside-btn.danger {
   border-color: rgba(187, 129, 102, 0.32);
   background: rgba(187, 129, 102, 0.12);
-  color: #9f684f;
+  color: #ac5b3b;
 }
 
 .dash-aside-empty {
@@ -1498,7 +1515,7 @@ button {
   display: grid;
   place-items: center;
   border-radius: 50%;
-  border: 1px solid rgba(52, 56, 63, 0.10);
+  border: 1px solid rgba(60, 55, 51, 0.09);
   background: rgba(255, 255, 255, 0.94);
   color: var(--dash-text-secondary);
   cursor: pointer;
@@ -1784,7 +1801,7 @@ button {
   align-self: flex-start;
   margin-top: 6px;
   padding: 5px;
-  border: 1px solid rgba(52, 56, 63, 0.09);
+  border: 1px solid rgba(60, 55, 51, 0.075);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.94);
   box-shadow:
@@ -1826,7 +1843,7 @@ button {
 .dash-tool-trace-panel {
   width: min(760px, 100%);
   padding: 13px;
-  border: 1px solid rgba(52, 56, 63, 0.10);
+  border: 1px solid rgba(60, 55, 51, 0.09);
   border-radius: 16px;
   background:
     url("./art/paper-grain-cool.webp"),
@@ -1882,7 +1899,7 @@ button {
 
 .dash-tool-event.denied,
 .dash-tool-event.skipped {
-  border-left-color: #4a7577;
+  border-left-color: #148286;
 }
 
 .dash-tool-event-head {
@@ -2181,14 +2198,14 @@ button {
   overflow-y: auto;
   margin-bottom: 10px;
   padding: 6px;
-  border: 1px solid rgba(52, 56, 63, 0.10);
+  border: 1px solid rgba(60, 55, 51, 0.09);
   border-radius: 14px;
   background:
     url("./art/paper-grain-cool.webp"),
     linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(var(--paper-tint-150-rgb), 0.72));
   background-size: 420px 420px, auto;
   box-shadow:
-    0 12px 24px rgba(52, 56, 63, 0.10),
+    0 12px 24px rgba(60, 55, 51, 0.09),
     inset 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
@@ -2637,7 +2654,7 @@ button {
 .home-danger-btn:hover {
   border-color: rgba(159, 104, 79, 0.4);
   background: rgba(159, 104, 79, 0.08);
-  color: #7b4e3a;
+  color: #82452c;
 }
 
 .home-glance-grid {
@@ -3145,7 +3162,7 @@ button {
 .dash-icon-btn.danger:hover:not(:disabled) {
   border-color: rgba(184, 79, 63, 0.25);
   background: rgba(184, 79, 63, 0.08);
-  color: #4a7577;
+  color: #148286;
 }
 
 .dash-icon-btn:disabled {
@@ -3242,7 +3259,7 @@ button {
 }
 
 .status-value.disconnected {
-  color: #4a7577;
+  color: #148286;
 }
 
 .status-value .status-dot {
@@ -3441,7 +3458,7 @@ button {
   align-items: center;
   padding: 3px 8px;
   border-radius: 999px;
-  background: rgba(96, 148, 151, 0.13);
+  background: rgba(4, 177, 183, 0.16);
   color: var(--dash-text-secondary);
   font-size: 10.5px;
   font-weight: 800;
@@ -3475,7 +3492,7 @@ button {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
   padding: 5px;
-  border: 1px solid rgba(52, 56, 63, 0.09);
+  border: 1px solid rgba(60, 55, 51, 0.075);
   border-radius: 8px;
   background: rgba(52, 56, 63, 0.04);
 }
@@ -3603,7 +3620,7 @@ button {
 .dash-test-result.error {
   border: 1px solid rgba(184, 79, 63, 0.18);
   background: rgba(184, 79, 63, 0.06);
-  color: #4a7577;
+  color: #148286;
 }
 
 /* ---------- deep test compatibility ---------- */
@@ -3662,7 +3679,7 @@ button {
 }
 
 .fail {
-  color: #9f684f;
+  color: #ac5b3b;
 }
 
 .compat-content {
@@ -3683,7 +3700,7 @@ button {
   padding: 0;
   list-style: none;
   font-size: 11px;
-  color: #9f684f;
+  color: #ac5b3b;
 }
 
 .compat-errors li {
@@ -3869,7 +3886,7 @@ button {
   color: rgb(var(--dash-accent-rgb));
   font-size: 13px;
   font-weight: 900;
-  box-shadow: 0 2px 8px rgba(52, 56, 63, 0.10);
+  box-shadow: 0 2px 8px rgba(60, 55, 51, 0.09);
 }
 
 .dash-skin-name {
@@ -4415,7 +4432,7 @@ button {
   bottom: 18px;
   height: 7px;
   border-radius: 999px;
-  background: linear-gradient(90deg, #bb8166, #d6ceba, #97c8ca, #79b1b3, #b6b0c2, #c29cad);
+  background: linear-gradient(90deg, #d9815e, #d3cfc9, #75d4d8, #3cc2c7, #b6b0c2, #c29cad);
   opacity: 0.42;
   pointer-events: none;
 }
@@ -4522,7 +4539,7 @@ button {
   background:
     radial-gradient(circle at 20% 18%, rgba(255, 255, 255, 0.74), transparent 30%),
     rgba(255, 255, 255, 0.48);
-  box-shadow: 0 4px 0 rgba(96, 148, 151, 0.06);
+  box-shadow: 0 4px 0 rgba(4, 177, 183, 0.07);
 }
 
 .voice-toggle-grid .sound-toggle-card::after {
@@ -4540,7 +4557,7 @@ button {
 .voice-interaction-panel > .dash-field-row {
   margin-top: 10px;
   padding: 14px 16px;
-  border: 1px solid rgba(96, 148, 151, 0.13);
+  border: 1px solid rgba(4, 177, 183, 0.16);
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.42);
 }
@@ -4580,7 +4597,7 @@ button {
   min-height: 360px;
   padding: 28px;
   border-radius: 18px 24px 18px 26px;
-  border-color: rgba(52, 56, 63, 0.10);
+  border-color: rgba(60, 55, 51, 0.09);
   background:
     url("./art/system-agent-lab.webp") right 20px bottom 18px / min(360px, 34vw) auto no-repeat,
     linear-gradient(135deg, rgba(255, 255, 255, 0.62), rgba(235, 250, 255, 0.42) 56%, rgba(151, 200, 202, 0.08));
@@ -4901,7 +4918,7 @@ button {
   border-radius: 16px;
   color: var(--dash-text-primary);
   background: rgba(255, 255, 255, 0.78);
-  box-shadow: 0 12px 40px rgba(52, 56, 63, 0.10);
+  box-shadow: 0 12px 40px rgba(60, 55, 51, 0.09);
   animation: dashScaleIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
@@ -4939,7 +4956,7 @@ button {
   border-radius: 8px;
   background: rgba(159, 104, 79, 0.08);
   border: 1px solid rgba(159, 104, 79, 0.18);
-  color: #9f684f;
+  color: #ac5b3b;
   font-size: 12px;
   font-weight: 600;
   margin-bottom: 8px;
@@ -4991,7 +5008,7 @@ button {
 }
 
 .dash-clear-all-btn:hover {
-  color: #9f684f;
+  color: #ac5b3b;
   background: rgba(159, 104, 79, 0.08);
 }
 
@@ -5028,7 +5045,7 @@ button {
 
 .dash-file-preview-item.error {
   opacity: 0.55;
-  border-color: #9f684f;
+  border-color: #ac5b3b;
 }
 
 .dash-preview-thumbnail {
@@ -5160,7 +5177,7 @@ button {
   gap: 6px;
   background: rgba(159, 104, 79, 0.12);
   border: 1px solid rgba(159, 104, 79, 0.25);
-  color: #9f684f;
+  color: #ac5b3b;
   padding: 4px 10px;
   border-radius: 6px;
   font-size: 11px;
@@ -5170,9 +5187,9 @@ button {
 }
 
 .dash-stop-btn:hover {
-  background: #9f684f;
+  background: #ac5b3b;
   color: #ffffff;
-  border-color: #9f684f;
+  border-color: #ac5b3b;
   transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(159, 104, 79, 0.35);
 }
@@ -5227,7 +5244,7 @@ button {
 
 .weather-info-bar.error {
   background: linear-gradient(135deg, rgba(255, 247, 237, 0.95), rgba(255, 241, 242, 0.95));
-  color: #4a7577;
+  color: #148286;
 }
 
 .weather-info-bar .weather-icon {
@@ -5307,19 +5324,21 @@ button {
 .dashboard-root {
   background:
     url("./art/paper-grain-cool.webp"),
-    radial-gradient(circle at 12% 8%, rgba(var(--paper-tint-300-rgb), 0.34), transparent 34%),
-    radial-gradient(circle at 88% 12%, rgba(96, 148, 151, 0.16), transparent 32%),
-    linear-gradient(180deg, var(--paper-100) 0%, var(--paper-150) 46%, var(--paper-200) 100%);
+    radial-gradient(circle at 12% 8%, rgba(var(--dash-accent-rgb), 0.07), transparent 36%),
+    radial-gradient(circle at 88% 12%, rgba(var(--paper-tint-300-rgb), 0.2), transparent 34%),
+    var(--paper-50);
   background-size: 520px 520px, auto, auto, auto;
+  /* 纹理用 soft-light：只做肌理，不给白底压灰 */
+  background-blend-mode: soft-light, normal, normal, normal;
   font-feature-settings: "calt", "kern", "liga";
 }
 
 .dashboard-titlebar {
   background:
     url("./art/paper-grain-cool.webp"),
-    linear-gradient(180deg, rgba(252, 254, 254, 0.96), rgba(233, 244, 242, 0.92));
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(250, 253, 253, 0.95));
   background-size: 420px 420px, auto;
-  border-bottom-color: rgba(52, 56, 63, 0.09);
+  border-bottom-color: rgba(60, 55, 51, 0.075);
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.76), 0 8px 18px rgba(52, 56, 63, 0.045);
 }
 
@@ -5328,12 +5347,18 @@ button {
 }
 
 .dashboard-sidebar {
-  border-right-color: rgba(52, 56, 63, 0.09);
+  border-right-color: rgba(60, 55, 51, 0.075);
+  /*
+   * 侧栏底色必须跟着主题走，所以两个色标都用主题派生变量。
+   * 上一版把第一个色标写死成 rgba(255,255,255,.97)，
+   * 结果 12 套主题的侧栏长得一模一样 —— 等于"换皮肤没反应"。
+   */
   background:
     url("./art/paper-grain-cool.webp"),
-    linear-gradient(172deg, rgba(var(--paper-tint-300-rgb), 0.94), rgba(var(--paper-tint-300-rgb), 0.86));
+    linear-gradient(172deg, rgba(var(--paper-tint-50-rgb, 253, 254, 254), 0.97), rgba(var(--paper-tint-150-rgb), 0.93));
   background-size: 520px 520px, auto;
-  background-blend-mode: multiply, normal;
+  /* soft-light 而不是 multiply：multiply 会把侧栏整体压成灰绿 */
+  background-blend-mode: soft-light, normal;
 }
 
 .dashboard-sidebar::before,
@@ -5343,9 +5368,9 @@ button {
 
 .dashboard-content {
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.42), transparent 230px),
-    var(--paper-tint-100);
-  scrollbar-color: rgba(86, 104, 128, 0.28) transparent;
+    linear-gradient(180deg, rgba(255, 255, 255, 0.6), transparent 240px),
+    var(--dash-content-bg);
+  scrollbar-color: rgba(86, 104, 128, 0.22) transparent;
 }
 
 .dashboard-content::before,
@@ -5373,7 +5398,7 @@ button {
 .sound-header,
 .lab-header {
   border-radius: var(--dash-radius-xl);
-  border-color: rgba(52, 56, 63, 0.09);
+  border-color: rgba(60, 55, 51, 0.075);
   background:
     url("./art/paper-grain-cool.webp"),
     linear-gradient(135deg, rgba(255, 255, 255, 0.76), rgba(246, 251, 255, 0.44));
@@ -5483,7 +5508,7 @@ button {
 
 .dash-toggle {
   border-color: rgba(52, 56, 63, 0.14);
-  background: rgba(52, 56, 63, 0.10);
+  background: rgba(60, 55, 51, 0.09);
 }
 
 .dash-toggle::before {
@@ -5602,7 +5627,7 @@ button {
 
 .voice-toggle-grid .sound-toggle-card {
   min-height: 116px;
-  border-color: rgba(52, 56, 63, 0.10);
+  border-color: rgba(60, 55, 51, 0.09);
   border-radius: 14px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(246, 252, 255, 0.48));
@@ -5620,7 +5645,7 @@ button {
 .mixer-panel .dash-range-row.mixer-control,
 .mixer-panel .dash-voice-picker-tools,
 .mixer-panel .dash-field-row {
-  border-color: rgba(52, 56, 63, 0.10);
+  border-color: rgba(60, 55, 51, 0.09);
   border-radius: 14px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.66), rgba(247, 252, 255, 0.44));
@@ -5639,7 +5664,7 @@ button {
 }
 
 .dash-mini-check {
-  border-color: rgba(52, 56, 63, 0.10);
+  border-color: rgba(60, 55, 51, 0.09);
   background: rgba(255, 255, 255, 0.66);
 }
 
@@ -5655,7 +5680,7 @@ button {
 .dash-file-preview-item,
 .dash-preview-file-card,
 .dash-msg-file-tag {
-  border-color: rgba(52, 56, 63, 0.10);
+  border-color: rgba(60, 55, 51, 0.09);
 }
 
 @media (max-width: 980px) {
@@ -5720,7 +5745,7 @@ button {
     flex: 0 0 auto;
     padding: 10px;
     border-right: 0;
-    border-bottom: 1px solid rgba(52, 56, 63, 0.09);
+    border-bottom: 1px solid rgba(60, 55, 51, 0.075);
     overflow: visible;
   }
 
@@ -5829,14 +5854,14 @@ button {
   overflow-y: auto;
   margin-bottom: 10px;
   padding: 6px;
-  border: 1px solid rgba(52, 56, 63, 0.10);
+  border: 1px solid rgba(60, 55, 51, 0.09);
   border-radius: 14px;
   background:
     url("./art/paper-grain-cool.webp"),
     linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(var(--paper-tint-150-rgb), 0.72));
   background-size: 420px 420px, auto;
   box-shadow:
-    0 12px 24px rgba(52, 56, 63, 0.10),
+    0 12px 24px rgba(60, 55, 51, 0.09),
     inset 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
@@ -5928,8 +5953,8 @@ button {
   margin-bottom: 6px;
   padding: 3px 10px 3px 4px;
   border-radius: 999px;
-  background: rgba(52, 56, 63, 0.055);
-  border: 1px solid rgba(52, 56, 63, 0.10);
+  background: rgba(60, 55, 51, 0.05);
+  border: 1px solid rgba(60, 55, 51, 0.09);
   font-size: 12px;
   color: var(--dash-text-secondary, rgba(52, 56, 63, 0.6));
   width: fit-content;
@@ -6000,7 +6025,7 @@ button {
   gap: 12px;
   padding: 10px 12px;
   margin-bottom: 8px;
-  border: 1px solid rgba(52, 56, 63, 0.09);
+  border: 1px solid rgba(60, 55, 51, 0.075);
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.5);
   transition: border-color var(--dash-transition), box-shadow var(--dash-transition);
@@ -6180,7 +6205,7 @@ button {
   align-items: center;
   gap: 8px;
   padding: 7px 10px;
-  border: 1px solid rgba(52, 56, 63, 0.10);
+  border: 1px solid rgba(60, 55, 51, 0.09);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.55);
   font-size: 12px;
@@ -6317,7 +6342,7 @@ button {
 
 .sidebar-subitem.active {
   background:
-    linear-gradient(135deg, rgba(var(--dash-accent-rgb), 0.12), rgba(96, 148, 151, 0.13)),
+    linear-gradient(135deg, rgba(var(--dash-accent-rgb), 0.12), rgba(4, 177, 183, 0.16)),
     rgba(255, 255, 255, 0.9);
   border-color: rgba(var(--dash-accent-rgb), 0.2);
   color: var(--dash-text-primary);
@@ -6479,7 +6504,7 @@ button {
 
 .dash-session-actions button {
   padding: 2px 6px;
-  border: 1px solid rgba(52, 56, 63, 0.10);
+  border: 1px solid rgba(60, 55, 51, 0.09);
   border-radius: 7px;
   background: rgba(255, 255, 255, 0.94);
   color: var(--dash-text-secondary);
@@ -6495,7 +6520,7 @@ button {
 .dash-session-actions button.danger:hover {
   border-color: rgba(159, 104, 79, 0.25);
   background: rgba(159, 104, 79, 0.12);
-  color: #4a7577;
+  color: #148286;
 }
 
 .dash-session-rename-input {
@@ -6522,7 +6547,7 @@ button {
   border: 1px solid rgba(159, 104, 79, 0.22);
   border-radius: 10px;
   background: rgba(159, 104, 79, 0.08);
-  color: #4a7577;
+  color: #148286;
   font-size: 12px;
 }
 
@@ -6752,7 +6777,7 @@ button {
   padding: 6px 8px;
   border-radius: var(--dash-radius-sm);
   background: rgba(187, 129, 102, 0.12);
-  color: #9f684f;
+  color: #ac5b3b;
   font-size: 11px;
   line-height: 1.45;
   word-break: break-word;
@@ -6797,7 +6822,7 @@ button {
 }
 
 .dash-agent-model-row:hover {
-  background: rgba(96, 148, 151, 0.1);
+  background: rgba(4, 177, 183, 0.12);
 }
 
 .dash-agent-model-row.active {
@@ -7092,6 +7117,120 @@ button {
   border-color: rgba(var(--dash-accent-rgb), 0.42);
   background: rgba(var(--dash-accent-rgb), 0.07);
   color: var(--dash-text-primary);
+}
+
+/* === 最近对话常驻条 ===
+   与背景条同一套瓷白语言，但横向单行可滚动，不占多行高度。
+   每个 chip 用槽位色点 + 会话标题，点一下直接打开对应会话。 */
+.dash-recent-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px 7px 12px;
+  border: 1px solid rgba(52, 56, 63, 0.08);
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.46)),
+    rgba(255, 255, 255, 0.28);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  min-height: 0;
+}
+
+.dash-recent-label {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--dash-text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.dash-recent-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(var(--dash-accent-rgb), 0.3) transparent;
+}
+
+.dash-recent-chips::-webkit-scrollbar {
+  height: 6px;
+}
+.dash-recent-chips::-webkit-scrollbar-track {
+  background: transparent;
+}
+.dash-recent-chips::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(var(--dash-accent-rgb), 0.24);
+}
+.dash-recent-chips::-webkit-scrollbar-thumb:hover {
+  background: rgba(var(--dash-accent-rgb), 0.42);
+}
+
+.dash-recent-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  max-width: 240px;
+  padding: 5px 12px 5px 6px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.56);
+  color: var(--dash-text-secondary);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: transform 140ms ease, border-color 140ms ease,
+    background 140ms ease, box-shadow 140ms ease, color 140ms ease;
+}
+
+.dash-recent-chip:hover {
+  transform: translateY(-1px);
+  border-color: rgba(var(--dash-accent-rgb), 0.24);
+  color: var(--dash-text-primary);
+}
+
+.dash-recent-chip.active {
+  border-color: rgba(var(--dash-accent-rgb), 0.5);
+  background: rgba(var(--dash-accent-rgb), 0.12);
+  color: var(--dash-text-primary);
+  box-shadow: 0 0 0 3px rgba(var(--dash-accent-rgb), 0.1);
+}
+
+.dash-recent-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.7);
+  box-shadow: 0 1px 3px rgba(52, 56, 63, 0.14);
+}
+
+/* 槽位色：主对话琥珀、Claude 珊瑚、Codex 薄荷、DeepSeek 天蓝，
+   与晨光瓷白的极光强调色一致，扫一眼就能分清对话来自哪个窗口。 */
+.dash-recent-chip.slot-main .dash-recent-icon { color: #d97706; }
+.dash-recent-chip.slot-claude .dash-recent-icon { color: #e11d48; }
+.dash-recent-chip.slot-codex .dash-recent-icon { color: #059669; }
+.dash-recent-chip.slot-dsh .dash-recent-icon { color: #0284c7; }
+
+.dash-recent-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .dash-chat-stage {
@@ -7563,7 +7702,7 @@ button {
   align-items: center;
   gap: 7px;
   padding: 6px 13px 6px 9px;
-  border: 1px solid rgba(52, 56, 63, 0.09);
+  border: 1px solid rgba(60, 55, 51, 0.075);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.6);
   color: var(--dash-text-secondary);
@@ -7608,7 +7747,7 @@ button {
 .dash-bg-stage-bubble {
   color: #2b3542;
   background: rgba(255, 255, 255, 0.86);
-  box-shadow: 0 4px 12px rgba(52, 56, 63, 0.09);
+  box-shadow: 0 4px 12px rgba(60, 55, 51, 0.075);
 }
 
 .dash-bg-stage-frame[data-bg="scifi"] .dash-bg-stage-bubble,
@@ -8152,7 +8291,7 @@ button {
 .atelier-character:hover {
   transform: translateY(-2px);
   border-color: rgba(var(--dash-accent-rgb), 0.3);
-  box-shadow: 0 12px 26px rgba(52, 56, 63, 0.09);
+  box-shadow: 0 12px 26px rgba(60, 55, 51, 0.075);
 }
 
 .atelier-character.active {
@@ -8261,7 +8400,7 @@ button {
   align-items: center;
   gap: 8px;
   padding: 7px 13px 7px 10px;
-  border: 1.5px solid rgba(52, 56, 63, 0.09);
+  border: 1.5px solid rgba(60, 55, 51, 0.075);
   border-radius: 11px;
   background: rgba(255, 255, 255, 0.66);
   cursor: pointer;
@@ -8422,7 +8561,7 @@ button {
 
 .atelier-bg-level {
   padding: 5px 13px;
-  border: 1.5px solid rgba(52, 56, 63, 0.09);
+  border: 1.5px solid rgba(60, 55, 51, 0.075);
   border-radius: 9px;
   background: rgba(255, 255, 255, 0.66);
   color: var(--dash-text-secondary);
@@ -8848,7 +8987,7 @@ button {
   background-size: 420px 420px, auto, auto, auto;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.9),
-    0 18px 46px rgba(52, 56, 63, 0.09);
+    0 18px 46px rgba(60, 55, 51, 0.075);
 }
 
 .atelier-hero-stage {

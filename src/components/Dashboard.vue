@@ -395,6 +395,31 @@ async function openSessionInSingle(sessionId: string) {
   }
   setWorkspaceLayout("single");
 }
+
+/**
+ * 「最近对话」常驻条：跨所有槽（主对话 + 三个 agent 窗口）按更新时间列出最近会话。
+ * 之前导入的 Harness 对话埋在折叠的 dsh 子导航里，用户打开控制台根本看不到，
+ * 这条把它们直接铺在对话页顶部，点一下就打开，旧工作一眼可见。
+ */
+const RECENT_SESSION_LIMIT = 8;
+const recentSessions = computed(() => sessions.sessions.slice(0, RECENT_SESSION_LIMIT));
+function sessionSlotLabel(slot: ChatSlot): string {
+  return slot === "main" ? "主对话" : SLOT_WINDOW_LABELS[slot];
+}
+function sessionSlotIcon(slot: ChatSlot): string {
+  return slot === "main" ? "brand-pet" : SLOT_WINDOW_ICONS[slot];
+}
+function sessionTimeLabel(session: ChatSession): string {
+  const stamp = session.updated_at || session.created_at;
+  if (!stamp) return "";
+  const diff = Date.now() - stamp * 1000;
+  if (diff < 60_000) return "刚刚";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
+  if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)} 天前`;
+  const date = new Date(stamp * 1000);
+  return `${date.getMonth() + 1}月${date.getDate()}日`;
+}
 // 会话列表就绪后剔除失效绑定（如此前删除的会话），避免窗格指向不存在的会话。
 watch(() => sessions.sessions, (list) => {
   if (!list.length) return;
@@ -4208,6 +4233,28 @@ ttsPlayer.stop();
                   </span>
                 </div>
               </template>
+            </div>
+            <!-- 最近对话常驻条：跨所有槽按更新时间列出最近会话，点一下直接打开。
+                 之前导入的 Harness 对话埋在折叠子导航里看不到，这条把它们铺在顶部。 -->
+            <div v-if="recentSessions.length" class="dash-recent-bar">
+              <span class="dash-recent-label">
+                <AppIcon name="clock-task" :size="13" />
+                最近对话
+              </span>
+              <div class="dash-recent-chips" role="list">
+                <button
+                  v-for="item in recentSessions"
+                  :key="item.id"
+                  type="button"
+                  role="listitem"
+                  :class="['dash-recent-chip', `slot-${item.slot}`, { active: item.id === currentSessionId }]"
+                  :title="`${sessionSlotLabel(item.slot)} · ${item.title || '新会话'} · ${sessionTimeLabel(item)}`"
+                  @click="openSessionInSingle(item.id)"
+                >
+                  <span class="dash-recent-icon"><AppIcon :name="sessionSlotIcon(item.slot)" :size="13" /></span>
+                  <span class="dash-recent-title">{{ item.title || "新会话" }}</span>
+                </button>
+              </div>
             </div>
             <div v-if="sessionError" class="dash-session-error-bar">
               <span>{{ sessionError }}</span>
