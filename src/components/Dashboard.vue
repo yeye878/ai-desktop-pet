@@ -63,6 +63,10 @@ import tileRain from "../assets/bg/tile-rain.webp";
 import tileScifi from "../assets/bg/tile-scifi.webp";
 import tileSakura from "../assets/bg/tile-sakura.webp";
 import tileMinimal from "../assets/bg/tile-minimal.webp";
+import tileSpringWillow from "../assets/bg/tile-spring-willow.webp";
+import tileSummerLotus from "../assets/bg/tile-summer-lotus.webp";
+import tileAutumnChrys from "../assets/bg/tile-autumn-chrys.webp";
+import tileWinterPlum from "../assets/bg/tile-winter-plum.webp";
 import { usePetStore, THEMES, FONT_COLORS, resolveSkinId, type PetState } from "../stores/pet";
 import { useSkillsStore, type Skill } from "../stores/skills";
 import { useChatStore, messageAgentFromPayload, type AiFinishedPayload, type Message, type MessageAgent, type QuotedMessage, type ToolEventItem } from "../stores/chat";
@@ -1859,6 +1863,10 @@ const TILE_IMAGES: Record<string, string> = {
   scifi: tileScifi,
   sakura: tileSakura,
   minimal: tileMinimal,
+  "spring-willow": tileSpringWillow,
+  "summer-lotus": tileSummerLotus,
+  "autumn-chrys": tileAutumnChrys,
+  "winter-plum": tileWinterPlum,
 };
 
 function bgTileStyle(preset: { id: string; swatch: string }): Record<string, string> {

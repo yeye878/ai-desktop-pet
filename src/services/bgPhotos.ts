@@ -17,6 +17,10 @@ import inkPhoto from "../assets/bg/ink.webp";
 import rainPhoto from "../assets/bg/rain.webp";
 import scifiPhoto from "../assets/bg/scifi.webp";
 import sakuraPhoto from "../assets/bg/sakura.webp";
+import springWillowPhoto from "../assets/bg/spring-willow.webp";
+import summerLotusPhoto from "../assets/bg/summer-lotus.webp";
+import autumnChrysPhoto from "../assets/bg/autumn-chrys.webp";
+import winterPlumPhoto from "../assets/bg/winter-plum.webp";
 
 export interface PhotoBackground {
   /** 对应 ChatBackgroundId */
@@ -84,11 +88,56 @@ export const PHOTO_BACKGROUNDS: Record<string, PhotoBackground> = {
   sakura: {
     id: "sakura",
     src: sakuraPhoto,
-    source: "7360x4912",
-    credit: "wallhaven / 实拍樱花枝",
+    source: "5712x3214",
+    credit: "wallhaven / 实拍樱花单枝（背景虚化）",
     opacity: 1,
-    tint: "rgba(28, 26, 28, 0.18)",
-    vignette: 0.46,
+    tint: "rgba(30, 28, 30, 0.16)",
+    vignette: 0.44,
+    drift: 0.01,
+  },
+  /*
+   * 四季意象。
+   * 每个季节取一种传统意象（柳/荷/菊/梅），全部是 wallhaven 上的真实摄影，
+   * 用 codex 逐张确认过 photorealism 10/10。
+   */
+  "spring-willow": {
+    id: "spring-willow",
+    src: springWillowPhoto,
+    source: "6000x4000",
+    credit: "wallhaven / 雾中垂柳",
+    opacity: 1,
+    tint: "rgba(24, 32, 26, 0.16)",
+    vignette: 0.4,
+    drift: 0.012,
+  },
+  "summer-lotus": {
+    id: "summer-lotus",
+    src: summerLotusPhoto,
+    source: "3840x2160",
+    credit: "wallhaven / 荷塘睡莲",
+    opacity: 1,
+    tint: "rgba(20, 34, 28, 0.16)",
+    vignette: 0.4,
+    drift: 0.014,
+  },
+  "autumn-chrys": {
+    id: "autumn-chrys",
+    src: autumnChrysPhoto,
+    source: "4608x3072",
+    credit: "wallhaven / 秋菊特写",
+    opacity: 1,
+    tint: "rgba(34, 26, 22, 0.16)",
+    vignette: 0.42,
+    drift: 0.012,
+  },
+  "winter-plum": {
+    id: "winter-plum",
+    src: winterPlumPhoto,
+    source: "4928x3264",
+    credit: "wallhaven / 腊月梅枝",
+    opacity: 1,
+    tint: "rgba(26, 26, 32, 0.16)",
+    vignette: 0.44,
     drift: 0.01,
   },
 };

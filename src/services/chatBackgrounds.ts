@@ -17,6 +17,10 @@ export type ChatBackgroundId =
   | "sakura"
   | "scifi"
   | "minimal"
+  | "spring-willow"
+  | "summer-lotus"
+  | "autumn-chrys"
+  | "winter-plum"
   | "custom";
 
 export interface ChatBackgroundPreset {
@@ -166,6 +170,46 @@ export const CHAT_BACKGROUNDS: ChatBackgroundPreset[] = [
     accent: "#c9a8b4",
   },
   {
+    id: "spring-willow",
+    name: "春·柳",
+    description: "真实摄影：雾中垂柳，初春的嫩绿垂条",
+    icon: "柳",
+    swatch: "linear-gradient(165deg, #3d4a38, #26301f)",
+    opacity: 1,
+    tone: "paper",
+    accent: "#9db87a",
+  },
+  {
+    id: "summer-lotus",
+    name: "夏·荷",
+    description: "真实摄影：夏日荷塘，睡莲浮在静水上",
+    icon: "荷",
+    swatch: "linear-gradient(165deg, #2f4438, #1a2a22)",
+    opacity: 1,
+    tone: "paper",
+    accent: "#8fb59a",
+  },
+  {
+    id: "autumn-chrys",
+    name: "秋·菊",
+    description: "真实摄影：秋日菊影，暖粉花簇虚在暗底上",
+    icon: "菊",
+    swatch: "linear-gradient(165deg, #4a3a34, #2a201c)",
+    opacity: 1,
+    tone: "paper",
+    accent: "#d59a86",
+  },
+  {
+    id: "winter-plum",
+    name: "冬·梅",
+    description: "真实摄影：腊月梅枝，冷调背景前的白梅",
+    icon: "梅",
+    swatch: "linear-gradient(165deg, #3a3a44, #202028)",
+    opacity: 1,
+    tone: "paper",
+    accent: "#b6b0c4",
+  },
+  {
     id: "scifi",
     name: "科幻",
     description: "真实摄影：雾中的摩天楼群，冷灰蓝调的未来都市",
@@ -220,6 +264,10 @@ export function backgroundThumbPhoto(id: string): string | null {
     case "rain":
     case "scifi":
     case "sakura":
+    case "spring-willow":
+    case "summer-lotus":
+    case "autumn-chrys":
+    case "winter-plum":
       return id;
     default:
       return null;

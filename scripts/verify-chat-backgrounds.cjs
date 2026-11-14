@@ -52,7 +52,23 @@ test("预设清单包含重设计后的全部模式且 id 唯一", () => {
   const sorted = ids.slice().sort().join(",");
   assert.equal(
     sorted,
-    ["aurora", "custom", "sakura", "ink", "minimal", "none", "rain", "scifi"].sort().join(","),
+    [
+      "aurora",
+      "custom",
+      "sakura",
+      "ink",
+      "minimal",
+      "none",
+      "rain",
+      "scifi",
+      // 四季意象
+      "spring-willow",
+      "summer-lotus",
+      "autumn-chrys",
+      "winter-plum",
+    ]
+      .sort()
+      .join(","),
   );
   assert.equal(new Set(ids).size, ids.length, "id 必须唯一");
   for (const preset of api.CHAT_BACKGROUNDS) {

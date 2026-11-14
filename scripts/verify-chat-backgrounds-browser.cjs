@@ -10,7 +10,13 @@ const BASE = process.env.BG_BASE_URL || 'http://127.0.0.1:1441';
 const OUT = path.join(process.env.TEMP || process.cwd(), 'pet-bg-qa');
 fs.mkdirSync(OUT, { recursive: true });
 
-const PRESETS = ['none', 'aurora', 'ink', 'rain', 'sakura', 'scifi', 'minimal', 'custom'];
+// 顺序必须与 chatBackgrounds.ts 的 CHAT_BACKGROUNDS 完全一致 ——
+// 测试用 PRESETS.indexOf(id) 去点第 n 张卡片，顺序错位就会点错。
+const PRESETS = [
+  'none', 'aurora', 'ink', 'rain', 'sakura',
+  'spring-willow', 'summer-lotus', 'autumn-chrys', 'winter-plum',
+  'scifi', 'minimal', 'custom',
+];
 
 (async () => {
   const browser = await chromium.launch({ headless: true, channel: 'chromium' });
@@ -37,7 +43,7 @@ const PRESETS = ['none', 'aurora', 'ink', 'rain', 'sakura', 'scifi', 'minimal', 
     }
 
     // 2. 逐个点预设：卡片高亮、预览标记一致、canvas 生效、localStorage 落盘
-    for (const id of ['aurora', 'ink', 'rain', 'sakura', 'scifi', 'minimal']) {
+    for (const id of ['aurora', 'ink', 'rain', 'sakura', 'spring-willow', 'summer-lotus', 'autumn-chrys', 'winter-plum', 'scifi', 'minimal']) {
       await page.locator('.dash-bg-card').nth(PRESETS.indexOf(id)).click();
       await page.waitForTimeout(420);
       const stored = await page.evaluate(() => localStorage.getItem('ai-desktop-pet.chat-bg'));
