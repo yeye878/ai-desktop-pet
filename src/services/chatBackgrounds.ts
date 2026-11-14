@@ -14,7 +14,7 @@ export type ChatBackgroundId =
   | "aurora"
   | "ink"
   | "rain"
-  | "cute"
+  | "sakura"
   | "scifi"
   | "minimal"
   | "custom";
@@ -109,70 +109,66 @@ export const CHAT_BACKGROUNDS: ChatBackgroundPreset[] = [
   {
     id: "aurora",
     name: "极光",
-    description: "青绿与淡紫的光晕在纸面上缓缓流动，像清晨窗外的天光",
+    description: "真实摄影：湖面之上的极光帘幕与雪山剪影",
     icon: "☾",
     swatch:
-      "radial-gradient(110% 80% at 16% 10%, rgba(148,236,224,0.55), transparent 62%)," +
-      "radial-gradient(100% 75% at 84% 18%, rgba(186,182,255,0.42), transparent 64%)," +
-      "radial-gradient(120% 90% at 52% 100%, rgba(178,240,226,0.4), transparent 70%)," +
-      "linear-gradient(165deg, #f4fbf9, #f2f5fb 55%, #f7f4fa)",
-    opacity: 0.95,
+      "radial-gradient(90% 60% at 30% 18%, rgba(112,196,148,0.7), transparent 62%)," +
+      "radial-gradient(80% 50% at 74% 26%, rgba(142,112,166,0.55), transparent 64%)," +
+      "linear-gradient(170deg, #131c30, #1b2a40 50%, #0d1420)",
+    opacity: 1,
     tone: "paper",
     accent: "#8ed8cc",
   },
   {
     id: "ink",
     name: "水墨",
-    description: "米色宣纸上的淡墨远山与流动雾霭，最安静的一个",
+    description: "真实摄影：云雾中的山脊层层退远，像一幅淡墨山水",
     icon: "墨",
     swatch:
-      "radial-gradient(90% 70% at 22% 88%, rgba(120,128,140,0.22), transparent 64%)," +
-      "radial-gradient(80% 60% at 74% 96%, rgba(140,148,160,0.16), transparent 66%)," +
-      "radial-gradient(120% 90% at 60% 8%, rgba(255,255,255,0.75), transparent 70%)," +
-      "linear-gradient(168deg, #fbf8f1, #f6f2e9 52%, #f1ece1)",
-    opacity: 0.95,
+      "radial-gradient(80% 60% at 50% 20%, rgba(226,230,232,0.6), transparent 66%)," +
+      "radial-gradient(90% 70% at 26% 88%, rgba(104,112,120,0.45), transparent 64%)," +
+      "linear-gradient(170deg, #dfe4e6, #b9c2c6 55%, #6d757c)",
+    opacity: 1,
     tone: "paper",
     accent: "#b09a7e",
   },
   {
     id: "rain",
     name: "细雨",
-    description: "窗外下着雨：远中近三层雨幕、玻璃上的水珠与落地润漪，点一下会清起水花",
+    description: "真实摄影：雨滴挂在玻璃上，窗外城市灯火化成散景",
     icon: "雨",
     swatch:
-      "radial-gradient(75% 55% at 26% 20%, rgba(186,212,222,0.45), transparent 62%)," +
-      "linear-gradient(74deg, transparent 0 46%, rgba(146,176,192,0.3) 46% 47%, transparent 47% 74%, rgba(146,176,192,0.2) 74% 75%, transparent 75%)," +
-      "radial-gradient(40% 30% at 68% 62%, rgba(255,255,255,0.9), transparent 70%)," +
-      "linear-gradient(168deg, #f8fcfd, #e7f0f4 55%, #d9e6ec)",
-    opacity: 0.95,
+      "radial-gradient(55% 40% at 28% 30%, rgba(180,206,222,0.5), transparent 60%)," +
+      "radial-gradient(45% 35% at 70% 66%, rgba(226,182,142,0.4), transparent 62%)," +
+      "linear-gradient(168deg, #1d262e, #172029 55%, #101820)",
+    opacity: 1,
     tone: "paper",
     accent: "#93b4c2",
   },
   {
-    id: "cute",
-    name: "可爱",
-    description: "樱花飘落与糖果色气泡，点击还会撒出爱心",
-    icon: "🐾",
+    id: "sakura",
+    name: "樱花",
+    description: "真实摄影：压暗的樱花枝，浅灰粉的花瓣与深色枝干",
+    icon: "樱",
     swatch:
-      "radial-gradient(100% 80% at 20% 20%, rgba(255,196,208,0.6), transparent 62%)," +
-      "radial-gradient(90% 70% at 80% 30%, rgba(255,222,238,0.6), transparent 60%)," +
-      "radial-gradient(120% 90% at 50% 100%, rgba(206,182,255,0.28), transparent 66%)," +
-      "linear-gradient(165deg, #fff7fa, #fff0f5 55%, #faf3ff)",
-    opacity: 0.95,
+      "radial-gradient(80% 60% at 30% 24%, rgba(232,206,214,0.55), transparent 64%)," +
+      "radial-gradient(70% 50% at 78% 62%, rgba(198,170,180,0.4), transparent 66%)," +
+      "linear-gradient(165deg, #2f2c2e, #262426 55%, #1f1e20)",
+    opacity: 1,
     tone: "paper",
-    accent: "#f7a8bf",
+    accent: "#c9a8b4",
   },
   {
     id: "scifi",
     name: "科幻",
-    description: "淡蓝星图与六边形网格，会跟随桌宠状态呼吸",
-    icon: "🚀",
+    description: "真实摄影：长曝光下的车流光轨，冷蓝与暖橙交错",
+    icon: "◇",
     swatch:
-      "radial-gradient(90% 70% at 26% 26%, rgba(140,205,255,0.45), transparent 64%)," +
-      "radial-gradient(85% 65% at 76% 72%, rgba(178,172,255,0.38), transparent 66%)," +
-      "repeating-linear-gradient(0deg, rgba(120,170,220,0.10) 0 1px, transparent 1px 9px)," +
-      "linear-gradient(160deg, #f2f8fd, #eef3fb 55%, #f3f1fc)",
-    opacity: 0.95,
+      "radial-gradient(80% 50% at 24% 30%, rgba(96,168,220,0.5), transparent 62%)," +
+      "radial-gradient(70% 45% at 78% 70%, rgba(226,150,96,0.42), transparent 64%)," +
+      "repeating-linear-gradient(104deg, rgba(150,200,240,0.16) 0 2px, transparent 2px 20px)," +
+      "linear-gradient(168deg, #141b26, #101720 55%, #0a1018)",
+    opacity: 1,
     tone: "paper",
     accent: "#79b1b3",
   },

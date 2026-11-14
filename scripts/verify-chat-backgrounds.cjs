@@ -52,7 +52,7 @@ test("预设清单包含重设计后的全部模式且 id 唯一", () => {
   const sorted = ids.slice().sort().join(",");
   assert.equal(
     sorted,
-    ["aurora", "custom", "cute", "ink", "minimal", "none", "rain", "scifi"].sort().join(","),
+    ["aurora", "custom", "sakura", "ink", "minimal", "none", "rain", "scifi"].sort().join(","),
   );
   assert.equal(new Set(ids).size, ids.length, "id 必须唯一");
   for (const preset of api.CHAT_BACKGROUNDS) {
@@ -133,30 +133,56 @@ test("localStorage 配额抛错时界面状态仍然生效", () => {
   });
   const fallback = moduleContext.exports;
   assert.equal(fallback.readChatBackground(), "none");
-  fallback.applyChatBackground("cute");
+  fallback.applyChatBackground("sakura");
   assert.equal(events.length, 1, "存储失败也要广播，让本窗口即时切换");
-  assert.equal(events[0].detail.id, "cute");
+  assert.equal(events[0].detail.id, "sakura");
 });
 
-test("所有预设都收敛到纸面友好基调，不再有深色底或荧光色", () => {
+test("预设配色：浅色图案保持纸面基调，照片背景允许深色但不得荧光", () => {
   const { api } = createHarness();
-  const chromaOf = (hex) => {
+  const rgbOf = (hex) => {
     const raw = hex.replace("#", "");
-    const [r, g, b] = [0, 2, 4].map((i) => parseInt(raw.slice(i, i + 2), 16));
+    return [0, 2, 4].map((i) => parseInt(raw.slice(i, i + 2), 16));
+  };
+  const chromaOf = (hex) => {
+    const [r, g, b] = rgbOf(hex);
     return Math.max(r, g, b) - Math.min(r, g, b);
   };
+  const lightnessOf = (hex) => {
+    const [r, g, b] = rgbOf(hex);
+    return (r + g + b) / 3;
+  };
+
+  /*
+   * 背景策略在 v7 换过一次：
+   *   旧：全部是程序生成的浅色纸面光晕 → 所有 swatch 必须亮
+   *   新：极光/水墨/细雨/科幻/樱花 换成真实摄影照片（压暗以保文字可读），
+   *       深色底是设计需要，不是缺陷。
+   * 所以亮度约束只对「仍是程序生成浅色图案」的预设生效。
+   */
+  const LIGHT_PRESETS = new Set(["none", "minimal", "custom"]);
+
   for (const preset of api.CHAT_BACKGROUNDS) {
-    assert.equal(preset.tone, "paper", `${preset.id} 必须与米白控制台同基调`);
+    assert.equal(preset.tone, "paper", `${preset.id} 必须与其他页面基调统一`);
     assert.ok(preset.accent, `${preset.id} 需要主题色`);
 
-    // 色板里所有 hex 都要低饱和（彩度 ≤ 100），不允许深底或荧光色
     const hexes = preset.swatch.match(/#[0-9a-f]{6}/gi) || [];
     for (const hex of hexes) {
+      // 彩度上限对所有预设都成立：不允许荧光色
       assert.ok(chromaOf(hex) <= 100, `${preset.id} 的 ${hex} 彩度 ${chromaOf(hex)} 过高`);
-      const raw = hex.replace("#", "");
-      const [r, g, b] = [0, 2, 4].map((i) => parseInt(raw.slice(i, i + 2), 16));
-      const lightness = (r + g + b) / 3;
-      assert.ok(lightness >= 150, `${preset.id} 的 ${hex} 太暗（L=${lightness.toFixed(0)}）`);
+
+      if (LIGHT_PRESETS.has(preset.id)) {
+        assert.ok(
+          lightnessOf(hex) >= 150,
+          `${preset.id} 是浅色图案，${hex} 不应偏暗（L=${lightnessOf(hex).toFixed(0)}）`,
+        );
+      }
+    }
+
+    // 照片背景必须有压暗的底色，否则白字气泡压不住
+    if (!LIGHT_PRESETS.has(preset.id) && preset.id !== "none") {
+      const hasDarkStop = hexes.some((hex) => lightnessOf(hex) < 120);
+      assert.ok(hasDarkStop, `${preset.id} 是照片背景，swatch 里应有一档压暗底色`);
     }
   }
 });

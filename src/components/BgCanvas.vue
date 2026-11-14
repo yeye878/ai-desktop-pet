@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch } from 'vue';
 import { usePetStore } from '../stores/pet';
+import { PHOTO_BACKGROUNDS, photoBackground } from '../services/bgPhotos';
 
 const props = defineProps<{ mode: string; customImage?: string; intensity?: number }>();
 const petStore = usePetStore();
@@ -12,6 +13,16 @@ let particles: any[] = [];
 let ripples: any[] = [];
 let trail: { x: number; y: number; t: number }[] = [];
 let customImg: HTMLImageElement | null = null;
+/**
+ * 照片背景缓存。
+ * 每种模式一张 HTMLImageElement，加载完成后才能画；
+ * 未加载完时先画底色，避免出现黑屏。
+ */
+const photoImages: Record<string, HTMLImageElement> = {};
+let photoLoadStarted = false;
+/** 漂移相位：让照片极缓地平移/缩放，静止的贴图感会消失 */
+let photoPhase = 0;
+
 let ro: ResizeObserver | null = null;
 
 /**
@@ -294,9 +305,25 @@ function spawnPacket(fromNode: any, toNode: any) {
   });
 }
 
+/**
+ * 预加载全部照片背景。
+ * 只在首次需要时触发一次，加载失败的项保持未定义，绘制时兜底成底色。
+ */
+function ensurePhotoLoaded() {
+  if (photoLoadStarted) return;
+  photoLoadStarted = true;
+  for (const cfg of Object.values(PHOTO_BACKGROUNDS)) {
+    if (photoImages[cfg.id]) continue;
+    const img = new Image();
+    img.decoding = "async";
+    img.onload = () => { photoImages[cfg.id] = img; };
+    img.src = cfg.src;
+  }
+}
+
 function initParticles() {
   particles = []; ripples = []; trail = [];
-  if (props.mode === 'cute') initCute();
+  if (props.mode === 'sakura') initCute();
   else if (props.mode === 'scifi') initScifi();
   else if (props.mode === 'minimal') initMinimal();
   else if (props.mode === 'aurora') initAurora();
@@ -307,7 +334,7 @@ function initParticles() {
 function addRipple(x: number, y: number, big = false) {
   const color =
     props.mode === 'scifi' ? 'rgba(56,189,248,' :
-    props.mode === 'cute' ? 'rgba(255,107,157,' :
+    props.mode === 'sakura' ? 'rgba(201,168,180,' :
     props.mode === 'aurora' ? 'rgba(94,234,212,' :
     props.mode === 'ink' ? 'rgba(54,62,74,' :
     props.mode === 'rain' ? 'rgba(150,180,192,' :
@@ -333,7 +360,7 @@ function update() {
     if (trail[i].t <= 0) trail.splice(i, 1);
   }
 
-  if (props.mode === 'cute') {
+  if (props.mode === 'sakura') {
     const t = now;
     // Petals
     for (const p of ctPetals) {
@@ -1509,6 +1536,121 @@ function drawRain(ctx: CanvasRenderingContext2D) {
   ctx.fillRect(0, 0, W, H * 0.18);
 }
 
+/**
+ * 画真实照片背景。
+ *
+ * 要点：
+ *  · cover 铺满，绝不拉伸（拉伸一眼假）
+ *  · ken-burns 极缓漂移：缩放 1.04→1.10 + 平移，周期约 40 秒，肉眼几乎察觉不到但画面是活的
+ *  · 叠一层色调把照片统一到应用配色，避免每张图色彩打架
+ *  · 暗角压住四角，让中间气泡区域保持视觉中心
+ *  · 底部再压一层渐变，保证输入框区域的文字可读
+ */
+/**
+ * 照片模式下保留的交互层：鼠标涟漪 + 点击光点。
+ * 这些是「桌面宠物应用」该有的活气，照片本身是静的。
+ */
+function drawSharedInteraction(ctx: CanvasRenderingContext2D) {
+  const k = strength();
+
+  // 鼠标涟漪
+  for (const r of ripples) {
+    ctx.save();
+    ctx.globalAlpha = r.alpha * 0.5;
+    ctx.strokeStyle = "rgba(255, 255, 255, 1)";
+    ctx.lineWidth = r.lw;
+    ctx.beginPath();
+    ctx.arc(r.x, r.y, r.r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // 点击光点
+  for (const p of particles) {
+    const life = Math.max(0, p.life);
+    if (life <= 0) continue;
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.globalAlpha = p.alpha * life * k * 0.7;
+    const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.size * 4);
+    g.addColorStop(0, "rgba(255, 255, 255, 0.7)");
+    g.addColorStop(0.4, p.color.replace(/,\s*[\d.]+\)$/, ", 0.3)"));
+    g.addColorStop(1, "rgba(255, 255, 255, 0)");
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size * 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+function drawPhotoBackground(ctx: CanvasRenderingContext2D, k: number) {
+  const cfg = photoBackground(props.mode);
+  if (!cfg) return false;
+  ensurePhotoLoaded();
+
+  // 底色兜底：照片未加载完时先铺一层同色调深色，避免闪白
+  ctx.fillStyle = "rgba(20, 26, 34, 1)";
+  ctx.fillRect(0, 0, W, H);
+
+  const img = photoImages[cfg.id];
+  if (!img) return true; // 已画兜底色，等图加载
+
+  // ---------- cover 铺满 + ken-burns ----------
+  const ir = img.width / img.height;
+  const cr = W / H;
+  // 基础缩放：让图片完全覆盖画布
+  const baseScale = ir > cr ? H / img.height : W / img.width;
+  // 漂移：缓慢的缩放与位移，幅度很小
+  const driftT = photoPhase;
+  const zoom = 1.05 + Math.sin(driftT * 0.7) * 0.028 * (cfg.drift / 0.014);
+  const dx = Math.sin(driftT * 0.43) * W * cfg.drift;
+  const dy = Math.cos(driftT * 0.31) * H * cfg.drift;
+
+  const dw = img.width * baseScale * zoom;
+  const dh = img.height * baseScale * zoom;
+  const ox = (W - dw) / 2 + dx;
+  const oy = (H - dh) / 2 + dy;
+
+  ctx.save();
+  ctx.globalAlpha = cfg.opacity * Math.min(1, 0.55 + 0.45 * k);
+  ctx.drawImage(img, ox, oy, dw, dh);
+  ctx.restore();
+
+  // ---------- 色调统一 ----------
+  ctx.save();
+  ctx.fillStyle = cfg.tint;
+  ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+
+  // ---------- 暗角 ----------
+  const vig = ctx.createRadialGradient(
+    W * 0.5, H * 0.42, Math.min(W, H) * 0.28,
+    W * 0.5, H * 0.42, Math.max(W, H) * 0.82,
+  );
+  vig.addColorStop(0, "rgba(0, 0, 0, 0)");
+  vig.addColorStop(0.62, `rgba(0, 0, 0, ${(cfg.vignette * 0.35).toFixed(3)})`);
+  vig.addColorStop(1, `rgba(0, 0, 0, ${cfg.vignette.toFixed(3)})`);
+  ctx.fillStyle = vig;
+  ctx.fillRect(0, 0, W, H);
+
+  // ---------- 底部压暗：输入框区域必须清晰 ----------
+  const bottom = ctx.createLinearGradient(0, H * 0.72, 0, H);
+  bottom.addColorStop(0, "rgba(0, 0, 0, 0)");
+  bottom.addColorStop(1, "rgba(0, 0, 0, 0.28)");
+  ctx.fillStyle = bottom;
+  ctx.fillRect(0, H * 0.72, W, H * 0.28);
+
+  // ---------- 顶部压暗：让标题栏区域不被照片细节干扰 ----------
+  const top = ctx.createLinearGradient(0, 0, 0, H * 0.24);
+  top.addColorStop(0, "rgba(0, 0, 0, 0.3)");
+  top.addColorStop(1, "rgba(0, 0, 0, 0)");
+  ctx.fillStyle = top;
+  ctx.fillRect(0, 0, W, H * 0.24);
+
+  return true;
+}
+
 function drawLightField(ctx: CanvasRenderingContext2D, k: number, warm = '255, 250, 240') {
   const diag = Math.sqrt(W * W + H * H);
 
@@ -1627,8 +1769,15 @@ function draw() {
   if (!ctx) return;
   ctx.clearRect(0, 0, W, H);
 
+  // 照片背景优先：极光/水墨/细雨/科幻/樱花 现在都是真实摄影
+  if (drawPhotoBackground(ctx, strength())) {
+    // 照片模式下只保留交互层（涟漪/光点），不再叠加程序化图案
+    drawSharedInteraction(ctx);
+    return;
+  }
+
   // Background fills
-  if (props.mode === 'cute') {
+  if (props.mode === 'sakura') {
     // Background gradient
     const g = ctx.createLinearGradient(0, 0, W, H);
     g.addColorStop(0, '#fffbfc'); g.addColorStop(0.34, '#fdf2f6'); g.addColorStop(0.68, '#fbeaf2'); g.addColorStop(1, '#f7e6f0');
@@ -1935,7 +2084,13 @@ function draw() {
   }
 }
 
-function animate() { update(); draw(); animId = requestAnimationFrame(animate); }
+function animate() {
+  // 照片漂移相位：每帧推进一点点，约 40 秒一个周期
+  photoPhase += 0.0025;
+  update();
+  draw();
+  animId = requestAnimationFrame(animate);
+}
 
 function resize() {
   const el = canvasRef.value?.parentElement;
@@ -1950,7 +2105,7 @@ function resize() {
 
 function onMouseMove(x: number, y: number) {
   mx = x; my = y;
-  if (props.mode === 'cute') trail.push({ x, y, t: 1 });
+  if (props.mode === 'sakura') trail.push({ x, y, t: 1 });
   if (props.mode === 'custom') { if (Math.random() < 0.15) addRipple(x, y); }
   if (props.mode === 'aurora' && Math.random() < 0.12) {
     particles.push({
@@ -1972,7 +2127,7 @@ function clearPointer() {
 
 function onClick(x: number, y: number) {
   const mode = props.mode;
-  if (mode === 'cute') {
+  if (mode === 'sakura') {
     addRipple(x, y, true);
     // Burst petals + hearts
     const shapes = ['heart','sparkle','star','heart','heart'];
