@@ -101,7 +101,10 @@ export const CHAT_BACKGROUNDS: ChatBackgroundPreset[] = [
     description: "保留原本的纸张质感，不叠加任何背景",
     icon: "∅",
     swatch:
-      "linear-gradient(150deg, rgba(255,255,255,0.92), rgba(244,240,232,0.88))",
+      "radial-gradient(75% 70% at 26% 22%, #ffffff, transparent 58%)," +
+      "radial-gradient(60% 55% at 76% 72%, #eceef0, transparent 62%)," +
+      "radial-gradient(50% 45% at 40% 90%, #f4f3f1, transparent 60%)," +
+      "linear-gradient(165deg, #fbfaf8, #f2f1ef)",
     opacity: 1,
     tone: "paper",
     accent: "#e8e2d6",
@@ -112,9 +115,10 @@ export const CHAT_BACKGROUNDS: ChatBackgroundPreset[] = [
     description: "真实摄影：湖面之上的极光帘幕与雪山剪影",
     icon: "☾",
     swatch:
-      "radial-gradient(90% 60% at 30% 18%, rgba(112,196,148,0.7), transparent 62%)," +
-      "radial-gradient(80% 50% at 74% 26%, rgba(142,112,166,0.55), transparent 64%)," +
-      "linear-gradient(170deg, #131c30, #1b2a40 50%, #0d1420)",
+      "radial-gradient(70% 65% at 30% 22%, rgba(96,142,132,0.9), transparent 58%)," +
+      "radial-gradient(55% 50% at 78% 34%, rgba(52,74,108,0.85), transparent 62%)," +
+      "radial-gradient(65% 55% at 46% 88%, rgba(30,44,64,0.9), transparent 60%)," +
+      "linear-gradient(168deg, #1d2a3a, #131d2c 58%, #0d1520)",
     opacity: 1,
     tone: "paper",
     accent: "#8ed8cc",
@@ -125,9 +129,10 @@ export const CHAT_BACKGROUNDS: ChatBackgroundPreset[] = [
     description: "真实摄影：云雾中的山脊层层退远，像一幅淡墨山水",
     icon: "墨",
     swatch:
-      "radial-gradient(80% 60% at 50% 20%, rgba(226,230,232,0.6), transparent 66%)," +
-      "radial-gradient(90% 70% at 26% 88%, rgba(104,112,120,0.45), transparent 64%)," +
-      "linear-gradient(170deg, #dfe4e6, #b9c2c6 55%, #6d757c)",
+      "radial-gradient(80% 70% at 22% 16%, #e4e8ea, transparent 60%)," +
+      "radial-gradient(60% 55% at 72% 40%, #b5bec2, transparent 62%)," +
+      "radial-gradient(70% 60% at 38% 88%, #6d767d, transparent 58%)," +
+      "linear-gradient(170deg, #d3d9dd, #8b949b 55%, #5c656c)",
     opacity: 1,
     tone: "paper",
     accent: "#b09a7e",
@@ -135,12 +140,13 @@ export const CHAT_BACKGROUNDS: ChatBackgroundPreset[] = [
   {
     id: "rain",
     name: "细雨",
-    description: "真实摄影：雨滴挂在玻璃上，窗外城市灯火化成散景",
+    description: "真实摄影：雨痕划过玻璃，窗外的红与青灯光被拉成光带",
     icon: "雨",
     swatch:
-      "radial-gradient(55% 40% at 28% 30%, rgba(180,206,222,0.5), transparent 60%)," +
-      "radial-gradient(45% 35% at 70% 66%, rgba(226,182,142,0.4), transparent 62%)," +
-      "linear-gradient(168deg, #1d262e, #172029 55%, #101820)",
+      "radial-gradient(65% 60% at 32% 26%, rgba(72,96,112,0.95), transparent 60%)," +
+      "radial-gradient(50% 45% at 76% 30%, rgba(138,74,72,0.75), transparent 62%)," +
+      "radial-gradient(60% 52% at 58% 82%, rgba(40,52,62,0.9), transparent 60%)," +
+      "linear-gradient(170deg, #202b34, #141d25 58%, #0c141b)",
     opacity: 1,
     tone: "paper",
     accent: "#93b4c2",
@@ -148,12 +154,13 @@ export const CHAT_BACKGROUNDS: ChatBackgroundPreset[] = [
   {
     id: "sakura",
     name: "樱花",
-    description: "真实摄影：压暗的樱花枝，浅灰粉的花瓣与深色枝干",
+    description: "真实摄影：近黑背景前的樱花枝，浅粉花瓣与暗色枝干",
     icon: "樱",
     swatch:
-      "radial-gradient(80% 60% at 30% 24%, rgba(232,206,214,0.55), transparent 64%)," +
-      "radial-gradient(70% 50% at 78% 62%, rgba(198,170,180,0.4), transparent 66%)," +
-      "linear-gradient(165deg, #2f2c2e, #262426 55%, #1f1e20)",
+      "radial-gradient(70% 62% at 32% 24%, rgba(196,170,182,0.9), transparent 58%)," +
+      "radial-gradient(52% 48% at 72% 44%, rgba(140,116,128,0.75), transparent 62%)," +
+      "radial-gradient(62% 54% at 44% 86%, rgba(54,48,52,0.92), transparent 60%)," +
+      "linear-gradient(170deg, #332e31, #221e21 58%, #161315)",
     opacity: 1,
     tone: "paper",
     accent: "#c9a8b4",
@@ -161,13 +168,13 @@ export const CHAT_BACKGROUNDS: ChatBackgroundPreset[] = [
   {
     id: "scifi",
     name: "科幻",
-    description: "真实摄影：长曝光下的车流光轨，冷蓝与暖橙交错",
+    description: "真实摄影：雾中的摩天楼群，冷灰蓝调的未来都市",
     icon: "◇",
     swatch:
-      "radial-gradient(80% 50% at 24% 30%, rgba(96,168,220,0.5), transparent 62%)," +
-      "radial-gradient(70% 45% at 78% 70%, rgba(226,150,96,0.42), transparent 64%)," +
-      "repeating-linear-gradient(104deg, rgba(150,200,240,0.16) 0 2px, transparent 2px 20px)," +
-      "linear-gradient(168deg, #141b26, #101720 55%, #0a1018)",
+      "radial-gradient(65% 60% at 30% 22%, rgba(78,116,150,0.95), transparent 60%)," +
+      "radial-gradient(55% 50% at 74% 38%, rgba(148,152,160,0.7), transparent 62%)," +
+      "radial-gradient(58% 50% at 48% 86%, rgba(34,44,58,0.92), transparent 60%)," +
+      "linear-gradient(170deg, #1a2430, #111a24 58%, #0a1119)",
     opacity: 1,
     tone: "paper",
     accent: "#79b1b3",
@@ -178,10 +185,10 @@ export const CHAT_BACKGROUNDS: ChatBackgroundPreset[] = [
     description: "会跟随鼠标亮起的点阵星图，克制又灵巧",
     icon: "○",
     swatch:
-      "radial-gradient(80% 60% at 30% 30%, rgba(160,170,255,0.20), transparent 64%)," +
-      "repeating-linear-gradient(90deg, rgba(120,132,150,0.13) 0 1px, transparent 1px 12px)," +
-      "repeating-linear-gradient(0deg, rgba(120,132,150,0.13) 0 1px, transparent 1px 12px)," +
-      "linear-gradient(160deg, #fafbfd, #f3f6fa)",
+      "radial-gradient(85% 75% at 24% 18%, #fbfcfe, transparent 62%)," +
+      "radial-gradient(55% 50% at 74% 46%, #e5eaf3, transparent 60%)," +
+      "radial-gradient(60% 50% at 46% 86%, #edf1f7, transparent 58%)," +
+      "linear-gradient(168deg, #f2f5fb, #e2e8f1)",
     opacity: 0.9,
     tone: "paper",
     accent: "#b7bfd4",
@@ -198,6 +205,26 @@ export const CHAT_BACKGROUNDS: ChatBackgroundPreset[] = [
     accent: "#c7cbd6",
   },
 ];
+
+/**
+ * 照片类预设的缩略图来源。
+ *
+ * 背景本身就是真实摄影（见 bgPhotos.ts），所以选择器里的 tile 直接用
+ * 同一张照片裁一小块 —— 这是最真实的"缩略图"，比用 CSS 渐变模拟像照片得多。
+ * 返回 null 表示该预设没有照片（无 / 简洁 / 自定义）。
+ */
+export function backgroundThumbPhoto(id: string): string | null {
+  switch (id) {
+    case "aurora":
+    case "ink":
+    case "rain":
+    case "scifi":
+    case "sakura":
+      return id;
+    default:
+      return null;
+  }
+}
 
 export const CHAT_BACKGROUND_MAP: Record<string, ChatBackgroundPreset> =
   Object.fromEntries(CHAT_BACKGROUNDS.map((preset) => [preset.id, preset]));

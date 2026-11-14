@@ -7104,13 +7104,53 @@ button {
   box-shadow: 0 0 0 3px rgba(var(--dash-accent-rgb), 0.1);
 }
 
+/*
+ * 背景缩略图（tile）。
+ *
+ * 按参考截图重做：19~22px 的圆角方形，内部是「基底 + 两个模糊光斑」的柔和
+ * 渐变，不是纯色块。深色 tile 无描边、浅色 tile 有 1px 淡描边，
+ * 下方一道柔和投影（黑色 10% / dy 2px / blur 2px）。
+ *
+ * 这样一排看过去就是「七个不同的缩略图」，而不是「七个彩色圆点」。
+ */
 .dash-chat-bgbar-dot {
-  width: 15px;
-  height: 15px;
+  position: relative;
+  width: 26px;
+  height: 26px;
   flex: none;
-  border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.7);
-  box-shadow: 0 1px 3px rgba(var(--dash-ink-rgb), 0.16);
+  border-radius: 9px;
+  border: none;
+  overflow: hidden;
+  /*
+   * 刻意不加投影、不加统一高光。
+   * 参考图里的 tile 是平的 —— 一旦加了 0 2px 4px 这种投影 + 左上白色高光，
+   * 七个 tile 立刻被看成"七个立体按钮"而不是"七张缩略图"。
+   * 柔边色云本身就足够有质感，投影反而是负担。
+   */
+  transition: transform 160ms ease, box-shadow 160ms ease;
+}
+
+/* 深色 tile 只留一圈极淡的内亮边（1px），不再叠整片渐变高光 */
+.dash-chat-bgbar-dot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+  pointer-events: none;
+}
+
+/* 浅色 tile 需要描边才看得出边界 */
+.dash-chat-bgbar-dot.is-light {
+  box-shadow: inset 0 0 0 1px rgba(var(--dash-ink-rgb), 0.12);
+}
+
+.dash-chat-bgbar-chip:hover .dash-chat-bgbar-dot {
+  box-shadow: 0 0 0 2px rgba(var(--dash-accent-rgb), 0.24);
+}
+
+.dash-chat-bgbar-chip.active .dash-chat-bgbar-dot {
+  box-shadow: 0 0 0 2px rgb(var(--dash-accent-rgb));
 }
 
 .dash-chat-bgbar-import {
