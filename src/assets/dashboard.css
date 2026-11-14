@@ -107,14 +107,14 @@
   /* surfaces：以青纸为主，暖砂只做「暖点缀」 */
   --dash-sidebar-bg: var(--paper-tint-100);
   --dash-sidebar-bg-2: var(--celadon-100);
-  --dash-shell-bg: var(--paper-50);
+  --dash-shell-bg: var(--paper-tint-150);
   --dash-content-bg: var(--paper-50);
   --dash-panel-bg: rgba(246, 251, 251, 0.84);
   --dash-panel-solid: var(--paper-50);
   --dash-panel-soft: var(--paper-tint-150);
   --dash-card-secondary: var(--sand-200);
-  --dash-card-border: rgba(60, 55, 51, 0.09);
-  --dash-divider: rgba(60, 55, 51, 0.08);
+  --dash-card-border: rgba(var(--dash-ink-rgb), 0.09);
+  --dash-divider: rgba(var(--dash-ink-rgb), 0.08);
 
   /*
     语义色：取代原来那套高饱和「糖果色」（#3cc2c7 / #d3cfc9 / #d9815e …）。
@@ -166,13 +166,13 @@
   /* shadows：把色相从原来偏蓝的 (33,48,74) 换成偏暖中性的墨色 */
   --dash-shadow-sm:
     0 1px 0 rgba(255, 255, 255, 0.95),
-    0 8px 24px rgba(60, 55, 51, 0.05);
+    0 8px 24px rgba(var(--dash-ink-rgb), 0.05);
   --dash-shadow-md:
     0 1px 0 rgba(255, 255, 255, 0.9),
-    0 14px 38px rgba(60, 55, 51, 0.065);
+    0 14px 38px rgba(var(--dash-ink-rgb), 0.065);
   --dash-shadow-hover:
     0 1px 0 rgba(255, 255, 255, 0.96),
-    0 18px 42px rgba(60, 55, 51, 0.075);
+    0 18px 42px rgba(var(--dash-ink-rgb), 0.075);
   --dash-shadow-glow:
     0 0 0 4px rgba(4, 177, 183, 0.16),
     0 8px 0 rgba(4, 177, 183, 0.07),
@@ -188,16 +188,16 @@
      原来用 ink-500 只有 2.9:1，在浅青底上偏虚。 */
   --dash-text-primary: var(--ink-800);
   --dash-text-secondary: var(--ink-700);
-  --dash-text-muted: var(--ink-600);
+  --dash-text-muted: var(--ink-650);
   --dash-text-inverse: var(--ink-50);
 
   /* form controls */
   --dash-control-bg: rgba(252, 250, 245, 0.86);
   --dash-control-bg-hover: var(--sand-50);
   --dash-control-border: rgba(78, 83, 92, 0.13);
-  --dash-control-border-strong: rgba(96, 148, 151, 0.42);
+  --dash-control-border-strong: rgba(var(--dash-accent-rgb), 0.42);
 
-  --dash-focus: rgba(96, 148, 151, 0.18);
+  --dash-focus: rgba(var(--dash-accent-rgb), 0.18);
   --dash-sidebar-width: 252px;
   --dash-titlebar-height: 40px;
   --dash-transition: 200ms cubic-bezier(0.22, 1, 0.36, 1);
@@ -222,8 +222,8 @@
 body {
   margin: 0;
   background:
-    repeating-linear-gradient(90deg, rgba(52, 56, 63, 0.022) 0 1px, transparent 1px 28px),
-    repeating-linear-gradient(0deg, rgba(52, 56, 63, 0.018) 0 1px, transparent 1px 28px),
+    repeating-linear-gradient(90deg, rgba(var(--dash-ink-rgb), 0.022) 0 1px, transparent 1px 28px),
+    repeating-linear-gradient(0deg, rgba(var(--dash-ink-rgb), 0.018) 0 1px, transparent 1px 28px),
     var(--dash-content-bg);
   overflow: hidden;
   user-select: none;
@@ -274,10 +274,10 @@ button {
   background:
     url("./art/paper-grain-cool.webp"),
     linear-gradient(90deg, rgba(255, 255, 255, 0.88), rgba(239, 251, 255, 0.88)),
-    linear-gradient(135deg, rgba(151, 200, 202, 0.20), rgba(96, 148, 151, 0.16), rgba(194, 156, 173, 0.14));
+    linear-gradient(135deg, rgba(var(--dash-accent-rgb), 0.20), rgba(var(--dash-accent-rgb), 0.16), rgba(var(--dash-accent-rgb), 0.14));
   background-size: 420px 420px, auto, auto;
-  border-bottom: 1px solid rgba(52, 56, 63, 0.08);
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.82), 0 8px 24px rgba(52, 56, 63, 0.05);
+  border-bottom: 1px solid rgba(var(--dash-ink-rgb), 0.08);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.82), 0 8px 24px rgba(var(--dash-ink-rgb), 0.05);
   -webkit-app-region: drag;
   user-select: none;
   flex-shrink: 0;
@@ -307,7 +307,7 @@ button {
   height: 18px;
   border-radius: 999px;
   background:
-    linear-gradient(90deg, rgba(187, 129, 102, 0.68), rgba(151, 200, 202, 0.70), rgba(96, 148, 151, 0.68));
+    linear-gradient(90deg, rgba(var(--dash-warm-rgb), 0.68), rgba(var(--dash-accent-rgb), 0.70), rgba(var(--dash-accent-rgb), 0.68));
   opacity: 0.28;
   transform: translateX(-50%) rotate(-2deg);
   pointer-events: none;
@@ -340,7 +340,7 @@ button {
   font-style: italic;
   font-family: "Cinzel", "Georgia", "Times New Roman", serif;
   letter-spacing: 0;
-  box-shadow: 0 3px 0 rgba(187, 129, 102, 0.18), 0 8px 18px rgba(187, 129, 102, 0.20);
+  box-shadow: 0 3px 0 rgba(var(--dash-warm-rgb), 0.18), 0 8px 18px rgba(var(--dash-warm-rgb), 0.20);
   text-shadow: 0 1px 1px rgba(130, 78, 38, 0.18);
 }
 
@@ -353,13 +353,13 @@ button {
   align-items: center;
   gap: 9px;
   padding: 5px 12px;
-  border: 1px solid rgba(52, 56, 63, 0.07);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.07);
   border-radius: 999px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.6), rgba(233, 244, 242, 0.38));
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.78),
-    0 4px 12px rgba(52, 56, 63, 0.04);
+    0 4px 12px rgba(var(--dash-ink-rgb), 0.04);
   transform: translate(-50%, -50%) rotate(-1deg);
   pointer-events: none;
 }
@@ -367,7 +367,7 @@ button {
 .titlebar-charm {
   display: inline-block;
   flex: 0 0 auto;
-  filter: drop-shadow(0 2px 1px rgba(52, 56, 63, 0.08));
+  filter: drop-shadow(0 2px 1px rgba(var(--dash-ink-rgb), 0.08));
 }
 
 .charm-dot {
@@ -442,7 +442,7 @@ button {
   background:
     url("./art/paper-grain-cool.webp"),
     linear-gradient(135deg, rgba(134, 168, 138, 0.16), transparent 42%),
-    linear-gradient(225deg, rgba(194, 156, 173, 0.10), transparent 44%),
+    linear-gradient(225deg, rgba(var(--dash-accent-rgb), 0.10), transparent 44%),
     var(--dash-shell-bg);
   background-size: 540px 540px, auto, auto, auto;
 }
@@ -460,11 +460,11 @@ button {
     linear-gradient(180deg, var(--dash-sidebar-bg), var(--dash-sidebar-bg-2) 96%);
   background-size: 460px 460px, auto, auto;
   background-blend-mode: soft-light, normal, normal;
-  border-right: 1px solid rgba(52, 56, 63, 0.08);
+  border-right: 1px solid rgba(var(--dash-ink-rgb), 0.08);
   box-shadow:
     1px 0 0 rgba(255, 255, 255, 0.80),
-    14px 0 34px rgba(52, 56, 63, 0.05);
-  color: var(--dash-text-inverse);
+    14px 0 34px rgba(var(--dash-ink-rgb), 0.05);
+  color: var(--dash-text-primary);
   position: relative;
   overflow: hidden;
 }
@@ -479,7 +479,7 @@ button {
   background: url("./art/sidebar-mascot.png") center bottom / contain no-repeat;
   opacity: 0.92;
   pointer-events: none;
-  filter: drop-shadow(0 10px 18px rgba(60, 55, 51, 0.09));
+  filter: drop-shadow(0 10px 18px rgba(var(--dash-ink-rgb), 0.09));
   transform: rotate(-2deg);
 }
 
@@ -491,7 +491,7 @@ button {
   right: -1px;
   bottom: 10%;
   width: 1px;
-  background: linear-gradient(180deg, transparent, rgba(var(--dash-accent-rgb), 0.18) 30%, rgba(96, 148, 151, 0.18) 70%, transparent);
+  background: linear-gradient(180deg, transparent, rgba(var(--dash-accent-rgb), 0.18) 30%, rgba(var(--dash-accent-rgb), 0.18) 70%, transparent);
   pointer-events: none;
 }
 
@@ -519,7 +519,7 @@ button {
   color: #fff9f1;
   box-shadow:
     0 4px 0 rgba(73, 151, 156, 0.16),
-    0 10px 22px rgba(96, 148, 151, 0.20),
+    0 10px 22px rgba(var(--dash-accent-rgb), 0.20),
     inset 0 1px 0 rgba(255, 255, 255, 0.36);
   font-size: 20px;
   font-weight: 700;
@@ -585,7 +585,7 @@ button {
 
 .sidebar-item:hover {
   background: rgba(255, 255, 255, 0.78);
-  border-color: rgba(52, 56, 63, 0.07);
+  border-color: rgba(var(--dash-ink-rgb), 0.07);
   color: var(--dash-text-primary);
   transform: translateX(4px) rotate(-1deg);
 }
@@ -597,14 +597,14 @@ button {
 
 .sidebar-item.active {
   background:
-    linear-gradient(135deg, rgba(var(--dash-accent-rgb), 0.12), rgba(96, 148, 151, 0.14)),
+    linear-gradient(135deg, rgba(var(--dash-accent-rgb), 0.12), rgba(var(--dash-accent-rgb), 0.14)),
     rgba(255, 255, 255, 0.92);
   border-color: rgba(var(--dash-accent-rgb), 0.22);
   color: var(--dash-text-primary);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.70),
     0 3px 0 rgba(var(--dash-accent-rgb), 0.08),
-    0 14px 26px rgba(52, 56, 63, 0.07);
+    0 14px 26px rgba(var(--dash-ink-rgb), 0.07);
 }
 
 .sidebar-item.active::before {
@@ -632,7 +632,7 @@ button {
   font-weight: 700;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.75),
-    0 3px 8px rgba(52, 56, 63, 0.05);
+    0 3px 8px rgba(var(--dash-ink-rgb), 0.05);
   transform: rotate(-2deg);
 }
 
@@ -643,7 +643,7 @@ button {
 .sidebar-divider {
   height: 1px;
   margin: 14px 10px;
-  background: linear-gradient(90deg, transparent, rgba(60, 55, 51, 0.09), transparent);
+  background: linear-gradient(90deg, transparent, rgba(var(--dash-ink-rgb), 0.09), transparent);
 }
 
 /* --- sidebar footer --- */
@@ -687,7 +687,7 @@ button {
   color: #fffaf4;
   box-shadow:
     0 4px 0 rgba(178, 94, 60, 0.18),
-    0 12px 24px rgba(187, 129, 102, 0.22),
+    0 12px 24px rgba(var(--dash-warm-rgb), 0.22),
     inset 0 1px 0 rgba(255, 255, 255, 0.15);
 }
 
@@ -707,7 +707,7 @@ button {
 
 .sidebar-action-btn.danger {
   background: rgba(255, 255, 255, 0.58);
-  border-color: rgba(52, 56, 63, 0.07);
+  border-color: rgba(var(--dash-ink-rgb), 0.07);
   color: var(--dash-text-muted);
 }
 
@@ -735,7 +735,7 @@ button {
     url("./art/paper-grain-cool.webp"),
     radial-gradient(120% 80% at 8% 0%, rgba(var(--dash-accent-rgb), 0.055), transparent 62%),
     radial-gradient(110% 75% at 96% 100%, rgba(var(--paper-tint-300-rgb), 0.18), transparent 65%),
-    repeating-linear-gradient(90deg, rgba(60, 55, 51, 0.012) 0 1px, transparent 1px 34px),
+    repeating-linear-gradient(90deg, rgba(var(--dash-ink-rgb), 0.012) 0 1px, transparent 1px 34px),
     var(--dash-content-bg);
   background-size: 620px 620px, auto, auto, auto, auto;
   background-blend-mode: soft-light, normal, normal, normal, normal;
@@ -747,8 +747,8 @@ button {
   border-radius: var(--dash-radius-xl);
   border: 2px solid rgba(255, 255, 255, 0.88);
   box-shadow:
-    0 8px 0 rgba(52, 56, 63, 0.06),
-    0 22px 48px rgba(52, 56, 63, 0.12),
+    0 8px 0 rgba(var(--dash-ink-rgb), 0.06),
+    0 22px 48px rgba(var(--dash-ink-rgb), 0.12),
     inset 0 1px 0 rgba(255, 255, 255, 0.9);
   
   /* Ensure scrolling content respects rounded corners */
@@ -800,7 +800,7 @@ button {
     url("./art/paper-grain-cool.webp"),
     radial-gradient(circle at 14% 16%, rgba(var(--dash-accent-rgb), 0.10), transparent 30%),
     radial-gradient(circle at 88% 10%, rgba(var(--pet-accent-rgb, 60, 194, 199), 0.08), transparent 32%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.4) 380px),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0.14) 380px),
     var(--dash-content-bg);
   background-size: 620px 620px, auto, auto, auto, auto;
   background-blend-mode: soft-light, normal, normal, normal, normal;
@@ -854,8 +854,8 @@ button {
 .dashboard-content.page-system {
   background:
     url("./art/paper-grain-cool.webp"),
-    linear-gradient(90deg, rgba(60, 55, 51, 0.018) 0 1px, transparent 1px 32px),
-    linear-gradient(0deg, rgba(60, 55, 51, 0.016) 0 1px, transparent 1px 32px),
+    linear-gradient(90deg, rgba(var(--dash-ink-rgb), 0.018) 0 1px, transparent 1px 32px),
+    linear-gradient(0deg, rgba(var(--dash-ink-rgb), 0.016) 0 1px, transparent 1px 32px),
     radial-gradient(circle at 92% 12%, rgba(var(--dash-accent-rgb), 0.09), transparent 30%),
     var(--dash-content-bg);
   background-size: 620px 620px, 32px 32px, 32px 32px, auto, auto;
@@ -947,7 +947,7 @@ button {
   min-height: 34px;
   padding: 8px 14px;
   border-radius: 999px;
-  border: 2px solid rgba(60, 55, 51, 0.09);
+  border: 2px solid rgba(var(--dash-ink-rgb), 0.09);
   background: rgba(255, 255, 255, 0.82);
   color: var(--dash-text-secondary);
   box-shadow: var(--dash-shadow-sm);
@@ -983,9 +983,20 @@ button {
   overflow: hidden;
   border: 2px solid var(--dash-card-border);
   border-radius: var(--dash-radius-lg);
+  /*
+   * 卡片底从「几乎纯白」改成「白 + 淡主题色」。
+   * 用户反复说"不够鲜艳"，但纸面 token 已经白到头了（L 0.988）。
+   * 真正的解法不是继续把白调白，而是让彩色**面积**变大 ——
+   * 参考图就是「大面积白 + 一条覆盖 12% 面积的高饱和带」。
+   */
+  /*
+   * 卡片：以白为主，只在左下角带一点主题色。
+   * 参考图的规律是"大面积白 + 局部高饱和"，所以卡片不该整片染色，
+   * 而是保持白净、让主题色只作为一角的气氛。
+   */
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(255, 255, 255, 0.72)),
-    var(--dash-panel-bg);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0.82)),
+    linear-gradient(160deg, rgba(var(--dash-accent-rgb), 0.1), rgba(var(--paper-tint-150-rgb), 0.5));
   box-shadow: var(--dash-shadow-sm);
   padding: 26px;
   margin: 0 auto 20px;
@@ -1012,7 +1023,7 @@ button {
 .dash-card:hover {
   transform: translateY(-3px) rotate(-0.25deg);
   box-shadow: var(--dash-shadow-hover);
-  border-color: rgba(52, 56, 63, 0.16);
+  border-color: rgba(var(--dash-ink-rgb), 0.16);
 }
 
 .dashboard-content.page-home .dash-card {
@@ -1031,43 +1042,43 @@ button {
   background-size: 420px 420px, auto;
   box-shadow:
     0 4px 0 rgba(184, 129, 54, 0.06),
-    0 18px 34px rgba(52, 56, 63, 0.07);
+    0 18px 34px rgba(var(--dash-ink-rgb), 0.07);
 }
 
 .dashboard-content.page-appearance .dash-card {
   background:
     url("./art/paper-grain-cool.webp"),
-    linear-gradient(135deg, rgba(194, 156, 173, 0.13), rgba(255, 255, 255, 0.58) 52%, rgba(123, 132, 159, 0.11));
+    linear-gradient(135deg, rgba(var(--dash-accent-rgb), 0.22), rgba(255, 255, 255, 0.62) 52%, rgba(var(--dash-accent-rgb), 0.1));
   background-size: 460px 460px, auto;
 }
 
 .dashboard-content.page-appearance .dash-card:nth-of-type(3) {
   background:
     url("./art/paper-grain-cool.webp"),
-    linear-gradient(135deg, rgba(96, 148, 151, 0.12), rgba(255, 255, 255, 0.62) 48%, rgba(151, 200, 202, 0.16));
+    linear-gradient(135deg, rgba(var(--dash-accent-rgb), 0.12), rgba(255, 255, 255, 0.62) 48%, rgba(var(--dash-accent-rgb), 0.16));
   background-size: 460px 460px, auto;
 }
 
 .dashboard-content.page-voice .dash-card {
-  border-color: rgba(96, 148, 151, 0.18);
+  border-color: rgba(var(--dash-accent-rgb), 0.18);
   background:
     url("./art/paper-grain-cool.webp"),
-    linear-gradient(135deg, rgba(96, 148, 151, 0.16), rgba(255, 255, 255, 0.56) 52%, rgba(134, 168, 138, 0.12));
+    linear-gradient(135deg, rgba(var(--dash-accent-rgb), 0.16), rgba(255, 255, 255, 0.56) 52%, rgba(134, 168, 138, 0.12));
   background-size: 460px 460px, auto;
   box-shadow:
     0 4px 0 rgba(4, 177, 183, 0.07),
-    0 20px 40px rgba(52, 56, 63, 0.08);
+    0 20px 40px rgba(var(--dash-ink-rgb), 0.08);
 }
 
 .dashboard-content.page-system .dash-card {
-  border-color: rgba(60, 55, 51, 0.09);
+  border-color: rgba(var(--dash-ink-rgb), 0.09);
   background:
     url("./art/paper-grain-cool.webp"),
     linear-gradient(180deg, rgba(255, 255, 255, 0.70), rgba(245, 250, 255, 0.48));
   background-size: 460px 460px, auto;
   box-shadow:
-    0 3px 0 rgba(52, 56, 63, 0.04),
-    0 18px 36px rgba(52, 56, 63, 0.08);
+    0 3px 0 rgba(var(--dash-ink-rgb), 0.04),
+    0 18px 36px rgba(var(--dash-ink-rgb), 0.08);
 }
 
 .dashboard-content.page-about .dash-card {
@@ -1197,8 +1208,8 @@ button {
   flex-direction: column;
   background:
     url("./art/paper-grain-cool.webp"),
-    radial-gradient(circle at 82% 76%, rgba(151, 200, 202, 0.24), transparent 34%),
-    radial-gradient(circle at 18% 18%, rgba(96, 148, 151, 0.18), transparent 30%),
+    radial-gradient(circle at 82% 76%, rgba(var(--dash-accent-rgb), 0.24), transparent 34%),
+    radial-gradient(circle at 18% 18%, rgba(var(--dash-accent-rgb), 0.18), transparent 30%),
     linear-gradient(145deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.10) 54%, rgba(var(--paper-tint-150-rgb), 0.28)),
     #f7fbff;
   background-size: 620px 620px, auto, auto, auto, auto;
@@ -1245,7 +1256,7 @@ button {
   flex-shrink: 0;
   min-height: 72px;
   padding: 10px 18px;
-  border-bottom: 1px solid rgba(52, 56, 63, 0.07);
+  border-bottom: 1px solid rgba(var(--dash-ink-rgb), 0.07);
 }
 
 .dash-chat-head-title {
@@ -1288,7 +1299,7 @@ button {
 
 .dash-status-pill.state.busy::before {
   background: var(--dash-candy-coral);
-  box-shadow: 0 0 0 3px rgba(187, 129, 102, 0.20);
+  box-shadow: 0 0 0 3px rgba(var(--dash-warm-rgb), 0.20);
 }
 
 /* --- 右侧信息面板 --- */
@@ -1318,7 +1329,7 @@ button {
 }
 
 .dash-aside-card + .dash-aside-card {
-  border-top: 1px solid rgba(52, 56, 63, 0.07);
+  border-top: 1px solid rgba(var(--dash-ink-rgb), 0.07);
 }
 
 .dash-aside-title {
@@ -1358,7 +1369,7 @@ button {
   border-radius: 12px;
   font-size: 20px;
   background: linear-gradient(145deg, rgba(255, 255, 255, 0.92), rgba(225, 239, 236, 0.75));
-  box-shadow: inset 0 0 0 1px rgba(52, 56, 63, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(var(--dash-ink-rgb), 0.06);
 }
 
 .dash-aside-avatar.active {
@@ -1394,7 +1405,7 @@ button {
   height: 30px;
   border-radius: 7px;
   border: 1px solid transparent;
-  background: rgba(52, 56, 63, 0.04);
+  background: rgba(var(--dash-ink-rgb), 0.04);
   color: var(--dash-text-secondary);
   font-size: 12px;
   font-weight: 600;
@@ -1406,8 +1417,8 @@ button {
 .dash-aside-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .dash-aside-btn.danger {
-  border-color: rgba(187, 129, 102, 0.32);
-  background: rgba(187, 129, 102, 0.12);
+  border-color: rgba(var(--dash-warm-rgb), 0.32);
+  background: rgba(var(--dash-warm-rgb), 0.12);
   color: #ac5b3b;
 }
 
@@ -1432,7 +1443,7 @@ button {
 }
 
 .dash-aside-item + .dash-aside-item {
-  border-top: 1px solid rgba(52, 56, 63, 0.05);
+  border-top: 1px solid rgba(var(--dash-ink-rgb), 0.05);
 }
 
 .dash-aside-date {
@@ -1480,7 +1491,7 @@ button {
 .dash-aside-progress-bar {
   height: 6px;
   border-radius: 999px;
-  background: rgba(52, 56, 63, 0.08);
+  background: rgba(var(--dash-ink-rgb), 0.08);
   overflow: hidden;
 }
 
@@ -1515,11 +1526,11 @@ button {
   display: grid;
   place-items: center;
   border-radius: 50%;
-  border: 1px solid rgba(60, 55, 51, 0.09);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.09);
   background: rgba(255, 255, 255, 0.94);
   color: var(--dash-text-secondary);
   cursor: pointer;
-  box-shadow: 0 6px 16px rgba(52, 56, 63, 0.14);
+  box-shadow: 0 6px 16px rgba(var(--dash-ink-rgb), 0.14);
   transition: transform var(--dash-transition);
 }
 
@@ -1562,8 +1573,8 @@ button {
   background:
     linear-gradient(135deg, rgba(255, 255, 255, 0.66), rgba(var(--paper-tint-150-rgb), 0.36));
   box-shadow:
-    0 4px 0 rgba(52, 56, 63, 0.035),
-    0 16px 28px rgba(52, 56, 63, 0.06);
+    0 4px 0 rgba(var(--dash-ink-rgb), 0.035),
+    0 16px 28px rgba(var(--dash-ink-rgb), 0.06);
   backdrop-filter: blur(8px);
 }
 
@@ -1601,8 +1612,8 @@ button {
   font-size: 13px;
   line-height: 1.5;
   box-shadow:
-    0 3px 0 rgba(52, 56, 63, 0.035),
-    0 12px 24px rgba(52, 56, 63, 0.07);
+    0 3px 0 rgba(var(--dash-ink-rgb), 0.035),
+    0 12px 24px rgba(var(--dash-ink-rgb), 0.07);
   user-select: text;
   backdrop-filter: blur(10px) saturate(1.14);
   -webkit-backdrop-filter: blur(10px) saturate(1.14);
@@ -1627,7 +1638,7 @@ button {
   background-size: 420px 420px, auto;
   color: var(--dash-text-primary);
   border-bottom-left-radius: 6px;
-  border: 1px solid rgba(52, 56, 63, 0.08);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.08);
 }
 
 .dash-msg-wrapper.assistant .dash-msg-bubble::before {
@@ -1635,7 +1646,7 @@ button {
   position: absolute;
   inset: 0 auto 0 0;
   width: 5px;
-  background: linear-gradient(180deg, rgba(96, 148, 151, 0.38), rgba(151, 200, 202, 0.22));
+  background: linear-gradient(180deg, rgba(var(--dash-accent-rgb), 0.38), rgba(var(--dash-accent-rgb), 0.22));
   pointer-events: none;
 }
 
@@ -1655,7 +1666,7 @@ button {
 .dash-system-divider-line {
   flex: 1;
   height: 1px;
-  background: var(--dash-card-border, rgba(52, 56, 63, 0.08));
+  background: var(--dash-card-border, rgba(var(--dash-ink-rgb), 0.08));
 }
 
 .dash-system-divider-text {
@@ -1672,7 +1683,7 @@ button {
   margin-bottom: 8px;
   font-size: 11px;
   color: var(--dash-text-secondary);
-  border: 1px solid rgba(52, 56, 63, 0.06);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.06);
   border-left: 3px solid rgba(var(--dash-accent-rgb), 0.44);
 }
 
@@ -1698,7 +1709,7 @@ button {
   border-radius: 8px;
   padding: 6px 10px;
   margin-bottom: 7px;
-  background: rgba(52, 56, 63, 0.05);
+  background: rgba(var(--dash-ink-rgb), 0.05);
   border-left: 3px solid rgba(var(--dash-accent-rgb), 0.5);
   cursor: default;
 }
@@ -1738,7 +1749,7 @@ button {
 
 /* AI 回复内的 [QUOTE] 引用块：蓝色系竖线区分 */
 .dash-msg-quote.ai-quote {
-  border-left-color: rgba(96, 148, 151, 0.65);
+  border-left-color: rgba(var(--dash-accent-rgb), 0.65);
 }
 
 /* 输入框上方的引用预览条 */
@@ -1791,7 +1802,7 @@ button {
 }
 
 .dash-quote-remove-btn:hover {
-  background: rgba(52, 56, 63, 0.08);
+  background: rgba(var(--dash-ink-rgb), 0.08);
   color: var(--dash-text-primary);
 }
 
@@ -1801,12 +1812,12 @@ button {
   align-self: flex-start;
   margin-top: 6px;
   padding: 5px;
-  border: 1px solid rgba(60, 55, 51, 0.075);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.075);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.94);
   box-shadow:
-    0 2px 0 rgba(52, 56, 63, 0.04),
-    0 12px 24px rgba(52, 56, 63, 0.12);
+    0 2px 0 rgba(var(--dash-ink-rgb), 0.04),
+    0 12px 24px rgba(var(--dash-ink-rgb), 0.12);
   user-select: none;
 }
 
@@ -1818,7 +1829,7 @@ button {
   min-width: 72px;
   height: 30px;
   padding: 0 11px;
-  border: 1px solid rgba(52, 56, 63, 0.08);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.08);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.88);
   color: var(--dash-text-secondary);
@@ -1843,15 +1854,15 @@ button {
 .dash-tool-trace-panel {
   width: min(760px, 100%);
   padding: 13px;
-  border: 1px solid rgba(60, 55, 51, 0.09);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.09);
   border-radius: 16px;
   background:
     url("./art/paper-grain-cool.webp"),
     linear-gradient(145deg, rgba(255, 255, 255, 0.66), rgba(var(--paper-tint-150-rgb), 0.40));
   background-size: 420px 420px, auto;
   box-shadow:
-    0 3px 0 rgba(52, 56, 63, 0.035),
-    0 16px 30px rgba(52, 56, 63, 0.07);
+    0 3px 0 rgba(var(--dash-ink-rgb), 0.035),
+    0 16px 30px rgba(var(--dash-ink-rgb), 0.07);
   backdrop-filter: blur(9px) saturate(1.08);
 }
 
@@ -1912,7 +1923,7 @@ button {
 .dash-tool-status {
   padding: 2px 7px;
   border-radius: 999px;
-  background: rgba(52, 56, 63, 0.06);
+  background: rgba(var(--dash-ink-rgb), 0.06);
   color: var(--dash-text-secondary);
   font-size: 11px;
   font-weight: 800;
@@ -1950,7 +1961,7 @@ button {
   overflow: auto;
   padding: 8px;
   border-radius: 8px;
-  background: rgba(52, 56, 63, 0.05);
+  background: rgba(var(--dash-ink-rgb), 0.05);
   color: var(--dash-text-secondary);
   white-space: pre-wrap;
 }
@@ -1994,11 +2005,11 @@ button {
   background:
     linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(var(--paper-tint-150-rgb), 0.90));
   backdrop-filter: blur(12px);
-  border: 1px solid rgba(187, 129, 102, 0.38);
+  border: 1px solid rgba(var(--dash-warm-rgb), 0.38);
   border-radius: 16px;
   box-shadow:
-    0 4px 12px rgba(187, 129, 102, 0.12),
-    0 14px 30px rgba(52, 56, 63, 0.12),
+    0 4px 12px rgba(var(--dash-warm-rgb), 0.12),
+    0 14px 30px rgba(var(--dash-ink-rgb), 0.12),
     inset 0 1px 0 rgba(255, 255, 255, 0.8);
 }
 
@@ -2059,7 +2070,7 @@ button {
   border-radius: 16px;
   box-shadow:
     0 4px 12px rgba(59, 130, 246, 0.12),
-    0 14px 30px rgba(52, 56, 63, 0.12),
+    0 14px 30px rgba(var(--dash-ink-rgb), 0.12),
     inset 0 1px 0 rgba(255, 255, 255, 0.8);
 }
 
@@ -2092,7 +2103,7 @@ button {
   gap: 2px;
   padding: 10px 12px;
   text-align: left;
-  border: 1px solid rgba(52, 56, 63, 0.14);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.14);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.75);
   cursor: pointer;
@@ -2124,7 +2135,7 @@ button {
 .dash-ask-user-input input {
   width: 100%;
   padding: 10px 12px;
-  border: 1px solid rgba(52, 56, 63, 0.14);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.14);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.85);
   color: var(--dash-text-primary);
@@ -2172,16 +2183,16 @@ button {
   flex-shrink: 0;
   margin: 4px 16px 16px;
   padding: 10px 12px 8px;
-  border: 1px solid rgba(52, 56, 63, 0.12);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.12);
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.78);
-  box-shadow: 0 4px 16px rgba(52, 56, 63, 0.035), inset 0 1px 0 #fff;
+  box-shadow: 0 4px 16px rgba(var(--dash-ink-rgb), 0.035), inset 0 1px 0 #fff;
   transition: border-color .18s, box-shadow .18s;
 }
 
 .dash-chat-composer:focus-within {
   border-color: rgba(var(--dash-accent-rgb), 0.38);
-  box-shadow: 0 4px 20px rgba(52, 56, 63, 0.06), 0 0 0 2px rgba(var(--dash-accent-rgb), 0.06);
+  box-shadow: 0 4px 20px rgba(var(--dash-ink-rgb), 0.06), 0 0 0 2px rgba(var(--dash-accent-rgb), 0.06);
 }
 
 .dash-chat-input-area {
@@ -2198,14 +2209,14 @@ button {
   overflow-y: auto;
   margin-bottom: 10px;
   padding: 6px;
-  border: 1px solid rgba(60, 55, 51, 0.09);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.09);
   border-radius: 14px;
   background:
     url("./art/paper-grain-cool.webp"),
     linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(var(--paper-tint-150-rgb), 0.72));
   background-size: 420px 420px, auto;
   box-shadow:
-    0 12px 24px rgba(60, 55, 51, 0.09),
+    0 12px 24px rgba(var(--dash-ink-rgb), 0.09),
     inset 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
@@ -2233,7 +2244,7 @@ button {
 
 .dash-slash-item.skill.active {
   background:
-    linear-gradient(90deg, rgba(96, 148, 151, 0.15), rgba(var(--dash-accent-rgb), 0.08));
+    linear-gradient(90deg, rgba(var(--dash-accent-rgb), 0.15), rgba(var(--dash-accent-rgb), 0.08));
 }
 
 .dash-slash-mark {
@@ -2247,7 +2258,7 @@ button {
   color: rgb(var(--dash-accent-rgb));
   font-size: 14px;
   font-weight: 800;
-  box-shadow: inset 0 0 0 1px rgba(52, 56, 63, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(var(--dash-ink-rgb), 0.06);
 }
 
 .dash-slash-main {
@@ -2363,7 +2374,7 @@ button {
 .dash-meta-value {
   padding: 1px 6px;
   border-radius: 6px;
-  background: rgba(52, 56, 63, 0.05);
+  background: rgba(var(--dash-ink-rgb), 0.05);
   color: var(--dash-text-secondary);
   font-weight: 600;
 }
@@ -2824,9 +2835,9 @@ button {
   height: 10px;
   overflow: hidden;
   border-radius: 999px;
-  background: rgba(52, 56, 63, 0.07);
+  background: rgba(var(--dash-ink-rgb), 0.07);
   box-shadow:
-    inset 0 1px 2px rgba(52, 56, 63, 0.06),
+    inset 0 1px 2px rgba(var(--dash-ink-rgb), 0.06),
     0 1px 0 rgba(255, 255, 255, 0.8);
 }
 
@@ -3480,10 +3491,10 @@ button {
   gap: 12px;
   padding: 14px;
   margin: -4px 0 18px;
-  border: 2px solid rgba(96, 148, 151, 0.20);
+  border: 2px solid rgba(var(--dash-accent-rgb), 0.20);
   border-radius: 8px;
   background:
-    linear-gradient(135deg, rgba(96, 148, 151, 0.10), rgba(151, 200, 202, 0.08)),
+    linear-gradient(135deg, rgba(var(--dash-accent-rgb), 0.10), rgba(var(--dash-accent-rgb), 0.08)),
     rgba(255, 255, 255, 0.68);
 }
 
@@ -3492,9 +3503,9 @@ button {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
   padding: 5px;
-  border: 1px solid rgba(60, 55, 51, 0.075);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.075);
   border-radius: 8px;
-  background: rgba(52, 56, 63, 0.04);
+  background: rgba(var(--dash-ink-rgb), 0.04);
 }
 
 .dash-thinking-option {
@@ -3638,8 +3649,8 @@ button {
   margin-top: 12px;
   padding: 12px;
   border-radius: 10px;
-  background: rgba(52, 56, 63, 0.03);
-  border: 1px solid rgba(52, 56, 63, 0.08);
+  background: rgba(var(--dash-ink-rgb), 0.03);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.08);
   font-size: 12px;
 }
 
@@ -3788,7 +3799,7 @@ button {
 .dashboard-content.page-appearance .dash-skin-item {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(var(--paper-tint-150-rgb), 0.34));
-  border-color: rgba(194, 156, 173, 0.16);
+  border-color: rgba(var(--dash-accent-rgb), 0.16);
 }
 
 .dashboard-content.page-appearance .dash-font-color-item {
@@ -3799,7 +3810,7 @@ button {
 
 .dashboard-content.page-appearance .dash-bg-opt {
   background:
-    linear-gradient(145deg, rgba(96, 148, 151, 0.10), rgba(255, 255, 255, 0.46));
+    linear-gradient(145deg, rgba(var(--dash-accent-rgb), 0.10), rgba(255, 255, 255, 0.46));
 }
 
 .dash-option-item {
@@ -3886,7 +3897,7 @@ button {
   color: rgb(var(--dash-accent-rgb));
   font-size: 13px;
   font-weight: 900;
-  box-shadow: 0 2px 8px rgba(60, 55, 51, 0.09);
+  box-shadow: 0 2px 8px rgba(var(--dash-ink-rgb), 0.09);
 }
 
 .dash-skin-name {
@@ -4063,7 +4074,7 @@ button {
   background-size: 360px 360px, auto;
   box-shadow:
     0 2px 0 rgba(184, 129, 54, 0.05),
-    0 14px 24px rgba(52, 56, 63, 0.06);
+    0 14px 24px rgba(var(--dash-ink-rgb), 0.06);
   backdrop-filter: blur(6px);
   transform-origin: 28px 18px;
 }
@@ -4091,8 +4102,8 @@ button {
     linear-gradient(135deg, rgba(255, 253, 248, 0.78), rgba(236, 250, 255, 0.58)),
     rgba(255, 255, 255, 0.42);
   box-shadow:
-    0 2px 0 rgba(52, 56, 63, 0.04),
-    0 14px 28px rgba(52, 56, 63, 0.06);
+    0 2px 0 rgba(var(--dash-ink-rgb), 0.04),
+    0 14px 28px rgba(var(--dash-ink-rgb), 0.06);
   backdrop-filter: blur(8px);
 }
 
@@ -4108,7 +4119,7 @@ button {
   min-height: 74px;
   padding: 10px;
   border-radius: 8px;
-  background: rgba(52, 56, 63, 0.05);
+  background: rgba(var(--dash-ink-rgb), 0.05);
   color: var(--dash-text-primary);
 }
 
@@ -4193,13 +4204,13 @@ button {
 
 .dashboard-content.page-voice .dash-switch-row,
 .dashboard-content.page-voice .dash-range-row {
-  border-top-color: rgba(96, 148, 151, 0.14);
+  border-top-color: rgba(var(--dash-accent-rgb), 0.14);
 }
 
 .dashboard-content.page-voice .dash-range {
   background:
-    linear-gradient(90deg, rgba(96, 148, 151, 0.24), rgba(134, 168, 138, 0.20)),
-    rgba(52, 56, 63, 0.05);
+    linear-gradient(90deg, rgba(var(--dash-accent-rgb), 0.24), rgba(134, 168, 138, 0.20)),
+    rgba(var(--dash-ink-rgb), 0.05);
 }
 
 .dashboard-content.page-voice .dash-voice-search {
@@ -4211,8 +4222,8 @@ button {
 .dashboard-content.page-system .dash-thinking-switch,
 .dashboard-content.page-system .dash-model-picker {
   background:
-    linear-gradient(135deg, rgba(52, 56, 63, 0.035), rgba(96, 148, 151, 0.08));
-  border-color: rgba(52, 56, 63, 0.08);
+    linear-gradient(135deg, rgba(var(--dash-ink-rgb), 0.035), rgba(var(--dash-accent-rgb), 0.08));
+  border-color: rgba(var(--dash-ink-rgb), 0.08);
 }
 
 .dashboard-content.page-system .dash-profile-item,
@@ -4385,15 +4396,16 @@ button {
 .sound-header,
 .lab-header {
   padding: 14px 18px;
-  border: 1px solid rgba(52, 56, 63, 0.07);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.07);
   border-radius: 18px;
   background:
     url("./art/paper-grain-cool.webp"),
-    linear-gradient(135deg, rgba(255, 255, 255, 0.58), rgba(var(--paper-tint-150-rgb), 0.28));
+    linear-gradient(135deg, rgba(var(--dash-accent-rgb), 0.34), rgba(var(--dash-accent-rgb), 0.1) 62%, rgba(var(--dash-accent-rgb), 0.16)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0.06));
   background-size: 420px 420px, auto;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.78),
-    0 8px 24px rgba(52, 56, 63, 0.045);
+    0 8px 24px rgba(var(--dash-ink-rgb), 0.045);
 }
 
 /* Appearance: atelier palette */
@@ -4418,10 +4430,10 @@ button {
   padding-right: 26px;
   padding-bottom: 32px;
   border-radius: 20px 14px 28px 16px;
-  border-color: rgba(194, 156, 173, 0.22);
+  border-color: rgba(var(--dash-accent-rgb), 0.22);
   background:
     url("./art/appearance-atelier.webp") right 12px bottom 0 / min(240px, 24vw) auto no-repeat,
-    linear-gradient(135deg, rgba(194, 156, 173, 0.14), rgba(255, 255, 255, 0.46) 48%, rgba(123, 132, 159, 0.12));
+    linear-gradient(135deg, rgba(var(--dash-accent-rgb), 0.14), rgba(255, 255, 255, 0.46) 48%, rgba(var(--dash-accent-rgb), 0.12));
 }
 
 .palette-panel.skin-panel::after {
@@ -4439,9 +4451,9 @@ button {
 
 .sample-sheet.font-panel {
   border-radius: 12px 24px 18px 16px;
-  border-color: rgba(123, 132, 159, 0.20);
+  border-color: rgba(var(--dash-accent-rgb), 0.20);
   background:
-    linear-gradient(180deg, transparent 0 38px, rgba(123, 132, 159, 0.08) 38px 39px, transparent 39px 78px),
+    linear-gradient(180deg, transparent 0 38px, rgba(var(--dash-accent-rgb), 0.08) 38px 39px, transparent 39px 78px),
     url("./art/paper-grain-cool.webp"),
     rgba(255, 255, 255, 0.54);
   background-size: auto, 420px 420px, auto;
@@ -4450,10 +4462,10 @@ button {
 
 .film-strip-panel.bg-panel {
   border-radius: 24px 14px 18px 16px;
-  border-color: rgba(96, 148, 151, 0.20);
+  border-color: rgba(var(--dash-accent-rgb), 0.20);
   background:
-    repeating-linear-gradient(90deg, rgba(52, 56, 63, 0.07) 0 9px, transparent 9px 22px),
-    linear-gradient(145deg, rgba(96, 148, 151, 0.12), rgba(255, 255, 255, 0.48));
+    repeating-linear-gradient(90deg, rgba(var(--dash-ink-rgb), 0.07) 0 9px, transparent 9px 22px),
+    linear-gradient(145deg, rgba(var(--dash-accent-rgb), 0.12), rgba(255, 255, 255, 0.48));
   background-size: 100% 14px, auto;
   background-position: top left, center;
   background-repeat: repeat-x, no-repeat;
@@ -4462,9 +4474,9 @@ button {
 .portrait-frame-panel.avatar-panel {
   grid-column: 1 / -1;
   border-radius: 18px 26px 18px 24px;
-  border-color: rgba(151, 200, 202, 0.28);
+  border-color: rgba(var(--dash-accent-rgb), 0.28);
   background:
-    linear-gradient(135deg, rgba(151, 200, 202, 0.14), rgba(255, 255, 255, 0.54)),
+    linear-gradient(135deg, rgba(var(--dash-accent-rgb), 0.14), rgba(255, 255, 255, 0.54)),
     rgba(255, 255, 255, 0.34);
 }
 
@@ -4474,8 +4486,8 @@ button {
   border: 6px solid rgba(255, 253, 248, 0.92);
   border-radius: 20px 14px 22px 14px;
   box-shadow:
-    0 4px 0 rgba(52, 56, 63, 0.06),
-    0 18px 32px rgba(52, 56, 63, 0.08);
+    0 4px 0 rgba(var(--dash-ink-rgb), 0.06),
+    0 18px 32px rgba(var(--dash-ink-rgb), 0.08);
   transform: rotate(-2deg);
 }
 
@@ -4515,7 +4527,7 @@ button {
   border-radius: 24px 18px 24px 18px;
   background:
     url("./art/voice-wave-ribbon.webp") right 18px top 12px / min(420px, 42vw) auto no-repeat,
-    linear-gradient(135deg, rgba(96, 148, 151, 0.15), rgba(255, 255, 255, 0.48) 58%, rgba(134, 168, 138, 0.10));
+    linear-gradient(135deg, rgba(var(--dash-accent-rgb), 0.15), rgba(255, 255, 255, 0.48) 58%, rgba(134, 168, 138, 0.10));
 }
 
 .voice-toggle-grid {
@@ -4534,7 +4546,7 @@ button {
   align-items: start;
   gap: 12px;
   padding: 16px;
-  border: 1px solid rgba(96, 148, 151, 0.18);
+  border: 1px solid rgba(var(--dash-accent-rgb), 0.18);
   border-radius: 18px 14px 18px 14px;
   background:
     radial-gradient(circle at 20% 18%, rgba(255, 255, 255, 0.74), transparent 30%),
@@ -4548,8 +4560,8 @@ button {
   height: 22px;
   border-radius: 999px;
   background:
-    repeating-linear-gradient(90deg, rgba(96, 148, 151, 0.50) 0 3px, transparent 3px 9px),
-    linear-gradient(90deg, rgba(134, 168, 138, 0.18), rgba(151, 200, 202, 0.12));
+    repeating-linear-gradient(90deg, rgba(var(--dash-accent-rgb), 0.50) 0 3px, transparent 3px 9px),
+    linear-gradient(90deg, rgba(134, 168, 138, 0.18), rgba(var(--dash-accent-rgb), 0.12));
   opacity: 0.42;
   mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
 }
@@ -4565,15 +4577,15 @@ button {
 .mixer-panel.voice-engine-panel {
   border-radius: 18px 26px 18px 22px;
   background:
-    linear-gradient(90deg, rgba(52, 56, 63, 0.035) 0 1px, transparent 1px 46px),
-    linear-gradient(135deg, rgba(123, 132, 159, 0.12), rgba(255, 255, 255, 0.52) 55%, rgba(96, 148, 151, 0.10));
+    linear-gradient(90deg, rgba(var(--dash-ink-rgb), 0.035) 0 1px, transparent 1px 46px),
+    linear-gradient(135deg, rgba(var(--dash-accent-rgb), 0.12), rgba(255, 255, 255, 0.52) 55%, rgba(var(--dash-accent-rgb), 0.10));
   background-size: 46px 100%, auto;
 }
 
 .mixer-panel .dash-range-row.mixer-control {
   padding: 14px 16px;
   margin-top: 12px;
-  border: 1px solid rgba(52, 56, 63, 0.08);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.08);
   border-radius: 14px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.54), rgba(245, 252, 255, 0.34));
@@ -4582,7 +4594,7 @@ button {
 .mixer-panel .dash-voice-picker-tools,
 .mixer-panel .dash-field-row {
   padding: 14px 16px;
-  border: 1px solid rgba(52, 56, 63, 0.08);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.08);
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.42);
 }
@@ -4597,10 +4609,10 @@ button {
   min-height: 360px;
   padding: 28px;
   border-radius: 18px 24px 18px 26px;
-  border-color: rgba(60, 55, 51, 0.09);
+  border-color: rgba(var(--dash-ink-rgb), 0.09);
   background:
     url("./art/system-agent-lab.webp") right 20px bottom 18px / min(360px, 34vw) auto no-repeat,
-    linear-gradient(135deg, rgba(255, 255, 255, 0.62), rgba(235, 250, 255, 0.42) 56%, rgba(151, 200, 202, 0.08));
+    linear-gradient(135deg, rgba(255, 255, 255, 0.62), rgba(235, 250, 255, 0.42) 56%, rgba(var(--dash-accent-rgb), 0.08));
 }
 
 .lab-module .dash-backend-selector {
@@ -4614,11 +4626,11 @@ button {
   min-height: 76px;
   justify-content: flex-start;
   padding: 16px 18px;
-  border: 1px solid rgba(52, 56, 63, 0.08);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.08);
   border-radius: 16px 12px 18px 12px;
   background:
     linear-gradient(145deg, rgba(255, 255, 255, 0.60), rgba(245, 250, 255, 0.34));
-  box-shadow: 0 4px 0 rgba(52, 56, 63, 0.04);
+  box-shadow: 0 4px 0 rgba(var(--dash-ink-rgb), 0.04);
 }
 
 .lab-module .dash-backend-btn span {
@@ -4628,16 +4640,16 @@ button {
   align-items: center;
   justify-content: center;
   border-radius: 10px;
-  background: rgba(96, 148, 151, 0.16);
+  background: rgba(var(--dash-accent-rgb), 0.16);
 }
 
 .lab-module .dash-backend-btn.active {
-  border-color: rgba(96, 148, 151, 0.32);
+  border-color: rgba(var(--dash-accent-rgb), 0.32);
   background:
     linear-gradient(145deg, rgba(255, 255, 255, 0.80), rgba(235, 250, 255, 0.54));
   box-shadow:
-    0 0 0 4px rgba(96, 148, 151, 0.10),
-    0 6px 0 rgba(96, 148, 151, 0.08);
+    0 0 0 4px rgba(var(--dash-accent-rgb), 0.10),
+    0 6px 0 rgba(var(--dash-accent-rgb), 0.08);
 }
 
 .lab-module .connection-status-row,
@@ -4648,7 +4660,7 @@ button {
   border-radius: 14px;
   background:
     linear-gradient(135deg, rgba(255, 255, 255, 0.58), rgba(245, 250, 255, 0.36));
-  border-color: rgba(52, 56, 63, 0.08);
+  border-color: rgba(var(--dash-ink-rgb), 0.08);
 }
 
 .lab-module .dash-profile-item {
@@ -4672,13 +4684,13 @@ button {
 .system-role-grid .role-card {
   border-radius: 24px 16px 22px 16px;
   background:
-    linear-gradient(135deg, rgba(151, 200, 202, 0.12), rgba(255, 255, 255, 0.54) 52%, rgba(194, 156, 173, 0.10));
+    linear-gradient(135deg, rgba(var(--dash-accent-rgb), 0.12), rgba(255, 255, 255, 0.54) 52%, rgba(var(--dash-accent-rgb), 0.10));
 }
 
 .system-role-grid .profession-panel {
   border-radius: 16px 24px 16px 22px;
   background:
-    linear-gradient(135deg, rgba(96, 148, 151, 0.12), rgba(255, 255, 255, 0.54) 52%, rgba(134, 168, 138, 0.10));
+    linear-gradient(135deg, rgba(var(--dash-accent-rgb), 0.12), rgba(255, 255, 255, 0.54) 52%, rgba(134, 168, 138, 0.10));
 }
 
 .system-role-grid .dash-option-grid {
@@ -4860,7 +4872,7 @@ button {
 
   .palette-panel.skin-panel {
     background-image:
-      linear-gradient(135deg, rgba(194, 156, 173, 0.14), rgba(255, 255, 255, 0.46) 48%, rgba(123, 132, 159, 0.12));
+      linear-gradient(135deg, rgba(var(--dash-accent-rgb), 0.14), rgba(255, 255, 255, 0.46) 48%, rgba(var(--dash-accent-rgb), 0.12));
   }
 }
 
@@ -4918,7 +4930,7 @@ button {
   border-radius: 16px;
   color: var(--dash-text-primary);
   background: rgba(255, 255, 255, 0.78);
-  box-shadow: 0 12px 40px rgba(60, 55, 51, 0.09);
+  box-shadow: 0 12px 40px rgba(var(--dash-ink-rgb), 0.09);
   animation: dashScaleIn 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
@@ -5105,7 +5117,7 @@ button {
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  background: rgba(52, 56, 63, 0.6);
+  background: rgba(var(--dash-ink-rgb), 0.6);
   color: #ffffff;
   border: none;
   font-size: 12px;
@@ -5237,7 +5249,7 @@ button {
   gap: 10px;
   padding: 5px 22px;
   background: rgba(235, 242, 251, 0.3);
-  border-bottom: 1px solid rgba(52, 56, 63, 0.045);
+  border-bottom: 1px solid rgba(var(--dash-ink-rgb), 0.045);
   font-size: 11px;
   color: var(--dash-text-secondary);
 }
@@ -5311,9 +5323,9 @@ button {
 .weather-settings-preview {
   margin: -2px 0 14px;
   padding: 10px 12px;
-  border: 1px solid rgba(96, 148, 151, 0.18);
+  border: 1px solid rgba(var(--dash-accent-rgb), 0.18);
   border-radius: 8px;
-  background: rgba(96, 148, 151, 0.08);
+  background: rgba(var(--dash-accent-rgb), 0.08);
   color: var(--dash-text-secondary);
   font-size: 12px;
   font-weight: 700;
@@ -5338,8 +5350,8 @@ button {
     url("./art/paper-grain-cool.webp"),
     linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(250, 253, 253, 0.95));
   background-size: 420px 420px, auto;
-  border-bottom-color: rgba(60, 55, 51, 0.075);
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.76), 0 8px 18px rgba(52, 56, 63, 0.045);
+  border-bottom-color: rgba(var(--dash-ink-rgb), 0.075);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.76), 0 8px 18px rgba(var(--dash-ink-rgb), 0.045);
 }
 
 .dashboard-titlebar::after {
@@ -5347,7 +5359,7 @@ button {
 }
 
 .dashboard-sidebar {
-  border-right-color: rgba(60, 55, 51, 0.075);
+  border-right-color: rgba(var(--dash-ink-rgb), 0.075);
   /*
    * 侧栏底色必须跟着主题走，所以两个色标都用主题派生变量。
    * 上一版把第一个色标写死成 rgba(255,255,255,.97)，
@@ -5355,7 +5367,9 @@ button {
    */
   background:
     url("./art/paper-grain-cool.webp"),
-    linear-gradient(172deg, rgba(var(--paper-tint-50-rgb, 253, 254, 254), 0.97), rgba(var(--paper-tint-150-rgb), 0.93));
+    /* 侧栏是画面上最大的连续色块，用它承载高饱和主题色 —— 参考图的"彩虹带"角色 */
+    linear-gradient(172deg, rgba(var(--dash-accent-rgb), 0.42), rgba(var(--dash-accent-rgb), 0.2) 55%, rgba(var(--dash-accent-rgb), 0.3)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.3), rgba(255, 255, 255, 0.05));
   background-size: 520px 520px, auto;
   /* soft-light 而不是 multiply：multiply 会把侧栏整体压成灰绿 */
   background-blend-mode: soft-light, normal;
@@ -5368,7 +5382,7 @@ button {
 
 .dashboard-content {
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.6), transparent 240px),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.34), transparent 240px),
     var(--dash-content-bg);
   scrollbar-color: rgba(86, 104, 128, 0.22) transparent;
 }
@@ -5398,7 +5412,7 @@ button {
 .sound-header,
 .lab-header {
   border-radius: var(--dash-radius-xl);
-  border-color: rgba(60, 55, 51, 0.075);
+  border-color: rgba(var(--dash-ink-rgb), 0.075);
   background:
     url("./art/paper-grain-cool.webp"),
     linear-gradient(135deg, rgba(255, 255, 255, 0.76), rgba(246, 251, 255, 0.44));
@@ -5410,9 +5424,10 @@ button {
   border-width: 1px;
   border-color: var(--dash-card-border);
   border-radius: var(--dash-radius-xl);
+  /* 与基础规则保持一致（这里顺序在后，会覆盖前面） */
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.66)),
-    var(--dash-panel-bg);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(255, 255, 255, 0.84)),
+    linear-gradient(160deg, rgba(var(--dash-accent-rgb), 0.11), rgba(var(--paper-tint-150-rgb), 0.52));
   box-shadow: var(--dash-shadow-sm);
   backdrop-filter: blur(22px) saturate(1.28);
   -webkit-backdrop-filter: blur(22px) saturate(1.28);
@@ -5426,7 +5441,7 @@ button {
 
 .dash-card:hover {
   transform: translateY(-1px);
-  border-color: rgba(52, 56, 63, 0.15);
+  border-color: rgba(var(--dash-ink-rgb), 0.15);
   box-shadow: var(--dash-shadow-hover);
 }
 
@@ -5469,7 +5484,7 @@ button {
   background: var(--dash-control-bg);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.72),
-    0 1px 2px rgba(52, 56, 63, 0.03);
+    0 1px 2px rgba(var(--dash-ink-rgb), 0.03);
 }
 
 .dash-select:hover:not(:disabled),
@@ -5477,7 +5492,7 @@ button {
 .dash-voice-search:hover:not(:disabled),
 .dash-textarea:hover:not(:disabled),
 .dash-form-group input:hover:not(:disabled) {
-  border-color: rgba(52, 56, 63, 0.17);
+  border-color: rgba(var(--dash-ink-rgb), 0.17);
   background: var(--dash-control-bg-hover);
 }
 
@@ -5507,12 +5522,12 @@ button {
 }
 
 .dash-toggle {
-  border-color: rgba(52, 56, 63, 0.14);
-  background: rgba(60, 55, 51, 0.09);
+  border-color: rgba(var(--dash-ink-rgb), 0.14);
+  background: rgba(var(--dash-ink-rgb), 0.09);
 }
 
 .dash-toggle::before {
-  box-shadow: 0 2px 8px rgba(52, 56, 63, 0.20);
+  box-shadow: 0 2px 8px rgba(var(--dash-ink-rgb), 0.20);
 }
 
 .dash-toggle:checked {
@@ -5523,8 +5538,8 @@ button {
 .dash-range {
   height: 7px;
   background:
-    linear-gradient(90deg, rgba(var(--dash-accent-rgb), 0.24), rgba(96, 148, 151, 0.18)),
-    rgba(52, 56, 63, 0.08);
+    linear-gradient(90deg, rgba(var(--dash-accent-rgb), 0.24), rgba(var(--dash-accent-rgb), 0.18)),
+    rgba(var(--dash-ink-rgb), 0.08);
 }
 
 .dash-range::-webkit-slider-thumb,
@@ -5569,7 +5584,7 @@ button {
   transform: translateY(-1px);
   border-color: rgba(var(--dash-accent-rgb), 0.26);
   background: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 10px 22px rgba(52, 56, 63, 0.08);
+  box-shadow: 0 10px 22px rgba(var(--dash-ink-rgb), 0.08);
 }
 
 .dash-btn:active:not(:disabled),
@@ -5598,13 +5613,13 @@ button {
 .dash-tool-confirm-card,
 .dash-tool-confirm-inline {
   border-width: 1px;
-  box-shadow: 0 10px 24px rgba(52, 56, 63, 0.07);
+  box-shadow: 0 10px 24px rgba(var(--dash-ink-rgb), 0.07);
 }
 
 .dash-msg-wrapper.assistant .dash-msg-bubble {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(255, 253, 248, 0.78)),
-    var(--pet-bubble-bot, rgba(187, 129, 102, 0.08));
+    var(--pet-bubble-bot, rgba(var(--dash-warm-rgb), 0.08));
 }
 
 .dash-msg-wrapper.user .dash-msg-bubble {
@@ -5614,7 +5629,7 @@ button {
 }
 
 .sound-panel.voice-interaction-panel {
-  border-color: rgba(96, 148, 151, 0.16);
+  border-color: rgba(var(--dash-accent-rgb), 0.16);
   background:
     url("./art/voice-wave-ribbon.webp") right 16px top 10px / min(360px, 38vw) auto no-repeat,
     radial-gradient(circle at 16% 6%, rgba(134, 168, 138, 0.18), transparent 26%),
@@ -5627,13 +5642,13 @@ button {
 
 .voice-toggle-grid .sound-toggle-card {
   min-height: 116px;
-  border-color: rgba(60, 55, 51, 0.09);
+  border-color: rgba(var(--dash-ink-rgb), 0.09);
   border-radius: 14px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.74), rgba(246, 252, 255, 0.48));
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.70),
-    0 10px 24px rgba(52, 56, 63, 0.06);
+    0 10px 24px rgba(var(--dash-ink-rgb), 0.06);
 }
 
 .voice-toggle-grid .sound-toggle-card::after {
@@ -5645,7 +5660,7 @@ button {
 .mixer-panel .dash-range-row.mixer-control,
 .mixer-panel .dash-voice-picker-tools,
 .mixer-panel .dash-field-row {
-  border-color: rgba(60, 55, 51, 0.09);
+  border-color: rgba(var(--dash-ink-rgb), 0.09);
   border-radius: 14px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.66), rgba(247, 252, 255, 0.44));
@@ -5653,8 +5668,8 @@ button {
 
 .mixer-panel.voice-engine-panel {
   background:
-    linear-gradient(90deg, rgba(52, 56, 63, 0.035) 0 1px, transparent 1px 42px),
-    radial-gradient(circle at 100% 0%, rgba(96, 148, 151, 0.12), transparent 28%),
+    linear-gradient(90deg, rgba(var(--dash-ink-rgb), 0.035) 0 1px, transparent 1px 42px),
+    radial-gradient(circle at 100% 0%, rgba(var(--dash-accent-rgb), 0.12), transparent 28%),
     linear-gradient(135deg, rgba(255, 255, 255, 0.7), rgba(233, 244, 242, 0.52));
   background-size: 42px 100%, auto, auto;
 }
@@ -5664,7 +5679,7 @@ button {
 }
 
 .dash-mini-check {
-  border-color: rgba(60, 55, 51, 0.09);
+  border-color: rgba(var(--dash-ink-rgb), 0.09);
   background: rgba(255, 255, 255, 0.66);
 }
 
@@ -5680,7 +5695,7 @@ button {
 .dash-file-preview-item,
 .dash-preview-file-card,
 .dash-msg-file-tag {
-  border-color: rgba(60, 55, 51, 0.09);
+  border-color: rgba(var(--dash-ink-rgb), 0.09);
 }
 
 @media (max-width: 980px) {
@@ -5745,7 +5760,7 @@ button {
     flex: 0 0 auto;
     padding: 10px;
     border-right: 0;
-    border-bottom: 1px solid rgba(60, 55, 51, 0.075);
+    border-bottom: 1px solid rgba(var(--dash-ink-rgb), 0.075);
     overflow: visible;
   }
 
@@ -5854,14 +5869,14 @@ button {
   overflow-y: auto;
   margin-bottom: 10px;
   padding: 6px;
-  border: 1px solid rgba(60, 55, 51, 0.09);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.09);
   border-radius: 14px;
   background:
     url("./art/paper-grain-cool.webp"),
     linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(var(--paper-tint-150-rgb), 0.72));
   background-size: 420px 420px, auto;
   box-shadow:
-    0 12px 24px rgba(60, 55, 51, 0.09),
+    0 12px 24px rgba(var(--dash-ink-rgb), 0.09),
     inset 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
@@ -5888,7 +5903,7 @@ button {
 }
 
 .dash-mention-new {
-  border-top: 1px dashed rgba(52, 56, 63, 0.14);
+  border-top: 1px dashed rgba(var(--dash-ink-rgb), 0.14);
   border-radius: 0 0 10px 10px;
 }
 
@@ -5922,7 +5937,7 @@ button {
 
 .dash-mention-desc {
   font-size: 11px;
-  color: var(--dash-text-secondary, rgba(52, 56, 63, 0.55));
+  color: var(--dash-text-secondary, rgba(var(--dash-ink-rgb), 0.55));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -5930,7 +5945,7 @@ button {
 
 .dash-mention-hint {
   font-size: 10px;
-  color: rgba(52, 56, 63, 0.38);
+  color: rgba(var(--dash-ink-rgb), 0.38);
 }
 
 /* 消息中的 @名字 高亮 */
@@ -5953,10 +5968,10 @@ button {
   margin-bottom: 6px;
   padding: 3px 10px 3px 4px;
   border-radius: 999px;
-  background: rgba(60, 55, 51, 0.05);
-  border: 1px solid rgba(60, 55, 51, 0.09);
+  background: rgba(var(--dash-ink-rgb), 0.05);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.09);
   font-size: 12px;
-  color: var(--dash-text-secondary, rgba(52, 56, 63, 0.6));
+  color: var(--dash-text-secondary, rgba(var(--dash-ink-rgb), 0.6));
   width: fit-content;
 }
 
@@ -6010,10 +6025,10 @@ button {
 
 .dash-agents-empty {
   padding: 26px 12px;
-  border: 1px dashed rgba(52, 56, 63, 0.16);
+  border: 1px dashed rgba(var(--dash-ink-rgb), 0.16);
   border-radius: 12px;
   text-align: center;
-  color: var(--dash-text-secondary, rgba(52, 56, 63, 0.55));
+  color: var(--dash-text-secondary, rgba(var(--dash-ink-rgb), 0.55));
   font-size: 13px;
   line-height: 1.7;
 }
@@ -6025,7 +6040,7 @@ button {
   gap: 12px;
   padding: 10px 12px;
   margin-bottom: 8px;
-  border: 1px solid rgba(60, 55, 51, 0.075);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.075);
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.5);
   transition: border-color var(--dash-transition), box-shadow var(--dash-transition);
@@ -6033,7 +6048,7 @@ button {
 
 .dash-agent-card:hover {
   border-color: rgba(var(--dash-accent-rgb), 0.28);
-  box-shadow: 0 6px 16px rgba(52, 56, 63, 0.06);
+  box-shadow: 0 6px 16px rgba(var(--dash-ink-rgb), 0.06);
 }
 
 .dash-agent-card-avatar {
@@ -6062,7 +6077,7 @@ button {
 
 .dash-agent-card-desc {
   font-size: 12px;
-  color: var(--dash-text-secondary, rgba(52, 56, 63, 0.55));
+  color: var(--dash-text-secondary, rgba(var(--dash-ink-rgb), 0.55));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -6070,7 +6085,7 @@ button {
 
 .dash-agent-card-meta {
   font-size: 11px;
-  color: rgba(52, 56, 63, 0.4);
+  color: rgba(var(--dash-ink-rgb), 0.4);
 }
 
 .dash-agent-card-actions {
@@ -6091,7 +6106,7 @@ button {
 .dash-agents-ai-hint {
   margin: 4px 0 10px;
   font-size: 12px;
-  color: var(--dash-text-secondary, rgba(52, 56, 63, 0.55));
+  color: var(--dash-text-secondary, rgba(var(--dash-ink-rgb), 0.55));
   line-height: 1.6;
 }
 
@@ -6100,7 +6115,7 @@ button {
   box-sizing: border-box;
   min-height: 72px;
   padding: 10px 12px;
-  border: 1px solid rgba(52, 56, 63, 0.14);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.14);
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.72);
   color: var(--dash-text-primary);
@@ -6137,13 +6152,13 @@ button {
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  box-shadow: 0 6px 14px rgba(52, 56, 63, 0.14);
+  box-shadow: 0 6px 14px rgba(var(--dash-ink-rgb), 0.14);
   transition: transform var(--dash-transition), box-shadow var(--dash-transition), opacity var(--dash-transition);
 }
 
 .dash-primary-btn:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 8px 18px rgba(52, 56, 63, 0.18);
+  box-shadow: 0 8px 18px rgba(var(--dash-ink-rgb), 0.18);
 }
 
 .dash-primary-btn:disabled {
@@ -6155,10 +6170,10 @@ button {
   margin-left: auto;
   width: 28px;
   height: 28px;
-  border: 1px solid rgba(52, 56, 63, 0.14);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.14);
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.6);
-  color: var(--dash-text-secondary, rgba(52, 56, 63, 0.6));
+  color: var(--dash-text-secondary, rgba(var(--dash-ink-rgb), 0.6));
   font-size: 15px;
   cursor: pointer;
 }
@@ -6177,7 +6192,7 @@ button {
 .dash-avatar-option {
   width: 38px;
   height: 38px;
-  border: 1px solid rgba(52, 56, 63, 0.12);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.12);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.62);
   font-size: 19px;
@@ -6205,7 +6220,7 @@ button {
   align-items: center;
   gap: 8px;
   padding: 7px 10px;
-  border: 1px solid rgba(60, 55, 51, 0.09);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.09);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.55);
   font-size: 12px;
@@ -6223,7 +6238,7 @@ button {
   gap: 10px;
   margin-top: 16px;
   padding-top: 14px;
-  border-top: 1px dashed rgba(52, 56, 63, 0.12);
+  border-top: 1px dashed rgba(var(--dash-ink-rgb), 0.12);
 }
 
 .dash-agents-editor-actions .dash-agents-gen-error {
@@ -6251,7 +6266,7 @@ button {
 
 .sidebar-item-parent.active {
   background:
-    linear-gradient(135deg, rgba(var(--dash-accent-rgb), 0.12), rgba(96, 148, 151, 0.14)),
+    linear-gradient(135deg, rgba(var(--dash-accent-rgb), 0.12), rgba(var(--dash-accent-rgb), 0.14)),
     rgba(255, 255, 255, 0.92);
 }
 
@@ -6294,7 +6309,7 @@ button {
 }
 
 .sidebar-item-caret:hover {
-  background: rgba(52, 56, 63, 0.06);
+  background: rgba(var(--dash-ink-rgb), 0.06);
   color: var(--dash-text-primary);
 }
 
@@ -6308,7 +6323,7 @@ button {
   gap: 2px;
   margin: 1px 0 3px 20px;
   padding-left: 10px;
-  border-left: 1px dashed rgba(52, 56, 63, 0.14);
+  border-left: 1px dashed rgba(var(--dash-ink-rgb), 0.14);
 }
 
 .sidebar-subitem {
@@ -6335,7 +6350,7 @@ button {
 
 .sidebar-subitem:hover {
   background: rgba(255, 255, 255, 0.78);
-  border-color: rgba(52, 56, 63, 0.07);
+  border-color: rgba(var(--dash-ink-rgb), 0.07);
   color: var(--dash-text-primary);
   transform: translateX(2px);
 }
@@ -6380,7 +6395,7 @@ button {
   flex-shrink: 0;
   border-radius: 50%;
   background: var(--dash-candy-coral);
-  box-shadow: 0 0 0 3px rgba(187, 129, 102, 0.16);
+  box-shadow: 0 0 0 3px rgba(var(--dash-warm-rgb), 0.16);
   animation: pulse-glow 1.8s ease-in-out infinite;
 }
 
@@ -6427,7 +6442,7 @@ button {
 }
 
 .dash-session-item:hover {
-  background: rgba(52, 56, 63, 0.035);
+  background: rgba(var(--dash-ink-rgb), 0.035);
 }
 
 .dash-session-item.active {
@@ -6504,7 +6519,7 @@ button {
 
 .dash-session-actions button {
   padding: 2px 6px;
-  border: 1px solid rgba(60, 55, 51, 0.09);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.09);
   border-radius: 7px;
   background: rgba(255, 255, 255, 0.94);
   color: var(--dash-text-secondary);
@@ -6587,7 +6602,7 @@ button {
 
 .dash-agent-head-controls > .session-access {
   padding-left: 10px;
-  border-left: 1px solid rgba(52, 56, 63, 0.1);
+  border-left: 1px solid rgba(var(--dash-ink-rgb), 0.1);
 }
 
 .dash-agent-field {
@@ -6704,7 +6719,7 @@ button {
   height: 12px;
   flex-shrink: 0;
   border-radius: 50%;
-  border: 2px solid rgba(52, 56, 63, 0.16);
+  border: 2px solid rgba(var(--dash-ink-rgb), 0.16);
   border-top-color: var(--dash-candy-sky);
   animation: orbit-spin 0.8s linear infinite;
 }
@@ -6726,9 +6741,9 @@ button {
   backdrop-filter: blur(32px) saturate(1.45);
   -webkit-backdrop-filter: blur(32px) saturate(1.45);
   box-shadow:
-    inset 0 0 0 1px rgba(52, 56, 63, 0.035),
-    0 8px 24px rgba(52, 56, 63, 0.08),
-    0 24px 64px rgba(52, 56, 63, 0.15);
+    inset 0 0 0 1px rgba(var(--dash-ink-rgb), 0.035),
+    0 8px 24px rgba(var(--dash-ink-rgb), 0.08),
+    0 24px 64px rgba(var(--dash-ink-rgb), 0.15);
   animation: float-in var(--dash-dur-base) var(--dash-ease-out);
 }
 
@@ -6776,7 +6791,7 @@ button {
   margin: 0 2px 8px;
   padding: 6px 8px;
   border-radius: var(--dash-radius-sm);
-  background: rgba(187, 129, 102, 0.12);
+  background: rgba(var(--dash-warm-rgb), 0.12);
   color: #ac5b3b;
   font-size: 11px;
   line-height: 1.45;
@@ -6826,8 +6841,8 @@ button {
 }
 
 .dash-agent-model-row.active {
-  background: rgba(96, 148, 151, 0.16);
-  box-shadow: inset 0 0 0 1px rgba(96, 148, 151, 0.36);
+  background: rgba(var(--dash-accent-rgb), 0.16);
+  box-shadow: inset 0 0 0 1px rgba(var(--dash-accent-rgb), 0.36);
 }
 
 .dash-agent-model-row-main {
@@ -6878,7 +6893,7 @@ button {
   flex-shrink: 0;
   margin: 12px -4px 0;
   padding-top: 12px;
-  border-top: 1px solid rgba(52, 56, 63, 0.07);
+  border-top: 1px solid rgba(var(--dash-ink-rgb), 0.07);
 }
 
 .dash-agent-model-efforts-note {
@@ -6946,7 +6961,7 @@ button {
   margin-left: 6px;
   padding: 0 6px;
   border-radius: 999px;
-  background: rgba(96, 148, 151, 0.16);
+  background: rgba(var(--dash-accent-rgb), 0.16);
   color: var(--dash-text-secondary);
   font-size: 10px;
   font-weight: 700;
@@ -7016,7 +7031,7 @@ button {
   }
   .dash-aside-card + .dash-aside-card {
     border-top: 0;
-    border-left: 1px solid rgba(52, 56, 63, 0.07);
+    border-left: 1px solid rgba(var(--dash-ink-rgb), 0.07);
   }
 }
 
@@ -7033,7 +7048,7 @@ button {
   align-items: center;
   gap: 10px;
   padding: 7px 10px 7px 12px;
-  border: 1px solid rgba(52, 56, 63, 0.08);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.08);
   border-radius: 14px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.46)),
@@ -7095,14 +7110,14 @@ button {
   flex: none;
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.7);
-  box-shadow: 0 1px 3px rgba(52, 56, 63, 0.16);
+  box-shadow: 0 1px 3px rgba(var(--dash-ink-rgb), 0.16);
 }
 
 .dash-chat-bgbar-import {
   flex: none;
   margin-left: auto;
   padding: 5px 11px;
-  border: 1px dashed rgba(52, 56, 63, 0.16);
+  border: 1px dashed rgba(var(--dash-ink-rgb), 0.16);
   border-radius: 999px;
   background: transparent;
   color: var(--dash-text-muted);
@@ -7127,7 +7142,7 @@ button {
   align-items: center;
   gap: 10px;
   padding: 7px 10px 7px 12px;
-  border: 1px solid rgba(52, 56, 63, 0.08);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.08);
   border-radius: 14px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.46)),
@@ -7216,7 +7231,7 @@ button {
   border-radius: 7px;
   border: 1px solid rgba(255, 255, 255, 0.7);
   background: rgba(255, 255, 255, 0.7);
-  box-shadow: 0 1px 3px rgba(52, 56, 63, 0.14);
+  box-shadow: 0 1px 3px rgba(var(--dash-ink-rgb), 0.14);
 }
 
 /* 槽位色：主对话琥珀、Claude 珊瑚、Codex 薄荷、DeepSeek 天蓝，
@@ -7285,8 +7300,8 @@ button {
    让气泡与背景之间有空气感，但不挡背景 */
 .dash-chat-stage.has-bg .dash-msg-bubble {
   background: rgba(255, 255, 255, 0.7);
-  border-color: rgba(52, 56, 63, 0.05);
-  box-shadow: 0 3px 12px rgba(52, 56, 63, 0.045);
+  border-color: rgba(var(--dash-ink-rgb), 0.05);
+  box-shadow: 0 3px 12px rgba(var(--dash-ink-rgb), 0.045);
 }
 
 .dash-chat-stage.has-bg .dash-msg-wrapper.user .dash-msg-bubble {
@@ -7359,7 +7374,7 @@ button {
   border-radius: 16px;
   overflow: hidden;
   background: rgba(244, 240, 232, 0.72);
-  border: 1px solid rgba(52, 56, 63, 0.1);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.1);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
   isolation: isolate;
 }
@@ -7418,7 +7433,7 @@ button {
   line-height: 1.5;
   color: #26313f;
   background: rgba(255, 255, 255, 0.9);
-  box-shadow: 0 6px 16px rgba(52, 56, 63, 0.12);
+  box-shadow: 0 6px 16px rgba(var(--dash-ink-rgb), 0.12);
 }
 
 .dash-bg-stage-bubble.user {
@@ -7450,7 +7465,7 @@ button {
   color: var(--dash-text-secondary);
   font-size: 10.5px;
   font-weight: 700;
-  box-shadow: 0 4px 12px rgba(52, 56, 63, 0.12);
+  box-shadow: 0 4px 12px rgba(var(--dash-ink-rgb), 0.12);
 }
 
 .dash-bg-stage-dot {
@@ -7505,7 +7520,7 @@ button {
   align-items: stretch;
   gap: 6px;
   padding: 9px;
-  border: 1px solid rgba(52, 56, 63, 0.1);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.1);
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.6);
   cursor: pointer;
@@ -7518,7 +7533,7 @@ button {
 .dash-bg-card:hover {
   transform: translateY(-2px);
   border-color: rgba(var(--dash-accent-rgb), 0.32);
-  box-shadow: 0 12px 26px rgba(52, 56, 63, 0.1);
+  box-shadow: 0 12px 26px rgba(var(--dash-ink-rgb), 0.1);
 }
 
 .dash-bg-card.active {
@@ -7577,7 +7592,7 @@ button {
   color: #fff;
   font-size: 11px;
   font-weight: 800;
-  box-shadow: 0 2px 8px rgba(52, 56, 63, 0.24);
+  box-shadow: 0 2px 8px rgba(var(--dash-ink-rgb), 0.24);
 }
 
 .dash-bg-card-name {
@@ -7639,7 +7654,7 @@ button {
   gap: 2px;
   padding: 2px;
   border-radius: 999px;
-  background: rgba(52, 56, 63, 0.05);
+  background: rgba(var(--dash-ink-rgb), 0.05);
 }
 
 .dash-chat-bgbar-level {
@@ -7662,7 +7677,7 @@ button {
 .dash-chat-bgbar-level.active {
   background: rgba(255, 255, 255, 0.92);
   color: var(--dash-text-primary);
-  box-shadow: 0 1px 4px rgba(52, 56, 63, 0.1);
+  box-shadow: 0 1px 4px rgba(var(--dash-ink-rgb), 0.1);
 }
 
 .dash-bg-intensity {
@@ -7671,7 +7686,7 @@ button {
   gap: 8px;
   margin-top: 14px;
   padding-top: 12px;
-  border-top: 1px dashed rgba(52, 56, 63, 0.1);
+  border-top: 1px dashed rgba(var(--dash-ink-rgb), 0.1);
 }
 
 .dash-bg-intensity-head {
@@ -7702,7 +7717,7 @@ button {
   align-items: center;
   gap: 7px;
   padding: 6px 13px 6px 9px;
-  border: 1px solid rgba(60, 55, 51, 0.075);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.075);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.6);
   color: var(--dash-text-secondary);
@@ -7739,7 +7754,7 @@ button {
 
 /* 预览框不再给强描边，用极淡的纸色边界 */
 .dash-bg-stage-frame {
-  border-color: rgba(52, 56, 63, 0.06);
+  border-color: rgba(var(--dash-ink-rgb), 0.06);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
 }
 
@@ -7747,7 +7762,7 @@ button {
 .dash-bg-stage-bubble {
   color: #2b3542;
   background: rgba(255, 255, 255, 0.86);
-  box-shadow: 0 4px 12px rgba(60, 55, 51, 0.075);
+  box-shadow: 0 4px 12px rgba(var(--dash-ink-rgb), 0.075);
 }
 
 .dash-bg-stage-frame[data-bg="scifi"] .dash-bg-stage-bubble,
@@ -7788,7 +7803,7 @@ button {
   .dash-agent-head-info { flex-basis: 100%; }
   .dash-agent-head-controls { width: 100%; gap: 8px; }
   .dash-agent-model-value { max-width: min(220px, 48vw); }
-  .dash-aside-card + .dash-aside-card { border-left: 0; border-top: 1px solid rgba(52, 56, 63, 0.07); }
+  .dash-aside-card + .dash-aside-card { border-left: 0; border-top: 1px solid rgba(var(--dash-ink-rgb), 0.07); }
   .dash-aside-actions {
     flex-wrap: wrap;
   }
@@ -7825,7 +7840,7 @@ button {
   -webkit-backdrop-filter: blur(14px) saturate(1.08);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.46),
-    0 8px 32px rgba(52, 56, 63, 0.045);
+    0 8px 32px rgba(var(--dash-ink-rgb), 0.045);
 }
 .dash-workspace-toolbar {
   display: flex;
@@ -7834,7 +7849,7 @@ button {
   gap: 8px;
   flex-shrink: 0;
   padding: 10px 20px;
-  border-bottom: 1px solid rgba(52, 56, 63, 0.065);
+  border-bottom: 1px solid rgba(var(--dash-ink-rgb), 0.065);
 }
 .dash-workspace-toolbar-label {
   font-size: 10px;
@@ -7846,7 +7861,7 @@ button {
   gap: 2px;
   padding: 2px;
   border-radius: 7px;
-  background: rgba(52, 56, 63, 0.035);
+  background: rgba(var(--dash-ink-rgb), 0.035);
 }
 .dash-workspace-seg-btn {
   display: inline-flex;
@@ -7864,11 +7879,11 @@ button {
   cursor: pointer;
   transition: background .15s, color .15s;
 }
-.dash-workspace-seg-btn:hover { color: var(--dash-text-primary); background: rgba(52, 56, 63, 0.04); }
+.dash-workspace-seg-btn:hover { color: var(--dash-text-primary); background: rgba(var(--dash-ink-rgb), 0.04); }
 .dash-workspace-seg-btn.active {
   background: rgba(255, 255, 255, .95);
   color: var(--dash-text-primary);
-  box-shadow: 0 1px 3px rgba(52, 56, 63, 0.1);
+  box-shadow: 0 1px 3px rgba(var(--dash-ink-rgb), 0.1);
 }
 .dash-workspace-seg-btn:not(.active) .dash-workspace-seg-text { display: none; }
 .dash-workspace-seg-btn:focus-visible { outline: 2px solid var(--dash-accent); outline-offset: 2px; }
@@ -8015,12 +8030,12 @@ button {
   margin-bottom: 26px;
   padding: 18px;
   border-radius: 22px;
-  border: 1px solid rgba(52, 56, 63, 0.07);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.07);
   background:
     url("./art/paper-grain-cool.webp"),
     linear-gradient(135deg, rgba(255, 255, 255, 0.7), rgba(var(--paper-tint-150-rgb), 0.34));
   background-size: 420px 420px, auto;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75), 0 10px 28px rgba(52, 56, 63, 0.05);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75), 0 10px 28px rgba(var(--dash-ink-rgb), 0.05);
 }
 
 .atelier-hero-stage {
@@ -8030,7 +8045,7 @@ button {
   overflow: hidden;
   isolation: isolate;
   background: linear-gradient(160deg, rgba(255, 255, 255, 0.9), rgba(var(--paper-tint-200-rgb), 0.7));
-  border: 1px solid rgba(52, 56, 63, 0.06);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.06);
 }
 
 .atelier-hero-stage > :deep(.bg-canvas) {
@@ -8061,7 +8076,7 @@ button {
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  filter: drop-shadow(0 10px 18px rgba(52, 56, 63, 0.16));
+  filter: drop-shadow(0 10px 18px rgba(var(--dash-ink-rgb), 0.16));
 }
 
 .atelier-hero-pet img {
@@ -8087,7 +8102,7 @@ button {
   border-radius: 12px;
   font-size: 12px;
   line-height: 1.5;
-  box-shadow: 0 6px 16px rgba(52, 56, 63, 0.1);
+  box-shadow: 0 6px 16px rgba(var(--dash-ink-rgb), 0.1);
 }
 
 .atelier-hero-bubble.user {
@@ -8099,7 +8114,7 @@ button {
 .atelier-hero-bubble.bot {
   color: var(--pet-bubble-bot-text, var(--dash-text-primary));
   background: rgba(255, 255, 255, 0.9);
-  border: 1px solid rgba(52, 56, 63, 0.06);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.06);
   border-bottom-left-radius: 4px;
 }
 
@@ -8117,7 +8132,7 @@ button {
   color: var(--dash-text-secondary);
   font-size: 10.5px;
   font-weight: 700;
-  box-shadow: 0 4px 12px rgba(52, 56, 63, 0.1);
+  box-shadow: 0 4px 12px rgba(var(--dash-ink-rgb), 0.1);
 }
 
 /* 右侧摘要 */
@@ -8167,7 +8182,7 @@ button {
   gap: 3px;
   padding: 8px 11px;
   border-radius: 10px;
-  border: 1px solid rgba(52, 56, 63, 0.06);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.06);
   background: rgba(255, 255, 255, 0.6);
 }
 
@@ -8195,7 +8210,7 @@ button {
   flex: none;
   border-radius: 4px;
   border: 1px solid rgba(255, 255, 255, 0.7);
-  box-shadow: 0 1px 3px rgba(52, 56, 63, 0.15);
+  box-shadow: 0 1px 3px rgba(var(--dash-ink-rgb), 0.15);
 }
 
 /* ---------- 分区 ---------- */
@@ -8262,7 +8277,7 @@ button {
   border-radius: 999px;
   background: rgb(var(--dash-accent-rgb));
   color: #fff;
-  box-shadow: 0 2px 7px rgba(52, 56, 63, 0.22);
+  box-shadow: 0 2px 7px rgba(var(--dash-ink-rgb), 0.22);
 }
 
 /* ---------- 形象 ---------- */
@@ -8279,7 +8294,7 @@ button {
   align-items: center;
   gap: 6px;
   padding: 12px 12px 14px;
-  border: 2px solid rgba(52, 56, 63, 0.07);
+  border: 2px solid rgba(var(--dash-ink-rgb), 0.07);
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.62);
   cursor: pointer;
@@ -8291,7 +8306,7 @@ button {
 .atelier-character:hover {
   transform: translateY(-2px);
   border-color: rgba(var(--dash-accent-rgb), 0.3);
-  box-shadow: 0 12px 26px rgba(60, 55, 51, 0.075);
+  box-shadow: 0 12px 26px rgba(var(--dash-ink-rgb), 0.075);
 }
 
 .atelier-character.active {
@@ -8348,7 +8363,7 @@ button {
   flex-direction: column;
   gap: 6px;
   padding: 8px;
-  border: 2px solid rgba(52, 56, 63, 0.07);
+  border: 2px solid rgba(var(--dash-ink-rgb), 0.07);
   border-radius: 13px;
   background: rgba(255, 255, 255, 0.6);
   cursor: pointer;
@@ -8361,7 +8376,7 @@ button {
 .atelier-skin:hover {
   transform: translateY(-2px);
   border-color: rgba(var(--dash-accent-rgb), 0.3);
-  box-shadow: 0 10px 22px rgba(52, 56, 63, 0.08);
+  box-shadow: 0 10px 22px rgba(var(--dash-ink-rgb), 0.08);
 }
 
 .atelier-skin.active {
@@ -8400,7 +8415,7 @@ button {
   align-items: center;
   gap: 8px;
   padding: 7px 13px 7px 10px;
-  border: 1.5px solid rgba(60, 55, 51, 0.075);
+  border: 1.5px solid rgba(var(--dash-ink-rgb), 0.075);
   border-radius: 11px;
   background: rgba(255, 255, 255, 0.66);
   cursor: pointer;
@@ -8491,7 +8506,7 @@ button {
   line-height: 1.5;
   color: #2b3542;
   background: rgba(255, 255, 255, 0.9);
-  box-shadow: 0 4px 12px rgba(52, 56, 63, 0.1);
+  box-shadow: 0 4px 12px rgba(var(--dash-ink-rgb), 0.1);
 }
 
 .atelier-bg-sample.user {
@@ -8535,7 +8550,7 @@ button {
 .atelier-bg-intensity {
   margin-top: auto;
   padding-top: 14px;
-  border-top: 1px dashed rgba(52, 56, 63, 0.1);
+  border-top: 1px dashed rgba(var(--dash-ink-rgb), 0.1);
 }
 
 .atelier-bg-intensity-head {
@@ -8561,7 +8576,7 @@ button {
 
 .atelier-bg-level {
   padding: 5px 13px;
-  border: 1.5px solid rgba(60, 55, 51, 0.075);
+  border: 1.5px solid rgba(var(--dash-ink-rgb), 0.075);
   border-radius: 9px;
   background: rgba(255, 255, 255, 0.66);
   color: var(--dash-text-secondary);
@@ -8588,7 +8603,7 @@ button {
   flex-wrap: wrap;
   gap: 8px;
   padding-top: 14px;
-  border-top: 1px dashed rgba(52, 56, 63, 0.1);
+  border-top: 1px dashed rgba(var(--dash-ink-rgb), 0.1);
 }
 
 .atelier-bg-presets .dash-bg-card {
@@ -8675,7 +8690,7 @@ button {
 /* ---------- 折叠区（自定义像素桌宠） ---------- */
 .atelier-details {
   margin-top: 14px;
-  border: 1px solid rgba(52, 56, 63, 0.08);
+  border: 1px solid rgba(var(--dash-ink-rgb), 0.08);
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.5);
   overflow: hidden;
@@ -8981,13 +8996,14 @@ button {
   border: 1px solid rgba(var(--dash-accent-rgb), 0.2);
   background:
     url("./art/paper-grain-cool.webp"),
-    radial-gradient(130% 150% at 2% 0%, rgba(var(--dash-accent-rgb), 0.34), transparent 56%),
-    radial-gradient(110% 130% at 100% 100%, rgba(var(--pet-accent-rgb, 200, 220, 220), 0.4), transparent 60%),
-    linear-gradient(135deg, rgba(255, 255, 255, 0.9), rgba(var(--paper-tint-150-rgb), 0.62));
+    /* 外观页 hero 是全站最"艳"的地方：两块高饱和主题色光斑相互叠加 */
+    radial-gradient(130% 150% at 2% 0%, rgba(var(--dash-accent-rgb), 0.62), transparent 58%),
+    radial-gradient(110% 130% at 100% 100%, rgba(var(--pet-accent-rgb, 200, 220, 220), 0.72), transparent 62%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.55), rgba(var(--paper-tint-100-rgb), 0.3));
   background-size: 420px 420px, auto, auto, auto;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.9),
-    0 18px 46px rgba(60, 55, 51, 0.075);
+    0 18px 46px rgba(var(--dash-ink-rgb), 0.075);
 }
 
 .atelier-hero-stage {
@@ -8996,7 +9012,7 @@ button {
   border: 1px solid rgba(var(--dash-accent-rgb), 0.12);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.9),
-    0 10px 28px rgba(52, 56, 63, 0.07);
+    0 10px 28px rgba(var(--dash-ink-rgb), 0.07);
 }
 
 /* 桌宠放大到 210px：它是这个页面的主角 */
@@ -9005,7 +9021,7 @@ button {
   height: 246px;
   left: 12px;
   bottom: -14px;
-  filter: drop-shadow(0 16px 26px rgba(52, 56, 63, 0.18));
+  filter: drop-shadow(0 16px 26px rgba(var(--dash-ink-rgb), 0.18));
 }
 
 .atelier-hero-chat {
@@ -9019,7 +9035,7 @@ button {
   font-size: 13.5px;
   padding: 10px 15px;
   border-radius: 14px;
-  box-shadow: 0 8px 22px rgba(52, 56, 63, 0.13);
+  box-shadow: 0 8px 22px rgba(var(--dash-ink-rgb), 0.13);
 }
 
 .atelier-hero-badge {
@@ -9111,20 +9127,20 @@ button {
 /* ---------- 形象卡：选中即抬升，形成明确的层次 ---------- */
 .atelier-character {
   border-width: 1px;
-  border-color: rgba(52, 56, 63, 0.08);
+  border-color: rgba(var(--dash-ink-rgb), 0.08);
   border-radius: 18px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.78));
   box-shadow:
     0 1px 0 rgba(255, 255, 255, 0.9),
-    0 6px 16px rgba(52, 56, 63, 0.07);
+    0 6px 16px rgba(var(--dash-ink-rgb), 0.07);
   padding: 12px;
 }
 
 .atelier-character:hover {
   box-shadow:
     0 1px 0 rgba(255, 255, 255, 0.9),
-    0 14px 32px rgba(52, 56, 63, 0.13);
+    0 14px 32px rgba(var(--dash-ink-rgb), 0.13);
 }
 
 .atelier-character.active {
@@ -9156,7 +9172,7 @@ button {
   border-radius: 14px;
   padding: 7px;
   background: rgba(255, 255, 255, 0.9);
-  box-shadow: 0 4px 12px rgba(52, 56, 63, 0.06);
+  box-shadow: 0 4px 12px rgba(var(--dash-ink-rgb), 0.06);
 }
 
 .atelier-skin-swatch {
@@ -9168,7 +9184,7 @@ button {
 }
 
 .atelier-skin:hover {
-  box-shadow: 0 10px 24px rgba(52, 56, 63, 0.12);
+  box-shadow: 0 10px 24px rgba(var(--dash-ink-rgb), 0.12);
 }
 
 .atelier-skin.active {
@@ -9187,7 +9203,7 @@ button {
   padding: 8px 14px 8px 10px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.9);
-  box-shadow: 0 3px 10px rgba(52, 56, 63, 0.06);
+  box-shadow: 0 3px 10px rgba(var(--dash-ink-rgb), 0.06);
 }
 
 .atelier-font-preview {
@@ -9211,10 +9227,10 @@ button {
 .atelier-bg-panel {
   border-radius: 20px;
   border-width: 1px;
-  border-color: rgba(52, 56, 63, 0.08);
+  border-color: rgba(var(--dash-ink-rgb), 0.08);
   box-shadow:
     0 1px 0 rgba(255, 255, 255, 0.9),
-    0 10px 30px rgba(52, 56, 63, 0.07);
+    0 10px 30px rgba(var(--dash-ink-rgb), 0.07);
   padding: 20px;
 }
 
@@ -9223,12 +9239,12 @@ button {
   overflow: hidden;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.6),
-    0 8px 24px rgba(52, 56, 63, 0.1);
+    0 8px 24px rgba(var(--dash-ink-rgb), 0.1);
 }
 
 .atelier-bg-presets .dash-bg-card {
   border-radius: 13px;
-  box-shadow: 0 3px 10px rgba(52, 56, 63, 0.05);
+  box-shadow: 0 3px 10px rgba(var(--dash-ink-rgb), 0.05);
 }
 
 .atelier-bg-presets .dash-bg-card.active {
@@ -9248,7 +9264,7 @@ button {
   height: 88px;
   border-radius: 22px;
   border-width: 2px;
-  box-shadow: inset 0 2px 8px rgba(52, 56, 63, 0.06);
+  box-shadow: inset 0 2px 8px rgba(var(--dash-ink-rgb), 0.06);
 }
 
 /* ---------- 窄窗 ---------- */
