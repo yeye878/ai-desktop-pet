@@ -1193,10 +1193,17 @@ function initRain() {
   rnWind = 0; rnWindTarget = rnd(-0.3, 0.5);
 
   // 三层雨幕：远 / 中 / 近。远景密而淡，织成「雨幕」；近景粗而快，划过镜头。
+  /*
+   * 三层雨幕：远 / 中 / 近。
+   *
+   * 透明度偏低时整片雨看起来像"灰雾"，两帧差异只有 0.18，肉眼几乎看不出在动。
+   * 这里把 alpha 和线宽都提上来：远层仍要淡（织成雨幕），
+   * 但中近两层必须清晰可辨 —— 雨的"动"是靠这两层传递的。
+   */
   const layers = [
-    { count: Math.min(220, Math.floor(W * H / 4200)), lenMin: 8, lenMax: 16, vxMin: 0.2, vxMax: 0.45, vyMin: 1.6, vyMax: 2.6, w: 0.6, aMin: 0.07, aMax: 0.13 },
-    { count: Math.min(140, Math.floor(W * H / 6500)), lenMin: 16, lenMax: 34, vxMin: 0.5, vxMax: 0.95, vyMin: 3.2, vyMax: 5.2, w: 1.0, aMin: 0.12, aMax: 0.2 },
-    { count: Math.min(60, Math.floor(W * H / 16000)), lenMin: 34, lenMax: 72, vxMin: 0.9, vxMax: 1.7, vyMin: 6.5, vyMax: 10, w: 1.5, aMin: 0.18, aMax: 0.3 },
+    { count: Math.min(360, Math.floor(W * H / 2600)), lenMin: 10, lenMax: 20, vxMin: 0.22, vxMax: 0.5, vyMin: 1.8, vyMax: 2.9, w: 0.9, aMin: 0.16, aMax: 0.26 },
+    { count: Math.min(220, Math.floor(W * H / 4000)), lenMin: 20, lenMax: 40, vxMin: 0.55, vxMax: 1.0, vyMin: 3.4, vyMax: 5.6, w: 1.5, aMin: 0.26, aMax: 0.38 },
+    { count: Math.min(96, Math.floor(W * H / 9000)), lenMin: 40, lenMax: 84, vxMin: 1.0, vxMax: 1.8, vyMin: 7.0, vyMax: 11, w: 2.1, aMin: 0.38, aMax: 0.54 },
   ];
   layers.forEach((layer, li) => {
     for (let i = 0; i < layer.count; i++) {
@@ -1292,202 +1299,163 @@ function initRain() {
  *   5. 垂柳       —— 细长下垂的枝条，是江南最标志的元素
  *   6. 毛毛雨     —— 极细极密的短斜线，不是暴雨
  */
+/**
+ * 细雨：纯下雨，带动态。
+ *
+ * 这里画的是「下雨」本身，不画窗户、不画楼房、不画玻璃水珠。
+ *
+ * 动态来自 update() 里一直在跑的那几套状态：
+ *   rnStreaks   三层雨幕 —— 远层密而淡、中层中等、近层粗而快
+ *   rnWind      缓慢变化的阵风 —— 整片雨丝方向会轻轻摆动，雨才「活」
+ *   rnRipples   地面涟漪 —— 持续生成、扩散、淡出
+ *   rnSplashes  溅起的水花 —— 向上弹起后落回
+ *
+ * drawRain 只负责把这些状态画出来。之前那版"烟雨江南"用位置哈希算毛毛雨，
+ * 每帧完全一样，所以看起来是死的。
+ */
 function drawRain(ctx: CanvasRenderingContext2D) {
   const k = strength();
 
-  // ================= 1. 天空：灰绿，上深下浅 =================
+  // ================= 1. 阴天：灰绿渐变，上沉下亮 =================
   const sky = ctx.createLinearGradient(0, 0, 0, H);
-  sky.addColorStop(0, '#c3ccd0');
-  sky.addColorStop(0.28, '#d2dade');
-  sky.addColorStop(0.55, '#dee5e6');
-  sky.addColorStop(0.78, '#e7ece9');
-  sky.addColorStop(1, '#eef2ee');
+  sky.addColorStop(0, '#b8c4c6');
+  sky.addColorStop(0.26, '#c6d1d2');
+  sky.addColorStop(0.52, '#d5dedd');
+  sky.addColorStop(0.74, '#e0e7e4');
+  sky.addColorStop(1, '#e9ede9');
   ctx.fillStyle = sky;
   ctx.fillRect(0, 0, W, H);
 
-  // ================= 2. 远山：三层，越远越淡 =================
-  // 每条山脊用一串正弦叠加生成起伏，避免机械的重复
-  const ridges = [
-    { base: 0.50, amp: 0.075, alpha: 0.20, color: '112,132,128', seed: 1.1 },
-    { base: 0.575, amp: 0.062, alpha: 0.30, color: '92,114,110', seed: 4.7 },
-    { base: 0.645, amp: 0.048, alpha: 0.42, color: '72,94,90', seed: 8.3 },
-  ];
-  for (const rg of ridges) {
-    ctx.save();
-    // 水墨远山的边缘要"晕开"，用模糊实现
-    ctx.filter = `blur(${Math.max(1.2, 3.2 * rg.alpha * 2.4).toFixed(1)}px)`;
+  // 云团：几团大径向渐变叠出厚薄，避免平涂
+  for (let i = 0; i < 6; i++) {
+    const cx = W * (0.08 + ((i * 0.19) % 0.9));
+    const cy = H * (0.03 + ((i * 0.07) % 0.24));
+    const r = W * (0.24 + ((i * 0.13) % 0.3));
+    const cg = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+    const dark = i % 3 === 0;
+    cg.addColorStop(0, dark ? 'rgba(138, 154, 158, 0.30)' : 'rgba(238, 244, 244, 0.46)');
+    cg.addColorStop(1, dark ? 'rgba(138, 154, 158, 0)' : 'rgba(238, 244, 244, 0)');
+    ctx.fillStyle = cg;
     ctx.beginPath();
-    ctx.moveTo(-W * 0.05, H);
-    const steps = 48;
-    for (let s = 0; s <= steps; s++) {
-      const x = -W * 0.05 + (W * 1.1 * s) / steps;
-      const u = (s / steps) * Math.PI * 2;
-      const y =
-        H * rg.base -
-        H * rg.amp * (Math.sin(u * 1.7 + rg.seed) * 0.55 +
-                      Math.sin(u * 3.1 + rg.seed * 2.1) * 0.28 +
-                      Math.sin(u * 5.3 + rg.seed * 3.7) * 0.14);
-      ctx.lineTo(x, y);
-    }
-    ctx.lineTo(W * 1.05, H);
-    ctx.closePath();
-    ctx.fillStyle = `rgba(${rg.color}, ${(rg.alpha * k).toFixed(3)})`;
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
     ctx.fill();
-    ctx.restore();
   }
 
-  // ================= 3. 静水：山影的镜像 =================
-  const waterTop = H * 0.655;
-  const water = ctx.createLinearGradient(0, waterTop, 0, H);
-  water.addColorStop(0, 'rgba(150, 172, 168, 0.55)');
-  water.addColorStop(0.4, 'rgba(176, 192, 188, 0.40)');
-  water.addColorStop(1, 'rgba(206, 216, 212, 0.26)');
-  ctx.fillStyle = water;
-  ctx.fillRect(0, waterTop, W, H - waterTop);
-
-  // 倒影：把山脊再画一遍，垂直翻转 + 强模糊 + 低透明度
+  // ================= 2. 极淡的远山（只给一点纵深，不做主题） =================
   ctx.save();
-  ctx.filter = 'blur(6px)';
-  ctx.globalAlpha = 0.26 * k;
+  ctx.filter = 'blur(5px)';
   ctx.beginPath();
   ctx.moveTo(-W * 0.05, H);
-  for (let s = 0; s <= 40; s++) {
-    const x = -W * 0.05 + (W * 1.1 * s) / 40;
-    const u = (s / 40) * Math.PI * 2;
+  const ridgeSteps = 44;
+  for (let s = 0; s <= ridgeSteps; s++) {
+    const x = -W * 0.05 + (W * 1.1 * s) / ridgeSteps;
+    const u = (s / ridgeSteps) * Math.PI * 2;
     const y =
-      waterTop +
-      (waterTop - (H * 0.645 - H * 0.048 * (Math.sin(u * 1.7 + 8.3) * 0.55 +
-                                            Math.sin(u * 3.1 + 17.4) * 0.28))) * 0.45;
+      H * 0.615 -
+      H * 0.052 *
+        (Math.sin(u * 1.6 + 1.2) * 0.55 +
+          Math.sin(u * 3.3 + 4.4) * 0.28 +
+          Math.sin(u * 5.1 + 7.9) * 0.13);
     ctx.lineTo(x, y);
   }
   ctx.lineTo(W * 1.05, H);
   ctx.closePath();
-  ctx.fillStyle = 'rgba(72, 94, 90, 1)';
+  ctx.fillStyle = `rgba(122, 140, 140, ${(0.20 * k).toFixed(3)})`;
   ctx.fill();
   ctx.restore();
 
-  // 水面几道横向波纹：越近越粗，是静水唯一的"动"
-  for (let i = 0; i < 14; i++) {
-    const y = waterTop + (H - waterTop) * ((i + 1) / 15) ** 1.5;
-    const a = 0.05 + i * 0.012;
-    ctx.strokeStyle = `rgba(255, 255, 255, ${(a * k).toFixed(3)})`;
-    ctx.lineWidth = 0.8 + i * 0.22;
+  // ================= 3. 湿地面：底部反光带 =================
+  const groundTop = H * 0.70;
+  const ground = ctx.createLinearGradient(0, groundTop, 0, H);
+  ground.addColorStop(0, 'rgba(176, 190, 188, 0.42)');
+  ground.addColorStop(0.45, 'rgba(196, 208, 205, 0.30)');
+  ground.addColorStop(1, 'rgba(212, 220, 216, 0.18)');
+  ctx.fillStyle = ground;
+  ctx.fillRect(0, groundTop, W, H - groundTop);
+
+  // 地面横向反光：几道随机的亮线，模拟湿地面反光
+  for (let i = 0; i < 9; i++) {
+    const y = groundTop + (H - groundTop) * ((i + 1) / 10) ** 1.4;
+    ctx.strokeStyle = `rgba(255, 255, 255, ${((0.05 + i * 0.010) * k).toFixed(3)})`;
+    ctx.lineWidth = 0.9 + i * 0.24;
     ctx.beginPath();
     ctx.moveTo(-W * 0.02, y);
-    for (let x = 0; x <= W * 1.04; x += W * 0.04) {
-      ctx.lineTo(x, y + Math.sin(x * 0.012 + i * 2.1) * (1 + i * 0.4));
+    for (let x = 0; x <= W * 1.04; x += W * 0.05) {
+      ctx.lineTo(x, y + Math.sin(x * 0.011 + i * 1.7) * (1.2 + i * 0.35));
     }
     ctx.stroke();
   }
 
-  // ================= 4. 雾带：横向淡白条，缓慢横移 =================
-  const drift = (performance.now() / 1000) * 6;
-  for (let i = 0; i < 5; i++) {
-    const y = H * (0.40 + i * 0.085);
-    const hgt = H * (0.055 + (i % 3) * 0.022);
-    const off = ((drift * (0.5 + i * 0.18)) % (W * 1.4)) - W * 0.2;
-    const g = ctx.createLinearGradient(off - W * 0.5, 0, off + W * 0.5, 0);
-    g.addColorStop(0, 'rgba(246, 250, 248, 0)');
-    g.addColorStop(0.5, `rgba(246, 250, 248, ${(0.30 * k).toFixed(3)})`);
-    g.addColorStop(1, 'rgba(246, 250, 248, 0)');
-    ctx.save();
-    ctx.filter = 'blur(14px)';
-    ctx.fillStyle = g;
-    ctx.fillRect(0, y, W, hgt);
-    ctx.restore();
-  }
-
-  // ================= 5. 垂柳：江南最标志的元素 =================
+  // ================= 4. 三层雨丝（动态，最核心的一层） =================
   /*
-   * 柳条要"看得见但不抢戏"。
-   * 三个做法：
-   *   · 分远近两层：近处 3 根深（alpha 0.55）、远处 4 根淡（alpha 0.22）
-   *   · 加锥度：上端粗、末端细，自然下垂的柳条就是这个形状
-   *   · 枝条上挂稀疏细叶（短斜线），比光秃秃的线条像柳
+   * 远景几乎看不见但织成"雨幕"，近景粗而快划过镜头。
+   * 风（rnWind）让所有雨丝一起轻微倾斜，雨才不是死的斜纹。
    */
-  const drawWillow = (
-    bx: number,
-    topY: number,
-    hangLen: number,
-    alpha: number,
-    width: number,
-    lean: number,
-    seed: number,
-  ) => {
-    // 枝条：带锥度，用多段线 + 渐变线宽近似
-    const segs = 18;
-    let prevX = bx;
-    let prevY = topY;
-    for (let s = 1; s <= segs; s++) {
-      const p = s / segs;
-      const yy = topY + hangLen * p;
-      const xx = bx + Math.sin(p * 2.6 + seed) * W * 0.014 * lean * p;
-      // 线宽随下垂递减：上粗下细
-      const w = width * (1 - p * 0.72);
-      const a = alpha * (1 - p * 0.65);
-      ctx.strokeStyle = `rgba(72, 92, 74, ${(a * k).toFixed(3)})`;
-      ctx.lineWidth = Math.max(0.5, w);
-      ctx.lineCap = 'round';
-      ctx.beginPath();
-      ctx.moveTo(prevX, prevY);
-      ctx.lineTo(xx, yy);
-      ctx.stroke();
-      prevX = xx;
-      prevY = yy;
-    }
-    // 稀疏细叶：沿枝条在中段挂几片
-    const leafN = 5;
-    for (let i = 1; i <= leafN; i++) {
-      const p = 0.22 + (i / (leafN + 1)) * 0.62;
-      const yy = topY + hangLen * p;
-      const xx = bx + Math.sin(p * 2.6 + seed) * W * 0.014 * lean * p;
-      const dir = i % 2 === 0 ? 1 : -1;
-      const leafLen = W * (0.008 + (i % 3) * 0.003);
-      ctx.strokeStyle = `rgba(86, 108, 84, ${(alpha * 0.62 * k).toFixed(3)})`;
-      ctx.lineWidth = Math.max(0.6, width * 0.42);
-      ctx.beginPath();
-      ctx.moveTo(xx, yy);
-      ctx.lineTo(xx + leafLen * dir * lean, yy + leafLen * 0.42);
-      ctx.stroke();
-    }
-  };
-
-  // 近处一层（深、粗）：只 3 根，集中在两侧上角
-  drawWillow(W * 0.04, -H * 0.01, H * 0.50, 0.58, 2.6, 1, 0.7);
-  drawWillow(W * 0.10, -H * 0.02, H * 0.44, 0.52, 2.3, 1, 2.3);
-  drawWillow(W * 0.96, -H * 0.01, H * 0.46, 0.56, 2.4, -1, 4.1);
-
-  // 远处一层（淡、细）：铺开形成"柳烟"
-  for (let b = 0; b < 7; b++) {
-    const left = b < 4;
-    const baseX = left ? W * (0.015 + b * 0.028) : W * (0.985 - (b - 4) * 0.026);
-    drawWillow(
-      baseX, -H * 0.02,
-      H * (0.26 + ((b * 5) % 4) * 0.045),
-      0.20, 1.3,
-      left ? 1 : -1,
-      b * 1.7,
-    );
-  }
-
-  // ================= 6. 毛毛雨：极细极密，不抢画面 =================
   ctx.save();
-  ctx.strokeStyle = `rgba(226, 236, 236, ${(0.30 * k).toFixed(3)})`;
-  ctx.lineWidth = 0.7;
-  ctx.beginPath();
-  const rnd = (n: number) => {
-    const s = Math.sin(n * 127.1 + 311.7) * 43758.5453;
-    return s - Math.floor(s);
-  };
-  for (let i = 0; i < 260; i++) {
-    const x = rnd(i * 3 + 1) * W;
-    const y = rnd(i * 3 + 2) * H;
-    const len = 6 + rnd(i * 3 + 3) * 14;
-    ctx.moveTo(x, y);
-    // 江南的雨是斜的，但斜度很小（风不大）
-    ctx.lineTo(x + len * 0.10, y + len);
+  ctx.lineCap = 'round';
+  for (const s of rnStreaks) {
+    // 风的影响：越近的层受风越大
+    const windOff = rnWind * (0.4 + s.layer * 0.4);
+    const dx = windOff * s.len;
+    const dy = s.len;
+    const a = s.alpha * Math.min(1.15, k * 1.35) * (0.72 + 0.28 * Math.min(1, s.layer + 0.4));
+    if (a <= 0.01) continue;
+    // 颜色：远层偏冷灰、近层偏亮白
+    const c =
+      s.layer === 0 ? `rgba(206, 220, 226, ${a.toFixed(3)})`
+      : s.layer === 1 ? `rgba(226, 238, 242, ${a.toFixed(3)})`
+      : `rgba(246, 252, 254, ${a.toFixed(3)})`;
+    ctx.strokeStyle = c;
+    ctx.lineWidth = s.width;
+    ctx.beginPath();
+    ctx.moveTo(s.x, s.y);
+    ctx.lineTo(s.x + dx, s.y + dy);
+    ctx.stroke();
+
+    /*
+     * 末端亮点。
+     * 真实雨丝最显眼的地方是头部那一小段反光；加上它以后，
+     * 即使整根线条很淡，"在动"也能被一眼看到。
+     * 只给中近两层加 —— 远层加了会变成一片噪点。
+     */
+    if (s.layer >= 1) {
+      const hr = s.layer === 2 ? 1.5 : 1.05;
+      ctx.fillStyle = `rgba(250, 253, 255, ${Math.min(1, a * 1.7).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(s.x + dx, s.y + dy, hr, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
-  ctx.stroke();
+  ctx.restore();
+
+  // ================= 5. 地面涟漪 + 水花（动态） =================
+  ctx.save();
+  for (const r of rnRipples) {
+    if (r.alpha <= 0.012) continue;
+    ctx.strokeStyle = `rgba(255, 255, 255, ${(r.alpha * k * 0.85).toFixed(3)})`;
+    ctx.lineWidth = 1.1;
+    // 涟漪是横扁的椭圆 —— 地面是水平面，不是竖直的玻璃
+    ctx.beginPath();
+    ctx.ellipse(r.x, r.y, r.r, r.r * 0.32, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  for (const sp of rnSplashes) {
+    if (sp.alpha <= 0.012) continue;
+    ctx.fillStyle = `rgba(248, 252, 253, ${(sp.alpha * k).toFixed(3)})`;
+    ctx.beginPath();
+    ctx.arc(sp.x, sp.y + sp.h, Math.max(0.8, sp.r * 0.8), 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+
+  // ================= 6. 空气湿度：一层极淡的青雾 =================
+  ctx.save();
+  const haze = ctx.createLinearGradient(0, H * 0.30, 0, H * 0.78);
+  haze.addColorStop(0, 'rgba(232, 240, 240, 0)');
+  haze.addColorStop(0.5, `rgba(232, 240, 240, ${(0.10 * k).toFixed(3)})`);
+  haze.addColorStop(1, 'rgba(232, 240, 240, 0)');
+  ctx.fillStyle = haze;
+  ctx.fillRect(0, H * 0.30, W, H * 0.48);
   ctx.restore();
 }
 
