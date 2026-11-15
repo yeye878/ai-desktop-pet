@@ -14,7 +14,6 @@
  */
 import auroraPhoto from "../assets/bg/aurora.webp";
 import inkPhoto from "../assets/bg/ink.webp";
-import rainPhoto from "../assets/bg/rain.webp";
 import scifiPhoto from "../assets/bg/scifi.webp";
 import sakuraPhoto from "../assets/bg/sakura.webp";
 import springWillowPhoto from "../assets/bg/spring-willow.webp";
@@ -64,16 +63,6 @@ export const PHOTO_BACKGROUNDS: Record<string, PhotoBackground> = {
     tint: "rgba(40, 46, 52, 0.06)",
     vignette: 0.20,
     drift: 0.012,
-  },
-  rain: {
-    id: "rain",
-    src: rainPhoto,
-    source: "1200x1530",
-    credit: "用户提供 / 伞面雨珠",
-    opacity: 1,
-    tint: "rgba(248, 252, 255, 0.04)",
-    vignette: 0.10,
-    drift: 0.008,
   },
   scifi: {
     id: "scifi",

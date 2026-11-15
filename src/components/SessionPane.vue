@@ -22,7 +22,17 @@ import { effortLabel, type AgentModelSlot } from "../services/agentModels";
  * paneId 是窗格身份（布局持久化用），sessionId 是数据身份；
  * 关闭窗格只移除视图，不停止、不删除会话。
  */
-const props = defineProps<{ paneId: string; sessionId: string; backend?: string; fileOver?: boolean }>();
+const props = defineProps<{
+  paneId: string;
+  sessionId: string;
+  backend?: string;
+  fileOver?: boolean;
+  /**
+   * 同屏布局（single/two/three/master/four）。
+   * 背景要按格切开做成一整幅画，得先知道一共几格、怎么排。
+   */
+  layout?: string;
+}>();
 const emit = defineEmits<{
   assign: [paneId: string, sessionId: string];
   close: [paneId: string];
@@ -38,14 +48,33 @@ const runtime = useSessionRuntimeStore();
 const { chatBg, customBgImage, chatBgIntensity } = useChatBackground();
 
 /**
- * 窗格编号，用来给背景选不同取景区域。
+ * 背景切片位置。
  *
- * paneId 形如 "pane-0"/"pane-1"，取末尾数字即可。
- * 这样同一张背景在几个格子里各看一块，拼起来不像复制粘贴。
+ * 多窗格的每格不再各自 cover 一张图（那样是几张互不相干的壁纸），
+ * 而是把整幅画按布局切开、各画一条带 —— 几格拼起来是一整幅连续的画。
+ *
+ * 布局与切分方式的对应：
+ *   two    1 行 2 列
+ *   three  1 行 3 列
+ *   four   2 行 2 列
+ *   master 左 60% 跨两行（第 0 格），右侧上下两格（第 1、2 格）
  */
-const paneVariant = computed(() => {
-  const m = /(\d+)$/.exec(props.paneId || "");
-  return m ? Number(m[1]) : 0;
+const paneSlab = computed(() => {
+  const idx = Number(/(\d+)$/.exec(props.paneId || "")?.[1] ?? 0);
+  switch (props.layout) {
+    case "two":
+      return { index: idx, cols: 2, rows: 1, col: idx % 2, row: 0 };
+    case "three":
+      return { index: idx, cols: 3, rows: 1, col: idx % 3, row: 0 };
+    case "four":
+      return { index: idx, cols: 2, rows: 2, col: idx % 2, row: Math.floor(idx / 2) % 2 };
+    case "master":
+      // 第 0 格是左侧大块（占 2 行），第 1/2 格在右侧上下
+      if (idx === 0) return { index: 0, cols: 2, rows: 2, col: 0, row: 0 };
+      return { index: idx, cols: 2, rows: 2, col: 1, row: idx - 1 };
+    default:
+      return undefined;
+  }
 });
 const sessions = useSessionsStore();
 const attachments = useAttachmentsStore();
@@ -377,7 +406,7 @@ function rendered(content: string) {
         :mode="chatBg"
         :custom-image="customBgImage"
         :intensity="chatBgIntensity"
-        :variant="paneVariant"
+        :slab="paneSlab"
       />
       <div v-if="chatBg !== 'none'" class="session-pane-bg-scrim" aria-hidden="true"></div>
     <div ref="messagesRef" class="session-pane-messages">

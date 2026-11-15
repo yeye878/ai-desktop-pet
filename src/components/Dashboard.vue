@@ -4174,6 +4174,7 @@ ttsPlayer.stop();
                 :key="paneId"
                 :pane-id="paneId"
                 :file-over="isFileOver && fileOverPaneId === paneId"
+                :layout="workspaceLayout"
                 :session-id="workspacePanes[index] || ''"
                 :backend="paneSessionBackend(workspacePanes[index] || '')"
                 @assign="assignWorkspacePane"

@@ -8,12 +8,23 @@ const props = defineProps<{
   customImage?: string;
   intensity?: number;
   /**
-   * 窗格序号（多窗口模式时传入 0/1/2/3）。
+   * 多窗格「切片」信息。
    *
-   * 多窗格里如果每格都画同一张图的同一区域，看起来就是"复制粘贴"。
-   * 用序号把取景窗口平移到不同位置，几格拼起来反而像一幅被分割的画。
+   * 多窗口模式下，如果每个格子各自 cover 一张图，看起来就是几张
+   * 互不相干的壁纸拼在一起（视觉模型原话："separately cropped wallpaper
+   * panels，no continuity across panes"）。
+   *
+   * 正确的做法是把整幅画按窗格布局切开，每格只画属于自己的那一条带：
+   * 几格拼起来是**一幅连续的画**，接缝处的线条、明暗都能对上。
+   *
+   *   index  当前是第几格（0 起）
+   *   cols   横向切几份
+   *   rows   纵向切几份
+   *   col    当前格在第几列
+   *   row    当前格在第几行
+   *   不传则退化为单格 cover 居中（单窗格视图）
    */
-  variant?: number;
+  slab?: { index: number; cols: number; rows: number; col: number; row: number };
 }>();
 const petStore = usePetStore();
 const canvasRef = ref<HTMLCanvasElement | null>(null);
@@ -1579,36 +1590,53 @@ function drawPhotoBackground(ctx: CanvasRenderingContext2D, k: number) {
    * 用户明确要求「所有的动态效果都删了」—— 照片本身是完整画面，
    * 加任何运动或叠加都会干扰阅读，静止反而是最好的效果。
    */
+  /*
+   * 铺图：单格用 cover；多窗格用「整幅画按格切分」。
+   *
+   * 单格 cover 时，图片短边铺满，长边溢出居中裁 —— 这是标准做法。
+   *
+   * 多窗格时不能用 cover，否则每格都是同一张图的中心，四格完全一样。
+   * 改成：先算出整幅画铺满**整个窗格区域**时的尺寸和位置，
+   * 再按当前格的行列号截取对应的那一条带。
+   * 这样跨格子的线条是连续的，拼起来是一整幅画。
+   */
   const ir = img.width / img.height;
   const cr = W / H;
-  const v = Number(props.variant);
-  const multiPane = Number.isFinite(v) && v >= 0;
-  /*
-   * 多窗格取景偏移。
-   *
-   * 单纯 cover 铺满时，图片总有一边正好等于画布（overflow = 0），
-   * 那一维根本无法平移 —— 四个格子会看到完全一样的画面。
-   *
-   * 所以多窗格时先放大 18%，人为制造溢出，再在溢出范围里做四象限平移：
-   *   0 -> 左上，1 -> 右上，2 -> 左下，3 -> 右下
-   * 单窗格时不动，等价于居中 cover。
-   */
-  const scale = (ir > cr ? H / img.height : W / img.width) * (multiPane ? 1.35 : 1);
-  const dw = img.width * scale;
-  const dh = img.height * scale;
+  const slab = props.slab;
 
-  let biasX = 0.5;
-  let biasY = 0.5;
-  if (multiPane) {
-    biasX = v % 2 === 0 ? 0.14 : 0.86;
-    biasY = v < 2 ? 0.14 : 0.86;
+  if (slab && slab.cols > 0 && slab.rows > 0) {
+    /*
+     * 全景模式：把图片按整个网格的比例铺满，再取自己那一块。
+     *
+     * 关键点：铺满的是「整个网格的总尺寸」，不是单格尺寸。
+     * 总尺寸按 cols:rows 的比例放大到覆盖单格所需的倍数。
+     */
+    const gw = W * slab.cols;
+    const gh = H * slab.rows;
+    const gr = gw / gh;
+    const gscale = ir > gr ? gh / img.height : gw / img.width;
+    const gdw = img.width * gscale;
+    const gdh = img.height * gscale;
+    const gox = (gw - gdw) / 2;
+    const goy = (gh - gdh) / 2;
+
+    // 本格在整幅画里的左上角
+    const ox = gox - slab.col * W;
+    const oy = goy - slab.row * H;
+
+    ctx.save();
+    ctx.globalAlpha = cfg.opacity;
+    ctx.drawImage(img, ox, oy, gdw, gdh);
+    ctx.restore();
+  } else {
+    const scale = ir > cr ? H / img.height : W / img.width;
+    const dw = img.width * scale;
+    const dh = img.height * scale;
+    ctx.save();
+    ctx.globalAlpha = cfg.opacity;
+    ctx.drawImage(img, (W - dw) / 2, (H - dh) / 2, dw, dh);
+    ctx.restore();
   }
-  const ox = -Math.max(0, dw - W) * biasX;
-  const oy = -Math.max(0, dh - H) * biasY;
-
-  ctx.save();
-  ctx.globalAlpha = cfg.opacity;
-  ctx.drawImage(img, ox, oy, dw, dh);
   ctx.restore();
 
   /*
@@ -1632,22 +1660,6 @@ function drawPhotoBackground(ctx: CanvasRenderingContext2D, k: number) {
   ctx.save();
   ctx.fillStyle = cfg.tint;
   ctx.fillRect(0, 0, W, H);
-  /*
-   * 多窗格时给每格叠一层极淡的差异化色偏。
-   *
-   * 即使取景不同，如果色调完全一致，几格拼在一起仍然"太整齐"。
-   * 每格偏一点冷/暖，就像几扇窗朝向略有不同，自然得多。
-   */
-  if (Number.isFinite(Number(props.variant)) && Number(props.variant) >= 0) {
-    const tintByVariant = [
-      "rgba(255, 248, 234, 0.09)",  // 0 暖
-      "rgba(236, 246, 255, 0.09)",  // 1 冷
-      "rgba(248, 255, 244, 0.09)",  // 2 绿
-      "rgba(255, 244, 250, 0.09)",  // 3 粉
-    ];
-    ctx.fillStyle = tintByVariant[Number(props.variant) % 4];
-    ctx.fillRect(0, 0, W, H);
-  }
   ctx.restore();
 
   /*
