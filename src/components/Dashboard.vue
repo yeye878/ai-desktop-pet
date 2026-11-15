@@ -29,7 +29,7 @@ import {
   providerLabel,
   type AgentModelCatalog,
 } from "../services/agentModels";
-import { ArrowDown, House, MessageCircle, Brain, Palette, Bot, Mic, Settings as SettingsIcon, Info, PawPrint, Send, Plus, Power, Square as LayoutSingle, Columns2, Columns3, Grid2x2, PanelLeft, Paperclip } from "@lucide/vue";
+import { ArrowDown, House, MessageCircle, Brain, Bot, Settings as SettingsIcon, Info, PawPrint, Send, Plus, Power, Square as LayoutSingle, Columns2, Columns3, Grid2x2, PanelLeft, Paperclip } from "@lucide/vue";
 import AppIcon from "./AppIcon.vue";
 import CollaborationBar from "./CollaborationBar.vue";
 import type { CollaborationReply, CollaborationState } from "../services/collaboration";
@@ -200,7 +200,14 @@ const chatSlot = ref<ChatSlot>(readStoredChatSlot());
  * 用左侧栏子项承载，而不是页内锚点：设置项多的时候一路滚下去找不到北，
  * 子项导航能直接跳到某一类，而且和自己已熟悉的「对话互动」分组是同一种交互。
  */
-type SystemSection = "conversation" | "connection" | "service";
+/*
+ * 系统设置的分类。
+ *
+ * 原本 appearance / voice 是侧边栏的顶级入口，但它们本质上是"界面个性化"
+ * 与"语音和语言"，属于系统设置的一部分。收进子目录后侧边栏少两个顶级项，
+ * 找起来也符合直觉：想改外观就去系统设置。
+ */
+type SystemSection = "conversation" | "connection" | "service" | "appearance" | "voice";
 const SYSTEM_SECTIONS: Array<{
   id: SystemSection;
   label: string;
@@ -229,6 +236,20 @@ const SYSTEM_SECTIONS: Array<{
     icon: "weather-sun",
     desc: "外部服务与定时提醒：天气栏、每日问候",
   },
+  {
+    id: "appearance",
+    label: "个性外观",
+    kicker: "Appearance",
+    icon: "wardrobe",
+    desc: "主题皮肤、字体颜色、对话背景与个人形象",
+  },
+  {
+    id: "voice",
+    label: "语音与语言",
+    kicker: "Voice & Language",
+    icon: "voice-station",
+    desc: "语音交互开关、朗读引擎、发音语言与音色",
+  },
 ];
 const SYSTEM_SECTION_STORAGE_KEY = "dash.system-section";
 function readStoredSystemSection(): SystemSection {
@@ -241,10 +262,30 @@ const currentSystemSection = computed(
   () => SYSTEM_SECTIONS.find((item) => item.id === systemSection.value) ?? SYSTEM_SECTIONS[0],
 );
 function openSystemSection(section: SystemSection) {
-  activePage.value = "system";
+  /*
+   * appearance / voice 有自己独立完整的页面（外观页有实时预览舞台，
+   * 语音页有整页的控制项），所以只是把入口搬到侧边栏子目录，
+   * 页面本身仍然是独立页 —— 这样不用把上千行模板塞进系统页。
+   *
+   * 其余分类才是系统页内的分节。
+   */
   systemSection.value = section;
   systemNavExpanded.value = true;
+  activePage.value = section === "appearance" || section === "voice" ? section : "system";
 }
+
+/**
+ * 当前实际所在的「叶子」分类。
+ *
+ * 侧边栏子项用它判断高亮：appearance / voice 虽然渲染成独立页，
+ * 但在导航层级上属于系统设置的子项，所以要一起算进来。
+ */
+const activeNavLeaf = computed<SystemSection | "">(() => {
+  if (activePage.value === "appearance") return "appearance";
+  if (activePage.value === "voice") return "voice";
+  if (activePage.value === "system") return systemSection.value;
+  return "";
+});
 function toggleSystemSubnav() {
   systemNavExpanded.value = !systemNavExpanded.value;
 }
@@ -1187,11 +1228,30 @@ const conversationActions = [
   { id: "clear", icon: "⌫", label: "清空对话", desc: "删除全部聊天记录", danger: true },
 ];
 
-const missionEntries = [
-  { page: "chat" as NavPage, icon: "chat-cabin", title: "对话舱", desc: "直接派发任务或闲聊" },
-  { page: "appearance" as NavPage, icon: "wardrobe", title: "换装台", desc: "皮肤、字体和背景" },
-  { page: "voice" as NavPage, icon: "voice-station", title: "声线站", desc: "快捷键、语音和试听" },
+/*
+ * 首页的快捷入口。
+ *
+ * appearance / voice 已经收进系统设置的子目录，这里仍然直接跳过去 ——
+ * 首页快捷入口的价值就是"少点两层"，所以用 section 而不是 page 来定位。
+ */
+const missionEntries: Array<{
+  page?: NavPage;
+  section?: SystemSection;
+  icon: string;
+  title: string;
+  desc: string;
+  key: string;
+}> = [
+  { page: "chat", icon: "chat-cabin", title: "对话舱", desc: "直接派发任务或闲聊", key: "chat" },
+  { section: "appearance", icon: "wardrobe", title: "换装台", desc: "皮肤、字体和背景", key: "appearance" },
+  { section: "voice", icon: "voice-station", title: "声线站", desc: "快捷键、语音和试听", key: "voice" },
 ];
+
+/** 首页快捷入口的点击动作：有 section 走系统设置子项，否则直接切页。 */
+function openMissionEntry(entry: { page?: NavPage; section?: SystemSection }) {
+  if (entry.section) openSystemSection(entry.section);
+  else if (entry.page) activePage.value = entry.page;
+}
 
 const activeActionId = ref("");
 let actionFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
@@ -3921,28 +3981,14 @@ ttsPlayer.stop();
             <span>记忆库</span>
           </button>
           <button
-            :class="['sidebar-item', { active: activePage === 'appearance' }]"
-            @click="activePage = 'appearance'"
-          >
-            <span class="sidebar-item-icon"><Palette :size="15" /></span>
-            <span>个性外观</span>
-          </button>
-          <button
             :class="['sidebar-item', { active: activePage === 'agents' }]"
             @click="openAgentsPage()"
           >
             <span class="sidebar-item-icon"><Bot :size="15" /></span>
             <span>智能体</span>
           </button>
-          <button
-            :class="['sidebar-item', { active: activePage === 'voice' }]"
-            @click="activePage = 'voice'"
-          >
-            <span class="sidebar-item-icon"><Mic :size="15" /></span>
-            <span>语音设置</span>
-          </button>
           <div :class="['sidebar-group', { expanded: systemNavExpanded }]">
-            <div :class="['sidebar-item', 'sidebar-item-parent', { active: activePage === 'system' }]">
+            <div :class="['sidebar-item', 'sidebar-item-parent', { active: activePage === 'system' || activePage === 'appearance' || activePage === 'voice' }]">
               <button type="button" class="sidebar-item-main" title="进入系统设置" @click="openSystemSection(systemSection)">
                 <span class="sidebar-item-icon"><SettingsIcon :size="15" /></span>
                 <span class="sidebar-item-label">系统设置</span>
@@ -3964,7 +4010,7 @@ ttsPlayer.stop();
               <button
                 v-for="item in SYSTEM_SECTIONS"
                 :key="item.id"
-                :class="['sidebar-subitem', { active: activePage === 'system' && systemSection === item.id }]"
+                :class="['sidebar-subitem', { active: activeNavLeaf === item.id }]"
                 @click="openSystemSection(item.id)"
               >
                 <span class="sidebar-subitem-avatar" aria-hidden="true"><AppIcon :name="item.icon" :size="13" /></span>
@@ -4119,10 +4165,10 @@ ttsPlayer.stop();
                 <div class="home-shortcuts">
                   <button
                     v-for="entry in missionEntries"
-                    :key="entry.page"
+                    :key="entry.key"
                     type="button"
                     class="home-shortcut"
-                    @click="activePage = entry.page"
+                    @click="openMissionEntry(entry)"
                   >
                     <span class="home-shortcut-icon" aria-hidden="true"><AppIcon :name="entry.icon" :size="17" /></span>
                     <span class="home-shortcut-copy">
