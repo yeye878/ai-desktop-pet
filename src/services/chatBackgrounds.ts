@@ -16,7 +16,7 @@ export type ChatBackgroundId =
   | "rain"
   | "sakura"
   | "minimal"
-  | "spring-willow"
+  | "spring-peach"
   | "summer-lotus"
   | "autumn-chrys"
   | "winter-plum"
@@ -169,14 +169,14 @@ export const CHAT_BACKGROUNDS: ChatBackgroundPreset[] = [
     accent: "#c9a8b4",
   },
   {
-    id: "spring-willow",
-    name: "春·柳",
-    description: "真实摄影：暖阳穿过初春柳烟，金色光斑落在垂条上",
-    icon: "bg-spring",
-    swatch: "linear-gradient(165deg, #3d4a38, #26301f)",
+    id: "spring-peach",
+    name: "春·桃",
+    description: "真实摄影：春日桃花，淡粉花簇与深色枝条",
+    icon: "bg-peach",
+    swatch: "linear-gradient(165deg, #6b545a, #3d2f33)",
     opacity: 1,
     tone: "paper",
-    accent: "#9db87a",
+    accent: "#d99aa8",
   },
   {
     id: "summer-lotus",
@@ -248,7 +248,7 @@ export function backgroundThumbPhoto(id: string): string | null {
     case "ink":
     case "rain":
     case "sakura":
-    case "spring-willow":
+    case "spring-peach":
     case "summer-lotus":
     case "autumn-chrys":
     case "winter-plum":
@@ -270,8 +270,20 @@ export function isChatBackgroundId(value: string | null | undefined): value is C
   return Boolean(value && value in CHAT_BACKGROUND_MAP);
 }
 
+/**
+ * 旧 id 的兼容映射。
+ *
+ * spring-willow 已改名为 spring-peach；用户 localStorage 里可能还存着旧值，
+ * 直接回落到 none 会让他们"背景突然没了"，所以映射到新 id。
+ */
+const LEGACY_BACKGROUND_IDS: Record<string, string> = {
+  "spring-willow": "spring-peach",
+};
+
 export function normalizeChatBackgroundId(value: string | null | undefined): ChatBackgroundId {
-  return isChatBackgroundId(value) ? value : "none";
+  // 先查旧 id 映射（spring-willow -> spring-peach），再校验合法性
+  const mapped = value ? LEGACY_BACKGROUND_IDS[value] ?? value : value;
+  return isChatBackgroundId(mapped) ? mapped : "none";
 }
 
 export function chatBackgroundPreset(value: string | null | undefined): ChatBackgroundPreset {

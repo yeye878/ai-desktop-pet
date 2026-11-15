@@ -14,7 +14,7 @@ fs.mkdirSync(OUT, { recursive: true });
 // 测试用 PRESETS.indexOf(id) 去点第 n 张卡片，顺序错位就会点错。
 const PRESETS = [
   'none', 'aurora', 'ink', 'rain', 'sakura',
-  'spring-willow', 'summer-lotus', 'autumn-chrys', 'winter-plum',
+  'spring-peach', 'summer-lotus', 'autumn-chrys', 'winter-plum',
   'minimal', 'custom',
 ];
 
@@ -43,7 +43,7 @@ const PRESETS = [
     }
 
     // 2. 逐个点预设：卡片高亮、预览标记一致、canvas 生效、localStorage 落盘
-    for (const id of ['aurora', 'ink', 'rain', 'sakura', 'spring-willow', 'summer-lotus', 'autumn-chrys', 'winter-plum', 'minimal']) {
+    for (const id of ['aurora', 'ink', 'rain', 'sakura', 'spring-peach', 'summer-lotus', 'autumn-chrys', 'winter-plum', 'minimal']) {
       await page.locator('.dash-bg-card').nth(PRESETS.indexOf(id)).click();
       await page.waitForTimeout(420);
       const stored = await page.evaluate(() => localStorage.getItem('ai-desktop-pet.chat-bg'));
@@ -77,7 +77,7 @@ const PRESETS = [
       ['细雨', 'rain', 'chat-rain-stage.png'],
       ['简洁', 'minimal', 'chat-minimal-stage.png'],
       ['樱花', 'sakura', 'chat-sakura-stage.png'],
-      ['春·柳', 'spring-willow', 'chat-spring-stage.png'],
+      ['春·桃', 'spring-peach', 'chat-peach-stage.png'],
       ['夏·荷', 'summer-lotus', 'chat-summer-stage.png'],
       ['秋·菊', 'autumn-chrys', 'chat-autumn-stage.png'],
       ['冬·梅', 'winter-plum', 'chat-winter-stage.png'],

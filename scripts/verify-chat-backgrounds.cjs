@@ -61,7 +61,7 @@ test("预设清单包含重设计后的全部模式且 id 唯一", () => {
       "none",
       "rain",
       // 四季意象
-      "spring-willow",
+      "spring-peach",
       "summer-lotus",
       "autumn-chrys",
       "winter-plum",

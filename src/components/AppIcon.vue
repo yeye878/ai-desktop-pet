@@ -282,6 +282,16 @@ withDefaults(
       <circle cx="12" cy="12" r="1.1" fill="currentColor" stroke="none" />
     </template>
 
+    <!-- Background Option: Peach (五瓣桃花，花瓣更圆更饱满，区别于樱花) -->
+    <template v-else-if="name === 'bg-peach'">
+      <ellipse cx="12" cy="7.9" rx="2.7" ry="3.2" />
+      <ellipse cx="16.1" cy="10.9" rx="2.7" ry="3.2" transform="rotate(72 16.1 10.9)" />
+      <ellipse cx="14.5" cy="15.6" rx="2.7" ry="3.2" transform="rotate(144 14.5 15.6)" />
+      <ellipse cx="9.5" cy="15.6" rx="2.7" ry="3.2" transform="rotate(216 9.5 15.6)" />
+      <ellipse cx="7.9" cy="10.9" rx="2.7" ry="3.2" transform="rotate(288 7.9 10.9)" />
+      <circle cx="12" cy="12" r="1.35" fill="currentColor" stroke="none" />
+    </template>
+
     <!-- Background Option: Spring (drooping willow branches) -->
     <template v-else-if="name === 'bg-spring'">
       <!-- 主干从左上伸入 -->

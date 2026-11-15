@@ -3,7 +3,7 @@
  *
  * 素材来源分两类：
  *   1. wallhaven.cc 实拍壁纸（极光 / 水墨 / 夏荷）—— 都用 codex 验证过写真度
- *   2. 用户提供的参考图（春柳 / 秋菊 / 冬梅 / 细雨 / 樱花）—— 按用户指定直接采用
+ *   2. 用户提供的参考图（春桃 / 秋菊 / 冬梅 / 樱花）—— 按用户指定直接采用
  *
  * ⚠️ 后一组是**手机截图**，上下带黑 UI 条。处理时必须先按行扫描
  *    "接近黑像素占比 > 85%" 的连续带把它裁掉，否则背景里会露出播放器/按钮。
@@ -16,7 +16,7 @@ import auroraPhoto from "../assets/bg/aurora.webp";
 import inkPhoto from "../assets/bg/ink.webp";
 import scifiPhoto from "../assets/bg/scifi.webp";
 import sakuraPhoto from "../assets/bg/sakura.webp";
-import springWillowPhoto from "../assets/bg/spring-willow.webp";
+import springPeachPhoto from "../assets/bg/spring-peach.webp";
 import summerLotusPhoto from "../assets/bg/summer-lotus.webp";
 import autumnChrysPhoto from "../assets/bg/autumn-chrys.webp";
 import winterPlumPhoto from "../assets/bg/winter-plum.webp";
@@ -89,14 +89,14 @@ export const PHOTO_BACKGROUNDS: Record<string, PhotoBackground> = {
    * 每个季节取一种传统意象（柳/荷/菊/梅），全部是 wallhaven 上的真实摄影，
    * 用 codex 逐张确认过 photorealism 10/10。
    */
-  "spring-willow": {
-    id: "spring-willow",
-    src: springWillowPhoto,
-    source: "1200x661",
-    credit: "用户提供 / 雨窗垂柳（暖阳改造）",
+  "spring-peach": {
+    id: "spring-peach",
+    src: springPeachPhoto,
+    source: "1200x889",
+    credit: "用户提供 / 春日桃花",
     opacity: 1,
-    tint: "rgba(255, 246, 224, 0.06)",
-    vignette: 0.05,
+    tint: "rgba(255, 250, 250, 0.06)",
+    vignette: 0.08,
     drift: 0.012,
   },
   "summer-lotus": {
