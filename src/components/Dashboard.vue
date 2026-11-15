@@ -4168,20 +4168,42 @@ ttsPlayer.stop();
               <span>{{ workspaceFileError }}</span>
               <button type="button" aria-label="关闭附件提示" @click="workspaceFileError = ''">×</button>
             </p>
-            <div v-if="isWorkspaceMode" :class="['dash-workspace-grid', `layout-${workspaceLayout}`]">
-              <SessionPane
-                v-for="(paneId, index) in workspacePaneIds"
-                :key="paneId"
-                :pane-id="paneId"
-                :file-over="isFileOver && fileOverPaneId === paneId"
-                :layout="workspaceLayout"
-                :session-id="workspacePanes[index] || ''"
-                :backend="paneSessionBackend(workspacePanes[index] || '')"
-                @assign="assignWorkspacePane"
-                @close="closeWorkspacePane"
-                @open-single="openSessionInSingle"
-                @pane-drop="moveWorkspacePane"
+            <!--
+              多窗格背景：**整个区域共用一张完整背景**。
+
+              这里踩过两个坑：
+                1. 每个窗格各自 cover -> 四格同一块图，像复制粘贴
+                2. 每格画整幅图的切片 -> 接缝虽然连续，但每格只有一条窄带，
+                   树干上下被切断，视觉模型评"像几条横条拼的"
+
+              正解是把背景铺在这一层（整幅完整呈现），窗格只做半透明白卡
+              浮在照片上。这样既连续，也不会切断画面主体。
+            -->
+            <div
+              v-if="isWorkspaceMode"
+              :class="['dash-workspace-stage', chatBg !== 'none' ? 'has-bg' : '']"
+              :data-chat-bg="chatBg"
+            >
+              <BgCanvas
+                v-if="chatBg !== 'none'"
+                :mode="chatBg"
+                :custom-image="customBgImage"
+                :intensity="chatBgIntensity"
               />
+              <div :class="['dash-workspace-grid', `layout-${workspaceLayout}`]">
+                <SessionPane
+                  v-for="(paneId, index) in workspacePaneIds"
+                  :key="paneId"
+                  :pane-id="paneId"
+                  :file-over="isFileOver && fileOverPaneId === paneId"
+                  :session-id="workspacePanes[index] || ''"
+                  :backend="paneSessionBackend(workspacePanes[index] || '')"
+                  @assign="assignWorkspacePane"
+                  @close="closeWorkspacePane"
+                  @open-single="openSessionInSingle"
+                  @pane-drop="moveWorkspacePane"
+                />
+              </div>
             </div>
             <template v-else>
            <div class="dash-chat-main">

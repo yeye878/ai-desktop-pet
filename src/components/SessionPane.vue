@@ -7,8 +7,6 @@ import { useAttachmentsStore } from "../stores/attachments";
 import { useDraftStore } from "../stores/drafts";
 import { getFileIcon } from "../services/attachments";
 import AgentActivity from "./AgentActivity.vue";
-import BgCanvas from "./BgCanvas.vue";
-import { useChatBackground } from "../composables/useChatBackground";
 import AgentModelPicker from "./AgentModelPicker.vue";
 import SessionPermissionPicker from "./SessionPermissionPicker.vue";
 import UserQuestion from "./UserQuestion.vue";
@@ -27,11 +25,6 @@ const props = defineProps<{
   sessionId: string;
   backend?: string;
   fileOver?: boolean;
-  /**
-   * 同屏布局（single/two/three/master/four）。
-   * 背景要按格切开做成一整幅画，得先知道一共几格、怎么排。
-   */
-  layout?: string;
 }>();
 const emit = defineEmits<{
   assign: [paneId: string, sessionId: string];
@@ -41,41 +34,6 @@ const emit = defineEmits<{
 }>();
 
 const runtime = useSessionRuntimeStore();
-/**
- * 同屏多窗格的每个窗格也要吃「对话背景」设置。
- * 之前只有单窗格视图挂了 BgCanvas，多窗口模式下背景整个失效。
- */
-const { chatBg, customBgImage, chatBgIntensity } = useChatBackground();
-
-/**
- * 背景切片位置。
- *
- * 多窗格的每格不再各自 cover 一张图（那样是几张互不相干的壁纸），
- * 而是把整幅画按布局切开、各画一条带 —— 几格拼起来是一整幅连续的画。
- *
- * 布局与切分方式的对应：
- *   two    1 行 2 列
- *   three  1 行 3 列
- *   four   2 行 2 列
- *   master 左 60% 跨两行（第 0 格），右侧上下两格（第 1、2 格）
- */
-const paneSlab = computed(() => {
-  const idx = Number(/(\d+)$/.exec(props.paneId || "")?.[1] ?? 0);
-  switch (props.layout) {
-    case "two":
-      return { index: idx, cols: 2, rows: 1, col: idx % 2, row: 0 };
-    case "three":
-      return { index: idx, cols: 3, rows: 1, col: idx % 3, row: 0 };
-    case "four":
-      return { index: idx, cols: 2, rows: 2, col: idx % 2, row: Math.floor(idx / 2) % 2 };
-    case "master":
-      // 第 0 格是左侧大块（占 2 行），第 1/2 格在右侧上下
-      if (idx === 0) return { index: 0, cols: 2, rows: 2, col: 0, row: 0 };
-      return { index: idx, cols: 2, rows: 2, col: 1, row: idx - 1 };
-    default:
-      return undefined;
-  }
-});
 const sessions = useSessionsStore();
 const attachments = useAttachmentsStore();
 const attachmentDraft = computed(() => attachments.ensure(props.sessionId));
@@ -398,17 +356,16 @@ function rendered(content: string) {
 
     <div
       v-else
-      :class="['session-pane-stage', chatBg !== 'none' ? 'has-bg' : '']"
-      :data-chat-bg="chatBg"
+      class="session-pane-stage"
     >
-      <BgCanvas
-        v-if="chatBg !== 'none'"
-        :mode="chatBg"
-        :custom-image="customBgImage"
-        :intensity="chatBgIntensity"
-        :slab="paneSlab"
-      />
-      <div v-if="chatBg !== 'none'" class="session-pane-bg-scrim" aria-hidden="true"></div>
+      <!--
+        背景不在这里画。
+
+        多窗格里如果每个窗格各画一份背景，"各自裁切"或"切片"都会显得
+        不自然：切片方案每格只有一条窄带，树干上下被切断，像几条横条拼的。
+        现在改成在整个 workspace 区域背后铺一张完整背景（见 Dashboard.vue），
+        窗格本身只做半透明白卡浮在照片上。
+      -->
     <div ref="messagesRef" class="session-pane-messages">
       <p v-if="!messages.length && !loading" class="session-pane-hint">暂无消息，发一条开始对话。</p>
       <div v-for="msg in messages" :key="msg.id" :class="['session-pane-msg', msg.role]">
@@ -594,11 +551,9 @@ function rendered(content: string) {
 .session-pane-switch { flex: 1; min-width: 70px; width: 0; font-size: 11px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: #7d7267; padding: 3px 4px; cursor: pointer; }
 .session-pane-switch:hover, .session-pane-switch:focus { border-color: rgba(120,110,100,.25); background: #fff; }
 .session-pane-stage { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; isolation: isolate; }
-.session-pane-stage > :deep(.bg-canvas) { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
 .session-pane-bg-scrim { position: absolute; inset: 0; z-index: 1; pointer-events: none;
   background: radial-gradient(120% 90% at 50% 0%, rgba(255,255,255,.12), transparent 58%),
               linear-gradient(180deg, rgba(255,255,255,.04), transparent 32%, transparent 76%, rgba(255,255,255,.05)); }
-.session-pane-stage.has-bg .session-pane-messages { position: relative; z-index: 2; }
 .session-pane-messages { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
 .session-pane-hint { color: #968b7f; font-size: 12px; text-align: center; margin: auto 0; }
 .session-pane-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; margin: 10px; border: 1.5px dashed rgba(120,110,100,.25); border-radius: 10px; color: #968b7f; font-size: 12px; }

@@ -7801,7 +7801,7 @@ button {
 /* 预览里的示意气泡：浅色背景上保持纸感，不再分深色/浅色两套 */
 .dash-bg-stage-bubble {
   color: #2b3542;
-  background: rgba(255, 255, 255, 0.86);
+  background: rgba(255, 255, 255, 0.97);
   box-shadow: 0 4px 12px rgba(var(--dash-ink-rgb), 0.075);
 }
 
@@ -7927,6 +7927,90 @@ button {
 }
 .dash-workspace-seg-btn:not(.active) .dash-workspace-seg-text { display: none; }
 .dash-workspace-seg-btn:focus-visible { outline: 2px solid var(--dash-accent); outline-offset: 2px; }
+/*
+ * 多窗格背景舞台。
+ *
+ * 背景铺在这一层（整幅完整），窗格浮在上面。
+ * 之前把背景画进每个窗格，无论"各自裁切"还是"切片"都不自然：
+ *   · 各自裁切 -> 四格同一块图，像复制粘贴
+ *   · 切片     -> 接缝连续，但每格只有一条窄带，树干上下被切断
+ * 现在照片是完整一张，窗格只是半透明卡片，视觉上自然得多。
+ */
+/*
+ * 多窗格工作区 = 一张「桌面」。
+ *
+ * 用户的要求是「真实桌面环境 + 四个悬浮 AI 窗口」：
+ * 背景是一整张桌面壁纸（完整呈现，不切割），
+ * 四个对话窗格是浮在桌面上的窗口（有投影、有间隙、能看见壁纸）。
+ *
+ * 之前踩的两个坑：
+ *   1. 每格各自 cover 一张图 -> 四格同一块图，像复制粘贴
+ *   2. 每格画整幅图的切片 -> 接缝连续，但每格只有窄带，树干被切断
+ * 现在壁纸完整铺底层，窗格悬浮在上层，才是"桌面 + 窗口"的关系。
+ */
+.dash-workspace-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-radius: 16px;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.dash-workspace-stage > .bg-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.dash-workspace-stage.has-bg .dash-workspace-grid {
+  position: relative;
+  z-index: 1;
+}
+
+/*
+ * 悬浮窗口。
+ *
+ * 三个视觉线索让它"浮起来"而不是"平铺"：
+ *   · 更大的间隙（露出的壁纸形成"桌面"）
+ *   · 双层投影（近距离的接触阴影 + 远距离的环境阴影）
+ *   · 毛玻璃（壁纸的明暗透过来，但文字仍清晰）
+ */
+.dash-workspace-stage.has-bg .dash-workspace-grid .session-pane {
+  background: rgba(255, 255, 255, 0.93);
+  border: 1px solid rgba(255, 255, 255, 0.92);
+  border-radius: 16px;
+  backdrop-filter: blur(20px) saturate(1.02);
+  -webkit-backdrop-filter: blur(20px) saturate(1.02);
+  box-shadow:
+    /* 顶部一道高光，像窗口边缘反光 */
+    0 1px 0 rgba(255, 255, 255, 0.55) inset,
+    /* 接触阴影：贴近桌面，短而实 */
+    0 2px 4px rgba(28, 34, 44, 0.10),
+    /* 环境阴影：把窗口托离桌面，长而虚 */
+    0 12px 32px rgba(28, 34, 44, 0.16),
+    0 28px 56px rgba(28, 34, 44, 0.08);
+}
+
+/* 悬浮窗口的悬停反馈：像窗口被"点亮" */
+.dash-workspace-stage.has-bg .dash-workspace-grid .session-pane:hover {
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.6) inset,
+    0 3px 6px rgba(28, 34, 44, 0.12),
+    0 16px 40px rgba(28, 34, 44, 0.20),
+    0 32px 64px rgba(28, 34, 44, 0.10);
+}
+
+/* 有壁纸时，工作区留出更宽的边距，让"桌面"露出来 */
+.dash-workspace-stage.has-bg .dash-workspace-grid {
+  gap: 14px;
+  padding: 18px 18px 20px;
+}
+
 .dash-workspace-grid {
   flex: 1;
   min-height: 0;
@@ -7939,6 +8023,41 @@ button {
 .dash-workspace-grid.layout-four { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
 .dash-workspace-grid.layout-master { grid-template-columns: 1.5fr 1fr; grid-template-rows: 1fr 1fr; }
 .dash-workspace-grid.layout-master > :first-child { grid-row: span 2; }
+
+/*
+ * 四个窗口不要摆得像仪表盘。
+ *
+ * 等分 2×2 的格子看起来是"仪表盘分区"，不是"桌面上摆着几个窗口"。
+ * 给每格一点点不同的内缩 / 圆角 / 投影强度，
+ * 视觉上就像手动拖放、各自位置略有出入的真实窗口。
+ */
+.dash-workspace-stage.has-bg .dash-workspace-grid.layout-four > :nth-child(1) {
+  margin: 0 2px 4px 0;
+  border-radius: 18px 16px 16px 16px;
+}
+.dash-workspace-stage.has-bg .dash-workspace-grid.layout-four > :nth-child(2) {
+  margin: 4px 0 0 2px;
+  border-radius: 16px 18px 16px 16px;
+}
+.dash-workspace-stage.has-bg .dash-workspace-grid.layout-four > :nth-child(3) {
+  margin: 2px 4px 0 0;
+  border-radius: 16px 16px 16px 18px;
+}
+.dash-workspace-stage.has-bg .dash-workspace-grid.layout-four > :nth-child(4) {
+  margin: 0 0 2px 4px;
+  border-radius: 16px 16px 18px 16px;
+}
+
+/* 主从布局：大窗口的地平线略低，像被往前推了一点 */
+.dash-workspace-stage.has-bg .dash-workspace-grid.layout-master > :first-child {
+  margin-bottom: 3px;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.55) inset,
+    0 3px 6px rgba(28, 34, 44, 0.12),
+    0 18px 44px rgba(28, 34, 44, 0.20),
+    0 34px 70px rgba(28, 34, 44, 0.10);
+}
+
 
 /* ============================================================
    系统设置页：左侧栏子项 + 当前分类标题
@@ -8088,7 +8207,7 @@ button {
   border: 1px solid rgba(var(--dash-ink-rgb), 0.06);
 }
 
-.atelier-hero-stage > :deep(.bg-canvas) {
+.atelier-hero-stage > .bg-canvas {
   position: absolute;
   inset: 0;
   z-index: 0;
