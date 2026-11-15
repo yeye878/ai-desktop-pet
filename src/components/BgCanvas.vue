@@ -3,7 +3,18 @@ import { ref, onMounted, onBeforeUnmount, watch } from 'vue';
 import { usePetStore } from '../stores/pet';
 import { PHOTO_BACKGROUNDS, photoBackground } from '../services/bgPhotos';
 
-const props = defineProps<{ mode: string; customImage?: string; intensity?: number }>();
+const props = defineProps<{
+  mode: string;
+  customImage?: string;
+  intensity?: number;
+  /**
+   * 窗格序号（多窗口模式时传入 0/1/2/3）。
+   *
+   * 多窗格里如果每格都画同一张图的同一区域，看起来就是"复制粘贴"。
+   * 用序号把取景窗口平移到不同位置，几格拼起来反而像一幅被分割的画。
+   */
+  variant?: number;
+}>();
 const petStore = usePetStore();
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 let ctx: CanvasRenderingContext2D | null = null;
@@ -1570,11 +1581,30 @@ function drawPhotoBackground(ctx: CanvasRenderingContext2D, k: number) {
    */
   const ir = img.width / img.height;
   const cr = W / H;
-  const scale = ir > cr ? H / img.height : W / img.width;
+  const v = Number(props.variant);
+  const multiPane = Number.isFinite(v) && v >= 0;
+  /*
+   * 多窗格取景偏移。
+   *
+   * 单纯 cover 铺满时，图片总有一边正好等于画布（overflow = 0），
+   * 那一维根本无法平移 —— 四个格子会看到完全一样的画面。
+   *
+   * 所以多窗格时先放大 18%，人为制造溢出，再在溢出范围里做四象限平移：
+   *   0 -> 左上，1 -> 右上，2 -> 左下，3 -> 右下
+   * 单窗格时不动，等价于居中 cover。
+   */
+  const scale = (ir > cr ? H / img.height : W / img.width) * (multiPane ? 1.35 : 1);
   const dw = img.width * scale;
   const dh = img.height * scale;
-  const ox = (W - dw) / 2;
-  const oy = (H - dh) / 2;
+
+  let biasX = 0.5;
+  let biasY = 0.5;
+  if (multiPane) {
+    biasX = v % 2 === 0 ? 0.14 : 0.86;
+    biasY = v < 2 ? 0.14 : 0.86;
+  }
+  const ox = -Math.max(0, dw - W) * biasX;
+  const oy = -Math.max(0, dh - H) * biasY;
 
   ctx.save();
   ctx.globalAlpha = cfg.opacity;
@@ -1602,6 +1632,22 @@ function drawPhotoBackground(ctx: CanvasRenderingContext2D, k: number) {
   ctx.save();
   ctx.fillStyle = cfg.tint;
   ctx.fillRect(0, 0, W, H);
+  /*
+   * 多窗格时给每格叠一层极淡的差异化色偏。
+   *
+   * 即使取景不同，如果色调完全一致，几格拼在一起仍然"太整齐"。
+   * 每格偏一点冷/暖，就像几扇窗朝向略有不同，自然得多。
+   */
+  if (Number.isFinite(Number(props.variant)) && Number(props.variant) >= 0) {
+    const tintByVariant = [
+      "rgba(255, 248, 234, 0.09)",  // 0 暖
+      "rgba(236, 246, 255, 0.09)",  // 1 冷
+      "rgba(248, 255, 244, 0.09)",  // 2 绿
+      "rgba(255, 244, 250, 0.09)",  // 3 粉
+    ];
+    ctx.fillStyle = tintByVariant[Number(props.variant) % 4];
+    ctx.fillRect(0, 0, W, H);
+  }
   ctx.restore();
 
   /*

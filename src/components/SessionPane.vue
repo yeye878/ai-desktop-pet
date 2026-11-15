@@ -36,6 +36,17 @@ const runtime = useSessionRuntimeStore();
  * 之前只有单窗格视图挂了 BgCanvas，多窗口模式下背景整个失效。
  */
 const { chatBg, customBgImage, chatBgIntensity } = useChatBackground();
+
+/**
+ * 窗格编号，用来给背景选不同取景区域。
+ *
+ * paneId 形如 "pane-0"/"pane-1"，取末尾数字即可。
+ * 这样同一张背景在几个格子里各看一块，拼起来不像复制粘贴。
+ */
+const paneVariant = computed(() => {
+  const m = /(\d+)$/.exec(props.paneId || "");
+  return m ? Number(m[1]) : 0;
+});
 const sessions = useSessionsStore();
 const attachments = useAttachmentsStore();
 const attachmentDraft = computed(() => attachments.ensure(props.sessionId));
@@ -366,6 +377,7 @@ function rendered(content: string) {
         :mode="chatBg"
         :custom-image="customBgImage"
         :intensity="chatBgIntensity"
+        :variant="paneVariant"
       />
       <div v-if="chatBg !== 'none'" class="session-pane-bg-scrim" aria-hidden="true"></div>
     <div ref="messagesRef" class="session-pane-messages">
