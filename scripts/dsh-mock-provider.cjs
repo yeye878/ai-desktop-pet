@@ -41,6 +41,13 @@ function plan(messages) {
   const toolResult = [...messages].reverse().find((message) => message.role === 'tool')
   const wantsTool = prompt.includes('USE_TOOL')
 
+  if (prompt.includes('USE_MEMORY') && !hasToolResult) {
+    return {
+      reasoning: '先保存这条用户偏好。', text: '',
+      toolCall: { name: 'save_memory', arguments: JSON.stringify({ category: 'preference', key: 'mock-language', value: '中文' }) }
+    }
+  }
+
   if (wantsTool && !hasToolResult) {
     return {
       reasoning: '先执行命令确认结果。',

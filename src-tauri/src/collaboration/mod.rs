@@ -109,6 +109,8 @@ pub struct CollaborationState {
     pub turn: usize,
     pub max_turns: usize,
     pub message: String,
+    /// 发起这次协同的会话：协同状态全局只有一份，用它拒绝其它会话同时发起协同。
+    pub session_id: String,
 }
 
 #[derive(Clone)]

@@ -129,6 +129,16 @@ pub const ACTIVE_MAIN_SESSION_KEY: &str = "active_main_session_id";
 /// 主对话槽位名；chat_sessions.slot 的取值之一。
 pub const MAIN_CHAT_SLOT: &str = "main";
 
+/// 记忆写入统一走这条 upsert（应用内 save_memory 命令、直连 API 的 save_memory 工具、
+/// 快捷方式注册共用）：依赖 (category, key) 唯一索引，重复保存时只覆盖 value 并刷新 updated_at。
+/// created_at / updated_at 显式写整数秒，避免与 INTEGER 列的类型亲和规则混淆。
+pub const UPSERT_MEMORY_SQL: &str = "INSERT INTO pet_memory (category, key, value, created_at, updated_at)
+     VALUES (?1, ?2, ?3, CAST(strftime('%s', 'now') AS INTEGER), CAST(strftime('%s', 'now') AS INTEGER))
+     ON CONFLICT(category, key) DO UPDATE SET
+         value = excluded.value,
+         updated_at = excluded.updated_at
+     RETURNING id";
+
 /// 一个对话会话：主对话窗口（kind=main/slot=main）与三个 agent 窗口
 /// （kind=agent/slot=claude|codex|dsh）共用同一种结构。
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -334,17 +344,27 @@ impl Database {
     }
 
     fn configure_pragmas(&self) -> Result<()> {
+        // busy_timeout 必须最先设置：切换 WAL 需要短暂的写锁，库正被其它连接占用时
+        // 没有等待时间会立刻 SQLITE_BUSY，Database::new 失败后 app 在启动时直接退出。
+        self.conn.busy_timeout(std::time::Duration::from_secs(5))?;
         self.conn.pragma_update(None, "journal_mode", "WAL")?;
         self.conn.pragma_update(None, "synchronous", "NORMAL")?;
         self.conn.pragma_update(None, "foreign_keys", "ON")?;
-        self.conn.busy_timeout(std::time::Duration::from_secs(5))?;
         Ok(())
     }
 
     fn ensure_indexes(&self) -> Result<()> {
+        // pet_memory 曾经没有唯一约束：同一 (category, key) 存了多行，open_app / get_memory
+        // 取到的是最旧那行（例如应用搬家后重新注册，仍然打开旧路径）。
+        // 先按 (category, key) 只保留最新一行，再建唯一索引，save_memory 从此走 upsert。
         self.conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_pet_memory_category_key ON pet_memory(category, key);
-             CREATE INDEX IF NOT EXISTS idx_chat_history_created_at ON chat_history(created_at);
+            "DELETE FROM pet_memory
+               WHERE id NOT IN (SELECT MAX(id) FROM pet_memory GROUP BY category, key);
+             DROP INDEX IF EXISTS idx_pet_memory_category_key;
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_pet_memory_category_key_unique ON pet_memory(category, key);",
+        )?;
+        self.conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_chat_history_created_at ON chat_history(created_at);
              CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_enabled_due ON scheduled_tasks(enabled, due_at);
              CREATE INDEX IF NOT EXISTS idx_clipboard_items_pinned_id ON clipboard_items(pinned DESC, id DESC);
              CREATE INDEX IF NOT EXISTS idx_skills_is_active ON skills(is_active) WHERE is_active = 1;
@@ -457,6 +477,7 @@ impl Database {
                 updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
             );",
         )?;
+        self.ensure_memory_updated_at_column()?;
         self.ensure_chat_thinking_column()?;
         self.ensure_chat_quote_columns()?;
         self.ensure_chat_agent_columns()?;
@@ -468,6 +489,22 @@ impl Database {
         self.ensure_scheduled_tasks_columns()?;
         self.init_chat_sessions()?;
         self.ensure_builtin_skills()?;
+        Ok(())
+    }
+
+    /// 旧库的 pet_memory 没有 updated_at：幂等补上（0 = 从未更新过，展示时退回 created_at）。
+    fn ensure_memory_updated_at_column(&self) -> Result<()> {
+        let columns = self
+            .conn
+            .prepare("PRAGMA table_info(pet_memory)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>>>()?;
+        if !columns.iter().any(|column| column == "updated_at") {
+            self.conn.execute(
+                "ALTER TABLE pet_memory ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
         Ok(())
     }
 
@@ -608,6 +645,12 @@ impl Database {
         self.conn.execute(
             "UPDATE chat_history SET session_id = ?1 WHERE session_id = ''",
             [DEFAULT_CHAT_SESSION_ID],
+        )?;
+        // 清理孤儿消息：旧版本在"回合进行中删除会话"时，回合收尾仍会往已删除的会话写消息，
+        // 这些行不属于任何会话，界面上永远看不到。
+        self.conn.execute(
+            "DELETE FROM chat_history WHERE session_id NOT IN (SELECT id FROM chat_sessions)",
+            [],
         )?;
         self.ensure_active_main_session()?;
         Ok(())
@@ -1224,12 +1267,10 @@ impl Database {
 
     // ===== 宠物记忆 =====
 
+    /// 写入或更新一条记忆：同一 (category, key) 只保留一行，重复保存即覆盖 value。
     pub fn save_memory(&self, category: &str, key: &str, value: &str) -> Result<i64> {
-        self.conn.execute(
-            "INSERT INTO pet_memory (category, key, value) VALUES (?1, ?2, ?3)",
-            (category, key, value),
-        )?;
-        Ok(self.conn.last_insert_rowid())
+        self.conn
+            .query_row(UPSERT_MEMORY_SQL, (category, key, value), |row| row.get(0))
     }
 
     pub fn get_memory(&self, category: &str, key: &str) -> Result<Option<String>> {
@@ -1265,7 +1306,8 @@ impl Database {
 
     pub fn get_all_memories(&self) -> Result<Vec<MemoryItem>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, category, key, value, created_at FROM pet_memory ORDER BY id DESC",
+            "SELECT id, category, key, value, created_at FROM pet_memory
+             ORDER BY MAX(created_at, updated_at) DESC, id DESC",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(MemoryItem {
@@ -1288,7 +1330,7 @@ impl Database {
             "SELECT id, category, key, value, created_at
              FROM pet_memory
              WHERE category = ?1
-             ORDER BY id DESC",
+             ORDER BY MAX(created_at, updated_at) DESC, id DESC",
         )?;
         let rows = stmt.query_map([category], |row| {
             Ok(MemoryItem {
