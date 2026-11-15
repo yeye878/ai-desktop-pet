@@ -445,7 +445,7 @@ function drawCharacterStateOverlay(
   if (state === "sleeping") {
     const zOff = Math.sin(frame * 0.05) * 4;
     const zAlpha = 0.6 + Math.sin(frame * 0.07) * 0.25;
-    ctx.fillStyle = hexToRgba("#5b6480", zAlpha);
+    ctx.fillStyle = hexToRgba("#6366f1", zAlpha);
     ctx.font = "bold 15px sans-serif";
     ctx.fillText("Z", cx + 30, cy - 26 + zOff);
     ctx.font = "bold 11px sans-serif";
@@ -457,7 +457,7 @@ function drawCharacterStateOverlay(
   if (state === "thinking") {
     const bob = Math.sin(frame * 0.08) * 2;
     ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
-    ctx.strokeStyle = "#adb2bb";
+    ctx.strokeStyle = "#94a3b8";
     ctx.lineWidth = 1.2;
     ctx.beginPath();
     ctx.arc(cx + 26, cy - 34 + bob, 3, 0, Math.PI * 2);
@@ -505,7 +505,7 @@ function drawCharacterStateOverlay(
     ctx.save();
     ctx.translate(cx + 32, cy - 40);
     ctx.scale(qScale, qScale);
-    ctx.fillStyle = "#bb8166";
+    ctx.fillStyle = "#f59e0b";
     ctx.font = "bold 22px sans-serif";
     ctx.fillText("?", 0, 0);
     ctx.restore();
@@ -522,7 +522,7 @@ function drawCharacterStateOverlay(
 
   if (state === "happy" || state === "waving") {
     const heartBob = Math.sin(frame * 0.12) * 3;
-    ctx.fillStyle = "#a97f92";
+    ctx.fillStyle = "#fb7185";
     ctx.font = "bold 13px sans-serif";
     ctx.fillText("♥", cx - 34, cy - 32 + heartBob);
     if (state === "waving") {
@@ -531,20 +531,20 @@ function drawCharacterStateOverlay(
   }
 
   if (state === "hungry") {
-    ctx.fillStyle = "#bb8166";
+    ctx.fillStyle = "#f97316";
     ctx.font = "bold 13px sans-serif";
     ctx.fillText("…", cx + 32, cy - 34);
   }
 
   if (state === "stuffed") {
-    ctx.fillStyle = "#6f8f74";
+    ctx.fillStyle = "#22c55e";
     ctx.font = "bold 13px sans-serif";
     ctx.fillText("♥", cx + 32, cy - 34);
   }
 
   if (state === "refusing") {
     const crossBob = Math.sin(frame * 0.2) * 2;
-    ctx.strokeStyle = "#9f684f";
+    ctx.strokeStyle = "#ef4444";
     ctx.lineWidth = 2.4;
     ctx.beginPath();
     ctx.moveTo(cx + 28, cy - 44 + crossBob);
@@ -950,7 +950,7 @@ function drawBongoEars(
   ctx.quadraticCurveTo(cx - bw * 0.34, earBaseY - 10, leftTipX + 2, leftTipY + 4);
   ctx.quadraticCurveTo(cx - bw * 0.22, earBaseY - 8, cx - bw * 0.18, earBaseY);
   ctx.closePath();
-  ctx.fillStyle = "#eddfe5";
+  ctx.fillStyle = "#fbcfe8";
   ctx.fill();
 
   // --- 右耳 ---
@@ -974,7 +974,7 @@ function drawBongoEars(
   ctx.quadraticCurveTo(cx + bw * 0.22, earBaseY - 8, rightTipX - 2, rightTipY + 4);
   ctx.quadraticCurveTo(cx + bw * 0.34, earBaseY - 10, cx + bw * 0.36, earBaseY + 1);
   ctx.closePath();
-  ctx.fillStyle = "#eddfe5";
+  ctx.fillStyle = "#fbcfe8";
   ctx.fill();
 
   ctx.restore();
@@ -1034,7 +1034,7 @@ function drawBongoBody(
   const collarW = halfW * 0.85;
   ctx.beginPath();
   ctx.ellipse(cx, collarY, collarW, 7, 0, 0.15 * Math.PI, 0.85 * Math.PI);
-  ctx.strokeStyle = theme.primary || "#9f684f";
+  ctx.strokeStyle = theme.primary || "#ef4444";
   ctx.lineWidth = 4.2;
   ctx.stroke();
 
@@ -1042,16 +1042,16 @@ function drawBongoBody(
   const bellSway = Math.sin(frame * 0.08) * 1.2;
   const bellX = cx + bellSway;
   const bellY = collarY + 6.5;
-  ctx.fillStyle = "#cf9e89";
+  ctx.fillStyle = "#fbbf24";
   ctx.beginPath();
   ctx.arc(bellX, bellY, 3.8, 0, Math.PI * 2);
   ctx.fill();
-  ctx.strokeStyle = "#9f684f";
+  ctx.strokeStyle = "#d97706";
   ctx.lineWidth = 1;
   ctx.stroke();
 
   // 铃铛小孔
-  ctx.fillStyle = "#7b4e3a";
+  ctx.fillStyle = "#92400e";
   ctx.beginPath();
   ctx.arc(bellX, bellY + 1.2, 1, 0, Math.PI * 2);
   ctx.fill();
@@ -1078,7 +1078,7 @@ function drawBongoFace(
 
   // 软萌腮红 (草莓牛奶粉)
   const blushAlpha = state === "happy" ? 0.72 : 0.52;
-  ctx.fillStyle = `rgba(169, 127, 146, ${blushAlpha})`;
+  ctx.fillStyle = `rgba(251, 113, 133, ${blushAlpha})`;
   ctx.beginPath();
   ctx.ellipse(cx - 21.5, faceY + 5.5, 5.5, 3.2, -0.05, 0, Math.PI * 2);
   ctx.fill();
@@ -1087,7 +1087,7 @@ function drawBongoFace(
   ctx.fill();
 
   // 两侧萌系猫须 (细腻干净)
-  ctx.strokeStyle = "#adb2bb";
+  ctx.strokeStyle = "#94a3b8";
   ctx.lineWidth = 1.3;
   // 左侧胡须
   ctx.beginPath();
@@ -1205,7 +1205,7 @@ function drawBongoFace(
 
   // --- 萌系小鼻子与 :3 猫唇 ---
   const noseY = faceY + 2.6;
-  ctx.fillStyle = "#c29cad";
+  ctx.fillStyle = "#f472b6";
   ctx.beginPath();
   ctx.ellipse(cx, noseY, 1.4, 1.0, 0, 0, Math.PI * 2);
   ctx.fill();
@@ -1218,12 +1218,12 @@ function drawBongoFace(
     // 说话或欢笑时张开小嘴 (含萌萌小粉舌)
     ctx.beginPath();
     ctx.arc(cx, mouthY + 1.5, 3.8, 0.1 * Math.PI, 0.9 * Math.PI);
-    ctx.fillStyle = "#9f684f";
+    ctx.fillStyle = "#f43f5e";
     ctx.fill();
     ctx.stroke();
 
     // 舌尖
-    ctx.fillStyle = "#eddfe5";
+    ctx.fillStyle = "#fbcfe8";
     ctx.beginPath();
     ctx.arc(cx, mouthY + 3.2, 2.2, 0.1 * Math.PI, 0.9 * Math.PI);
     ctx.fill();
@@ -1270,14 +1270,14 @@ function drawBongoDeskAndKeyboard(
   // 1. 木质桌面
   const woodGrad = ctx.createLinearGradient(deskX, deskY, deskX, deskY + deskH);
   woodGrad.addColorStop(0, "#fef3c7");
-  woodGrad.addColorStop(0.35, "#e4ddcc");
-  woodGrad.addColorStop(1, "#bb8166");
+  woodGrad.addColorStop(0.35, "#fde68a");
+  woodGrad.addColorStop(1, "#f59e0b");
   ctx.fillStyle = woodGrad;
 
   ctx.beginPath();
   roundRect(ctx, deskX, deskY, deskW, deskH, deskR);
   ctx.fill();
-  ctx.strokeStyle = "#9f684f";
+  ctx.strokeStyle = "#d97706";
   ctx.lineWidth = 2.0;
   ctx.stroke();
 
@@ -1300,14 +1300,14 @@ function drawBongoDeskAndKeyboard(
   ctx.beginPath();
   roundRect(ctx, kbX, kbY, kbW, kbH, kbR);
   ctx.fill();
-  ctx.strokeStyle = "#adb2bb";
+  ctx.strokeStyle = "#94a3b8";
   ctx.lineWidth = 1.2;
   ctx.stroke();
 
   // 3. 两排彩色马卡龙键帽
   const keyColors = [
-    "#d0ebec", "#d9e4dc", "#eee9dc", "#eddfe5", "#e6dbe4",
-    "#b6dcdd", "#fed7aa", "#fecdd3", "#c7d2fe", "#f5d0fe",
+    "#bae6fd", "#bbf7d0", "#fef08a", "#fbcfe8", "#e9d5ff",
+    "#a7f3d0", "#fed7aa", "#fecdd3", "#c7d2fe", "#f5d0fe",
   ];
 
   // 敲键盘按压相位 (根据敲击状态计算当前被按下的键)
@@ -1356,7 +1356,7 @@ function drawBongoDeskAndKeyboard(
   ctx.stroke();
 
   // 杯身小粉爪印
-  ctx.fillStyle = "#c29cad";
+  ctx.fillStyle = "#f472b6";
   ctx.beginPath();
   ctx.arc(cupX + 4.5, cupY + 6.5, 1.4, 0, Math.PI * 2);
   ctx.fill();
@@ -1486,7 +1486,7 @@ function drawCuteRaisedPaw(
   ctx.stroke();
 
   // 粉嫩中心主肉垫
-  ctx.fillStyle = "#c29cad";
+  ctx.fillStyle = "#f472b6";
   ctx.beginPath();
   ctx.ellipse(0, 0.5, 3.6, 2.8, 0, 0, Math.PI * 2);
   ctx.fill();
@@ -1547,7 +1547,7 @@ function drawBongoStateEffects(
   if (state === "thinking") {
     const bobbleY = cy - bh * 0.45;
     ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
-    ctx.strokeStyle = "#adb2bb";
+    ctx.strokeStyle = "#94a3b8";
     ctx.lineWidth = 1.2;
 
     // 导向小气泡
@@ -1569,7 +1569,7 @@ function drawBongoStateEffects(
     // 泡泡内的小鱼干
     ctx.save();
     ctx.translate(bubbleX, bubbleY);
-    ctx.fillStyle = "#cf9e89";
+    ctx.fillStyle = "#fbbf24";
     ctx.beginPath();
     ctx.ellipse(0, 0, 7.5, 4.0, 0, 0, Math.PI * 2);
     // 鱼尾
@@ -1581,7 +1581,7 @@ function drawBongoStateEffects(
     ctx.fill();
 
     // 鱼眼
-    ctx.fillStyle = "#7b4e3a";
+    ctx.fillStyle = "#78350f";
     ctx.beginPath();
     ctx.arc(-4, -1, 0.9, 0, Math.PI * 2);
     ctx.fill();
@@ -1592,7 +1592,7 @@ function drawBongoStateEffects(
   if (state === "sleeping") {
     const zOff = Math.sin(frame * 0.05) * 4;
     const zAlpha = 0.55 + Math.sin(frame * 0.07) * 0.25;
-    ctx.fillStyle = hexToRgba(theme.accent || "#5b6480", zAlpha);
+    ctx.fillStyle = hexToRgba(theme.accent || "#6366f1", zAlpha);
     ctx.font = "bold 14px sans-serif";
     ctx.textAlign = "center";
     ctx.fillText("Z", cx + 26, cy - 20 + zOff);
@@ -1650,7 +1650,7 @@ function drawBongoStateEffects(
     ctx.save();
     ctx.translate(cx + 24, cy - bh * 0.5);
     ctx.scale(qScale, qScale);
-    ctx.fillStyle = "#bb8166";
+    ctx.fillStyle = "#f59e0b";
     ctx.font = "bold 20px sans-serif";
     ctx.textAlign = "center";
     ctx.fillText("?", 0, 0);

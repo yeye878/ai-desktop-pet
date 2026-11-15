@@ -22,5 +22,5 @@ const chat = useChatStore();
 .collaboration-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 10px 12px; border: 1px solid rgba(24,42,72,.1); border-radius: 10px; background: rgba(255,255,255,.6); color: #64748b; font-size: 12px; line-height: 1.5; }
 .collaboration-switch { display: inline-flex; align-items: center; gap: 6px; color: #334155; white-space: nowrap; cursor: pointer; }
 .collaboration-bar strong { color: #334155; font-weight: 600; }
-.collaboration-switch input { accent-color: var(--pet-primary, #79b1b3); }
+.collaboration-switch input { accent-color: var(--pet-primary, #38bdf8); }
 </style>

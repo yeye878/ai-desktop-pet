@@ -23,19 +23,19 @@ const STAGE_SCALE = 2;
 
 // 每个状态一套语汇，用于灯带与状态气泡
 const STATE_VIBES: Record<string, { hue: string; glow: string; bubble: string }> = {
-  idle: { hue: "#79b1b3", glow: "rgba(96, 148, 151, 0.35)", bubble: "在发呆～" },
-  listening: { hue: "#97c8ca", glow: "rgba(134, 168, 138, 0.35)", bubble: "我在听" },
-  thinking: { hue: "#b6b0c2", glow: "rgba(123, 132, 159, 0.35)", bubble: "让我想想…" },
-  speaking: { hue: "#c29cad", glow: "rgba(194, 156, 173, 0.35)", bubble: "说给你听" },
-  working: { hue: "#79b1b3", glow: "rgba(96, 148, 151, 0.4)", bubble: "干活中" },
+  idle: { hue: "#66c8ff", glow: "rgba(102, 200, 255, 0.35)", bubble: "在发呆～" },
+  listening: { hue: "#8ee6a8", glow: "rgba(142, 230, 168, 0.35)", bubble: "我在听" },
+  thinking: { hue: "#a7a2ff", glow: "rgba(167, 162, 255, 0.35)", bubble: "让我想想…" },
+  speaking: { hue: "#ff93c7", glow: "rgba(255, 147, 199, 0.35)", bubble: "说给你听" },
+  working: { hue: "#66c8ff", glow: "rgba(102, 200, 255, 0.4)", bubble: "干活中" },
   sleeping: { hue: "#8792a3", glow: "rgba(135, 146, 163, 0.3)", bubble: "Zzz…" },
-  happy: { hue: "#d6ceba", glow: "rgba(151, 200, 202, 0.45)", bubble: "好开心！" },
-  confused: { hue: "#bb8166", glow: "rgba(187, 129, 102, 0.35)", bubble: "咦？" },
-  waving: { hue: "#97c8ca", glow: "rgba(134, 168, 138, 0.45)", bubble: "嗨～" },
-  hungry: { hue: "#bb8166", glow: "rgba(187, 129, 102, 0.4)", bubble: "有点饿" },
-  stuffed: { hue: "#d6ceba", glow: "rgba(151, 200, 202, 0.4)", bubble: "吃撑了…" },
-  refusing: { hue: "#bb8166", glow: "rgba(187, 129, 102, 0.5)", bubble: "不要！" },
-  dragging: { hue: "#b6b0c2", glow: "rgba(123, 132, 159, 0.4)", bubble: "放我下来" },
+  happy: { hue: "#ffd85c", glow: "rgba(255, 216, 92, 0.45)", bubble: "好开心！" },
+  confused: { hue: "#ff7a66", glow: "rgba(255, 122, 102, 0.35)", bubble: "咦？" },
+  waving: { hue: "#8ee6a8", glow: "rgba(142, 230, 168, 0.45)", bubble: "嗨～" },
+  hungry: { hue: "#ff7a66", glow: "rgba(255, 122, 102, 0.4)", bubble: "有点饿" },
+  stuffed: { hue: "#ffd85c", glow: "rgba(255, 216, 92, 0.4)", bubble: "吃撑了…" },
+  refusing: { hue: "#ff7a66", glow: "rgba(255, 122, 102, 0.5)", bubble: "不要！" },
+  dragging: { hue: "#a7a2ff", glow: "rgba(167, 162, 255, 0.4)", bubble: "放我下来" },
 };
 
 const vibe = computed(() => STATE_VIBES[pet.state] ?? STATE_VIBES.idle);
@@ -231,11 +231,11 @@ const ringOffset = (percent: number) => RING_C * (1 - Math.max(0, Math.min(100, 
 }
 
 .stage-ring-fill.mood {
-  stroke: var(--dash-candy-coral, #bb8166);
+  stroke: var(--dash-candy-coral, #ff7a66);
 }
 
 .stage-ring-fill.energy {
-  stroke: var(--dash-candy-sky, #79b1b3);
+  stroke: var(--dash-candy-sky, #66c8ff);
 }
 
 .stage-meter-copy {

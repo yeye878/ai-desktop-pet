@@ -264,7 +264,7 @@ onMounted(() => {
 .session-access-trigger.compact { max-width: 170px; padding: 3px 6px; font-size: 10.5px; }
 .session-access-icon { color: #968b7f; flex-shrink: 0; }
 .session-access-trigger.danger .session-access-icon { color: #b45309; }
-.session-access-label { color: var(--dash-text-secondary); flex-shrink: 0; }
+.session-access-label { color: #968b7f; flex-shrink: 0; }
 .session-access-value {
   font-weight: 600;
   white-space: nowrap;

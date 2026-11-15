@@ -133,8 +133,8 @@ h1 {
 }
 
 .icon-btn:hover {
-  border-color: rgba(159, 104, 79, 0.30);
-  color: #7b4e3a;
+  border-color: rgba(239, 68, 68, 0.30);
+  color: #dc2626;
 }
 
 .tool-confirm-body {
@@ -243,13 +243,13 @@ pre {
 }
 
 .deny-btn {
-  background: rgba(159, 104, 79, 0.08);
-  border-color: rgba(159, 104, 79, 0.18) !important;
-  color: #7b4e3a;
+  background: rgba(239, 68, 68, 0.08);
+  border-color: rgba(239, 68, 68, 0.18) !important;
+  color: #dc2626;
 }
 
 .approve-btn {
-  background: #57735c;
+  background: #1f9d55;
   color: #ffffff;
   box-shadow: 0 10px 20px rgba(31, 157, 85, 0.20);
 }
@@ -257,8 +257,8 @@ pre {
 /* Product polish layer */
 .tool-confirm-window {
   background:
-    url("../assets/art/paper-grain-cool.webp"),
-    radial-gradient(circle at 8% 0%, rgba(151, 200, 202, 0.18), transparent 32%),
+    url("../assets/art/paper-grain.webp"),
+    radial-gradient(circle at 8% 0%, rgba(255, 216, 92, 0.18), transparent 32%),
     linear-gradient(145deg, rgba(255, 255, 255, 0.98), rgba(241, 250, 255, 0.94));
   background-size: 420px 420px, auto, auto;
   border-color: rgba(33, 48, 74, 0.12);
@@ -292,7 +292,7 @@ h1 {
 
 .icon-btn:hover {
   background: #ffffff;
-  box-shadow: 0 10px 20px rgba(159, 104, 79, 0.10);
+  box-shadow: 0 10px 20px rgba(239, 68, 68, 0.10);
 }
 
 .summary-panel,
@@ -340,17 +340,17 @@ h1 {
 }
 
 .deny-btn {
-  background: rgba(159, 104, 79, 0.08);
+  background: rgba(239, 68, 68, 0.08);
 }
 
 .deny-btn:hover:not(:disabled) {
-  background: #9f684f;
+  background: #ef4444;
   color: #ffffff;
-  box-shadow: 0 10px 20px rgba(159, 104, 79, 0.16);
+  box-shadow: 0 10px 20px rgba(239, 68, 68, 0.16);
 }
 
 .approve-btn {
-  background: linear-gradient(135deg, #57735c, #6f8f74);
+  background: linear-gradient(135deg, #1f9d55, #20b866);
   box-shadow: 0 10px 22px rgba(31, 157, 85, 0.18);
 }
 
@@ -365,7 +365,7 @@ h1 {
     transform: none !important;
   }
 }
-.confirm-error { margin: 0; color: #9f684f; overflow-wrap: anywhere; font-size: 12px; }
+.confirm-error { margin: 0; color: #b54040; overflow-wrap: anywhere; font-size: 12px; }
 .icon-btn { display: grid; place-items: center; }
 .summary-panel strong { overflow-wrap: anywhere; }
 .tool-confirm-body > * { flex-shrink: 0; }

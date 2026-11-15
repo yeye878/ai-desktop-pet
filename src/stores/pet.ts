@@ -2,7 +2,6 @@ import { defineStore } from "pinia";
 import { ref, computed, watch } from "vue";
 import type { CustomPixelPetAsset } from "../services/customPixelPet";
 import type { PetCharacterId } from "../services/petCharacters";
-import { themeToneScale } from "../services/palette";
 
 export type PetState =
   | "idle"
@@ -36,175 +35,99 @@ export interface Theme {
   cycleColors?: string[]; // 动态变色调色盘
 }
 
-/**
- * 主题（v4「青瓷」）—— 从一张参考照片提取、按 OKLCH 等感知步长重建的低饱和纸面系。
- *
- * 旧版是一堆高饱和糖果色（#609497 / #7b849f / #6f8f74 …），单看很跳，
- * 放在一起就吵：色相散、明度接近、互相抢。新方案沿用参考照片的规律：
- *   明度高（L≈0.88）、饱和低（C≈0.02）、色相只留青瓷(198°) 与暖砂(88°) 两族，
- * 每个主题靠「色相微调 + 明度差」区分，而不是靠把饱和度拉满。
- *
- * 保留 default / ocean / galaxy / forest / sunset / sakura 这些 id 是为了
- * 不让老用户的已选皮肤失效（后端 DB 里存的就是这些字符串）。
- */
 export const THEMES: Record<string, Theme> = {
   default: {
     id: "default",
-    name: "青瓷",
-    primary: "#04b1b7",
-    primaryDark: "#148286",
-    accent: "#75d4d8",
-    bgGlass: "rgba(252, 250, 245, 0.92)",
-    bubbleUser: "linear-gradient(135deg, #008389, #00959a)",
-    bubbleBot: "rgba(4, 177, 183, 0.07)",
-    bubbleBotText: "#34383f",
-    headerGradient: "linear-gradient(135deg, #008d93, #11b4ba)",
-    particleColors: ["#008388", "#02a6ac", "#4ac6cb", "#93e5e8"],
+    name: "樱花红",
+    primary: "#ff6b6b",
+    primaryDark: "#e55a5a",
+    accent: "#ffa07a",
+    bgGlass: "rgba(255, 255, 255, 0.92)",
+    bubbleUser: "linear-gradient(135deg, #ff6b6b, #ff8e8e)",
+    bubbleBot: "rgba(255, 107, 107, 0.08)",
+    bubbleBotText: "#4a4a4a",
+    headerGradient: "linear-gradient(135deg, #ff6b6b, #ff8e53)",
+    particleColors: ["#ff6b6b", "#ff8e8e", "#ffa07a", "#ffb6c1"],
   },
   ocean: {
     id: "ocean",
-    name: "雨过天青",
-    primary: "#09b0be",
-    primaryDark: "#15818b",
-    accent: "#76d3dd",
-    bgGlass: "rgba(243, 251, 251, 0.92)",
-    bubbleUser: "linear-gradient(135deg, #00828f, #0094a1)",
-    bubbleBot: "rgba(9, 176, 190, 0.07)",
-    bubbleBotText: "#2b3238",
-    headerGradient: "linear-gradient(135deg, #008c99, #14b3c1)",
-    particleColors: ["#00828e", "#05a5b3", "#4ac5d2", "#93e4ed"],
+    name: "深海蓝",
+    primary: "#4ecdc4",
+    primaryDark: "#3db8b0",
+    accent: "#45b7d1",
+    bgGlass: "rgba(240, 253, 252, 0.92)",
+    bubbleUser: "linear-gradient(135deg, #4ecdc4, #44b8c4)",
+    bubbleBot: "rgba(78, 205, 196, 0.08)",
+    bubbleBotText: "#3a5a5c",
+    headerGradient: "linear-gradient(135deg, #4ecdc4, #45b7d1)",
+    particleColors: ["#4ecdc4", "#45b7d1", "#96e6df", "#a7f3d0"],
   },
   galaxy: {
     id: "galaxy",
-    name: "远山黛",
-    primary: "#789ae4",
-    primaryDark: "#5871a7",
-    accent: "#a6c1fd",
-    bgGlass: "rgba(248, 249, 252, 0.92)",
-    bubbleUser: "linear-gradient(135deg, #536faf, #6180c4)",
-    bubbleBot: "rgba(120, 154, 228, 0.07)",
-    bubbleBotText: "#2f333d",
-    headerGradient: "linear-gradient(135deg, #5a78bc, #7b9ce7)",
-    particleColors: ["#5671ac", "#7090d7", "#8fb0f6", "#bbd4ff"],
+    name: "星空紫",
+    primary: "#a855f7",
+    primaryDark: "#9333ea",
+    accent: "#c084fc",
+    bgGlass: "rgba(250, 245, 255, 0.92)",
+    bubbleUser: "linear-gradient(135deg, #a855f7, #8b5cf6)",
+    bubbleBot: "rgba(168, 85, 247, 0.08)",
+    bubbleBotText: "#4a3b5c",
+    headerGradient: "linear-gradient(135deg, #a855f7, #ec4899)",
+    particleColors: ["#a855f7", "#c084fc", "#e879f9", "#f0abfc"],
   },
   forest: {
     id: "forest",
-    name: "鼠尾草",
-    primary: "#62b074",
-    primaryDark: "#498156",
-    accent: "#98d3a3",
-    bgGlass: "rgba(247, 250, 246, 0.92)",
-    bubbleUser: "linear-gradient(135deg, #3e8250, #4c945e)",
-    bubbleBot: "rgba(98, 176, 116, 0.07)",
-    bubbleBotText: "#2f3830",
-    headerGradient: "linear-gradient(135deg, #448c56, #65b377)",
-    particleColors: ["#448253", "#5ca56d", "#7dc58c", "#afe4b9"],
+    name: "森林绿",
+    primary: "#22c55e",
+    primaryDark: "#16a34a",
+    accent: "#4ade80",
+    bgGlass: "rgba(240, 255, 244, 0.92)",
+    bubbleUser: "linear-gradient(135deg, #22c55e, #16a34a)",
+    bubbleBot: "rgba(34, 197, 94, 0.08)",
+    bubbleBotText: "#2d5a3e",
+    headerGradient: "linear-gradient(135deg, #22c55e, #06b6d4)",
+    particleColors: ["#22c55e", "#4ade80", "#86efac", "#a7f3d0"],
   },
   sunset: {
     id: "sunset",
-    name: "陶土",
-    primary: "#d88260",
-    primaryDark: "#9f6047",
-    accent: "#f4af94",
-    bgGlass: "rgba(252, 249, 244, 0.92)",
-    bubbleUser: "linear-gradient(135deg, #a45b3e, #b86a4b)",
-    bubbleBot: "rgba(216, 130, 96, 0.07)",
-    bubbleBotText: "#3b332e",
-    headerGradient: "linear-gradient(135deg, #b06244, #db8563)",
-    particleColors: ["#a25e43", "#cb7a5a", "#eb9a7a", "#ffc4ab"],
+    name: "日落橙",
+    primary: "#f97316",
+    primaryDark: "#ea580c",
+    accent: "#fb923c",
+    bgGlass: "rgba(255, 251, 240, 0.92)",
+    bubbleUser: "linear-gradient(135deg, #f97316, #ef4444)",
+    bubbleBot: "rgba(249, 115, 22, 0.08)",
+    bubbleBotText: "#5c3a1e",
+    headerGradient: "linear-gradient(135deg, #f97316, #ef4444)",
+    particleColors: ["#f97316", "#fb923c", "#fbbf24", "#f87171"],
   },
   sakura: {
     id: "sakura",
-    name: "藕荷",
-    primary: "#d27ca6",
-    primaryDark: "#9a5c7a",
-    accent: "#efaaca",
-    bgGlass: "rgba(252, 248, 249, 0.92)",
-    bubbleUser: "linear-gradient(135deg, #9f567a, #b2658b)",
-    bubbleBot: "rgba(210, 124, 166, 0.07)",
-    bubbleBotText: "#3a3237",
-    headerGradient: "linear-gradient(135deg, #aa5d83, #d57fa9)",
-    particleColors: ["#9d597a", "#c5749c", "#e594bb", "#febfdc"],
-  },
-  moon: {
-    id: "moon",
-    name: "月白",
-    primary: "#3ca8d6",
-    primaryDark: "#2f7c9d",
-    accent: "#82cdf1",
-    bgGlass: "rgba(248, 250, 253, 0.92)",
-    bubbleUser: "linear-gradient(135deg, #127ca3, #248db7)",
-    bubbleBot: "rgba(60, 168, 214, 0.07)",
-    bubbleBotText: "#30343b",
-    headerGradient: "linear-gradient(135deg, #1785af, #3fabd9)",
-    particleColors: ["#237ca1", "#379ec9", "#60bee8", "#9ddfff"],
-  },
-  tea: {
-    id: "tea",
-    name: "茶褐",
-    primary: "#d38750",
-    primaryDark: "#9b633c",
-    accent: "#f0b38a",
-    bgGlass: "rgba(251, 249, 245, 0.92)",
-    bubbleUser: "linear-gradient(135deg, #a05f2f, #b46e3c)",
-    bubbleBot: "rgba(211, 135, 80, 0.07)",
-    bubbleBotText: "#37322c",
-    headerGradient: "linear-gradient(135deg, #ac6734, #d68a53)",
-    particleColors: ["#9e6236", "#c77f4b", "#e69e6d", "#fec7a2"],
-  },
-  indigo: {
-    id: "indigo",
-    name: "靛青",
-    primary: "#689ee3",
-    primaryDark: "#4d74a6",
-    accent: "#9bc5fc",
-    bgGlass: "rgba(247, 249, 252, 0.92)",
-    bubbleUser: "linear-gradient(135deg, #4573ae, #5284c2)",
-    bubbleBot: "rgba(104, 158, 227, 0.07)",
-    bubbleBotText: "#2c3138",
-    headerGradient: "linear-gradient(135deg, #4b7cba, #6ba1e6)",
-    particleColors: ["#4974ab", "#6195d6", "#82b4f5", "#b1d7ff"],
-  },
-  moss: {
-    id: "moss",
-    name: "苔痕",
-    primary: "#83aa59",
-    primaryDark: "#617d43",
-    accent: "#afce90",
-    bgGlass: "rgba(249, 250, 245, 0.92)",
-    bubbleUser: "linear-gradient(135deg, #5d7e38, #6c8f44)",
-    bubbleBot: "rgba(131, 170, 89, 0.07)",
-    bubbleBotText: "#33362c",
-    headerGradient: "linear-gradient(135deg, #64873d, #86ad5c)",
-    particleColors: ["#5f7e3d", "#7ba054", "#9abf75", "#c3dfa8"],
-  },
-  coral: {
-    id: "coral",
-    name: "柚粉",
-    primary: "#db7d76",
-    primaryDark: "#a15d57",
-    accent: "#f7aba5",
-    bgGlass: "rgba(253, 249, 249, 0.92)",
-    bubbleUser: "linear-gradient(135deg, #a65752, #bb6660)",
-    bubbleBot: "rgba(219, 125, 118, 0.07)",
-    bubbleBotText: "#3a3131",
-    headerGradient: "linear-gradient(135deg, #b25e59, #de8079)",
-    particleColors: ["#a45a55", "#ce766f", "#ee968e", "#ffc0ba"],
+    name: "樱花粉",
+    primary: "#ec4899",
+    primaryDark: "#db2777",
+    accent: "#f472b6",
+    bgGlass: "rgba(255, 241, 248, 0.92)",
+    bubbleUser: "linear-gradient(135deg, #ec4899, #f472b6)",
+    bubbleBot: "rgba(236, 72, 153, 0.08)",
+    bubbleBotText: "#5c2d4a",
+    headerGradient: "linear-gradient(135deg, #ec4899, #a855f7)",
+    particleColors: ["#ec4899", "#f472b6", "#f9a8d4", "#fbcfe8"],
   },
   aurora: {
     id: "aurora",
-    name: "流光",
-    primary: "#9491e1",
-    primaryDark: "#6d6ba5",
-    accent: "#bbbafa",
-    bgGlass: "rgba(249, 250, 251, 0.9)",
-    bubbleUser: "linear-gradient(135deg, #6c68ac, #7b77c1)",
-    bubbleBot: "rgba(148, 145, 225, 0.07)",
-    bubbleBotText: "#2f353b",
-    headerGradient: "linear-gradient(135deg, #7470b9, #9793e4)",
-    particleColors: ["#6d6aa9", "#8b88d4", "#aaa7f3", "#ceceff"],
+    name: "流光变色",
+    primary: "#ff6b9d",
+    primaryDark: "#d9467a",
+    accent: "#38bdf8",
+    bgGlass: "rgba(248, 252, 255, 0.9)",
+    bubbleUser: "linear-gradient(135deg, #ff6b9d, #38bdf8)",
+    bubbleBot: "rgba(56, 189, 248, 0.1)",
+    bubbleBotText: "#334155",
+    headerGradient: "linear-gradient(135deg, #ff6b9d, #f59e0b, #38bdf8, #8b5cf6)",
+    particleColors: ["#ff6b9d", "#f59e0b", "#45d483", "#38bdf8", "#8b5cf6"],
     animated: true,
-    cycleColors: ["#7e93a8", "#a8b8a8", "#c2b6a4", "#97c8ca", "#b6b0c2"],
+    cycleColors: ["#ff6b9d", "#f59e0b", "#45d483", "#38bdf8", "#8b5cf6"],
   },
 };
 
@@ -271,7 +194,7 @@ function mixHex(from: string, to: string, amount: number) {
 }
 
 function colorAt(colors: string[], phase: number) {
-  if (colors.length === 0) return "#609497";
+  if (colors.length === 0) return "#ff6b6b";
   const wrapped = ((phase % 1) + 1) % 1;
   const scaled = wrapped * colors.length;
   const index = Math.floor(scaled);
@@ -391,43 +314,6 @@ export const usePetStore = defineStore("pet", () => {
     root.style.setProperty("--pet-bubble-bot-text", t.bubbleBotText);
     root.style.setProperty("--pet-header-gradient", t.headerGradient);
     root.style.setProperty("--pet-font-color", fontColor.value || t.bubbleBotText);
-
-    /*
-     * 控制台配色也要跟着皮肤走。
-     *
-     * 之前 `--dash-accent-rgb` 是写死青瓷的，而 dashboard.css 里有 141 处用它，
-     * 于是切皮肤只有按钮变了、侧栏/卡片/选中态纹丝不动——看起来就是「换皮肤没反应」。
-     * 现在整套纸面色阶都从主题主色派生，切换时整个控制台一起换色调。
-     */
-    const tone = themeToneScale(t.primary, t.primaryDark);
-    const accentScale = hexToRgb(t.primary);
-    root.style.setProperty("--dash-accent", tone.accent);
-    root.style.setProperty("--dash-accent-strong", tone.accentStrong);
-    /*
-     * 压在 accent 亮色块上的文字色。
-     * accent 是 L≈0.66 的亮色，白字只有 3:1；用本主题的深墨色则有 7:1。
-     * 这是"既亮又能读"的关键，不是把主色压暗。
-     */
-    root.style.setProperty("--dash-on-accent", tone.onAccent);
-    // 小字用的深主色：亮主色当文字只有 2.7:1，读不清
-    root.style.setProperty("--dash-accent-text", tone.accentText);
-    root.style.setProperty("--dash-accent-rgb", `${accentScale.r}, ${accentScale.g}, ${accentScale.b}`);
-    const strongRgb = hexToRgb(t.primaryDark);
-    root.style.setProperty("--dash-accent-strong-rgb", `${strongRgb.r}, ${strongRgb.g}, ${strongRgb.b}`);
-
-    root.style.setProperty("--paper-tint-50", tone.tint50);
-    root.style.setProperty("--paper-tint-100", tone.tint100);
-    root.style.setProperty("--paper-tint-150", tone.tint150);
-    root.style.setProperty("--paper-tint-200", tone.tint200);
-    root.style.setProperty("--paper-tint-300", tone.tint300);
-    const tint50 = hexToRgb(tone.tint50);
-    root.style.setProperty("--paper-tint-50-rgb", `${tint50.r}, ${tint50.g}, ${tint50.b}`);
-    const tint150 = hexToRgb(tone.tint150);
-    const tint200 = hexToRgb(tone.tint200);
-    const tint300 = hexToRgb(tone.tint300);
-    root.style.setProperty("--paper-tint-150-rgb", `${tint150.r}, ${tint150.g}, ${tint150.b}`);
-    root.style.setProperty("--paper-tint-200-rgb", `${tint200.r}, ${tint200.g}, ${tint200.b}`);
-    root.style.setProperty("--paper-tint-300-rgb", `${tint300.r}, ${tint300.g}, ${tint300.b}`);
   }
 
   function syncThemeTimer() {

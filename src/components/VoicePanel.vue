@@ -324,11 +324,11 @@ onMounted(async () => {
         const amp = isActive ? 1 : isOutput ? 0.72 : isBusy ? 0.46 : 0.18;
 
         const accent = isActive
-          ? { a: "#6f8f74", b: "#79b1b3", soft: "rgba(49, 212, 137, 0.18)" }
+          ? { a: "#31d489", b: "#51c7ff", soft: "rgba(49, 212, 137, 0.18)" }
           : isOutput
-            ? { a: "#7b849f", b: "#8aa6b8", soft: "rgba(124, 108, 242, 0.17)" }
+            ? { a: "#7c6cf2", b: "#52c3ff", soft: "rgba(124, 108, 242, 0.17)" }
             : isBusy
-              ? { a: "#cf9e89", b: "#bb8166", soft: "rgba(255, 177, 92, 0.16)" }
+              ? { a: "#ffb15c", b: "#ff6f6f", soft: "rgba(255, 177, 92, 0.16)" }
               : { a: "#7b8ca5", b: "#c5d5e8", soft: "rgba(123, 140, 165, 0.12)" };
 
         const bg = ctx.createLinearGradient(0, 0, W, H);
@@ -673,7 +673,7 @@ onBeforeUnmount(() => {
   padding: 3px 8px;
   border-radius: 4px;
   background: rgba(56, 189, 248, 0.12);
-  color: #79b1b3;
+  color: #7dd3fc;
   border: 1px solid rgba(56, 189, 248, 0.15);
   text-shadow: 0 0 4px rgba(56, 189, 248, 0.4);
 }
@@ -687,23 +687,23 @@ onBeforeUnmount(() => {
 }
 
 .status-indicator.listening {
-  background: #8aa98f;
+  background: #4ade80;
   box-shadow: 0 0 8px rgba(74, 222, 128, 0.8);
 }
 
 .status-indicator.speaking {
-  background: #79b1b3;
+  background: #38bdf8;
   box-shadow: 0 0 8px rgba(56, 189, 248, 0.8);
 }
 
 .status-indicator.error {
-  background: #a97f92;
-  box-shadow: 0 0 6px rgba(169, 127, 146, 0.6);
+  background: #fb7185;
+  box-shadow: 0 0 6px rgba(251, 113, 133, 0.6);
 }
 
 .status-text {
   font-size: 12px;
-  color: #adb2bb;
+  color: #94a3b8;
 }
 
 .close-btn {
@@ -762,20 +762,20 @@ onBeforeUnmount(() => {
   justify-content: center;
   background: rgba(15, 23, 42, 0.45);
   border: 1px solid rgba(255, 255, 255, 0.08);
-  color: #adb2bb;
+  color: #94a3b8;
   backdrop-filter: blur(4px);
   z-index: 5;
   transition: all 0.3s;
 }
 
 .core-overlay-icon.listening {
-  color: #8aa98f;
+  color: #4ade80;
   border-color: rgba(74, 222, 128, 0.35);
   box-shadow: 0 0 16px rgba(74, 222, 128, 0.15);
 }
 
 .core-overlay-icon.speaking {
-  color: #8aa6b8;
+  color: #a78bfa;
   border-color: rgba(167, 139, 250, 0.35);
   box-shadow: 0 0 16px rgba(167, 139, 250, 0.15);
 }
@@ -820,7 +820,7 @@ onBeforeUnmount(() => {
 
 .live-caption {
   font-size: 11px;
-  color: #79b1b3;
+  color: #7dd3fc;
   text-align: center;
   padding: 0 4px;
 }
@@ -854,7 +854,7 @@ onBeforeUnmount(() => {
 .action-btn.primary {
   flex: 1;
   color: #0f172a;
-  background: linear-gradient(135deg, #79b1b3, #8aa6b8);
+  background: linear-gradient(135deg, #38bdf8, #a78bfa);
 }
 
 .action-btn.primary.mic {
@@ -862,12 +862,12 @@ onBeforeUnmount(() => {
 }
 
 .action-btn.primary.mic.recording {
-  background: linear-gradient(135deg, #8aa98f, #97c8ca);
+  background: linear-gradient(135deg, #4ade80, #22d3ee);
 }
 
 .action-btn.secondary {
   width: 60px;
-  color: #adb2bb;
+  color: #94a3b8;
   background: rgba(15, 23, 42, 0.45);
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
@@ -895,9 +895,9 @@ onBeforeUnmount(() => {
   padding: 20px 18px 16px;
   color: #223047;
   background:
-    url("../assets/art/paper-grain-cool.webp"),
-    radial-gradient(circle at 18% 0%, rgba(96, 148, 151, 0.22), transparent 34%),
-    radial-gradient(circle at 88% 10%, rgba(134, 168, 138, 0.18), transparent 30%),
+    url("../assets/art/paper-grain.webp"),
+    radial-gradient(circle at 18% 0%, rgba(102, 200, 255, 0.22), transparent 34%),
+    radial-gradient(circle at 88% 10%, rgba(142, 230, 168, 0.18), transparent 30%),
     linear-gradient(155deg, rgba(255, 255, 255, 0.90), rgba(242, 250, 255, 0.82));
   background-size: 420px 420px, auto, auto, auto;
   border: 1px solid rgba(33, 48, 74, 0.12);
@@ -916,7 +916,7 @@ onBeforeUnmount(() => {
 
 .panel-glow {
   background:
-    radial-gradient(circle at 50% 18%, rgba(96, 148, 151, 0.16), transparent 34%),
+    radial-gradient(circle at 50% 18%, rgba(102, 200, 255, 0.16), transparent 34%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.12), transparent 42%);
   opacity: 0.84;
 }
@@ -925,8 +925,8 @@ onBeforeUnmount(() => {
 .voice-panel.speaking .panel-glow,
 .voice-panel.generating .panel-glow {
   background:
-    radial-gradient(circle at 50% 18%, rgba(134, 168, 138, 0.18), transparent 34%),
-    radial-gradient(circle at 80% 0%, rgba(96, 148, 151, 0.16), transparent 30%);
+    radial-gradient(circle at 50% 18%, rgba(142, 230, 168, 0.18), transparent 34%),
+    radial-gradient(circle at 80% 0%, rgba(102, 200, 255, 0.16), transparent 30%);
 }
 
 .voice-header {
@@ -940,10 +940,10 @@ onBeforeUnmount(() => {
 }
 
 .badge {
-  border-color: rgba(96, 148, 151, 0.22);
+  border-color: rgba(102, 200, 255, 0.22);
   border-radius: 999px;
-  background: rgba(96, 148, 151, 0.12);
-  color: #4a7577;
+  background: rgba(102, 200, 255, 0.12);
+  color: #24749d;
   text-shadow: none;
 }
 
@@ -965,9 +965,9 @@ onBeforeUnmount(() => {
 }
 
 .close-btn:hover {
-  border-color: rgba(159, 104, 79, 0.28);
+  border-color: rgba(239, 68, 68, 0.28);
   background: #ffffff;
-  color: #7b4e3a;
+  color: #dc2626;
 }
 
 .close-btn:active {
@@ -1002,13 +1002,13 @@ onBeforeUnmount(() => {
 }
 
 .core-overlay-icon.listening {
-  color: #57735c;
+  color: #168650;
   border-color: rgba(22, 134, 80, 0.24);
   box-shadow: 0 0 0 5px rgba(22, 134, 80, 0.08), 0 8px 18px rgba(33, 48, 74, 0.08);
 }
 
 .core-overlay-icon.speaking {
-  color: #5b6480;
+  color: #6d5bd0;
   border-color: rgba(109, 91, 208, 0.22);
   box-shadow: 0 0 0 5px rgba(109, 91, 208, 0.08), 0 8px 18px rgba(33, 48, 74, 0.08);
 }
@@ -1035,10 +1035,10 @@ onBeforeUnmount(() => {
 }
 
 .transcript:focus {
-  border-color: rgba(96, 148, 151, 0.42);
+  border-color: rgba(102, 200, 255, 0.42);
   background: #ffffff;
   box-shadow:
-    0 0 0 4px rgba(96, 148, 151, 0.16),
+    0 0 0 4px rgba(102, 200, 255, 0.16),
     inset 0 1px 0 rgba(255, 255, 255, 0.78);
 }
 
@@ -1048,12 +1048,12 @@ onBeforeUnmount(() => {
 
 .live-caption {
   min-height: 17px;
-  color: #4a7577;
+  color: #24749d;
   font-weight: 600;
 }
 
 .live-caption.error {
-  color: #7b4e3a;
+  color: #dc2626;
 }
 
 .actions {
@@ -1078,7 +1078,7 @@ onBeforeUnmount(() => {
 .action-btn:focus-visible,
 .close-btn:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 4px rgba(96, 148, 151, 0.18), 0 8px 18px rgba(33, 48, 74, 0.08);
+  box-shadow: 0 0 0 4px rgba(102, 200, 255, 0.18), 0 8px 18px rgba(33, 48, 74, 0.08);
 }
 
 .action-btn:active:not(:disabled) {
@@ -1099,7 +1099,7 @@ onBeforeUnmount(() => {
 
 .action-btn.primary.mic.recording {
   color: #052a1a;
-  background: linear-gradient(135deg, #97c8ca, #79b1b3);
+  background: linear-gradient(135deg, #8ee6a8, #66c8ff);
   text-shadow: none;
 }
 
@@ -1145,10 +1145,10 @@ onBeforeUnmount(() => {
   padding: 18px;
   gap: 12px;
   background:
-    url("../assets/art/paper-grain-cool.webp"),
-    radial-gradient(circle at 18% 0%, rgba(96, 148, 151, 0.18), transparent 34%),
-    radial-gradient(circle at 88% 6%, rgba(134, 168, 138, 0.14), transparent 31%),
-    linear-gradient(155deg, rgba(255, 255, 255, 0.94), rgba(229, 245, 245, 0.86));
+    url("../assets/art/paper-grain.webp"),
+    radial-gradient(circle at 18% 0%, rgba(102, 200, 255, 0.18), transparent 34%),
+    radial-gradient(circle at 88% 6%, rgba(142, 230, 168, 0.14), transparent 31%),
+    linear-gradient(155deg, rgba(255, 255, 255, 0.94), rgba(240, 248, 255, 0.86));
   background-size: 420px 420px, auto, auto, auto;
 }
 
@@ -1255,7 +1255,7 @@ onBeforeUnmount(() => {
 }
 
 .voice-copy-card.error {
-  border-color: rgba(123, 78, 58, 0.20);
+  border-color: rgba(220, 38, 38, 0.20);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(255, 244, 244, 0.56));
 }
@@ -1296,7 +1296,7 @@ onBeforeUnmount(() => {
 }
 
 .voice-copy-card.error .voice-copy-text {
-  color: #7b4e3a;
+  color: #b91c1c;
 }
 
 .actions {
@@ -1321,10 +1321,10 @@ onBeforeUnmount(() => {
   gap: 10px;
   isolation: isolate;
   background:
-    url("../assets/art/paper-grain-cool.webp"),
+    url("../assets/art/paper-grain.webp"),
     radial-gradient(circle at 50% 32%, rgba(255, 255, 255, 0.72), transparent 26%),
-    radial-gradient(circle at 24% 18%, rgba(96, 148, 151, 0.22), transparent 34%),
-    radial-gradient(circle at 88% 18%, rgba(134, 168, 138, 0.16), transparent 32%),
+    radial-gradient(circle at 24% 18%, rgba(102, 200, 255, 0.22), transparent 34%),
+    radial-gradient(circle at 88% 18%, rgba(142, 230, 168, 0.16), transparent 32%),
     linear-gradient(150deg, #fbfdff 0%, #edf8ff 48%, #fff9ef 100%);
   background-size: 420px 420px, auto, auto, auto, auto;
 }
@@ -1352,7 +1352,7 @@ onBeforeUnmount(() => {
   border-radius: 28px;
   background:
     radial-gradient(ellipse at center, rgba(255, 255, 255, 0.54), transparent 44%),
-    radial-gradient(ellipse at center, rgba(96, 148, 151, 0.12), transparent 62%);
+    radial-gradient(ellipse at center, rgba(102, 200, 255, 0.12), transparent 62%);
   filter: blur(2px);
 }
 
@@ -1428,7 +1428,7 @@ onBeforeUnmount(() => {
 }
 
 .voice-copy-card.error {
-  border-color: rgba(123, 78, 58, 0.18);
+  border-color: rgba(220, 38, 38, 0.18);
 }
 
 .actions {

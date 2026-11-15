@@ -23,17 +23,6 @@ import {
   setActiveCustomPixelPetAsset,
 } from "../services/customPixelPetAssets";
 import {
-  SELECTABLE_CHAT_BACKGROUNDS,
-  applyChatBackground,
-  applyCustomChatBackground,
-  chatBackgroundPreset,
-  clearCustomChatBackground,
-  normalizeChatBackgroundId,
-  readChatBackground,
-  readCustomChatBackground,
-  type ChatBackgroundId,
-} from "../services/chatBackgrounds";
-import {
   DEFAULT_VOICE_SETTINGS,
   getAvailableVoices,
   parseVoiceSettings,
@@ -122,12 +111,9 @@ const BG_KEY = "ai-desktop-pet.chat-bg";
 const CUSTOM_BG_KEY = "ai-desktop-pet.chat-bg-custom";
 const VOICE_SETTINGS_KEY = "voice_settings";
 const TTS_SETTINGS_KEY = "tts_settings";
-const chatBg = ref<ChatBackgroundId>(readChatBackground());
-const customBgImage = ref(readCustomChatBackground());
+const chatBg = ref(localStorage.getItem(BG_KEY) || "none");
+const customBgImage = ref(localStorage.getItem(CUSTOM_BG_KEY) || "");
 const bgInputRef = ref<HTMLInputElement | null>(null);
-/** 预设清单与「个性外观」页共用，避免两处各写一份图标和名字 */
-const chatBackgroundOptions = SELECTABLE_CHAT_BACKGROUNDS;
-const currentChatBgPreset = computed(() => chatBackgroundPreset(chatBg.value));
 const voiceSettings = ref<VoiceSettings>({ ...DEFAULT_VOICE_SETTINGS });
 const availableVoices = ref<SpeechSynthesisVoice[]>([]);
 const ttsSettings = ref<TtsSettings>({ ...DEFAULT_TTS_SETTINGS });
@@ -872,9 +858,9 @@ function readAvatarFile(file: File): Promise<string> {
   });
 }
 
-function selectBg(bg: ChatBackgroundId) {
+function selectBg(bg: string) {
   chatBg.value = bg;
-  applyChatBackground(bg);
+  localStorage.setItem(BG_KEY, bg);
 }
 
 function chooseBgImage() {
@@ -890,25 +876,17 @@ function onBgImageSelected(event: Event) {
   reader.onload = () => {
     const url = String(reader.result || "");
     customBgImage.value = url;
-    applyCustomChatBackground(url);
+    localStorage.setItem(CUSTOM_BG_KEY, url);
     chatBg.value = "custom";
+    localStorage.setItem(BG_KEY, "custom");
   };
   reader.readAsDataURL(file);
 }
 
 function clearCustomBg() {
   customBgImage.value = "";
-  clearCustomChatBackground();
-  chatBg.value = "none";
-}
-
-/** 外部（个性外观页 / 对话页快捷条）改了背景时同步过来 */
-function onChatBgStorageChange(event: StorageEvent) {
-  if (event.key === BG_KEY) {
-    chatBg.value = normalizeChatBackgroundId(event.newValue);
-  } else if (event.key === CUSTOM_BG_KEY) {
-    customBgImage.value = event.newValue || "";
-  }
+  localStorage.removeItem(CUSTOM_BG_KEY);
+  selectBg("none");
 }
 
 async function selectPersonality(personality: string) {
@@ -979,22 +957,21 @@ async function updateVoiceSettings(patch: Partial<VoiceSettings>) {
 }
 
 function cpuBarColor(cpu: number): string {
-  if (cpu > 80) return "#9f684f";
-  if (cpu > 50) return "#bb8166";
-  return "var(--pet-primary, #609497)";
+  if (cpu > 80) return "#ef4444";
+  if (cpu > 50) return "#f59e0b";
+  return "var(--pet-primary, #ff6b6b)";
 }
 
 function memBarColor(mem: number): string {
-  if (mem > 85) return "#9f684f";
-  if (mem > 60) return "#bb8166";
-  return "var(--pet-accent, #97c8ca)";
+  if (mem > 85) return "#ef4444";
+  if (mem > 60) return "#f59e0b";
+  return "var(--pet-accent, #ffa07a)";
 }
 
 const activeTab = ref("appearance");
 let unlistenSwitchTab: UnlistenFn | null = null;
 
 onMounted(async () => {
-  window.addEventListener("storage", onChatBgStorageChange);
   loadSystemInfo();
   loadCurrentModel();
   loadCurrentSkin();
@@ -1019,7 +996,6 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
-  window.removeEventListener("storage", onChatBgStorageChange);
   unlistenSwitchTab?.();
 });
 </script>
@@ -1130,20 +1106,23 @@ onUnmounted(() => {
 
         <!-- 对话背景 -->
         <div class="section">
-          <h3>&#x1F5BC;&#xFE0F; 对话背景</h3>
-          <p class="setting-desc bg-section-desc">选中的背景会立刻出现在对话互动页的消息区背后</p>
+          <h3>对话背景</h3>
           <div class="bg-grid">
-            <button
-              v-for="preset in chatBackgroundOptions"
-              :key="preset.id"
-              :class="['bg-opt', { active: chatBg === preset.id }]"
-              :title="preset.description"
-              @click="selectBg(preset.id)"
-            >
-              <div class="bg-opt-preview" :style="{ background: preset.swatch }">
-                <span>{{ preset.icon }}</span>
-              </div>
-              <span>{{ preset.name }}</span>
+            <button :class="['bg-opt', { active: chatBg === 'none' }]" @click="selectBg('none')">
+              <div class="bg-opt-preview bg-prev-none"><AppIcon name="bg-none" :size="16" /></div>
+              <span>无</span>
+            </button>
+            <button :class="['bg-opt', { active: chatBg === 'cute' }]" @click="selectBg('cute')">
+              <div class="bg-opt-preview bg-prev-cute"><AppIcon name="bg-cute" :size="16" /></div>
+              <span>可爱</span>
+            </button>
+            <button :class="['bg-opt', { active: chatBg === 'scifi' }]" @click="selectBg('scifi')">
+              <div class="bg-opt-preview bg-prev-scifi"><AppIcon name="bg-scifi" :size="16" /></div>
+              <span>科幻</span>
+            </button>
+            <button :class="['bg-opt', { active: chatBg === 'minimal' }]" @click="selectBg('minimal')">
+              <div class="bg-opt-preview bg-prev-minimal"><AppIcon name="bg-minimal" :size="16" /></div>
+              <span>简洁</span>
             </button>
             <button :class="['bg-opt', { active: chatBg === 'custom' }]" @click="chooseBgImage">
               <div class="bg-opt-preview bg-prev-custom">
@@ -1157,7 +1136,6 @@ onUnmounted(() => {
               <span>清除</span>
             </button>
           </div>
-          <p class="setting-desc bg-current-desc">当前：{{ currentChatBgPreset.name }} · {{ currentChatBgPreset.description }}</p>
           <input ref="bgInputRef" class="avatar-input" type="file" accept="image/*" @change="onBgImageSelected" />
         </div>
 
@@ -2016,7 +1994,7 @@ onUnmounted(() => {
 
 .header-decor {
   height: 3px;
-  background: var(--pet-header-gradient, linear-gradient(135deg, #609497, #79b1b3));
+  background: var(--pet-header-gradient, linear-gradient(135deg, #ff6b6b, #ff8e53));
   flex-shrink: 0;
 }
 
@@ -2025,7 +2003,7 @@ onUnmounted(() => {
   justify-content: space-between;
   align-items: center;
   padding: 11px 14px;
-  background: var(--pet-header-gradient, linear-gradient(135deg, #609497, #79b1b3));
+  background: var(--pet-header-gradient, linear-gradient(135deg, #ff6b6b, #ff8e53));
   background-size: 240% 240%;
   color: white;
   font-size: 14px;
@@ -2116,7 +2094,7 @@ onUnmounted(() => {
 
 .hint {
   font-size: 11px;
-  color: #adb2bb;
+  color: #94a3b8;
   margin-bottom: 8px;
   line-height: 1.5;
 }
@@ -2139,7 +2117,7 @@ onUnmounted(() => {
 
 .settings-input:focus,
 .settings-textarea:focus {
-  border-color: var(--pet-primary, #609497);
+  border-color: var(--pet-primary, #ff6b6b);
   box-shadow: 0 0 0 3px rgba(var(--pet-primary-rgb, 255, 107, 107), 0.15);
 }
 
@@ -2159,17 +2137,17 @@ onUnmounted(() => {
 }
 
 .action-row .action-btn.primary {
-  background: var(--pet-primary, #609497);
+  background: var(--pet-primary, #ff6b6b);
 }
 
 .muted-hint {
   font-size: 11px;
-  color: #adb2bb;
+  color: #94a3b8;
 }
 
 .empty-hint {
   font-size: 12px;
-  color: #adb2bb;
+  color: #94a3b8;
   padding: 10px 0;
 }
 
@@ -2191,7 +2169,7 @@ onUnmounted(() => {
 }
 
 .skill-card.active {
-  border-color: var(--pet-primary, #609497);
+  border-color: var(--pet-primary, #ff6b6b);
   background: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.08);
 }
 
@@ -2211,7 +2189,7 @@ onUnmounted(() => {
 
 .skill-active-badge {
   font-size: 10px;
-  background: var(--pet-primary, #609497);
+  background: var(--pet-primary, #ff6b6b);
   color: white;
   padding: 1px 6px;
   border-radius: 6px;
@@ -2227,7 +2205,7 @@ onUnmounted(() => {
   display: flex;
   gap: 10px;
   font-size: 11px;
-  color: #adb2bb;
+  color: #94a3b8;
   margin-top: 4px;
 }
 
@@ -2285,20 +2263,20 @@ onUnmounted(() => {
 }
 
 .tool-row-name {
-  color: #adb2bb;
+  color: #94a3b8;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 10px;
 }
 
 .mini-action-btn.danger {
-  background: rgba(159, 104, 79, 0.12);
-  color: #7b4e3a;
+  background: rgba(239, 68, 68, 0.12);
+  color: #b91c1c;
 }
 
 .action-btn {
   width: 100%;
   padding: 8px;
-  background: var(--pet-primary, #609497);
+  background: var(--pet-primary, #ff6b6b);
   color: white;
   border: none;
   border-radius: 10px;
@@ -2309,7 +2287,7 @@ onUnmounted(() => {
 }
 
 .action-btn:hover {
-  background: var(--pet-primary-dark, #4a7577);
+  background: var(--pet-primary-dark, #e55a5a);
   transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
@@ -2321,12 +2299,12 @@ onUnmounted(() => {
 }
 
 .config-btn {
-  background: linear-gradient(135deg, #8aa6b8, #7b849f) !important;
+  background: linear-gradient(135deg, #a78bfa, #8b5cf6) !important;
   box-shadow: 0 8px 18px rgba(139, 92, 246, 0.22) !important;
 }
 
 .config-btn:hover {
-  background: linear-gradient(135deg, #7b849f, #5b6480) !important;
+  background: linear-gradient(135deg, #8b5cf6, #7c3aed) !important;
 }
 
 /* ===== 性格 / 职业 ===== */
@@ -2367,7 +2345,7 @@ onUnmounted(() => {
 }
 
 .option-item.active {
-  border-color: var(--pet-primary, #609497);
+  border-color: var(--pet-primary, #ff6b6b);
   background: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.08);
   box-shadow: 0 8px 18px rgba(var(--pet-primary-rgb, 255, 107, 107), 0.12);
 }
@@ -2381,11 +2359,11 @@ onUnmounted(() => {
 .option-desc {
   font-size: 10px;
   line-height: 1.35;
-  color: #adb2bb;
+  color: #94a3b8;
 }
 
 .option-item.active .option-name {
-  color: var(--pet-primary, #609497);
+  color: var(--pet-primary, #ff6b6b);
 }
 
 .voice-options {
@@ -2431,7 +2409,7 @@ onUnmounted(() => {
 .field-row small {
   font-size: 9px;
   line-height: 1.25;
-  color: #adb2bb;
+  color: #94a3b8;
   font-weight: 500;
 }
 
@@ -2471,12 +2449,12 @@ onUnmounted(() => {
 .mini-check input {
   width: 14px;
   height: 14px;
-  accent-color: var(--pet-primary, #609497);
+  accent-color: var(--pet-primary, #ff6b6b);
 }
 
 .voice-empty {
   padding: 6px 9px 2px;
-  color: #adb2bb;
+  color: #94a3b8;
   font-size: 10px;
   line-height: 1.4;
 }
@@ -2510,7 +2488,7 @@ onUnmounted(() => {
 
 .voice-error-msg {
   padding: 6px 9px 2px;
-  color: #9f684f;
+  color: #ef4444;
   font-size: 11px;
   line-height: 1.4;
 }
@@ -2518,13 +2496,13 @@ onUnmounted(() => {
 .switch-row small {
   font-size: 10px;
   line-height: 1.35;
-  color: #adb2bb;
+  color: #94a3b8;
 }
 
 .switch-row input[type="checkbox"] {
   width: 16px;
   height: 16px;
-  accent-color: var(--pet-primary, #609497);
+  accent-color: var(--pet-primary, #ff6b6b);
   flex-shrink: 0;
 }
 
@@ -2559,7 +2537,7 @@ onUnmounted(() => {
 
 .range-row input[type="range"] {
   width: 100%;
-  accent-color: var(--pet-primary, #609497);
+  accent-color: var(--pet-primary, #ff6b6b);
 }
 
 /* ===== 皮肤网格 ===== */
@@ -2598,7 +2576,7 @@ onUnmounted(() => {
 }
 
 .character-item.active {
-  border-color: var(--pet-primary, #609497);
+  border-color: var(--pet-primary, #ff6b6b);
   background: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.09);
 }
 
@@ -2620,7 +2598,7 @@ onUnmounted(() => {
   width: 42px;
   height: 42px;
   border-radius: 14px;
-  background: var(--pet-header-gradient, linear-gradient(135deg, #609497, #79b1b3));
+  background: var(--pet-header-gradient, linear-gradient(135deg, #ff6b6b, #ff8e53));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35);
   color: white;
   display: grid;
@@ -2637,14 +2615,14 @@ onUnmounted(() => {
 }
 
 .character-item small {
-  color: #adb2bb;
+  color: #94a3b8;
   font-size: 9px;
   line-height: 1.25;
   text-align: center;
 }
 
 .character-item.active span {
-  color: var(--pet-primary, #609497);
+  color: var(--pet-primary, #ff6b6b);
 }
 
 .skin-item {
@@ -2668,7 +2646,7 @@ onUnmounted(() => {
 }
 
 .skin-item.active {
-  border-color: var(--pet-primary, #609497);
+  border-color: var(--pet-primary, #ff6b6b);
   background: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.09);
 }
 
@@ -2710,12 +2688,12 @@ onUnmounted(() => {
 
 .skin-item small {
   font-size: 9px;
-  color: var(--pet-primary, #609497);
+  color: var(--pet-primary, #ff6b6b);
   line-height: 1;
 }
 
 .skin-item.active span {
-  color: var(--pet-primary, #609497);
+  color: var(--pet-primary, #ff6b6b);
   font-weight: 600;
 }
 
@@ -2744,7 +2722,7 @@ onUnmounted(() => {
 }
 
 .font-color-item.active {
-  border-color: var(--pet-primary, #609497);
+  border-color: var(--pet-primary, #ff6b6b);
   background: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.08);
 }
 
@@ -2767,7 +2745,7 @@ onUnmounted(() => {
 }
 
 .font-color-item.active span {
-  color: var(--pet-primary, #609497);
+  color: var(--pet-primary, #ff6b6b);
   font-weight: 600;
 }
 
@@ -2783,7 +2761,7 @@ onUnmounted(() => {
   width: 54px;
   height: 54px;
   border-radius: 50%;
-  background: var(--pet-header-gradient, linear-gradient(135deg, #609497, #79b1b3));
+  background: var(--pet-header-gradient, linear-gradient(135deg, #ff6b6b, #ff8e53));
   background-size: 180% 180%;
   box-shadow:
     0 8px 18px rgba(15, 23, 42, 0.14),
@@ -2827,7 +2805,7 @@ onUnmounted(() => {
 }
 
 .avatar-btn.primary {
-  background: var(--pet-primary, #609497);
+  background: var(--pet-primary, #ff6b6b);
   color: white;
   border-color: transparent;
 }
@@ -2885,18 +2863,18 @@ onUnmounted(() => {
 }
 
 .bg-opt.active {
-  border-color: var(--pet-primary, #609497);
+  border-color: var(--pet-primary, #ff6b6b);
   background: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.08);
 }
 
 .bg-opt.active span {
-  color: var(--pet-primary, #609497);
+  color: var(--pet-primary, #ff6b6b);
   font-weight: 600;
 }
 
 .bg-opt.danger:hover {
-  border-color: rgba(159, 104, 79, 0.3);
-  color: #9f684f;
+  border-color: rgba(239, 68, 68, 0.3);
+  color: #ef4444;
 }
 
 .bg-opt-preview {
@@ -2918,7 +2896,7 @@ onUnmounted(() => {
 
 .bg-prev-none {
   background: rgba(241, 245, 249, 0.8);
-  color: #adb2bb;
+  color: #94a3b8;
   font-size: 14px;
 }
 
@@ -2928,13 +2906,13 @@ onUnmounted(() => {
 
 .bg-prev-scifi {
   background: linear-gradient(135deg, #0f172a, #1e3a5f);
-  color: #79b1b3;
+  color: #38bdf8;
   box-shadow: inset 0 0 8px rgba(56, 189, 248, 0.3);
 }
 
 .bg-prev-minimal {
   background: #f1f5f9;
-  color: #adb2bb;
+  color: #94a3b8;
   background-image: radial-gradient(circle, #cbd5e1 1px, transparent 1px);
   background-size: 8px 8px;
 }
@@ -2948,31 +2926,6 @@ onUnmounted(() => {
   height: 100%;
   object-fit: cover;
   border-radius: 8px;
-}
-
-.bg-section-desc,
-.bg-current-desc {
-  margin: 0 0 8px;
-  color: #64748b;
-  font-size: 11px;
-  line-height: 1.5;
-}
-
-.bg-current-desc {
-  margin: 8px 0 0;
-  color: var(--pet-primary, #609497);
-  font-weight: 600;
-}
-
-.bg-opt-preview > span {
-  color: #fff;
-  font-size: 17px;
-  font-weight: 800;
-  text-shadow: 0 2px 8px rgba(6, 12, 26, 0.45);
-}
-
-.bg-opt.active .bg-opt-preview {
-  transform: scale(1.04);
 }
 
 .stat-value {
@@ -3039,7 +2992,7 @@ onUnmounted(() => {
 
 .settings-tabs .tab-btn.active {
   background: white;
-  color: var(--pet-primary, #609497);
+  color: var(--pet-primary, #ff6b6b);
   box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
 }
 
@@ -3072,10 +3025,10 @@ onUnmounted(() => {
 }
 
 .backend-btn.active {
-  background: var(--pet-primary, #609497);
+  background: var(--pet-primary, #ff6b6b);
   color: white;
   border-color: transparent;
-  box-shadow: 0 4px 12px rgba(187, 129, 102, 0.2);
+  box-shadow: 0 4px 12px rgba(255, 107, 107, 0.2);
 }
 
 .profile-toolbar {
@@ -3094,7 +3047,7 @@ onUnmounted(() => {
 
 .profile-toolbar-subtitle {
   margin-top: 2px;
-  color: #adb2bb;
+  color: #94a3b8;
   font-size: 10px;
   line-height: 1.35;
 }
@@ -3144,7 +3097,7 @@ onUnmounted(() => {
 
 .profile-meta {
   overflow: hidden;
-  color: #adb2bb;
+  color: #94a3b8;
   font-size: 10px;
   line-height: 1.35;
   text-overflow: ellipsis;
@@ -3199,7 +3152,7 @@ onUnmounted(() => {
 .mini-action-btn:hover:not(:disabled) {
   border-color: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.28);
   background: white;
-  color: var(--pet-primary, #609497);
+  color: var(--pet-primary, #ff6b6b);
   transform: translateY(-1px);
 }
 
@@ -3274,7 +3227,7 @@ onUnmounted(() => {
 .thinking-option.active {
   border-color: rgba(var(--pet-primary-rgb, 255, 107, 107), 0.32);
   background: white;
-  color: var(--pet-primary, #609497);
+  color: var(--pet-primary, #ff6b6b);
   box-shadow: 0 3px 10px rgba(var(--pet-primary-rgb, 255, 107, 107), 0.11);
 }
 
@@ -3311,9 +3264,9 @@ onUnmounted(() => {
 
 .form-group input:focus,
 .form-group select:focus {
-  border-color: var(--pet-primary, #609497);
+  border-color: var(--pet-primary, #ff6b6b);
   background: white;
-  box-shadow: 0 0 0 2px rgba(187, 129, 102, 0.12);
+  box-shadow: 0 0 0 2px rgba(255, 107, 107, 0.12);
 }
 
 .toggle-group {
@@ -3332,7 +3285,7 @@ onUnmounted(() => {
 .toggle-input {
   width: 16px;
   height: 16px;
-  accent-color: var(--pet-primary, #609497);
+  accent-color: var(--pet-primary, #ff6b6b);
   cursor: pointer;
 }
 
@@ -3383,7 +3336,7 @@ onUnmounted(() => {
 
 .deep-test-btn {
   background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(139, 92, 246, 0.1));
-  color: #5b6480;
+  color: #6366f1;
   box-shadow: none;
   border: 1px solid rgba(99, 102, 241, 0.2);
 }
@@ -3405,7 +3358,7 @@ onUnmounted(() => {
 }
 
 .compatibility-result.error {
-  border-color: rgba(159, 104, 79, 0.3);
+  border-color: rgba(239, 68, 68, 0.3);
 }
 
 .compatibility-result h4 {
@@ -3433,11 +3386,11 @@ onUnmounted(() => {
 }
 
 .pass {
-  color: #6f8f74;
+  color: #10b981;
 }
 
 .fail {
-  color: #9f684f;
+  color: #ef4444;
 }
 
 .content-preview {
@@ -3450,7 +3403,7 @@ onUnmounted(() => {
 }
 
 .recommendation {
-  color: #5b6480;
+  color: #6366f1;
   font-weight: 500;
 }
 
@@ -3459,7 +3412,7 @@ onUnmounted(() => {
   padding: 0;
   list-style: none;
   font-size: 11px;
-  color: #9f684f;
+  color: #ef4444;
 }
 
 .error-list li {
@@ -3511,14 +3464,14 @@ onUnmounted(() => {
 
 .test-result.success {
   background: rgba(34, 197, 94, 0.1);
-  color: #57735c;
+  color: #15803d;
   border: 1px solid rgba(34, 197, 94, 0.15);
 }
 
 .test-result.error {
-  background: rgba(159, 104, 79, 0.1);
-  color: #7b4e3a;
-  border: 1px solid rgba(159, 104, 79, 0.15);
+  background: rgba(239, 68, 68, 0.1);
+  color: #b91c1c;
+  border: 1px solid rgba(239, 68, 68, 0.15);
   word-break: break-all;
 }
 
@@ -3531,9 +3484,9 @@ onUnmounted(() => {
   border-color: rgba(33, 48, 74, 0.11);
   border-radius: 18px;
   background:
-    url("../assets/art/paper-grain-cool.webp"),
-    radial-gradient(circle at 8% 0%, rgba(151, 200, 202, 0.16), transparent 32%),
-    radial-gradient(circle at 88% 4%, rgba(96, 148, 151, 0.16), transparent 30%),
+    url("../assets/art/paper-grain.webp"),
+    radial-gradient(circle at 8% 0%, rgba(255, 216, 92, 0.16), transparent 32%),
+    radial-gradient(circle at 88% 4%, rgba(102, 200, 255, 0.16), transparent 30%),
     linear-gradient(155deg, rgba(255, 255, 255, 0.94), rgba(245, 251, 255, 0.82));
   background-size: 420px 420px, auto, auto, auto;
   box-shadow:

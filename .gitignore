@@ -1,4 +1,4 @@
-﻿node_modules/
+node_modules/
 dist/
 .npm-cache/
 .md-check/
@@ -12,14 +12,7 @@ __pycache__/
 .DS_Store
 *.exe
 nul
-# resources/ 里放的是打包用的 node/ + CLI，体积大不进仓库；
-# 但 README.txt 这个占位文件必须进，否则 tauri.conf.json 的
-# '../resources/**/*' glob 匹配不到任何文件，全新 clone 直接构建失败。
-#
-# 注意必须写 resources/* 而不是 resources/：
-# 如果整个目录被排除，git 不会进去检查子文件的 ! 例外，例外规则会失效。
-resources/*
-!resources/README.txt
+resources/
 .qoder/
 .dsh-selftest/
 .cli-selftest/
