@@ -182,8 +182,20 @@ function clearHover() {
 }
 function onHandlePointerDown(event: PointerEvent) {
   if (event.button !== 0 || creating.value) return;
+  /*
+   * 拖动可以从窗格任意位置发起（不只是标题栏），
+   * 但排除这些会自己消费指针事件的元素：
+   *   · 按钮 / 下拉 / 输入框 / 链接
+   *   · 消息区（要能选中文字、拖滚动条）
+   */
   const target = event.target as HTMLElement | null;
-  if (target?.closest("button, select, input, a, option")) return;
+  if (
+    target?.closest(
+      "button, select, input, textarea, a, option, .session-pane-messages, .session-pane-bubble, .md-body",
+    )
+  ) {
+    return;
+  }
   dragPointer = { startX: event.clientX, startY: event.clientY, active: false };
   window.addEventListener("pointermove", onPointerMove);
   window.addEventListener("pointerup", onPointerUp, { once: true });
@@ -292,12 +304,13 @@ function rendered(content: string) {
     class="session-pane"
     :class="{ dragging, 'file-over': fileOver }"
     :data-pane-id="paneId"
+    @pointerdown="onHandlePointerDown"
   >
     <div v-if="fileOver" class="session-pane-file-drop" aria-hidden="true">
       <Paperclip :size="16" />
       <span>{{ sessionId ? '松开添加到此会话' : '先选择会话，再添加文件' }}</span>
     </div>
-    <header class="session-pane-head" title="按住拖动，与其它窗格换位" @pointerdown="onHandlePointerDown">
+    <header class="session-pane-head" title="按住拖动，与其它窗格换位">
       <GripHorizontal class="session-pane-grip" :size="14" aria-hidden="true" />
       <span class="session-pane-avatar" aria-hidden="true">
         <AppIcon v-if="!session || session.slot === 'main'" name="brand-pet" :size="16" />
@@ -530,11 +543,32 @@ function rendered(content: string) {
 
 <style scoped>
 .session-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; background: rgba(255,255,255,.64); border: 1px solid rgba(255,255,255,.62); border-radius: 14px; box-shadow: 0 2px 10px rgba(60,50,40,.05); transition: box-shadow .15s, opacity .15s; }
-.session-pane.dragging { opacity: .55; box-shadow: none; }
-.session-pane.drag-over { outline: 2px solid var(--pet-primary, #ff6b6b); outline-offset: -2px; box-shadow: 0 0 0 4px rgba(255,107,107,.12); }
+/* 拖动中被"拎起来"：缩小一点、变淡、投影加深 */
+.session-pane.dragging {
+  opacity: .62;
+  transform: scale(0.985);
+  transition: transform .12s, opacity .12s;
+}
+/* 拖到目标窗格上：柔和高亮（原来用红色 outline 太刺眼） */
+.session-pane.drag-over {
+  outline: 2px solid rgba(120, 160, 190, 0.65);
+  outline-offset: -2px;
+  box-shadow: 0 0 0 5px rgba(120, 160, 190, 0.16);
+}
 .session-pane-head { display: grid; grid-template-columns: 14px 28px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 9px 12px; border-bottom: 1px solid rgba(120,110,100,.1); flex-shrink: 0; cursor: grab; user-select: none; touch-action: none; background: rgba(255,255,255,.5); }
 .session-pane-head:active { cursor: grabbing; }
-.session-pane-grip { color: #b6aca1; flex-shrink: 0; }
+/* 抓手：默认淡，hover 才明显 —— 提示"这里能拖" */
+.session-pane-grip {
+  color: #b6aca1;
+  flex-shrink: 0;
+  opacity: 0.5;
+  transition: opacity .15s, color .15s;
+  cursor: grab;
+}
+.session-pane:hover .session-pane-grip {
+  opacity: 1;
+  color: #8e8378;
+}
 .session-pane-avatar { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; font-size: 16px; background: rgba(var(--pet-primary-rgb, 255,107,107), .1); border-radius: 9px; flex-shrink: 0; }
 .session-pane-title { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 1px; }
 .session-pane-title strong { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

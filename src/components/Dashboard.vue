@@ -354,23 +354,40 @@ function assignWorkspacePane(paneId: string, sessionId: string) {
   saveWorkspacePanes(next);
 }
 function closeWorkspacePane(paneId: string) {
-  // 只移除视图：不停止回合、不删除会话。剩一个窗格时回到单窗格视图。
+  /*
+   * 关闭一个窗格 = 移除该视图（不停止回合、不删除会话）。
+   *
+   * 注意这里的判断依据是**窗格总数**，不是「有绑定会话的窗格数」。
+   *
+   * 之前用 next.filter(Boolean).length <= 1 判断，结果是：
+   * 四窗格里只绑了 2 个会话时，关掉一个剩下 1 个绑定 -> 直接退回单窗格，
+   * 用户还有 2 个空窗格可用却被打回单窗格。这是 bug。
+   *
+   * 现在的行为：
+   *   · 4 格 -> 3 格（布局降级到 three）
+   *   · 3 格 -> 2 格（降级到 two）
+   *   · 2 格 -> 1 格（才退回 single）
+   */
   const index = workspacePaneIds.value.indexOf(paneId);
   if (index < 0 || workspaceLayout.value === "single") return;
+
   const next = workspacePanes.value.filter((_, i) => i !== index);
-  if (next.filter(Boolean).length <= 1) {
+
+  if (next.length <= 1) {
+    // 只剩一格：退回单窗格视图
     const only = next.find(Boolean) || "";
     workspacePanes.value = [only];
     setWorkspaceLayout("single");
     if (only) void openSessionInSingle(only);
-  } else {
-    // 数组变短后必须同步降级布局，否则窗格数与绑定数错位、会话整体左移。
-    const layout = WORKSPACE_LAYOUTS.find((item) => item.panes === next.length)?.id ?? "two";
-    workspaceLayout.value = layout;
-    saveWorkspaceLayout(layout);
-    workspacePanes.value = next;
-    saveWorkspacePanes(next);
+    return;
   }
+
+  // 还有多格：降级到最接近的布局，保留其余窗格的绑定
+  const layout = WORKSPACE_LAYOUTS.find((item) => item.panes === next.length)?.id ?? "two";
+  workspaceLayout.value = layout;
+  saveWorkspaceLayout(layout);
+  workspacePanes.value = next;
+  saveWorkspacePanes(next);
 }
 function moveWorkspacePane(targetPaneId: string, sourcePaneId: string) {
   const target = workspacePaneIds.value.indexOf(targetPaneId);
