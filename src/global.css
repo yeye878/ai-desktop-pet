@@ -33,9 +33,9 @@ h3.md-h, h4.md-h, h5.md-h, h6.md-h { font-size: 1em; }
 .md-quote {
   margin: 7px 0;
   padding: 4px 0 4px 10px;
-  border-left: 3px solid rgba(33, 48, 74, 0.18);
+  border-left: 3px solid rgba(52, 56, 63, 0.18);
   border-radius: 2px 8px 8px 2px;
-  background: rgba(33, 48, 74, 0.045);
+  background: rgba(52, 56, 63, 0.045);
   color: inherit;
   opacity: 0.92;
 }
@@ -44,14 +44,14 @@ h3.md-h, h4.md-h, h5.md-h, h6.md-h { font-size: 1em; }
   border-radius: 5px;
   font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
   font-size: 0.92em;
-  background: rgba(33, 48, 74, 0.08);
+  background: rgba(52, 56, 63, 0.08);
 }
 .md-pre {
   margin: 7px 0;
   padding: 8px 10px;
   border-radius: 10px;
-  background: rgba(21, 32, 51, 0.055);
-  border: 1px solid rgba(33, 48, 74, 0.08);
+  background: rgba(52, 56, 63, 0.055);
+  border: 1px solid rgba(52, 56, 63, 0.08);
   overflow-x: auto;
   white-space: pre;
   font-size: 0.92em;
@@ -61,7 +61,7 @@ h3.md-h, h4.md-h, h5.md-h, h6.md-h { font-size: 1em; }
 .md-hr {
   margin: 10px 0;
   border: 0;
-  border-top: 1px solid rgba(33, 48, 74, 0.12);
+  border-top: 1px solid rgba(52, 56, 63, 0.12);
 }
 .md-table {
   margin: 7px 0;
@@ -71,17 +71,17 @@ h3.md-h, h4.md-h, h5.md-h, h6.md-h { font-size: 1em; }
 .md-table th,
 .md-table td {
   padding: 4px 9px;
-  border: 1px solid rgba(33, 48, 74, 0.12);
+  border: 1px solid rgba(52, 56, 63, 0.12);
   text-align: left;
   vertical-align: top;
 }
-.md-table th { background: rgba(33, 48, 74, 0.06); font-weight: 700; }
-.md-table tr:nth-child(even) td { background: rgba(33, 48, 74, 0.022); }
+.md-table th { background: rgba(52, 56, 63, 0.06); font-weight: 700; }
+.md-table tr:nth-child(even) td { background: rgba(52, 56, 63, 0.022); }
 .md-body a,
 .md-body a.md-link {
-  color: #c95e3c;
+  color: #bb8166;
   text-decoration: none;
-  border-bottom: 1px solid rgba(201, 94, 60, 0.42);
+  border-bottom: 1px solid rgba(159, 104, 79, 0.42);
   cursor: pointer;
 }
 .md-body a:hover { border-bottom-color: currentColor; }
@@ -92,8 +92,8 @@ h3.md-h, h4.md-h, h5.md-h, h6.md-h { font-size: 1em; }
   padding: 0 5px;
   margin: 0 1px;
   border-radius: 6px;
-  background: rgba(204, 112, 82, 0.12);
-  color: #c95e3c;
+  background: rgba(96, 148, 151, 0.12);
+  color: #bb8166;
   font-weight: 600;
 }
 
@@ -140,7 +140,7 @@ h3.md-h, h4.md-h, h5.md-h, h6.md-h { font-size: 1em; }
   padding: 1px 6px;
   border-radius: 5px;
   background: rgba(200, 76, 60, 0.10);
-  color: #b3524a;
+  color: #9f684f;
   white-space: pre-wrap;
   word-break: break-all;
 }

@@ -3,8 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import AgentPermissionControl from "./AgentPermissionControl.vue";
 
-// showPermission=false：权限档位改在「系统设置 › 执行权限」统一展示，这里不再重复。
-withDefaults(defineProps<{ modelSaved: boolean; showPermission?: boolean }>(), { showPermission: true });
+defineProps<{ modelSaved: boolean }>();
 defineEmits<{ reset: [] }>();
 
 interface CodexStatus {
@@ -73,8 +72,8 @@ onUnmounted(() => window.removeEventListener("focus", refreshStatus));
       <div><dt>程序路径</dt><dd>{{ status.executable }}</dd></div>
       <div><dt>工作目录</dt><dd>{{ status.workspace }}</dd></div>
     </dl>
-    <p class="codex-hint">自动保持对话上下文，复用本机登录，无需在桌宠中填写 API Key。默认使用工作目录写入沙箱；需要额外权限的命令会被拒绝。{{ showPermission ? "可在下方切换到完全访问。" : "沙箱档位在「执行权限」页调整。" }}</p>
-    <AgentPermissionControl v-if="showPermission" backend="codex" />
+    <p class="codex-hint">自动保持对话上下文，复用本机登录，无需在桌宠中填写 API Key。默认使用工作目录写入沙箱；需要额外权限的命令会被拒绝。可在下方切换到完全访问。</p>
+    <AgentPermissionControl backend="codex" />
     <p v-if="status && !status.installed" class="codex-hint">安装命令：<code>npm install -g @openai/codex</code></p>
     <div class="codex-actions">
       <button type="button" @click="$emit('reset')">{{ modelSaved ? "已重置" : "重置会话" }}</button>
@@ -88,7 +87,7 @@ onUnmounted(() => window.removeEventListener("focus", refreshStatus));
 .codex-connection { color: var(--dash-text, #334155); font-size: 13px; }
 .codex-status { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .codex-status strong { color: #64748b; font-size: 12px; }
-.codex-status strong.connected { color: #15803d; }
+.codex-status strong.connected { color: #57735c; }
 .codex-hint { margin: 10px 0; color: var(--dash-text-secondary, #64748b); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
 .codex-details { display: grid; gap: 10px; padding: 14px; margin: 12px 0; border: 1px solid rgba(24, 42, 72, 0.08); border-radius: 10px; background: rgba(255, 255, 255, 0.4); }
 .codex-details div { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 10px; }
@@ -96,6 +95,6 @@ onUnmounted(() => window.removeEventListener("focus", refreshStatus));
 .codex-details dd { margin: 0; overflow-wrap: anywhere; }
 .codex-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .codex-actions button { padding: 8px 12px; border: 1px solid rgba(24, 42, 72, 0.12); border-radius: 8px; color: inherit; background: rgba(255, 255, 255, 0.7); font: inherit; cursor: pointer; }
-.codex-actions button:hover:not(:disabled) { border-color: var(--pet-primary, #38bdf8); }
+.codex-actions button:hover:not(:disabled) { border-color: var(--pet-primary, #79b1b3); }
 .codex-actions button:disabled { cursor: default; opacity: 0.5; }
 </style>

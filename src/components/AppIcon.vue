@@ -271,13 +271,129 @@ withDefaults(
       <path d="M6.6 17.4L17.4 6.6" />
     </template>
 
-    <!-- Background Option: Cute (Paw & Heart) -->
-    <template v-else-if="name === 'bg-cute'">
-      <ellipse cx="12" cy="15.2" rx="3.8" ry="3" />
-      <circle cx="7.2" cy="10.5" r="1.5" />
-      <circle cx="10.3" cy="8.2" r="1.5" />
-      <circle cx="13.7" cy="8.2" r="1.5" />
-      <circle cx="16.8" cy="10.5" r="1.5" />
+    <!-- Background Option: Sakura (five petals) -->
+    <template v-else-if="name === 'bg-sakura'">
+      <!-- 五片花瓣：每片是一个略扁的椭圆，绕中心旋转 -->
+      <ellipse cx="12" cy="7.4" rx="2.5" ry="3.1" />
+      <ellipse cx="16.4" cy="10.6" rx="2.5" ry="3.1" transform="rotate(72 16.4 10.6)" />
+      <ellipse cx="14.7" cy="15.7" rx="2.5" ry="3.1" transform="rotate(144 14.7 15.7)" />
+      <ellipse cx="9.3" cy="15.7" rx="2.5" ry="3.1" transform="rotate(216 9.3 15.7)" />
+      <ellipse cx="7.6" cy="10.6" rx="2.5" ry="3.1" transform="rotate(288 7.6 10.6)" />
+      <circle cx="12" cy="12" r="1.1" fill="currentColor" stroke="none" />
+    </template>
+
+    <!-- Background Option: Peach (五瓣桃花，花瓣更圆更饱满，区别于樱花) -->
+    <template v-else-if="name === 'bg-peach'">
+      <ellipse cx="12" cy="7.9" rx="2.7" ry="3.2" />
+      <ellipse cx="16.1" cy="10.9" rx="2.7" ry="3.2" transform="rotate(72 16.1 10.9)" />
+      <ellipse cx="14.5" cy="15.6" rx="2.7" ry="3.2" transform="rotate(144 14.5 15.6)" />
+      <ellipse cx="9.5" cy="15.6" rx="2.7" ry="3.2" transform="rotate(216 9.5 15.6)" />
+      <ellipse cx="7.9" cy="10.9" rx="2.7" ry="3.2" transform="rotate(288 7.9 10.9)" />
+      <circle cx="12" cy="12" r="1.35" fill="currentColor" stroke="none" />
+    </template>
+
+    <!-- Background Option: Spring (drooping willow branches) -->
+    <template v-else-if="name === 'bg-spring'">
+      <!-- 主干从左上伸入 -->
+      <path d="M3.5 4.2C7 5.4 10.5 7.2 13 9.6" />
+      <!-- 三组下垂柳条，末端略收 -->
+      <path d="M7.2 6.6C7.8 10.2 7.4 14.6 6.2 18.4" />
+      <path d="M10.4 8.2C11.2 11.8 11 16.2 10 19.6" />
+      <path d="M13.6 10.2C14.6 13.6 14.7 17.4 14 20.2" />
+      <!-- 两片细叶 -->
+      <path d="M6.9 12.4C5.6 11.9 5 11.1 5 10.2C6.1 10.4 6.8 11.2 6.9 12.4Z" />
+      <path d="M10.1 14.6C8.9 14.2 8.2 13.4 8.2 12.5C9.3 12.7 10 13.4 10.1 14.6Z" />
+    </template>
+
+    <!-- Background Option: Summer (lotus flower + pad) -->
+    <template v-else-if="name === 'bg-summer'">
+      <!-- 荷花：中间高、两侧斜开的花瓣 -->
+      <path d="M12 5.2C13.4 7.2 13.8 9.4 12.8 11.4C11.9 12.9 12.1 13.6 12 14.2C11.9 13.6 12.1 12.9 11.2 11.4C10.2 9.4 10.6 7.2 12 5.2Z" />
+      <path d="M7.6 7.8C9.6 8.4 11.2 9.8 11.9 11.8C10.1 11.4 8.4 10 7.6 7.8Z" />
+      <path d="M16.4 7.8C14.4 8.4 12.8 9.8 12.1 11.8C13.9 11.4 15.6 10 16.4 7.8Z" />
+      <!-- 荷叶：一道弧代表浮在水面的叶子 -->
+      <path d="M4.6 16.8C7.2 14.8 16.8 14.8 19.4 16.8C17 19.2 7 19.2 4.6 16.8Z" />
+    </template>
+
+    <!-- Background Option: Autumn (chrysanthemum) -->
+    <template v-else-if="name === 'bg-autumn'">
+      <!-- 外层短瓣一圈 + 内层一圈 + 花心 -->
+      <path d="M12 3.8C12.9 4.9 13.2 6.2 12.9 7.5" />
+      <path d="M16.1 5.3C16.3 6.7 15.9 8 15 9" />
+      <path d="M18.7 8.3C18.2 9.6 17.3 10.6 16.1 11.2" />
+      <path d="M19.4 12.4C18.5 13.4 17.3 14 15.9 14.1" />
+      <path d="M17.7 16.4C16.5 16.9 15.2 16.9 14 16.4" />
+      <path d="M14 19.4C13 18.6 12.4 17.5 12.2 16.1" />
+      <path d="M9.6 19.6C9.2 18.3 9.3 17 9.9 15.8" />
+      <path d="M6.4 17.5C6.8 16.2 7.6 15.1 8.8 14.4" />
+      <path d="M4.5 13.9C5.4 12.9 6.6 12.3 8 12.1" />
+      <path d="M4.9 9.8C6.1 9.3 7.4 9.3 8.6 9.8" />
+      <path d="M7.4 6.3C8.4 7.1 9 8.2 9.3 9.5" />
+      <path d="M10.8 4.4C11.4 5.6 11.6 6.9 11.4 8.2" />
+      <circle cx="12" cy="12" r="2.4" />
+    </template>
+
+    <!-- Background Option: Winter (plum blossom + snow) -->
+    <template v-else-if="name === 'bg-winter'">
+      <!-- 墨枝 -->
+      <path d="M3.6 16.8C6.2 15.4 8.8 13.6 10.8 11.4" />
+      <path d="M8.4 13.4C9.4 14.4 10.2 15.8 10.6 17.2" />
+      <!-- 五瓣梅：小圆瓣 -->
+      <circle cx="13.4" cy="9.2" r="1.7" />
+      <circle cx="16.6" cy="9.6" r="1.7" />
+      <circle cx="16.2" cy="12.8" r="1.7" />
+      <circle cx="12.8" cy="13.4" r="1.7" />
+      <circle cx="13.6" cy="6.4" r="1.7" />
+      <circle cx="14.9" cy="11" r="1" fill="currentColor" stroke="none" />
+      <!-- 一片雪花 -->
+      <path d="M18.6 15.2V20.2" />
+      <path d="M16.4 16.4L20.8 19" />
+      <path d="M16.4 19L20.8 16.4" />
+    </template>
+
+    <!-- Background Option: None (prohibited) -->
+    <template v-else-if="name === 'bg-none'">
+      <circle cx="12" cy="12" r="8.2" />
+      <path d="M6.2 17.8L17.8 6.2" />
+    </template>
+
+    <!-- Background Option: Aurora (flowing ribbon) -->
+    <template v-else-if="name === 'bg-aurora'">
+      <path d="M3.2 15.6C5.4 8.4 8.2 5.2 11.2 6.4C14.2 7.6 13.4 13 16.2 14.6C18 15.7 19.8 14.4 20.8 12.2" />
+      <path d="M3.6 19.2C5.8 12.8 8.4 10.4 11 11.6C13.6 12.8 13 17.2 15.6 18.4C17.4 19.2 19.2 18.2 20.4 16.4" opacity="0.55" />
+    </template>
+
+    <!-- Background Option: Ink (brush stroke over mountain) -->
+    <template v-else-if="name === 'bg-ink'">
+      <!-- 笔触：一头粗一头细的横向墨条 -->
+      <path d="M3.4 9.6C6.6 8.2 10.4 7.4 14.6 7.8C17.4 8 19.4 8.8 20.6 9.8C18 11 14.4 11.6 10.2 11.2C7.2 10.9 4.8 10.4 3.4 9.6Z" fill="currentColor" stroke="none" opacity="0.5" />
+      <!-- 山影 -->
+      <path d="M2.8 18.4L7.4 12.6L10.6 16.2L14.2 10.8L21.2 18.4" />
+    </template>
+
+    <!-- Background Option: Rain (droplet + streaks) -->
+    <template v-else-if="name === 'bg-rain'">
+      <!-- 水珠 -->
+      <path d="M12 4.2C14.2 7.4 16 9.8 16 12.2C16 14.6 14.2 16.4 12 16.4C9.8 16.4 8 14.6 8 12.2C8 9.8 9.8 7.4 12 4.2Z" />
+      <!-- 两侧雨丝 -->
+      <path d="M5.2 6.4L3.8 9.2" />
+      <path d="M5.6 12.2L4.2 15" />
+      <path d="M18.8 6.4L20.2 9.2" />
+      <path d="M18.4 12.2L19.8 15" />
+      <path d="M12 19.4L12 21" />
+    </template>
+
+    <!-- Background Option: Minimal (dot grid) -->
+    <template v-else-if="name === 'bg-minimal'">
+      <circle cx="7" cy="7" r="1.2" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="7" r="1.2" fill="currentColor" stroke="none" />
+      <circle cx="17" cy="7" r="1.2" fill="currentColor" stroke="none" />
+      <circle cx="7" cy="12" r="1.2" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none" />
+      <circle cx="17" cy="12" r="1.2" fill="currentColor" stroke="none" />
+      <circle cx="7" cy="17" r="1.2" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="17" r="1.2" fill="currentColor" stroke="none" />
+      <circle cx="17" cy="17" r="1.2" fill="currentColor" stroke="none" />
     </template>
 
     <!-- Background Option: Sci-Fi (Ringed Planet) -->

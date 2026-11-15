@@ -97,7 +97,7 @@ onBeforeUnmount(() => {
 .meta-picker-trigger { display: inline-flex; align-items: center; gap: 5px; padding: 4px 8px; border: 1px solid transparent; border-radius: 8px; background: transparent; cursor: pointer; font-size: 11px; transition: background .12s, border-color .12s; }
 .meta-picker-trigger:hover:not(:disabled), .meta-picker-trigger.open { background: rgba(255,255,255,.85); border-color: rgba(120,110,100,.16); }
 .meta-picker-trigger:disabled { opacity: .5; cursor: default; }
-.meta-picker-label { color: #968b7f; }
+.meta-picker-label { color: var(--dash-text-secondary); }
 .meta-picker-value { color: #3d3630; font-weight: 600; }
 .meta-picker-caret { color: #b6aca1; transition: transform .15s; }
 .meta-picker-trigger.open .meta-picker-caret { transform: rotate(180deg); }

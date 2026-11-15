@@ -30,11 +30,6 @@ async function action(name: string) {
       chat.isLoading = false;
       break;
     case "clear":
-      // clear_chat_history 会删除所有会话（含三个 agent 窗口）且不可恢复：必须先确认。
-      // 以前这里一点就删，右键菜单误触即丢失全部聊天记录。
-      if (!window.confirm("确定清空所有聊天记录吗？这会删除全部对话（包括 Claude Code / Codex / DSH 窗口），且不可撤销。")) {
-        break;
-      }
       await invoke("clear_chat_history");
       chat.clearMessages();
       await currentWindow.emit("chat-history-cleared");
@@ -80,7 +75,7 @@ async function action(name: string) {
     </div>
     <div class="menu-item" @click="action('clear')">
       <span class="menu-icon"><AppIcon name="trash" :size="14" /></span>
-      <span>清空全部对话…</span>
+      <span>清空对话</span>
     </div>
     <div class="menu-divider" />
     <div class="menu-item" @click="action('dashboard')">
@@ -145,7 +140,7 @@ async function action(name: string) {
 }
 
 .menu-item:hover {
-  background: var(--pet-header-gradient, linear-gradient(135deg, #ff6b6b, #ff8e53));
+  background: var(--pet-header-gradient, linear-gradient(135deg, #609497, #79b1b3));
   background-size: 180% 180%;
   color: white;
   transform: translateX(3px);
@@ -153,7 +148,7 @@ async function action(name: string) {
 }
 
 .exit-item:hover {
-  background: linear-gradient(135deg, #f59e0b, #d97706);
+  background: linear-gradient(135deg, #bb8166, #9f684f);
   box-shadow: 0 8px 18px rgba(217, 119, 6, 0.3);
 }
 
@@ -174,7 +169,7 @@ async function action(name: string) {
   border-radius: 14px;
   border-color: rgba(33, 48, 74, 0.11);
   background:
-    url("../assets/art/paper-grain.webp"),
+    url("../assets/art/paper-grain-cool.webp"),
     linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(246, 252, 255, 0.92)),
     var(--pet-bg-glass, rgba(255, 255, 255, 0.95));
   background-size: 380px 380px, auto, auto;
@@ -206,7 +201,7 @@ async function action(name: string) {
 }
 
 .exit-item:hover {
-  background: linear-gradient(135deg, #f59e0b, #ef7f47);
+  background: linear-gradient(135deg, #bb8166, #bb8166);
 }
 
 .menu-icon {

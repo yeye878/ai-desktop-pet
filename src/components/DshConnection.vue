@@ -3,8 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import AgentPermissionControl from "./AgentPermissionControl.vue";
 
-// showPermission=false：权限档位改在「系统设置 › 执行权限」统一展示，这里不再重复。
-withDefaults(defineProps<{ modelSaved: boolean; showPermission?: boolean }>(), { showPermission: true });
+defineProps<{ modelSaved: boolean }>();
 defineEmits<{ reset: [] }>();
 
 interface DshStatus {
@@ -83,7 +82,7 @@ onUnmounted(() => window.removeEventListener("focus", refreshStatus));
       <div><dt>工作目录</dt><dd>{{ status.workspace }}</dd></div>
     </dl>
     <p class="dsh-hint">
-      复用本机 dsh 的登录信息与模型，无需在桌宠中填写 API Key。权限{{ showPermission ? "可在下方选择" : "在「执行权限」页选择" }}，默认跟随本机 DSH 配置。
+      复用本机 dsh 的登录信息与模型，无需在桌宠中填写 API Key。权限可在下方选择，默认跟随本机 DSH 配置。
       桌宠使用专属 profile：挂载 dsh-base 与 dsh-headless，并用自带 runner 替换随包的一次性应用，
       因此推理过程、工具轨迹和会话续接都和 Codex / Claude Code 一致；你自己 profile 里的实验插件不会被加载。
     </p>
@@ -91,7 +90,7 @@ onUnmounted(() => window.removeEventListener("focus", refreshStatus));
       沙箱内的命令直接执行；当模型要越出沙箱时（升权请求），桌宠会弹出与直连 API 相同的确认窗口，
       显示命令、参数和升权理由，允许后才放行。审批策略为 never 的预设不会询问，需要授权的一律直接拒绝。
     </p>
-    <AgentPermissionControl v-if="showPermission" backend="dsh" />
+    <AgentPermissionControl backend="dsh" />
     <p v-if="status && !status.installed" class="dsh-hint">
       安装命令：<code>npm install -g @deepseek-ai/dsh</code>；配置模型：运行 <code>dsh web</code> 后在 Models 页面添加。
     </p>
@@ -110,7 +109,7 @@ onUnmounted(() => window.removeEventListener("focus", refreshStatus));
 .dsh-connection { color: var(--dash-text, #334155); font-size: 13px; }
 .dsh-status { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .dsh-status strong { color: #64748b; font-size: 12px; }
-.dsh-status strong.connected { color: #15803d; }
+.dsh-status strong.connected { color: #57735c; }
 .dsh-hint { margin: 10px 0; color: var(--dash-text-secondary, #64748b); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
 .dsh-details { display: grid; gap: 10px; padding: 14px; margin: 12px 0; border: 1px solid rgba(24, 42, 72, 0.08); border-radius: 10px; background: rgba(255, 255, 255, 0.4); }
 .dsh-details div { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 10px; }
@@ -118,6 +117,6 @@ onUnmounted(() => window.removeEventListener("focus", refreshStatus));
 .dsh-details dd { margin: 0; overflow-wrap: anywhere; }
 .dsh-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .dsh-actions button { padding: 8px 12px; border: 1px solid rgba(24, 42, 72, 0.12); border-radius: 8px; color: inherit; background: rgba(255, 255, 255, 0.7); font: inherit; cursor: pointer; }
-.dsh-actions button:hover:not(:disabled) { border-color: var(--pet-primary, #38bdf8); }
+.dsh-actions button:hover:not(:disabled) { border-color: var(--pet-primary, #79b1b3); }
 .dsh-actions button:disabled { cursor: default; opacity: 0.5; }
 </style>
