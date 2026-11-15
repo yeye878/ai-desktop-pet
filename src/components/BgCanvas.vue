@@ -1591,9 +1591,9 @@ function drawPhotoBackground(ctx: CanvasRenderingContext2D, k: number) {
   ctx.save();
   ctx.globalCompositeOperation = "screen";
   const lift = ctx.createLinearGradient(0, 0, W * 0.4, H);
-  lift.addColorStop(0, `rgba(255, 253, 247, ${(0.34 * k).toFixed(3)})`);
-  lift.addColorStop(0.55, `rgba(252, 253, 255, ${(0.24 * k).toFixed(3)})`);
-  lift.addColorStop(1, `rgba(246, 250, 255, ${(0.14 * k).toFixed(3)})`);
+  lift.addColorStop(0, `rgba(255, 253, 247, ${(0.10 * k).toFixed(3)})`);
+  lift.addColorStop(0.55, `rgba(252, 253, 255, ${(0.06 * k).toFixed(3)})`);
+  lift.addColorStop(1, `rgba(246, 250, 255, ${(0.03 * k).toFixed(3)})`);
   ctx.fillStyle = lift;
   ctx.fillRect(0, 0, W, H);
   ctx.restore();
