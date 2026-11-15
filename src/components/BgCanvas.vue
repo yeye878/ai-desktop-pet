@@ -85,9 +85,6 @@ let rnDrops: any[] = [];
 let rnStreaks: any[] = [];
 let rnRipples: any[] = [];
 let rnSplashes: any[] = [];
-let rnMicro: any[] = [];
-let rnWind = 0;
-let rnWindTarget = 0;
 
 const CUTE_C = ['#bb8fa2','#c99eb0','#dcc0cc','#d6ceba','#8aa6b8','#d9bcc8','#cf9e89','#a97f92'];
 const SF_COLS = { cyan:'#79b1b3', purple:'#8aa6b8', green:'#8aa98f', blue:'#7e93a8', teal:'#97c8ca' };
@@ -602,15 +599,11 @@ function update() {
     for (const p of particles) { p.life -= p.decay; p.x += p.vx; p.y += p.vy; p.vx *= 0.97; p.vy *= 0.97; }
     particles = particles.filter(p => p.life > 0);
   } else if (props.mode === 'rain') {
-    // 风：缓慢变化的阵风，让整片雨丝的方向轻轻摆动，雨才「活」
-    if (Math.random() < 0.006) rnWindTarget = rnd(-0.35, 0.6);
-    rnWind += (rnWindTarget - rnWind) * 0.012;
     // 雨丝：出屏后从顶部落回，x 也跟着重新随机，避免形成固定斜纹
     for (const s of rnStreaks) {
-      s.x += s.vx + rnWind * (0.4 + s.layer * 0.4); s.y += s.vy;
+      s.x += s.vx; s.y += s.vy;
       if (s.y - s.len > H) { s.y = rnd(-H * 0.5, -s.len); s.x = rnd(-W * 0.25, W * 1.05); }
       if (s.x > W + 30) { s.x = -30; s.y = rnd(-H * 0.5, H); }
-      if (s.x < -40) { s.x = W + 20; s.y = rnd(-H * 0.5, H); }
     }
     // 玻璃水珠：缓缓下滑、左右微摆，落到底部重置；同时积累拖尾长度
     for (const d of rnDrops) {
@@ -624,8 +617,6 @@ function update() {
         d.trail = 0;
       }
     }
-    // 微水珠：只闪不动
-    for (const m of rnMicro) m.phase += 0.02 * m.twinkle;
     // 涟漪：扩散 + 淡出
     for (let i = rnRipples.length - 1; i >= 0; i--) {
       const r = rnRipples[i];
@@ -640,13 +631,12 @@ function update() {
       sp.alpha *= 0.96;
       if (sp.h < 0 || sp.alpha < 0.01) rnSplashes.splice(i, 1);
     }
-    // 雨点持续落在「地面」上：在画面下半部随机溅起涟漪 + 水花
-    if (Math.random() < 0.34) {
-      const rx = rnd(W * 0.04, W * 0.96);
-      const ry = rnd(H * 0.55, H * 0.97);
-      rnRipples.push({ x: rx, y: ry, r: 0.5, alpha: 0.4 });
-      if (Math.random() < 0.5) rnRipples.push({ x: rx, y: ry, r: 0.2, alpha: 0.26 });
-      for (let i = 0; i < 2; i++) {
+    // 偶尔在随机位置自动落一滴，让画面在你不动的时候也有雨
+    if (Math.random() < 0.09) {
+      const rx = rnd(W * 0.05, W * 0.95);
+      const ry = rnd(H * 0.3, H * 0.95);
+      rnRipples.push({ x: rx, y: ry, r: 0.5, alpha: 0.32 });
+      for (let i = 0; i < 3; i++) {
         rnSplashes.push({
           x: rx + rnd(-6, 6), y: ry,
           r: rnd(0.8, 1.8), h: 0, vy: rnd(-1.1, -0.4), alpha: rnd(0.3, 0.5),
@@ -1189,23 +1179,15 @@ function drawInk(ctx: CanvasRenderingContext2D) {
  *   再加玻璃水珠（带高光、带拖尾、会慢慢下滑）与落地涟漪，把「雨」落到一个面上。
  */
 function initRain() {
-  rnStreaks = []; rnDrops = []; rnRipples = []; rnSplashes = []; rnMicro = [];
-  rnWind = 0; rnWindTarget = rnd(-0.3, 0.5);
+  rnStreaks = []; rnDrops = []; rnRipples = []; rnSplashes = [];
 
-  // 三层雨幕：远 / 中 / 近。远景密而淡，织成「雨幕」；近景粗而快，划过镜头。
-  /*
-   * 三层雨幕：远 / 中 / 近。
-   *
-   * 透明度偏低时整片雨看起来像"灰雾"，两帧差异只有 0.18，肉眼几乎看不出在动。
-   * 这里把 alpha 和线宽都提上来：远层仍要淡（织成雨幕），
-   * 但中近两层必须清晰可辨 —— 雨的"动"是靠这两层传递的。
-   */
+  // 三层雨幕：远 / 中 / 近
   const layers = [
-    { count: Math.min(360, Math.floor(W * H / 2600)), lenMin: 10, lenMax: 20, vxMin: 0.22, vxMax: 0.5, vyMin: 1.8, vyMax: 2.9, w: 0.9, aMin: 0.16, aMax: 0.26 },
-    { count: Math.min(220, Math.floor(W * H / 4000)), lenMin: 20, lenMax: 40, vxMin: 0.55, vxMax: 1.0, vyMin: 3.4, vyMax: 5.6, w: 1.5, aMin: 0.26, aMax: 0.38 },
-    { count: Math.min(96, Math.floor(W * H / 9000)), lenMin: 40, lenMax: 84, vxMin: 1.0, vxMax: 1.8, vyMin: 7.0, vyMax: 11, w: 2.1, aMin: 0.38, aMax: 0.54 },
+    { count: 58, lenMin: 7, lenMax: 14, vxMin: 0.25, vxMax: 0.5, vyMin: 1.6, vyMax: 2.6, w: 0.55, aMin: 0.06, aMax: 0.12 },
+    { count: 44, lenMin: 14, lenMax: 28, vxMin: 0.5, vxMax: 0.95, vyMin: 3.4, vyMax: 5.4, w: 0.9, aMin: 0.1, aMax: 0.18 },
+    { count: 18, lenMin: 28, lenMax: 52, vxMin: 0.9, vxMax: 1.6, vyMin: 6.2, vyMax: 9.5, w: 1.3, aMin: 0.12, aMax: 0.22 },
   ];
-  layers.forEach((layer, li) => {
+  for (const layer of layers) {
     for (let i = 0; i < layer.count; i++) {
       rnStreaks.push({
         x: rnd(-W * 0.25, W * 1.05),
@@ -1215,48 +1197,21 @@ function initRain() {
         vy: rnd(layer.vyMin, layer.vyMax),
         width: layer.w,
         alpha: rnd(layer.aMin, layer.aMax),
-        layer: li,
-        seed: rnd(0, 6.28),
       });
     }
-  });
+  }
 
-  // 玻璃水珠：三档尺度（微/中/大），形状不规则 —— 真实雨滴从来不是正圆。
-  // shape 用来把圆形压成各种椭圆比例，配合 drawRain 里的 rx/ry 计算。
-  const dropCount = Math.max(26, Math.min(56, Math.floor(W * H / 5200)));
-  for (let i = 0; i < dropCount; i++) {
-    const big = i < dropCount * 0.22;
-    const mid = !big && i < dropCount * 0.55;
+  // 玻璃水珠：大小分两档，大的慢、小的快
+  for (let i = 0; i < 20; i++) {
+    const big = i < 7;
     rnDrops.push({
       x: rnd(0, W), y: rnd(0, H),
-      r: big ? rnd(3.0, 6.2) : mid ? rnd(1.8, 3.0) : rnd(1.0, 1.9),
-      shape: rnd(-0.9, 1.0),       // 负=横扁，正=竖长，随机
-      drift: big ? rnd(0.02, 0.09) : rnd(0.05, 0.22),
+      r: big ? rnd(2.6, 4.6) : rnd(1.1, 2.2),
+      drift: big ? rnd(0.02, 0.1) : rnd(0.05, 0.22),
       wiggle: rnd(0, 6.28),
       trail: 0,
-      alpha: big ? rnd(0.34, 0.56) : mid ? rnd(0.26, 0.4) : rnd(0.18, 0.3),
+      alpha: big ? rnd(0.16, 0.3) : rnd(0.1, 0.2),
     });
-  }
-  // 凝结在玻璃上的微水珠：不动，只微微闪，提供「玻璃质感」的底纹
-  // 微珠：成簇分布而不是均匀撒点 —— 真实玻璃上的凝结总是连成片。
-  // 先选 8~14 个簇心，再围绕簇心撒点，所以有疏有密。
-  const clusterCount = 8 + Math.floor(Math.random() * 7);
-  const perCluster = Math.max(14, Math.floor(W * H / 26000));
-  for (let c = 0; c < clusterCount; c++) {
-    const cx = rnd(0, W);
-    const cy = rnd(0, H);
-    const spread = rnd(W * 0.06, W * 0.2);
-    for (let i = 0; i < perCluster; i++) {
-      // 高斯式散开：中心密、边缘稀
-      const ang = rnd(0, Math.PI * 2);
-      const dist = Math.pow(Math.random(), 1.7) * spread;
-      rnMicro.push({
-        x: Math.max(0, Math.min(W, cx + Math.cos(ang) * dist)),
-        y: Math.max(0, Math.min(H, cy + Math.sin(ang) * dist)),
-        r: rnd(0.4, 1.5), phase: rnd(0, 6.28),
-        twinkle: rnd(0.4, 1.2), alpha: rnd(0.14, 0.34),
-      });
-    }
   }
 }
 
@@ -1315,281 +1270,150 @@ function initRain() {
  */
 function drawRain(ctx: CanvasRenderingContext2D) {
   const k = strength();
-  const blurPx = Math.max(1.5, 5 * Math.max(0.35, k));
 
-  // ================= 第一层：窗外（全部失焦） =================
-  ctx.save();
-  ctx.filter = `blur(${Math.round(blurPx * 1.6)}px)`;
-
-  // 1a. 阴天天空：上沉下亮，云层有明暗起伏
-  const sky = ctx.createLinearGradient(0, 0, 0, H);
-  sky.addColorStop(0, '#9fb3bf');
-  sky.addColorStop(0.22, '#b3c4cd');
-  sky.addColorStop(0.46, '#c9d7dd');
-  sky.addColorStop(0.7, '#dbe6ea');
-  sky.addColorStop(1, '#e6eef0');
-  ctx.fillStyle = sky;
+  // 1. 底色：左上角亮、右下角略沉，模拟阴天窗边的光
+  const bg = ctx.createLinearGradient(0, 0, W * 0.35, H);
+  bg.addColorStop(0, '#fbfdfe');
+  bg.addColorStop(0.42, '#eef4f7');
+  bg.addColorStop(0.78, '#e2ecf1');
+  bg.addColorStop(1, '#d7e4ea');
+  ctx.fillStyle = bg;
   ctx.fillRect(0, 0, W, H);
 
-  // 云团：用几团大径向渐变叠出厚薄，避免平涂
-  for (let i = 0; i < 6; i++) {
-    const cx = W * (0.1 + (i * 0.19) % 0.9);
-    const cy = H * (0.04 + ((i * 0.07) % 0.26));
-    const r = W * (0.22 + ((i * 0.13) % 0.3));
-    const cg = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
-    const dark = i % 3 === 0;
-    cg.addColorStop(0, dark ? 'rgba(126,146,160,0.42)' : 'rgba(232,240,244,0.5)');
-    cg.addColorStop(1, dark ? 'rgba(126,146,160,0)' : 'rgba(232,240,244,0)');
-    ctx.fillStyle = cg;
-    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
-  }
+  // 2. 窗玻璃上的一层薄雾：让远处的雨丝显得「在玻璃后面」
+  const haze = ctx.createLinearGradient(0, 0, 0, H);
+  haze.addColorStop(0, `rgba(255,255,255,${(0.2 * k).toFixed(3)})`);
+  haze.addColorStop(0.5, `rgba(255,255,255,${(0.06 * k).toFixed(3)})`);
+  haze.addColorStop(1, `rgba(226,238,243,${(0.14 * k).toFixed(3)})`);
+  ctx.fillStyle = haze;
+  ctx.fillRect(0, 0, W, H);
 
-  // 1b. 中景城市：一排楼房轮廓 + 远处窗格灯光
-  //     "窗外有楼、有灯"是让空间立刻成立的关键
-  const cityBase = H * 0.78;
-  const buildings: Array<[number, number, number]> = []; // x, width, height
-  let bx = -W * 0.05;
-  while (bx < W * 1.05) {
-    const bw = W * (0.07 + ((Math.sin(bx * 0.021) + 1) * 0.06));
-    const bh = H * (0.16 + ((Math.sin(bx * 0.013 + 1.3) + 1) * 0.16));
-    buildings.push([bx, bw, bh]);
-    bx += bw * (1.02 + (Math.sin(bx * 0.055) + 1) * 0.06);
-  }
-  for (const [x, w, h] of buildings) {
-    ctx.fillStyle = 'rgba(84, 102, 116, 0.72)';
-    ctx.fillRect(x, cityBase - h, w, h);
-  }
-  // 窗格灯光：暖黄小点，间距不均匀（真实楼房不会整齐对齐）
-  for (const [x, w, h] of buildings) {
-    const cols = Math.max(1, Math.floor(w / (W * 0.022)));
-    const rows = Math.max(1, Math.floor(h / (H * 0.035)));
-    for (let c = 0; c < cols; c++) {
-      for (let rr = 0; rr < rows; rr++) {
-        const seed = Math.sin((x + c) * 12.9 + rr * 78.2) * 0.5 + 0.5;
-        if (seed < 0.62) continue; // 只有部分窗亮着
-        const wx = x + w * (0.15 + c * 0.8 / cols);
-        const wy = cityBase - h + h * (0.12 + rr * 0.72 / rows);
-        const warm = seed > 0.85;
-        ctx.fillStyle = warm ? 'rgba(255, 226, 160, 0.75)' : 'rgba(214, 226, 232, 0.5)';
-        ctx.fillRect(wx, wy, Math.max(1.2, W * 0.006), Math.max(1.2, H * 0.009));
-      }
-    }
-  }
-
-  // 1c. 近景树冠剪影：更暗、更大团，把画面下部压住
-  ctx.fillStyle = 'rgba(58, 76, 68, 0.6)';
-  for (let i = 0; i < 6; i++) {
-    const tx = W * (0.04 + i * 0.19);
-    const ty = H * (0.88 + Math.sin(i * 2.3) * 0.03);
-    const tr = W * (0.07 + (i % 3) * 0.02);
-    ctx.beginPath();
-    ctx.ellipse(tx, ty, tr, tr * 0.62, 0, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  // 1d. 地面湿光：底部一条横向反光带
-  const ground = ctx.createLinearGradient(0, H * 0.86, 0, H);
-  ground.addColorStop(0, 'rgba(190, 206, 212, 0.2)');
-  ground.addColorStop(1, 'rgba(150, 172, 182, 0.5)');
-  ctx.fillStyle = ground;
-  ctx.fillRect(0, H * 0.86, W, H * 0.14);
-
-  ctx.restore();
-
-  // ================= 第二层：窗外的雨（也失焦） =================
-  ctx.save();
-  ctx.filter = `blur(${Math.round(blurPx * 0.7)}px)`;
   ctx.lineCap = 'round';
-  for (const s of rnStreaks) {
-    if (s.layer > 1) continue;
-    const fade = 1 - s.layer * 0.32;
-    ctx.globalAlpha = Math.min(0.42, s.alpha * k * 2.2 * fade);
-    ctx.strokeStyle = 'rgba(196, 212, 220, 1)';
-    ctx.lineWidth = s.width * 1.6;
+
+  // 3. 远景 + 中景雨丝（按宽度排序，细的先画）
+  const farAndMid = rnStreaks.filter((s) => s.width < 1);
+  const near = rnStreaks.filter((s) => s.width >= 1);
+
+  for (const s of farAndMid) {
+    ctx.save();
+    ctx.globalAlpha = Math.min(0.58, s.alpha * k * 3.4);
+    // 两端渐隐：雨丝不是等粗的棍子
+    const tailX = s.x - s.vx * 2.6;
+    const tailY = s.y - s.len;
+    const grad = ctx.createLinearGradient(s.x, s.y, tailX, tailY);
+    grad.addColorStop(0, 'rgba(118,152,172,1)');
+    grad.addColorStop(0.4, 'rgba(134,166,184,0.72)');
+    grad.addColorStop(0.78, 'rgba(158,186,200,0.28)');
+    grad.addColorStop(1, 'rgba(176,198,210,0)');
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = s.width;
     ctx.beginPath();
     ctx.moveTo(s.x, s.y);
-    ctx.lineTo(s.x - s.vx * 3.4, s.y - s.len);
+    ctx.lineTo(tailX, tailY);
     ctx.stroke();
-  }
-  ctx.restore();
-
-  // ================= 第三层：玻璃本身（清晰） =================
-  // 只做「清晰湿玻璃」：一层不均匀的薄雾（有干湿差异，不是均匀白纱）
-  const fogGrad = ctx.createLinearGradient(0, 0, W * 0.6, H);
-  fogGrad.addColorStop(0, `rgba(236, 246, 250, ${(0.3 * k).toFixed(3)})`);
-  fogGrad.addColorStop(0.5, `rgba(226, 240, 246, ${(0.14 * k).toFixed(3)})`);
-  fogGrad.addColorStop(1, `rgba(240, 249, 251, ${(0.22 * k).toFixed(3)})`);
-  ctx.fillStyle = fogGrad;
-  ctx.fillRect(0, 0, W, H);
-
-  // 干湿斑驳：几处"被擦过/水流过"的较清澈区域（用 destination-out 挖淡）
-  ctx.save();
-  ctx.globalCompositeOperation = 'destination-out';
-  for (let i = 0; i < 5; i++) {
-    const cx = W * ((i * 0.27 + 0.1) % 1);
-    const cy = H * ((i * 0.21 + 0.2) % 1);
-    const r = Math.max(W, H) * (0.08 + (i % 3) * 0.04);
-    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
-    g.addColorStop(0, `rgba(0,0,0,${(0.22 * k).toFixed(3)})`);
-    g.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = g;
-    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
-  }
-  ctx.restore();
-
-  // 3a. 微水珠：密集、成簇（不是均匀撒点）
-  for (const m of rnMicro) {
-    const tw = 0.8 + Math.sin(m.phase) * 0.2;
-    ctx.save();
-    ctx.globalAlpha = Math.min(0.9, m.alpha * tw * k * 2.4);
-    const mg = ctx.createRadialGradient(
-      m.x - m.r * 0.3, m.y - m.r * 0.32, 0,
-      m.x, m.y, m.r * 1.1,
-    );
-    mg.addColorStop(0, 'rgba(255,255,255,0.98)');
-    mg.addColorStop(0.5, 'rgba(232,242,248,0.72)');
-    mg.addColorStop(0.84, 'rgba(176,196,210,0.52)');
-    mg.addColorStop(1, 'rgba(146,170,186,0.18)');
-    ctx.fillStyle = mg;
-    ctx.beginPath();
-    ctx.arc(m.x, m.y, m.r * 1.1, 0, Math.PI * 2);
-    ctx.fill();
-    // 一个极小的实心高光点 —— "玻璃上有水"最直接的证据
-    ctx.globalAlpha = Math.min(1, m.alpha * tw * k * 3.4);
-    ctx.fillStyle = '#ffffff';
-    ctx.beginPath();
-    ctx.arc(m.x - m.r * 0.32, m.y - m.r * 0.36, Math.max(0.35, m.r * 0.3), 0, Math.PI * 2);
-    ctx.fill();
     ctx.restore();
   }
 
-  // 3b. 中珠 + 大珠：不规则椭圆、带折射、带拖尾
+  // 4. 玻璃水珠：高光 + 阴影 + 拖尾
   for (const d of rnDrops) {
-    const wob = 1 + Math.sin(d.wiggle * 1.3) * 0.05;
-    // 水滴在玻璃上受重力：上窄下圆，所以是竖长椭圆
-    const rx = d.r * (0.82 + d.shape * 0.3) / wob;
-    const ry = d.r * (1.18 + d.shape * 0.24) * wob;
+    const rx = d.r;
+    const ry = d.r * rnd(1, 1.02) * 1.16;
 
-    // 拖尾：湿痕。上端淡、下端浓，宽窄有变化
-    if (d.trail > 1.2) {
-      const tg = ctx.createLinearGradient(d.x, d.y - d.trail, d.x, d.y);
-      tg.addColorStop(0, 'rgba(210, 228, 238, 0)');
-      tg.addColorStop(0.55, `rgba(210, 228, 238, ${(0.26 * k).toFixed(3)})`);
-      tg.addColorStop(1, `rgba(196, 218, 232, ${(0.46 * k).toFixed(3)})`);
+    // 拖尾：水珠下滑留下的湿痕
+    if (d.trail > 2) {
+      const trailGrad = ctx.createLinearGradient(d.x, d.y - d.trail, d.x, d.y);
+      trailGrad.addColorStop(0, 'rgba(198,220,230,0)');
+      trailGrad.addColorStop(1, `rgba(198,220,230,${(0.28 * k).toFixed(3)})`);
       ctx.save();
-      ctx.strokeStyle = tg;
-      ctx.lineWidth = Math.max(0.8, rx * 0.7);
+      ctx.strokeStyle = trailGrad;
+      ctx.lineWidth = rx * 0.9;
       ctx.lineCap = 'round';
       ctx.beginPath();
       ctx.moveTo(d.x, d.y - d.trail);
-      ctx.lineTo(d.x, d.y - ry * 0.35);
+      ctx.lineTo(d.x, d.y);
       ctx.stroke();
       ctx.restore();
     }
 
     ctx.save();
-    ctx.globalAlpha = Math.min(0.96, d.alpha * k * 2.0);
+    ctx.globalAlpha = d.alpha * k;
 
-    // 珠体：左上亮（光源）→ 右下透出窗外的冷色（折射），中心略偏上最亮
+    // 珠子本体：上暗下亮，像镜头里的真实水珠
     const body = ctx.createRadialGradient(
-      d.x - rx * 0.34, d.y - ry * 0.44, rx * 0.05,
-      d.x, d.y, ry * 1.04,
+      d.x - rx * 0.35, d.y - ry * 0.4, rx * 0.1,
+      d.x, d.y, ry,
     );
-    body.addColorStop(0, 'rgba(255,255,255,1)');
-    body.addColorStop(0.28, 'rgba(246,252,255,0.9)');
-    body.addColorStop(0.58, 'rgba(206,224,234,0.72)');
-    body.addColorStop(0.84, 'rgba(158,184,200,0.56)');
-    body.addColorStop(1, 'rgba(120,150,170,0.3)');
+    body.addColorStop(0, 'rgba(255,255,255,0.95)');
+    body.addColorStop(0.45, 'rgba(232,244,248,0.7)');
+    body.addColorStop(0.82, 'rgba(178,204,216,0.55)');
+    body.addColorStop(1, 'rgba(150,180,196,0.28)');
     ctx.fillStyle = body;
     ctx.beginPath();
     ctx.ellipse(d.x, d.y, rx, ry, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    // 下缘暗边：水珠边缘因折射压深，这是体积感的核心
-    ctx.strokeStyle = `rgba(88, 118, 138, ${(0.55 * k).toFixed(3)})`;
-    ctx.lineWidth = 0.75;
+    // 下缘的亮边（全内反射），水珠才有体积
+    ctx.strokeStyle = 'rgba(255,255,255,0.65)';
+    ctx.lineWidth = 0.7;
     ctx.beginPath();
-    ctx.ellipse(d.x, d.y, rx * 0.97, ry * 0.97, 0, 0.06 * Math.PI, 0.94 * Math.PI);
+    ctx.ellipse(d.x, d.y + ry * 0.12, rx * 0.82, ry * 0.8, 0, 0.15 * Math.PI, 0.85 * Math.PI);
     ctx.stroke();
 
-    // 内反射亮弧（水珠下部的全内反射，真实水珠都有）
-    ctx.strokeStyle = `rgba(255, 255, 255, ${(0.8 * k).toFixed(3)})`;
-    ctx.lineWidth = 0.85;
-    ctx.beginPath();
-    ctx.ellipse(d.x, d.y + ry * 0.16, rx * 0.74, ry * 0.68, 0, 0.2 * Math.PI, 0.8 * Math.PI);
-    ctx.stroke();
-
-    // 左上锐利高光
-    ctx.globalAlpha = Math.min(1, d.alpha * k * 3.6);
+    // 左上小高光点
+    ctx.globalAlpha = Math.min(0.62, d.alpha * k * 2.2);
     const spark = ctx.createRadialGradient(
-      d.x - rx * 0.32, d.y - ry * 0.42, 0,
-      d.x - rx * 0.32, d.y - ry * 0.42, Math.max(0.7, rx * 0.46),
+      d.x - rx * 0.32, d.y - ry * 0.38, 0,
+      d.x - rx * 0.32, d.y - ry * 0.38, rx * 0.42,
     );
-    spark.addColorStop(0, 'rgba(255,255,255,1)');
-    spark.addColorStop(0.5, 'rgba(255,255,255,0.6)');
+    spark.addColorStop(0, 'rgba(255,255,255,0.9)');
     spark.addColorStop(1, 'rgba(255,255,255,0)');
     ctx.fillStyle = spark;
     ctx.beginPath();
-    ctx.arc(d.x - rx * 0.32, d.y - ry * 0.42, Math.max(0.7, rx * 0.46), 0, Math.PI * 2);
+    ctx.arc(d.x - rx * 0.32, d.y - ry * 0.38, rx * 0.42, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
   }
 
-  // 3c. 溪流：水在玻璃上流下的蜿蜒沟痕（真实雨天最常见的东西）
-  //     关键：宽窄变化 + 蜿蜒 + 下端比上端粗 + 末端挂一颗珠
-  for (const s of rnStreaks) {
-    if (s.layer < 1) continue;
-    const streamLen = s.len * 2.2;
-    const topY = s.y - streamLen;
+  // 5. 近景雨：压在珠子之上，制造「雨从眼前划过」的纵深
+  for (const s of near) {
     ctx.save();
-    ctx.lineCap = 'round';
-    // 主沟：用多段线段模拟宽度变化
-    const segs = 8;
-    for (let i = 0; i < segs; i++) {
-      const t = i / segs;
-      const t2 = (i + 1) / segs;
-      const x1 = s.x + Math.sin(t * 5 + s.seed) * 2.6;
-      const x2 = s.x + Math.sin(t2 * 5 + s.seed) * 2.6;
-      const y1 = topY + streamLen * t;
-      const y2 = topY + streamLen * t2;
-      const w = (0.7 + t * 2.4) * Math.max(0.6, k); // 越往下越宽
-      ctx.strokeStyle = `rgba(226, 240, 248, ${((0.1 + t * 0.14) * k).toFixed(3)})`;
-      ctx.lineWidth = w;
-      ctx.beginPath();
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x2, y2);
-      ctx.stroke();
-      // 沟痕右侧的细高光：玻璃上的水沟边缘会反光
-      ctx.strokeStyle = `rgba(255, 255, 255, ${((0.06 + t * 0.08) * k).toFixed(3)})`;
-      ctx.lineWidth = 0.6;
-      ctx.beginPath();
-      ctx.moveTo(x1 + w * 0.5, y1);
-      ctx.lineTo(x2 + w * 0.5, y2);
-      ctx.stroke();
-    }
-    // 末端坠珠：水在沟底积成一颗更大的水珠
-    const endX = s.x + Math.sin(5 + s.seed) * 2.6;
-    const endR = Math.max(1.2, 1.8 + s.width) * Math.max(0.7, k);
-    ctx.globalAlpha = Math.min(0.9, 0.5 * k);
-    const eg = ctx.createRadialGradient(
-      endX - endR * 0.3, s.y - endR * 0.4, 0, endX, s.y, endR * 1.1,
-    );
-    eg.addColorStop(0, 'rgba(255,255,255,0.98)');
-    eg.addColorStop(0.6, 'rgba(214,232,242,0.7)');
-    eg.addColorStop(1, 'rgba(150,178,196,0.28)');
-    ctx.fillStyle = eg;
+    ctx.globalAlpha = Math.min(0.46, s.alpha * k * 2.8);
+    const tailX = s.x - s.vx * 3.4;
+    const tailY = s.y - s.len;
+    const grad = ctx.createLinearGradient(s.x, s.y, tailX, tailY);
+    grad.addColorStop(0, 'rgba(96,132,152,0.98)');
+    grad.addColorStop(0.45, 'rgba(120,152,170,0.58)');
+    grad.addColorStop(1, 'rgba(150,180,196,0)');
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = s.width;
     ctx.beginPath();
-    ctx.ellipse(endX, s.y, endR * 0.85, endR * 1.15, 0, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.moveTo(s.x, s.y);
+    ctx.lineTo(tailX, tailY);
+    ctx.stroke();
     ctx.restore();
   }
 
-  // ================= 第四层：玻璃顶部窗光 =================
-  const topLight = ctx.createLinearGradient(0, 0, 0, H * 0.18);
-  topLight.addColorStop(0, `rgba(255, 255, 255, ${(0.34 * k).toFixed(3)})`);
-  topLight.addColorStop(1, 'rgba(255, 255, 255, 0)');
-  ctx.fillStyle = topLight;
-  ctx.fillRect(0, 0, W, H * 0.18);
+  // 6. 落地涟漪 + 溅起的水花
+  for (const r of rnRipples) {
+    ctx.save();
+    ctx.globalAlpha = Math.min(0.5, r.alpha * k * 1.4);
+    ctx.strokeStyle = 'rgba(146,178,192,0.85)';
+    ctx.lineWidth = 0.9;
+    ctx.beginPath();
+    ctx.ellipse(r.x, r.y, r.r, r.r * 0.3, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  for (const sp of rnSplashes) {
+    ctx.save();
+    ctx.globalAlpha = Math.min(0.55, sp.alpha * k * 1.6);
+    ctx.fillStyle = 'rgba(198,220,230,0.9)';
+    ctx.beginPath();
+    ctx.ellipse(sp.x, sp.y - sp.h, sp.r, sp.r * 0.72, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
 }
 
 /**
