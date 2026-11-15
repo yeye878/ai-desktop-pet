@@ -30,6 +30,11 @@ async function action(name: string) {
       chat.isLoading = false;
       break;
     case "clear":
+      // clear_chat_history 会删除所有会话（含三个 agent 窗口）且不可恢复：必须先确认。
+      // 以前这里一点就删，右键菜单误触即丢失全部聊天记录。
+      if (!window.confirm("确定清空所有聊天记录吗？这会删除全部对话（包括 Claude Code / Codex / DSH 窗口），且不可撤销。")) {
+        break;
+      }
       await invoke("clear_chat_history");
       chat.clearMessages();
       await currentWindow.emit("chat-history-cleared");
@@ -75,7 +80,7 @@ async function action(name: string) {
     </div>
     <div class="menu-item" @click="action('clear')">
       <span class="menu-icon"><AppIcon name="trash" :size="14" /></span>
-      <span>清空对话</span>
+      <span>清空全部对话…</span>
     </div>
     <div class="menu-divider" />
     <div class="menu-item" @click="action('dashboard')">

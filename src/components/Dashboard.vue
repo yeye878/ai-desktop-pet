@@ -1799,7 +1799,15 @@ async function deleteApiProfile(id: string) {
   }
 }
 
+async function confirmDeleteApiProfile(profile: ApiProfile) {
+  const name = profile.name || profile.model;
+  if (!window.confirm(`删除模型配置「${name}」？保存的 API 密钥也会一起移除。`)) return;
+  await deleteApiProfile(profile.id);
+}
+
 async function resetModel() {
+  // switch_model 会清空当前主对话的全部消息并断开 CLI 连接，且不可恢复：先确认。
+  if (!window.confirm("重置会清空当前主对话的全部消息，并让本机 CLI 重新开始一段会话。确定继续吗？")) return;
   try {
     await invoke("switch_model");
     resetDashChatUi();
@@ -5750,7 +5758,7 @@ ttsPlayer.stop();
                       class="dash-icon-btn danger"
                       title="删除模型配置"
                       :disabled="profileDeletingId === profile.id || apiProfiles.length <= 1"
-                      @click="deleteApiProfile(profile.id)"
+                      @click="confirmDeleteApiProfile(profile)"
                     >
                       <AppIcon name="close" :size="13" />
                     </button>
