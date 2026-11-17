@@ -1,0 +1,51 @@
+{
+ "label": "before",
+ "source": "C:\\Users\\15188\\Desktop\\AI领域新闻报告汇总_2026年11月.docx",
+ "outdir": "D:\\ai-desktop-pet\\research\\docx-quality\\render\\out\\before",
+ "mode": "structure",
+ "started_at": "2026-11-14T02:07:30+0900",
+ "environment": {
+  "python": "3.12.6",
+  "word_exe": "C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE",
+  "free_offers": null
+ },
+ "source_copy": "D:\\ai-desktop-pet\\research\\docx-quality\\render\\out\\before\\source\\source_copy.docx",
+ "sha256": {
+  "original": "95ea6051115f3d8501ce35a0107b72b300c87ff3701f90d1bda5f9decc51e911",
+  "copy": "95ea6051115f3d8501ce35a0107b72b300c87ff3701f90d1bda5f9decc51e911",
+  "identical": true
+ },
+ "size": 9407,
+ "render": {
+  "attempted": false,
+  "ok": false,
+  "reason": "mode=structure，跳过 Word 渲染"
+ },
+ "structure": {
+  "file": "D:\\ai-desktop-pet\\research\\docx-quality\\render\\out\\before\\structure.json",
+  "verdict": "FAIL",
+  "parts_count": 3,
+  "checks": {
+   "pass": 2,
+   "fail": 13,
+   "warn": 4
+  },
+  "failed_checks": [
+   "包结构：目标态可选 part 齐全（styles/settings/theme/fontTable/webSettings/numbering/rels/docProps/header-footer）",
+   "命名样式（w:pStyle 引用）",
+   "大纲级别（styles.xml 中 Heading outlineLvl）",
+   "页眉页脚 + PAGE/NUMPAGES 域",
+   "目录 TOC 域",
+   "settings 打开时更新域（w:updateFields）",
+   "文档属性 docProps/core.xml + app.xml",
+   "封面分节 + 首页不同 + 页码起始 1",
+   "表格列宽 gridCol 合计 == tblW（无 tblW 时以版心宽 9026 twips 为参照）",
+   "rPr 子元素顺序无违规",
+   "字面量 '---' 分隔线未残留在正文（整段 == '---'）",
+   "正文首行缩进（BodyText firstLineChars/firstLine 或段落 w:ind firstLine）",
+   "行距（BodyText spacing line 或正文段落 spacing 一致）"
+  ]
+ },
+ "finished_at": "2026-11-14T02:07:30+0900",
+ "elapsed_s": 0.26
+}

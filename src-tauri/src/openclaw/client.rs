@@ -178,6 +178,59 @@ fn resolve_claude_cli(resource_dir: Option<&Path>) -> ClaudeCli {
         })
 }
 
+/// 快速探测本机是否有可用的 Claude Code CLI（内置资源或 PATH/npm 安装）。
+pub fn is_cli_available(resource_dir: Option<&Path>) -> bool {
+    if resource_dir.and_then(bundled_claude_cli).is_some() {
+        return true;
+    }
+    let mut dirs_to_check: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect())
+        .unwrap_or_default();
+    if let Some(app_data) = dirs::data_dir() {
+        dirs_to_check.push(app_data.join("npm"));
+    }
+    if let Some(home) = dirs::home_dir() {
+        dirs_to_check.push(home.join(".local").join("bin"));
+    }
+    #[cfg(target_os = "windows")]
+    let names = ["claude.exe", "claude.cmd", "claude.bat"];
+    #[cfg(not(target_os = "windows"))]
+    let names = ["claude"];
+    dirs_to_check
+        .iter()
+        .filter(|dir| dir.is_absolute())
+        .any(|dir| names.iter().any(|name| dir.join(name).is_file()))
+}
+
+/// 每次调用的显式配置（智能调度第 10.1 节）：不依赖“最近一次会话”的全局兜底。
+#[derive(Debug, Clone)]
+pub struct SpawnOptions {
+    pub session: Option<String>,
+    pub owner_session_id: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub permission: String,
+    pub workspace: Option<PathBuf>,
+    /// Some 时 CLI 只暴露列出的工具（执行端硬限制）。
+    pub tools_whitelist: Option<Vec<String>>,
+    pub use_permission_bridge: bool,
+}
+
+impl Default for SpawnOptions {
+    fn default() -> Self {
+        Self {
+            session: None,
+            owner_session_id: None,
+            model: None,
+            effort: None,
+            permission: String::new(),
+            workspace: None,
+            tools_whitelist: None,
+            use_permission_bridge: true,
+        }
+    }
+}
+
 /// 每个 CLI 路径的 `--permission-prompts` 支持情况：`--help` 只探测一次，之后走缓存。
 static PERMISSION_PROMPTS_CAPS: OnceLock<Mutex<HashMap<PathBuf, bool>>> = OnceLock::new();
 
@@ -352,6 +405,29 @@ impl ClaudeAdapter {
         effort: Option<&str>,
         permission: &str,
     ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
+        self.spawn_streaming_with_options(
+            app_handle,
+            message,
+            system_prompt,
+            &SpawnOptions {
+                session: session.map(str::to_string),
+                model: model.map(str::to_string),
+                effort: effort.map(str::to_string),
+                permission: permission.to_string(),
+                ..SpawnOptions::default()
+            },
+        )
+        .await
+    }
+
+    /// 智能调度等需要显式调用配置的场景：工作目录、工具硬白名单、授权桥开关。
+    pub async fn spawn_streaming_with_options(
+        &self,
+        app_handle: &tauri::AppHandle,
+        message: &str,
+        system_prompt: &str,
+        options: &SpawnOptions,
+    ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
         // 内置 CLI 优先（打包资源分布在 `_up_/resources/node` 等布局下），
         // 找不到才回退 PATH 上的 `claude.cmd`。原生 exe 不需要 bundled node。
         let cli = resolve_claude_cli(app_handle.path().resource_dir().ok().as_deref());
@@ -370,6 +446,10 @@ impl ClaudeAdapter {
 
         #[cfg(target_os = "windows")]
         cmd.creation_flags(CREATE_NO_WINDOW);
+
+        if let Some(workspace) = options.workspace.as_ref() {
+            cmd.current_dir(workspace);
+        }
 
         // 系统提示词落盘为 UTF-8 文件，再用 `--append-system-prompt-file` 传入：
         // 保留原始换行 / 段落结构，也避开命令行长度上限。写文件失败时退回旧的
@@ -399,7 +479,13 @@ impl ClaudeAdapter {
         // 优先写带会话后缀的配置，让桥把授权弹窗归属到本回合会话；
         // 桥没起来（或配置没写成）时退回全局配置，保持 Claude 自己的默认行为。
         let state = app_handle.state::<crate::AppState>();
-        let turn_session = crate::current_turn_session(&state);
+        let turn_session = options
+            .owner_session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| crate::current_turn_session(&state));
         let session_config = if turn_session.trim().is_empty() {
             None
         } else {
@@ -413,7 +499,11 @@ impl ClaudeAdapter {
                         .ok()
                 })
         };
-        let config = session_config.or_else(|| crate::mcp_permission::config_path(app_handle).ok());
+        let config = if options.use_permission_bridge {
+            session_config.or_else(|| crate::mcp_permission::config_path(app_handle).ok())
+        } else {
+            None
+        };
         if let Some(config) = config {
             if config.is_file() {
                 cmd.arg("--mcp-config")
@@ -431,10 +521,19 @@ impl ClaudeAdapter {
         // 会话级 / 设置页选定的权限模式：空串时沿用 Claude Code 自己的配置。
         // 显式档位（auto / manual / bypassPermissions 等）让桌宠能直接控制
         // 每次工具调用是否需要确认。
-        cmd.args(claude_permission_args(permission));
+        cmd.args(claude_permission_args(&options.permission));
 
         // 本回合模型 / 思考强度覆盖（空 = 跟随本机配置）与多轮续接。
-        cmd.args(claude_flags(model, effort, session));
+        cmd.args(claude_flags(
+            options.model.as_deref(),
+            options.effort.as_deref(),
+            options.session.as_deref(),
+        ));
+
+        // 工具硬白名单：CLI 执行端只暴露列出的工具，只读审核/评估据此强制。
+        if let Some(tools) = options.tools_whitelist.as_ref().filter(|t| !t.is_empty()) {
+            cmd.arg("--tools").arg(tools.join(","));
+        }
 
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());

@@ -1,0 +1,8 @@
+{"t": 0.0, "stage": "begin", "exists": true, "size": 9407}
+{"t": 0.09, "stage": "coinit"}
+{"t": 2.45, "stage": "DispatchEx"}
+{"t": 2.57, "stage": "opt_warn", "opt": "ShowSpellingErrors", "err": "AttributeError(\"Property '<unknown>.ShowSpellingErrors' can not be set.\")"}
+{"t": 2.58, "stage": "opt_warn", "opt": "ShowGrammarErrors", "err": "AttributeError(\"Property '<unknown>.ShowGrammarErrors' can not be set.\")"}
+{"t": 2.58, "stage": "options"}
+{"t": 2.58, "stage": "pid_warn", "err": "AttributeError('Word.Application.Hwnd')"}
+{"t": 2.58, "stage": "before_open"}

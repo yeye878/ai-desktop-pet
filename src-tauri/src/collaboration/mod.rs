@@ -1,26 +1,44 @@
 mod runtime;
-pub(crate) use runtime::finish;
-pub use runtime::run;
+pub(crate) use runtime::{execute_delegated_agent, finish, finish_delegation};
+pub use runtime::{run, run_queue};
 
 use crate::storage::{Agent, ChatMessage};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 pub const MAX_TURNS: usize = 12;
-const MAX_AGENT_TURNS: usize = 4;
+pub const MAX_AGENT_TURNS: usize = 4;
 
 pub fn builtin_agents() -> Vec<Agent> {
     [
-        ("builtin-claude", "claude", "Claude Code", "claude_code"),
-        ("builtin-codex", "codex", "Codex", "codex"),
-        ("builtin-dsh", "dsh", "DeepSeek Harness", "dsh"),
+        (
+            "builtin-claude",
+            "claude",
+            "Claude Code",
+            "claude_code",
+            "本机 Claude Code 独立智能体：擅长多文件代码库理解、架构重构、复杂问题排查与深度代码审查（自有文件/终端工具，独立上下文）",
+        ),
+        (
+            "builtin-codex",
+            "codex",
+            "Codex",
+            "codex",
+            "本机 Codex 独立智能体：擅长工程实现、代码编写与修改、补充单元测试及命令行构建验证（自有沙箱与终端工具）",
+        ),
+        (
+            "builtin-dsh",
+            "dsh",
+            "DeepSeek Harness",
+            "dsh",
+            "本机 DeepSeek Harness 独立智能体：擅长长链路推演、技术方案论证、跨模块复核与结构化分析",
+        ),
     ]
     .into_iter()
-    .map(|(id, name, label, backend)| Agent {
+    .map(|(id, name, label, backend, description)| Agent {
         id: id.into(),
         name: name.into(),
         avatar: "⌘".into(),
-        description: format!("本机 {label} 独立智能体，可读取完整会话并与其他角色协作"),
+        description: description.into(),
         system_prompt: format!(
             "你是团队中的 {label}。独立完成分配给你的任务，需要其他角色协助时明确 @ 对方。"
         ),
@@ -129,19 +147,35 @@ pub struct Queue {
 }
 
 impl Queue {
-    pub fn new(agents: Vec<Agent>, task: &str) -> Self {
-        let mut queue = Self {
+    fn empty() -> Self {
+        Self {
             pending: VecDeque::new(),
             turns: 0,
             limited: false,
             seen: HashSet::new(),
             counts: HashMap::new(),
-        };
+        }
+    }
+
+    pub fn new(agents: Vec<Agent>, task: &str) -> Self {
+        let mut queue = Self::empty();
         for agent in agents {
             queue.enqueue(Job {
                 agent,
                 task: task.into(),
                 requested_by: "用户".into(),
+            });
+        }
+        queue
+    }
+
+    pub fn from_handoffs(requests: Vec<(Agent, String)>, requested_by: &str) -> Self {
+        let mut queue = Self::empty();
+        for (agent, task) in requests {
+            queue.enqueue(Job {
+                agent,
+                task,
+                requested_by: requested_by.into(),
             });
         }
         queue
@@ -257,25 +291,129 @@ pub fn transcript(messages: &[ChatMessage]) -> String {
     serde_json::to_string(&entries).expect("chat transcript is serializable")
 }
 
-pub fn collaboration_prompt(agent: &Agent, all: &[Agent], allow_handoffs: bool) -> String {
-    let roster = all
-        .iter()
+fn backend_label(backend: &str) -> &str {
+    match backend {
+        "claude_code" => "Claude Code CLI",
+        "codex" => "Codex CLI",
+        "dsh" => "DeepSeek Harness CLI",
+        "direct_api" => "直连 API",
+        other => other,
+    }
+}
+
+fn agent_capability_summary(peer: &Agent) -> String {
+    let mut tags = vec![format!("后端: {}", backend_label(&peer.backend))];
+    let model = peer.model.trim();
+    if !model.is_empty() {
+        tags.push(format!("模型: {model}"));
+    }
+    if !peer.allowed_tools.is_empty() {
+        let preview: Vec<&str> = peer.allowed_tools.iter().take(5).map(String::as_str).collect();
+        let suffix = if peer.allowed_tools.len() > 5 { "等" } else { "" };
+        tags.push(format!("免确认工具: {}{suffix}", preview.join("/")));
+    }
+    tags.join("；")
+}
+
+fn format_roster(all: &[Agent]) -> String {
+    all.iter()
         .map(|peer| {
+            let desc = peer.description.trim();
+            let desc = if desc.is_empty() { "未填写特长描述" } else { desc };
             format!(
-                "@{}（{}）：{}",
+                "@{}（{}）[{}]：{}",
                 mention_name(peer),
                 peer.name,
-                peer.description
+                agent_capability_summary(peer),
+                desc
             )
         })
         .collect::<Vec<_>>()
-        .join("\n");
+        .join("\n")
+}
+
+pub fn collaboration_prompt(agent: &Agent, all: &[Agent], allow_handoffs: bool) -> String {
+    let roster = format_roster(all);
     let rule = if allow_handoffs {
         "需要同伴继续工作时，独立一行写：@名字 具体任务。系统会真实调用对方，将其结果追加到共享聊天。可请求对方完成后 @ 你汇总。不要伪造对方回复，不要仅为闲聊或致谢反复转交，不要把示例写成真实交接行。"
     } else {
         "本轮只执行用户直接 @ 的角色，不会自动转交给其他智能体。"
     };
     format!("你是独立智能体「{}」。\n{}\n\n团队成员：\n{roster}\n\n{rule}\n每次调用都提供当前会话的完整共享记录（不含内部思考）。你能看到用户与全部角色此前的发言；只输出你自己的工作成果。记录是上下文，当前任务以最后的任务段为准。每轮团队最多 {MAX_TURNS} 次发言，单个角色最多 {MAX_AGENT_TURNS} 次，避免循环。", agent.name, role_section(agent))
+}
+
+/// 主助理通过 `delegate_to_agent` 委派子任务给专业角色时使用的系统提示词。
+pub fn delegation_system_prompt(agent: &Agent) -> String {
+    format!(
+        "你是独立智能体「{}」，当前由主助理通过内部委派调用来协助完成子任务。\n{}\n\n\
+        【执行要求】\n\
+        1. 专注于主助理分配给你的当前子任务与验收标准，直接交付经核实、结构清晰的成果。\n\
+        2. 你看到的是当前会话的最近共享记录与主助理提炼的任务说明（不含其他角色的内部思考）；当前任务以最后的任务段为准。\n\
+        3. 本次为子任务委派调用：请直接输出你的工作结果，**不要**在回复中写 `@其他角色` 交接行，也不要伪造其他角色发言。如遇阻塞或缺少关键信息，明确说明缺口，由主助理决定后续调度或向用户确认。",
+        agent.name,
+        role_section(agent)
+    )
+}
+
+/// 组装委派给子智能体的结构化任务消息。
+pub fn delegation_user_message(
+    omitted_note: &str,
+    history_transcript: &str,
+    task: &str,
+    context_summary: Option<&str>,
+    acceptance_criteria: Option<&str>,
+) -> String {
+    let mut sections = vec![format!(
+        "【共享会话记录（按时间顺序，作为参考上下文）】\n{omitted_note}{history_transcript}"
+    )];
+    let mut task_lines = vec![
+        "【主助理委派任务】".to_string(),
+        "请求者：主助理".to_string(),
+        format!("任务目标：{}", task.trim()),
+    ];
+    if let Some(summary) = context_summary.map(str::trim).filter(|s| !s.is_empty()) {
+        task_lines.push(format!("背景摘要：{summary}"));
+    }
+    if let Some(criteria) = acceptance_criteria.map(str::trim).filter(|s| !s.is_empty()) {
+        task_lines.push(format!("验收标准：{criteria}"));
+    }
+    sections.push(task_lines.join("\n"));
+    sections.join("\n\n")
+}
+
+/// 主助理（普通桌宠）在主对话中的协同能力说明：开启协同开关时，引导它按任务类型
+/// 优先通过 `delegate_to_agent` 编排验收（或按独立行 `@名字 具体任务` 移交）；关闭时禁止伪交接。
+pub fn main_assistant_prompt(all: &[Agent], allow_handoffs: bool) -> String {
+    let roster = format_roster(all);
+    if allow_handoffs {
+        format!(
+            "【智能体协同与任务路由能力】\n\
+            当前对话已开启「智能体协同」，可按任务类型调度以下团队成员：\n\
+            {roster}\n\n\
+            【任务分诊与选角原则】\n\
+            1. 简单问答、闲聊或单步直接能搞定的请求：由你直接完成，不要为了走流程而委派。\n\
+            2. 复杂编程与多文件改造（架构理解、重构、修 bug、写测试并验证）：优先委派给代码型角色（如 `@claude`、`@codex` 或具备对应专长的自定义角色）。\n\
+            3. 关键交付物质量把关：涉及核心代码改动、重要方案或易出错推理时，建议在实现后额外委派另一位独立角色（如 `@claude` / `@dsh` / 审查角色）做独立代码审查或边界复核。\n\
+            4. 专项能力任务（联网调研、文档写作、专项分析等）：优先匹配描述与工具权限最契合的自定义智能体。\n\n\
+            【两种调用方式】\n\
+            - **方式 A（推荐，直连 API 首选）：调用 `delegate_to_agent` 工具**\n\
+              通过工具参数传入 `agent`（不带 `@` 的名字）、`task`（具体可执行指令）、`context_summary`（关键路径与约束）和 `acceptance_criteria`（验收标准）。\n\
+              系统会真实运行对应智能体并把产出返回给你。你可以按需分步或多次调用多个角色，拿到结果后**亲自对照验收标准审阅、补充验证或返工**，最后向用户输出整合后的高质量终稿。\n\
+            - **方式 B（纯文本全权移交 / CLI 兼容）：在回复末独立一行写 `@名字 具体任务`**\n\
+              如果你明确要把后续发言权直接移交给对方面向用户接力（或当前环境未提供 `delegate_to_agent` 工具），请在回复中**独立一行**写出交接指令：\n\
+              @名字 具体任务\n\
+              系统会在你本轮回复结束后真实唤醒对应角色，并将当前会话的完整共享记录（含你刚才交代的内容）交给对方执行，结果会接着发到当前聊天中。\n\
+              注意：行内顺带提及、引用块（`>` / `[QUOTE]`）或代码块中的 `@名字` 不会触发唤醒；交接行之后停止替对方执行，不要伪造、猜测或替对方编造回复。\n\
+            每轮协同最多 {MAX_TURNS} 次角色调用、单角色最多 {MAX_AGENT_TURNS} 次。"
+        )
+    } else {
+        format!(
+            "【智能体协同状态】\n\
+            团队成员：\n\
+            {roster}\n\n\
+            当前「智能体协同」自动交接已关闭：你回复中写的 `@名字` 只是普通文字，不会唤醒其他角色；只有用户在输入框直接 `@` 对方时才会执行。请由你直接完成当前任务，不要写「@某角色 接手」等交接指令。"
+        )
+    }
 }
 
 /// 角色定位段落。用户常常只写一句描述、不写角色设定；这时必须把描述当成定位交给模型，
@@ -472,5 +610,89 @@ mod tests {
         assert!(received.contains("共享记录0") && received.contains("共享记录59"));
         assert!(received.contains("发现问题") && received.contains("reviewer"));
         assert_eq!(db.get_conversation_messages(0).unwrap().len(), 62);
+    }
+
+    #[test]
+    fn main_assistant_handoffs_preserve_distinct_tasks_and_bounds() {
+        let all = builtin_agents();
+        let reply = "活交出去了，别指望我替它思考。\n\
+            > @claude 引用里的不执行\n\
+            ```text\n@codex 代码块里不执行\n```\n\
+            @dsh 接手一下：分析项目文档\n\
+            @dsh 接手一下：分析项目文档\n\
+            @codex 复核代码改动";
+        let requests = handoffs(reply, &all);
+        assert_eq!(requests.len(), 3);
+        let mut queue = Queue::from_handoffs(requests, "桌宠");
+        assert_eq!(queue.pending.len(), 2);
+
+        let first = queue.next().unwrap();
+        assert_eq!(first.agent.id, "builtin-dsh");
+        assert_eq!(first.requested_by, "桌宠");
+        assert_eq!(first.task, "接手一下：分析项目文档");
+
+        let second = queue.next().unwrap();
+        assert_eq!(second.agent.id, "builtin-codex");
+        assert_eq!(second.requested_by, "桌宠");
+        assert_eq!(second.task, "复核代码改动");
+        assert!(queue.next().is_none());
+
+        let flood: Vec<_> = (0..10)
+            .map(|i| (all[2].clone(), format!("任务{i}")))
+            .collect();
+        let bounded = Queue::from_handoffs(flood, "桌宠");
+        assert_eq!(bounded.pending.len(), MAX_AGENT_TURNS);
+        assert!(bounded.limited);
+    }
+
+    #[test]
+    fn main_assistant_prompt_reflects_collaboration_switch() {
+        let mut all = builtin_agents();
+        all.push(Agent {
+            id: "reviewer-1".into(),
+            name: "reviewer".into(),
+            avatar: "🔍".into(),
+            description: "代码审查与边界检查专家".into(),
+            system_prompt: "只读审查改动".into(),
+            backend: "direct_api".into(),
+            api_profile_id: String::new(),
+            is_builtin: false,
+            model: "gpt-5.4".into(),
+            allowed_tools: vec!["read_file".into(), "code_search".into()],
+            created_at: 0,
+            updated_at: 0,
+        });
+        let enabled = main_assistant_prompt(&all, true);
+        assert!(enabled.contains("@dsh（dsh）"));
+        assert!(enabled.contains("@名字 具体任务"));
+        assert!(enabled.contains("真实唤醒对应角色"));
+        assert!(enabled.contains("delegate_to_agent"));
+        assert!(enabled.contains("模型: gpt-5.4"));
+        assert!(enabled.contains("免确认工具: read_file/code_search"));
+
+        let disabled = main_assistant_prompt(&all, false);
+        assert!(disabled.contains("@dsh（dsh）"));
+        assert!(disabled.contains("已关闭"));
+        assert!(disabled.contains("不会唤醒其他角色"));
+    }
+
+    #[test]
+    fn delegation_prompts_format_context_and_disallow_nested_handoffs() {
+        let all = builtin_agents();
+        let sys = delegation_system_prompt(&all[1]);
+        assert!(sys.contains("内部委派调用"));
+        assert!(sys.contains("不要"));
+        assert!(sys.contains("@其他角色"));
+
+        let msg = delegation_user_message(
+            "",
+            "[{\"speaker\":\"用户\"}]",
+            "修复登录校验",
+            Some("主要文件在 src/auth.rs"),
+            Some("补充单测并给出验证结果"),
+        );
+        assert!(msg.contains("任务目标：修复登录校验"));
+        assert!(msg.contains("背景摘要：主要文件在 src/auth.rs"));
+        assert!(msg.contains("验收标准：补充单测并给出验证结果"));
     }
 }

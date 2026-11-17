@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -185,6 +185,69 @@ pub fn is_retryable_status(status: reqwest::StatusCode) -> bool {
         || status.is_server_error()
 }
 
+/// 流式工具调用累积状态（Chat Completions 与 Responses API 共用）
+#[derive(Debug, Clone, Default)]
+pub struct AccumulatedToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: String,
+}
+
+/// 增量 UTF-8 解码器：避免多字节字符被 HTTP chunk 边界切开时被替换成 `\u{FFFD}`
+#[derive(Default)]
+pub struct Utf8StreamDecoder {
+    pending: Vec<u8>,
+}
+
+impl Utf8StreamDecoder {
+    pub fn push(&mut self, bytes: &[u8]) -> String {
+        if bytes.is_empty() {
+            return String::new();
+        }
+        self.pending.extend_from_slice(bytes);
+        self.drain_valid(false)
+    }
+
+    pub fn finish(&mut self) -> String {
+        self.drain_valid(true)
+    }
+
+    fn drain_valid(&mut self, flush: bool) -> String {
+        let mut out = String::new();
+        loop {
+            match std::str::from_utf8(&self.pending) {
+                Ok(valid) => {
+                    out.push_str(valid);
+                    self.pending.clear();
+                    break;
+                }
+                Err(err) => {
+                    let valid_up_to = err.valid_up_to();
+                    if valid_up_to > 0 {
+                        let valid = std::str::from_utf8(&self.pending[..valid_up_to]).unwrap();
+                        out.push_str(valid);
+                    }
+                    match err.error_len() {
+                        Some(invalid_len) => {
+                            out.push('\u{FFFD}');
+                            self.pending.drain(..valid_up_to + invalid_len);
+                        }
+                        None => {
+                            self.pending.drain(..valid_up_to);
+                            if flush && !self.pending.is_empty() {
+                                out.push('\u{FFFD}');
+                                self.pending.clear();
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
 pub struct SseParser {
     buffer: String,
     current_event: String,
@@ -201,8 +264,8 @@ impl SseParser {
     }
 
     /// 返回 (event_type, data) 对的列表。
-    /// 对于 Chat Completions 格式，event_type 为空字符串。
-    /// 对于 Responses API 格式，event_type 为事件类型（如 "response.output_text.delta"）。
+    /// 对于 Chat Completions 格式或未携带 `event:` 行的 SSE 流，event_type 为空字符串。
+    /// 对于带 `event:` 行的 Responses API 格式，event_type 为事件类型（如 "response.output_text.delta"）。
     pub fn push(&mut self, text: &str) -> Vec<(String, String)> {
         self.buffer.push_str(text);
         if self.buffer.len() > SSE_BUFFER_MAX_BYTES {
@@ -233,6 +296,332 @@ impl SseParser {
 
         results
     }
+
+    /// 处理流结束时缓冲区中可能尚未以换行符结尾的最后一行
+    pub fn finish(&mut self) -> Vec<(String, String)> {
+        if self.buffer.is_empty() {
+            return Vec::new();
+        }
+        self.push("\n")
+    }
+}
+
+/// 判断文本是否是以 SSE 事件流（`data:` / `event:`）开头的响应，防止将其当作纯文本回复兜底展示
+pub fn looks_like_sse(text: &str) -> bool {
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with(':') {
+            continue;
+        }
+        return trimmed.starts_with("data:") || trimmed.starts_with("event:");
+    }
+    false
+}
+
+/// 判断一条 SSE 事件是否属于 OpenAI Responses API 事件格式
+pub fn is_responses_sse_event(event_type: &str, data_value: &Value) -> bool {
+    event_type.starts_with("response.")
+        || data_value
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|t| t.starts_with("response."))
+}
+
+#[derive(Debug, Default)]
+pub struct ResponsesSseEventOutcome {
+    pub answer_delta: Option<String>,
+    pub thinking_delta: Option<String>,
+    pub done: bool,
+}
+
+#[derive(Debug, Default)]
+pub struct ResponsesSseAccumulator {
+    saw_text_delta: HashSet<(usize, usize)>,
+    has_any_text: bool,
+}
+
+impl ResponsesSseAccumulator {
+    /// 解析单条 Responses API SSE 事件；兼容带 `event:` 行和不带 `event:` 行（仅在 JSON `type` 字段声明事件名）的服务端
+    pub fn apply_event(
+        &mut self,
+        event_type: &str,
+        data_value: &Value,
+        tool_calls: &mut HashMap<usize, AccumulatedToolCall>,
+    ) -> Result<ResponsesSseEventOutcome, String> {
+        let mut outcome = ResponsesSseEventOutcome::default();
+        let payload_type = data_value
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let effective_event = if !event_type.is_empty() && event_type != "message" {
+            event_type
+        } else {
+            payload_type
+        };
+
+        let output_index = data_value
+            .get("output_index")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize;
+        let content_index = data_value
+            .get("content_index")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize;
+
+        match effective_event {
+            "error" | "response.failed" => {
+                if let Some(msg) = api_error_message_from_value(data_value).or_else(|| {
+                    data_value
+                        .get("response")
+                        .and_then(api_error_message_from_value)
+                }) {
+                    return Err(msg);
+                }
+                if effective_event == "response.failed" {
+                    return Err("Responses API 返回 response.failed 状态。".to_string());
+                }
+            }
+            "response.output_item.added" => {
+                if let Some(item) = data_value.get("item") {
+                    if item.get("type").and_then(Value::as_str) == Some("function_call") {
+                        let entry = tool_calls.entry(output_index).or_default();
+                        merge_responses_function_call_item(entry, item, false);
+                    }
+                }
+            }
+            "response.output_text.delta" => {
+                if let Some(text) = data_value.get("delta").and_then(Value::as_str) {
+                    if !text.is_empty() {
+                        self.saw_text_delta.insert((output_index, content_index));
+                        self.has_any_text = true;
+                        outcome.answer_delta = Some(text.to_string());
+                    }
+                }
+            }
+            "response.output_text.done" => {
+                if !self.saw_text_delta.contains(&(output_index, content_index)) {
+                    if let Some(text) = data_value.get("text").and_then(Value::as_str) {
+                        if !text.is_empty() {
+                            self.saw_text_delta.insert((output_index, content_index));
+                            self.has_any_text = true;
+                            outcome.answer_delta = Some(text.to_string());
+                        }
+                    }
+                }
+            }
+            "response.reasoning_summary_text.delta"
+            | "response.reasoning_text.delta"
+            | "response.reasoning.delta" => {
+                if let Some(text) = data_value.get("delta").and_then(Value::as_str) {
+                    if !text.is_empty() {
+                        outcome.thinking_delta = Some(text.to_string());
+                    }
+                }
+            }
+            "response.function_call_arguments.delta" => {
+                if let Some(delta) = data_value.get("delta").and_then(Value::as_str) {
+                    tool_calls
+                        .entry(output_index)
+                        .or_default()
+                        .arguments
+                        .push_str(delta);
+                }
+            }
+            "response.function_call_arguments.done" => {
+                if let Some(args) = data_value.get("arguments").and_then(Value::as_str) {
+                    tool_calls.entry(output_index).or_default().arguments = args.to_string();
+                }
+            }
+            "response.output_item.done" => {
+                if let Some(item) = data_value.get("item") {
+                    match item.get("type").and_then(Value::as_str).unwrap_or("") {
+                        "function_call" => {
+                            let entry = tool_calls.entry(output_index).or_default();
+                            merge_responses_function_call_item(entry, item, true);
+                        }
+                        "message" => {
+                            let saw_any_delta_for_item = self
+                                .saw_text_delta
+                                .iter()
+                                .any(|(item_idx, _)| *item_idx == output_index);
+                            if !saw_any_delta_for_item {
+                                let text = extract_responses_message_item_text(item);
+                                if !text.is_empty() {
+                                    self.saw_text_delta.insert((output_index, 0));
+                                    self.has_any_text = true;
+                                    outcome.answer_delta = Some(text);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            "response.completed" | "response.done" => {
+                outcome.done = true;
+                if let Some(resp) = data_value.get("response") {
+                    if resp.get("status").and_then(Value::as_str) == Some("failed") {
+                        if let Some(msg) = api_error_message_from_value(resp) {
+                            return Err(msg);
+                        }
+                    }
+                    if !self.has_any_text && tool_calls.is_empty() {
+                        let parsed = parse_responses_non_stream(resp);
+                        if let Some(content) = parsed.content {
+                            self.has_any_text = true;
+                            outcome.answer_delta = Some(content);
+                        }
+                        for (i, tc) in parsed.tool_calls.into_iter().enumerate() {
+                            tool_calls.insert(
+                                i,
+                                AccumulatedToolCall {
+                                    id: tc.id.unwrap_or_default(),
+                                    name: tc.function.name,
+                                    arguments: tc.function.arguments,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        Ok(outcome)
+    }
+}
+
+fn merge_responses_function_call_item(
+    entry: &mut AccumulatedToolCall,
+    item: &Value,
+    overwrite_args: bool,
+) {
+    if let Some(id) = item
+        .get("call_id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .or_else(|| item.get("id").and_then(Value::as_str).filter(|s| !s.is_empty()))
+    {
+        entry.id = id.to_string();
+    }
+    if let Some(name) = item.get("name").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+        entry.name = name.to_string();
+    }
+    if let Some(args) = item.get("arguments").and_then(Value::as_str) {
+        if (overwrite_args && !args.is_empty()) || entry.arguments.is_empty() {
+            entry.arguments = args.to_string();
+        }
+    }
+}
+
+fn extract_responses_message_item_text(item: &Value) -> String {
+    let mut out = String::new();
+    if let Some(content_arr) = item.get("content").and_then(Value::as_array) {
+        for part in content_arr {
+            let ptype = part.get("type").and_then(Value::as_str).unwrap_or("");
+            if matches!(ptype, "output_text" | "text") {
+                if let Some(text) = part.get("text").and_then(Value::as_str) {
+                    out.push_str(text);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// 将完整的 SSE 文本解析为 `NonStreamResult`（同时兼容 Chat Completions 与 Responses API SSE）
+pub fn parse_sse_to_non_stream_result(text: &str) -> Result<Option<NonStreamResult>, String> {
+    let mut sse = SseParser::new();
+    let mut events = sse.push(text);
+    events.extend(sse.finish());
+
+    let mut combined_content = String::new();
+    let mut chat_tool_calls: HashMap<usize, AccumulatedToolCall> = HashMap::new();
+    let mut responses_tool_calls: HashMap<usize, AccumulatedToolCall> = HashMap::new();
+    let mut responses_acc = ResponsesSseAccumulator::default();
+
+    for (event_type, data) in events {
+        if data == "[DONE]" {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(&data) else {
+            continue;
+        };
+        if let Some(message) = api_error_message_from_value(&value) {
+            return Err(message);
+        }
+
+        if is_responses_sse_event(&event_type, &value) {
+            let outcome =
+                responses_acc.apply_event(&event_type, &value, &mut responses_tool_calls)?;
+            if let Some(delta) = outcome.answer_delta {
+                combined_content.push_str(&delta);
+            }
+            continue;
+        }
+
+        if let Ok(chunk) = serde_json::from_value::<ChatCompletionChunk>(value) {
+            if let Some(choice) = chunk.choices.first() {
+                if let Some(ref delta_text) = choice.delta.content {
+                    combined_content.push_str(delta_text);
+                }
+                if let Some(ref tc_deltas) = choice.delta.tool_calls {
+                    for tc in tc_deltas {
+                        let entry = chat_tool_calls.entry(tc.index.unwrap_or(0)).or_default();
+                        if let Some(ref id) = tc.id {
+                            if entry.id.is_empty() && !id.is_empty() {
+                                entry.id = id.clone();
+                            }
+                        }
+                        if let Some(ref func) = tc.function {
+                            if let Some(ref name) = func.name {
+                                if !name.is_empty() && entry.name != *name {
+                                    entry.name.push_str(name);
+                                }
+                            }
+                            if let Some(ref args) = func.arguments {
+                                entry.arguments.push_str(args);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let chosen_tool_calls = if !responses_tool_calls.is_empty() {
+        responses_tool_calls
+    } else {
+        chat_tool_calls
+    };
+
+    if combined_content.is_empty() && chosen_tool_calls.is_empty() {
+        return Ok(None);
+    }
+
+    let mut ordered: Vec<(usize, AccumulatedToolCall)> = chosen_tool_calls.into_iter().collect();
+    ordered.sort_by_key(|(idx, _)| *idx);
+    let tool_calls = ordered
+        .into_iter()
+        .map(|(_, tc)| NonStreamToolCall {
+            id: if tc.id.is_empty() { None } else { Some(tc.id) },
+            r#type: "function".to_string(),
+            function: NonStreamFunctionCall {
+                name: tc.name,
+                arguments: tc.arguments,
+            },
+        })
+        .collect();
+
+    Ok(Some(NonStreamResult {
+        content: if combined_content.is_empty() {
+            None
+        } else {
+            Some(combined_content)
+        },
+        tool_calls,
+        finish_reason: None,
+    }))
 }
 
 pub fn api_error_message_from_value(value: &Value) -> Option<String> {
@@ -461,7 +850,7 @@ pub fn convert_messages_to_responses_input(messages: &[Value]) -> Vec<Value> {
                 }));
             }
             "assistant" => {
-                // 文本消息部分
+                // 文本消息部分：Responses API 要求 assistant 文本使用 output_text
                 if let Some(content) = msg.get("content") {
                     if !content.is_null() {
                         let is_empty = match content {
@@ -475,7 +864,7 @@ pub fn convert_messages_to_responses_input(messages: &[Value]) -> Vec<Value> {
                             input.push(json!({
                                 "type": "message",
                                 "role": "assistant",
-                                "content": normalize_assistant_content_to_responses(content.clone())
+                                "content": normalize_content_to_responses_with_type(content.clone(), "output_text")
                             }));
                         }
                     }
@@ -494,14 +883,20 @@ pub fn convert_messages_to_responses_input(messages: &[Value]) -> Vec<Value> {
                             .and_then(|f| f.get("arguments"))
                             .and_then(|a| a.as_str())
                             .unwrap_or("{}");
-                        // 只传 call_id：function_call 项的 id 要求是 "fc_" 开头的条目 id，
-                        // 把 "call_..." 填进 id 会被官方端点拒绝；省略 id 是允许的。
-                        input.push(json!({
+                        // 只传 call_id，除非 id 以 "fc_" 开头（OpenAI Responses API 要求条目 id 必须以 "fc_" 开头）
+                        let mut item = json!({
                             "type": "function_call",
                             "call_id": id,
                             "name": name,
                             "arguments": arguments
-                        }));
+                        });
+                        // OpenAI Responses API 要求 function_call.id 若存在必须以 "fc_" 开头
+                        if id.starts_with("fc_") {
+                            item.as_object_mut()
+                                .unwrap()
+                                .insert("id".to_string(), json!(id));
+                        }
+                        input.push(item);
                     }
                 }
             }
@@ -537,8 +932,12 @@ pub fn convert_messages_to_responses_input(messages: &[Value]) -> Vec<Value> {
 
 /// 将 chat/completions 的 content 转换为 Responses API 的 content 数组格式
 fn normalize_content_to_responses(content: Value) -> Vec<Value> {
+    normalize_content_to_responses_with_type(content, "input_text")
+}
+
+fn normalize_content_to_responses_with_type(content: Value, text_type: &str) -> Vec<Value> {
     match content {
-        Value::String(s) => vec![json!({"type": "input_text", "text": s})],
+        Value::String(s) => vec![json!({"type": text_type, "text": s})],
         Value::Array(arr) => arr
             .into_iter()
             .map(|part| {
@@ -554,27 +953,13 @@ fn normalize_content_to_responses(content: Value) -> Vec<Value> {
                     }
                     "text" | _ => {
                         let text = part.get("text").and_then(|t| t.as_str()).unwrap_or("");
-                        json!({"type": "input_text", "text": text})
+                        json!({"type": text_type, "text": text})
                     }
                 }
             })
             .collect(),
-        other => vec![json!({"type": "input_text", "text": other.to_string()})],
+        other => vec![json!({"type": text_type, "text": other.to_string()})],
     }
-}
-
-/// assistant 历史消息转换为 Responses 格式：文本块用 output_text（图片不会出现在 assistant 里）。
-fn normalize_assistant_content_to_responses(content: Value) -> Vec<Value> {
-    let text = match content {
-        Value::String(text) => text,
-        Value::Array(parts) => parts
-            .iter()
-            .filter_map(|part| part.get("text").and_then(|text| text.as_str()))
-            .collect::<Vec<_>>()
-            .join(""),
-        other => other.to_string(),
-    };
-    vec![json!({ "type": "output_text", "text": text })]
 }
 
 /// 将 Chat Completions 风格的嵌套工具定义转换为 Responses API 需要的扁平结构。
@@ -913,85 +1298,27 @@ pub async fn call_chat_completions_non_stream(
         }
     }
 
-    // 策略2: 如果看起来像SSE格式，尝试SSE解析（包含 tool_calls 支持）
-    if response_text.contains("data:") {
-        let mut sse = SseParser::new();
-        let data_lines = sse.push(&response_text);
-        let mut combined_content = String::new();
-        let mut accumulated_tool_calls: HashMap<usize, NonStreamToolCall> = HashMap::new();
-
-        for (_event, data) in data_lines {
-            if data == "[DONE]" {
-                continue;
-            }
-            if let Ok(value) = serde_json::from_str::<Value>(&data) {
-                if let Some(message) = api_error_message_from_value(&value) {
-                    return Err(message);
-                }
-            }
-            if let Ok(chunk) = serde_json::from_str::<ChatCompletionChunk>(&data) {
-                if let Some(choice) = chunk.choices.first() {
-                    if let Some(ref text) = choice.delta.content {
-                        combined_content.push_str(text);
-                    }
-
-                    // 处理 SSE 格式的 tool_calls
-                    if let Some(ref tc_deltas) = choice.delta.tool_calls {
-                        for tc in tc_deltas {
-                            let entry =
-                                accumulated_tool_calls.entry(tc.index.unwrap_or(0)).or_insert_with(|| {
-                                    NonStreamToolCall {
-                                        id: None,
-                                        r#type: "function".to_string(),
-                                        function: NonStreamFunctionCall {
-                                            name: String::new(),
-                                            arguments: String::new(),
-                                        },
-                                    }
-                                });
-
-                            if let Some(ref id) = tc.id {
-                                entry.id = Some(id.clone());
-                            }
-                            if let Some(ref func) = tc.function {
-                                if let Some(ref name) = func.name {
-                                    entry.function.name.push_str(name);
-                                }
-                                if let Some(ref args) = func.arguments {
-                                    entry.function.arguments.push_str(args);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+    // 策略2: 如果看起来像SSE格式，尝试SSE解析（同时兼容 Chat Completions 与 Responses API）
+    if looks_like_sse(trimmed) || response_text.contains("data:") {
+        if let Some(result) = parse_sse_to_non_stream_result(&response_text)? {
+            return Ok(result);
         }
-
-        if !combined_content.is_empty() || !accumulated_tool_calls.is_empty() {
-            // 按模型给出的 index 排序：以前按 id（随机串）排序，"先建文件再修改"会被打乱顺序执行。
-            let mut indexed: Vec<(usize, NonStreamToolCall)> = accumulated_tool_calls.into_iter().collect();
-            indexed.sort_by_key(|(index, _)| *index);
-            let tool_calls: Vec<NonStreamToolCall> = indexed.into_iter().map(|(_, tc)| tc).collect();
-
-            return Ok(NonStreamResult {
-                content: if combined_content.is_empty() {
-                    None
-                } else {
-                    Some(combined_content)
-                },
-                tool_calls,
-                finish_reason: None,
-            });
+        if looks_like_sse(trimmed) {
+            return Err(format!(
+                "接口返回了 SSE 流式响应，但未提取到正文或工具调用内容。响应内容预览: {}",
+                truncate_chars(&response_text, 200)
+            ));
         }
     }
 
-    // 策略3: 检查是否是纯文本响应（某些API可能返回纯文本）
-    if !response_text.trim().is_empty()
-        && !response_text.trim().starts_with('{')
-        && !response_text.trim().starts_with('[')
+    // 策略3: 检查是否是纯文本响应（某些API可能返回纯文本；绝不把 SSE 原文当作纯文本回复）
+    if !trimmed.is_empty()
+        && !trimmed.starts_with('{')
+        && !trimmed.starts_with('[')
+        && !looks_like_sse(trimmed)
     {
         return Ok(NonStreamResult {
-            content: Some(response_text.trim().to_string()),
+            content: Some(trimmed.to_string()),
             tool_calls: Vec::new(),
             finish_reason: None,
         });
@@ -1271,6 +1598,154 @@ data: [DONE]
         let delta = &chunk.choices[0].delta;
         assert_eq!(delta.content.as_deref(), Some("hi"));
         assert_eq!(delta.tool_calls.as_ref().unwrap()[0].index, None);
+    }
+
+    #[test]
+    fn parses_responses_sse_function_call_without_event_lines() {
+        let sse = concat!(
+            "data: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_1\",\"status\":\"in_progress\",\"output\":[]}}\n\n",
+            "data: {\"type\":\"response.in_progress\",\"sequence_number\":1,\"response\":{\"id\":\"resp_1\",\"status\":\"in_progress\",\"output\":[]}}\n\n",
+            "data: {\"type\":\"response.output_item.added\",\"sequence_number\":2,\"output_index\":0,\"item\":{\"id\":\"fc_123\",\"type\":\"function_call\",\"status\":\"in_progress\",\"call_id\":\"call_00_abc\",\"name\":\"read_file\"}}\n\n",
+            "data: {\"type\":\"response.function_call_arguments.delta\",\"sequence_number\":3,\"output_index\":0,\"item_id\":\"fc_123\",\"delta\":\"{\\\"path\\\":\"}\n\n",
+            "data: {\"type\":\"response.function_call_arguments.delta\",\"sequence_number\":4,\"output_index\":0,\"item_id\":\"fc_123\",\"delta\":\"\\\"D:\\\\\\\\demo.docx\\\"}\"}\n\n",
+            "data: {\"type\":\"response.function_call_arguments.done\",\"sequence_number\":5,\"output_index\":0,\"item_id\":\"fc_123\",\"arguments\":\"{\\\"path\\\":\\\"D:\\\\\\\\demo.docx\\\"}\"}\n\n",
+            "data: {\"type\":\"response.output_item.done\",\"sequence_number\":6,\"output_index\":0,\"item\":{\"id\":\"fc_123\",\"type\":\"function_call\",\"status\":\"completed\",\"call_id\":\"call_00_abc\",\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"D:\\\\\\\\demo.docx\\\"}\"}}\n\n",
+            "data: {\"type\":\"response.completed\",\"sequence_number\":7,\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"output\":[{\"id\":\"fc_123\",\"type\":\"function_call\",\"status\":\"completed\",\"call_id\":\"call_00_abc\",\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"D:\\\\\\\\demo.docx\\\"}\"}]}}\n\n",
+            "data: [DONE]\n"
+        );
+
+        let parsed = parse_sse_to_non_stream_result(sse)
+            .expect("should parse")
+            .expect("should produce non-empty result");
+
+        assert!(parsed.content.is_none());
+        assert_eq!(parsed.tool_calls.len(), 1);
+        assert_eq!(parsed.tool_calls[0].id.as_deref(), Some("call_00_abc"));
+        assert_eq!(parsed.tool_calls[0].function.name, "read_file");
+        assert_eq!(
+            parsed.tool_calls[0].function.arguments,
+            "{\"path\":\"D:\\\\demo.docx\"}"
+        );
+    }
+
+    #[test]
+    fn responses_sse_accumulator_avoids_duplicating_delta_and_done_text() {
+        let sse = concat!(
+            "data: {\"type\":\"response.reasoning_summary_text.delta\",\"output_index\":0,\"delta\":\"先思考一下\"}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"output_index\":1,\"content_index\":0,\"delta\":\"你好\"}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"output_index\":1,\"content_index\":0,\"delta\":\"世界\"}\n\n",
+            "data: {\"type\":\"response.output_text.done\",\"output_index\":1,\"content_index\":0,\"text\":\"你好世界\"}\n\n",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"你好世界\"}]}}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[]}}\n"
+        );
+
+        let mut parser = SseParser::new();
+        let mut events = parser.push(sse);
+        events.extend(parser.finish());
+
+        let mut acc = ResponsesSseAccumulator::default();
+        let mut tool_calls = HashMap::new();
+        let mut text = String::new();
+        let mut thinking = String::new();
+        let mut done = false;
+
+        for (event_type, data) in events {
+            let value: Value = serde_json::from_str(&data).unwrap();
+            let outcome = acc
+                .apply_event(&event_type, &value, &mut tool_calls)
+                .unwrap();
+            if let Some(t) = outcome.thinking_delta {
+                thinking.push_str(&t);
+            }
+            if let Some(a) = outcome.answer_delta {
+                text.push_str(&a);
+            }
+            if outcome.done {
+                done = true;
+            }
+        }
+
+        assert_eq!(thinking, "先思考一下");
+        assert_eq!(text, "你好世界");
+        assert!(tool_calls.is_empty());
+        assert!(done);
+    }
+
+    #[test]
+    fn responses_sse_accumulator_extracts_completed_output_fallback_and_failed_error() {
+        let completed_only = concat!(
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"兜底回复\"}]}]}}"
+        );
+        let parsed = parse_sse_to_non_stream_result(completed_only)
+            .expect("should parse without trailing newline")
+            .expect("should extract completed message");
+        assert_eq!(parsed.content.as_deref(), Some("兜底回复"));
+
+        let failed = "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"message\":\"quota exceeded\",\"type\":\"rate_limit\"}}}\n\n";
+        let err = parse_sse_to_non_stream_result(failed).unwrap_err();
+        assert!(err.contains("quota exceeded"));
+    }
+
+    #[test]
+    fn utf8_stream_decoder_preserves_multibyte_chars_across_chunks() {
+        let original = "列出指定目录下的子文件与目录";
+        let bytes = original.as_bytes();
+        // Split right inside the 3-byte UTF-8 character '录'
+        let split_at = "列出指定目".len() + 2;
+
+        let mut decoder = Utf8StreamDecoder::default();
+        let part1 = decoder.push(&bytes[..split_at]);
+        let part2 = decoder.push(&bytes[split_at..]);
+        let tail = decoder.finish();
+
+        assert_eq!(format!("{part1}{part2}{tail}"), original);
+    }
+
+    #[test]
+    fn looks_like_sse_detects_sse_streams() {
+        assert!(looks_like_sse("data: {\"type\":\"response.created\"}\n"));
+        assert!(looks_like_sse("\n: keep-alive\nevent: message\ndata: {}\n"));
+        assert!(!looks_like_sse("你好，这是普通文本回复。"));
+        assert!(!looks_like_sse("{\"choices\":[]}"));
+    }
+
+    #[test]
+    fn convert_messages_to_responses_input_handles_assistant_and_tool_calls() {
+        let messages = vec![
+            json!({ "role": "system", "content": "sys" }),
+            json!({ "role": "user", "content": "check file" }),
+            json!({
+                "role": "assistant",
+                "content": "reading now",
+                "tool_calls": [{
+                    "id": "call_00_abc",
+                    "type": "function",
+                    "function": { "name": "read_file", "arguments": "{\"path\":\"a.txt\"}" }
+                }]
+            }),
+            json!({
+                "role": "tool",
+                "tool_call_id": "call_00_abc",
+                "name": "read_file",
+                "content": "file body"
+            }),
+        ];
+
+        let input = convert_messages_to_responses_input(&messages);
+
+        assert_eq!(input[0]["role"], "developer");
+        assert_eq!(input[0]["content"][0]["type"], "input_text");
+        assert_eq!(input[2]["role"], "assistant");
+        assert_eq!(input[2]["content"][0]["type"], "output_text");
+        assert_eq!(input[3]["type"], "function_call");
+        assert_eq!(input[3]["call_id"], "call_00_abc");
+        assert!(
+            input[3].get("id").is_none(),
+            "non-fc_ id must be omitted for Responses API input"
+        );
+        assert_eq!(input[4]["type"], "function_call_output");
+        assert_eq!(input[4]["call_id"], "call_00_abc");
+        assert_eq!(input[4]["output"], "file body");
     }
 }
 

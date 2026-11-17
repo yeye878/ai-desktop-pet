@@ -1,9 +1,11 @@
 use crate::direct_api::api_client::{
     api_error_message_from_sse_text, api_error_message_from_value,
-    call_chat_completions_non_stream, call_chat_completions_stream, ChatCompletionChunk,
-    DirectApiConfig, SseParser, UserAttachment, Utf8ChunkDecoder,
+    call_chat_completions_non_stream, call_chat_completions_stream, is_responses_sse_event,
+    looks_like_sse, parse_responses_non_stream, parse_sse_to_non_stream_result,
+    AccumulatedToolCall, ChatCompletionChunk, DirectApiConfig, ResponsesSseAccumulator,
+    SseParser, UserAttachment, Utf8ChunkDecoder,
 };
-use crate::direct_api::tools::{execute_tool, tool_definitions};
+use crate::direct_api::tools::{execute_tool, tool_definitions_for};
 use crate::storage::ChatMessage;
 use crate::AppState;
 use base64::Engine;
@@ -64,13 +66,6 @@ struct ToolEventPayload {
     approved: Option<bool>,
 }
 
-#[derive(Default)]
-struct AccumulatedToolCall {
-    id: String,
-    name: String,
-    arguments: String,
-}
-
 #[derive(Clone, Serialize)]
 struct AnswerDeltaPayload {
     text: String,
@@ -88,7 +83,9 @@ pub async fn run_direct_api_agent(
     agent: Option<crate::AgentContext>,
     turn_tool_grants: HashSet<String>,
     cancel: tokio_util::sync::CancellationToken,
-) {
+    clear_active_on_success: bool,
+    allow_delegation: bool,
+) -> Option<String> {
     let state = app_handle.state::<AppState>();
     let single_agent = agent.as_ref().and_then(|ctx| ctx.single()).cloned();
     let agent_meta = single_agent
@@ -109,6 +106,7 @@ pub async fn run_direct_api_agent(
         turn_tool_grants,
         cancel.clone(),
         true,
+        allow_delegation,
     )
     .await;
     let output = match result {
@@ -119,7 +117,7 @@ pub async fn run_direct_api_agent(
             } else {
                 send_error(&app_handle, error.message, &error.thinking, &error.partial_text, agent_meta).await;
             }
-            return;
+            return None;
         }
     };
     let full_text = output.text;
@@ -142,12 +140,14 @@ pub async fn run_direct_api_agent(
         behavior.mood.update(Some(0.05), None);
     }
 
-    crate::clear_active_chat(&state);
+    if clear_active_on_success {
+        crate::clear_active_chat(&state);
+    }
 
     let _ = app_handle.emit(
         "ai-finished",
         crate::AiFinishedPayload {
-            text: full_text,
+            text: full_text.clone(),
             thinking: if full_thinking.is_empty() {
                 None
             } else {
@@ -158,6 +158,7 @@ pub async fn run_direct_api_agent(
             agent_avatar: single_agent.as_ref().map(|a| a.avatar.clone()),
         },
     );
+    Some(full_text)
 }
 
 /// 首包超时：推理模型（o 系列、部分中转的 thinking 模型）可能先静默思考很久才吐第一个字节。
@@ -184,6 +185,7 @@ async fn wait_before_retry(
     reason: &str,
     full_text: &str,
     full_thinking: &str,
+    policy: &crate::orchestration::executor::TurnPolicy,
 ) -> Result<(), crate::agent_turn::TurnError> {
     let delay = Duration::from_secs(2u64.pow(attempt.min(4)));
     let notice = format!(
@@ -193,11 +195,71 @@ async fn wait_before_retry(
         attempt,
         MAX_STREAM_ATTEMPTS - 1
     );
-    let _ = app_handle.emit("ai-thinking", &notice);
+    if policy.emit_chat_events {
+        let _ = app_handle.emit("ai-thinking", &notice);
+    }
+    if let Some(sink) = policy.activity_sink.as_ref() {
+        sink(crate::orchestration::executor::ActivityDelta::Thinking(notice));
+    }
     tokio::select! {
         biased;
         _ = cancel.cancelled() => Err(aborted_error(full_text, full_thinking)),
         _ = tokio::time::sleep(delay) => Ok(()),
+    }
+}
+
+fn effective_turn_session(
+    state: &tauri::State<'_, AppState>,
+    policy: &crate::orchestration::executor::TurnPolicy,
+) -> String {
+    policy
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| crate::current_turn_session(state))
+}
+
+fn emit_turn_thinking(
+    app_handle: &tauri::AppHandle,
+    state: &tauri::State<'_, AppState>,
+    policy: &crate::orchestration::executor::TurnPolicy,
+    text: &str,
+) {
+    if policy.emit_chat_events {
+        append_active_thinking(state, text);
+        let _ = app_handle.emit("ai-thinking", text);
+    }
+    if let Some(sink) = policy.activity_sink.as_ref() {
+        sink(crate::orchestration::executor::ActivityDelta::Thinking(
+            text.to_string(),
+        ));
+    }
+}
+
+fn emit_turn_trace_only(
+    app_handle: &tauri::AppHandle,
+    state: &tauri::State<'_, AppState>,
+    policy: &crate::orchestration::executor::TurnPolicy,
+    text: &str,
+) {
+    if policy.emit_chat_events {
+        append_active_thinking(state, text);
+        let _ = app_handle.emit("ai-thinking", text);
+    }
+}
+
+fn emit_turn_delta(
+    app_handle: &tauri::AppHandle,
+    policy: &crate::orchestration::executor::TurnPolicy,
+    text: String,
+) {
+    if let Some(sink) = policy.activity_sink.as_ref() {
+        sink(crate::orchestration::executor::ActivityDelta::Text(text.clone()));
+    }
+    if policy.emit_chat_events {
+        let _ = app_handle.emit("ai-answer-delta", AnswerDeltaPayload { text });
     }
 }
 
@@ -278,6 +340,14 @@ fn merge_tool_call_delta(entry: &mut AccumulatedToolCall, delta: &crate::direct_
     }
 }
 
+#[derive(Default)]
+struct DelegationSession {
+    run_id: Option<String>,
+    turns: usize,
+    agent_counts: HashMap<String, usize>,
+}
+
+#[allow(clippy::too_many_arguments)]
 pub async fn execute_direct_api_turn(
     app_handle: tauri::AppHandle,
     message: String,
@@ -290,8 +360,104 @@ pub async fn execute_direct_api_turn(
     turn_tool_grants: HashSet<String>,
     cancel: tokio_util::sync::CancellationToken,
     follow_global_config: bool,
+    allow_delegation: bool,
+) -> Result<crate::agent_turn::TurnOutput, crate::agent_turn::TurnError> {
+    execute_direct_api_turn_with_policy(
+        app_handle,
+        message,
+        config,
+        system_prompt,
+        chat_history,
+        attachments,
+        quote,
+        agent,
+        turn_tool_grants,
+        cancel,
+        follow_global_config,
+        allow_delegation,
+        &crate::orchestration::executor::TurnPolicy::default(),
+    )
+    .await
+}
+
+/// 显式调用策略版本：只读强制、证据收集、invocation 归属（智能调度第 10.1 节）。
+#[allow(clippy::too_many_arguments)]
+pub async fn execute_direct_api_turn_with_policy(
+    app_handle: tauri::AppHandle,
+    message: String,
+    config: DirectApiConfig,
+    system_prompt: String,
+    chat_history: Vec<ChatMessage>,
+    attachments: Vec<UserAttachment>,
+    quote: Option<(String, String)>,
+    agent: Option<crate::AgentContext>,
+    turn_tool_grants: HashSet<String>,
+    cancel: tokio_util::sync::CancellationToken,
+    follow_global_config: bool,
+    allow_delegation: bool,
+    policy: &crate::orchestration::executor::TurnPolicy,
+) -> Result<crate::agent_turn::TurnOutput, crate::agent_turn::TurnError> {
+    let mut delegation = DelegationSession::default();
+    let result = execute_direct_api_turn_inner(
+        app_handle.clone(),
+        message,
+        config,
+        system_prompt,
+        chat_history,
+        attachments,
+        quote,
+        agent,
+        turn_tool_grants,
+        cancel,
+        follow_global_config,
+        allow_delegation,
+        &mut delegation,
+        policy,
+    )
+    .await;
+    if let (Err(ref error), Some(run_id)) = (&result, delegation.run_id.as_deref()) {
+        let state = app_handle.state::<AppState>();
+        let session_id = crate::current_turn_session(&state);
+        let (status, note) = if error.aborted {
+            ("aborted", "委派协同已停止。".to_string())
+        } else {
+            ("failed", format!("主助理回合异常结束：{}", error.message))
+        };
+        crate::collaboration::finish_delegation(
+            &app_handle,
+            run_id,
+            status,
+            delegation.turns,
+            note,
+            &session_id,
+        );
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_direct_api_turn_inner(
+    app_handle: tauri::AppHandle,
+    message: String,
+    config: DirectApiConfig,
+    system_prompt: String,
+    chat_history: Vec<ChatMessage>,
+    attachments: Vec<UserAttachment>,
+    quote: Option<(String, String)>,
+    agent: Option<crate::AgentContext>,
+    turn_tool_grants: HashSet<String>,
+    cancel: tokio_util::sync::CancellationToken,
+    follow_global_config: bool,
+    allow_delegation: bool,
+    delegation: &mut DelegationSession,
+    policy: &crate::orchestration::executor::TurnPolicy,
 ) -> Result<crate::agent_turn::TurnOutput, crate::agent_turn::TurnError> {
     let state = app_handle.state::<AppState>();
+    let delegated_attachments = if allow_delegation {
+        attachments.clone()
+    } else {
+        Vec::new()
+    };
 
     let (chat_history, omitted_history) = trim_history_for_context(chat_history, HISTORY_CHAR_BUDGET);
     let system_prompt = if omitted_history > 0 {
@@ -339,8 +505,7 @@ pub async fn execute_direct_api_turn(
             let limit_msg = turn_limit_message(MAX_AGENT_TURNS, &full_thinking);
             full_text.push_str(&limit_msg);
             full_thinking.push_str(&limit_msg);
-            append_active_thinking(&state, &limit_msg);
-            let _ = app_handle.emit("ai-thinking", &limit_msg);
+            emit_turn_thinking(&app_handle, &state, policy, &limit_msg);
             break;
         }
 
@@ -350,8 +515,10 @@ pub async fn execute_direct_api_turn(
 
         let tools = if config.execution_mode == "plan" {
             None
+        } else if policy.read_only {
+            Some(crate::direct_api::tools::tool_definitions_read_only())
         } else {
-            Some(tool_definitions())
+            Some(tool_definitions_for(allow_delegation))
         };
 
         let mut accumulated_tool_calls: HashMap<usize, AccumulatedToolCall> = HashMap::new();
@@ -376,12 +543,7 @@ pub async fn execute_direct_api_turn(
                             if !content.is_empty() {
                                 turn_text.push_str(content);
                                 full_text.push_str(content);
-                                let _ = app_handle.emit(
-                                    "ai-answer-delta",
-                                    AnswerDeltaPayload {
-                                        text: content.clone(),
-                                    },
-                                );
+                                emit_turn_delta(&app_handle, policy, content.clone());
                             }
                         }
 
@@ -431,7 +593,7 @@ pub async fn execute_direct_api_turn(
                         Err(error) => {
                             // 401 / 400 / 413 这类配置错误重试多少次都一样，直接报错，不再白等 30 秒。
                             if error.retryable && attempt < MAX_STREAM_ATTEMPTS {
-                                wait_before_retry(&app_handle, &cancel, attempt, &error.message, &full_text, &full_thinking).await?;
+                                wait_before_retry(&app_handle, &cancel, attempt, &error.message, &full_text, &full_thinking, policy).await?;
                                 continue;
                             }
                             return Err(crate::agent_turn::TurnError::failed(
@@ -444,12 +606,14 @@ pub async fn execute_direct_api_turn(
 
                     let mut stream = res.bytes_stream();
                     let mut sse = SseParser::new();
-                    // 跨 chunk 增量解码：被分块边界切开的汉字不再变成 "���"。
+                    // 跨 chunk 增量解码：被分块边界切开的汉字不再变成 replacement char。
                     let mut utf8 = Utf8ChunkDecoder::default();
+                    let mut responses_acc = ResponsesSseAccumulator::default();
+                    saw_model_event = false;
                     let mut done = false;
                     let mut stream_finished = false;
                     let mut received_any = false;
-                    let mut interruption: Option<String> = None;
+                    let mut interruption = None;
                     let mut last_tool_index: Option<usize> = None;
 
                     loop {
@@ -471,12 +635,17 @@ pub async fn execute_direct_api_turn(
                                 sse.push(&text)
                             }
                             Ok(None) => {
-                                // 正常结束：冲出残余字节，并用换行收尾最后一行没有换行符的数据。
+                                // 正常结束：冲出残余字节，并用 sse.finish() 处理最后一行没有换行符的数据。
                                 stream_finished = true;
-                                let mut text = utf8.finish();
+                                let text = utf8.finish();
                                 raw_buffer.push_str(&text);
-                                text.push('\n');
-                                sse.push(&text)
+                                let mut tail_events = if text.is_empty() {
+                                    Vec::new()
+                                } else {
+                                    sse.push(&text)
+                                };
+                                tail_events.extend(sse.finish());
+                                tail_events
                             }
                             Ok(Some(Err(error))) => {
                                 let message = error.to_string();
@@ -498,185 +667,22 @@ pub async fn execute_direct_api_turn(
                             }
                         };
 
-                        for (event_type, data) in events {
-                            if data == "[DONE]" {
-                                done = true;
-                                break;
-                            }
-
-                            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&data) {
-                                if let Some(message) = api_error_message_from_value(&value) {
-                                    return Err(crate::agent_turn::TurnError::failed(
-                                        message,
-                                        &full_thinking,
-                                    )
-                                    .with_partial_text(&full_text));
-                                }
-                            }
-
-                            if config.api_mode == "responses" {
-                                // ===== Responses API 流式解析 =====
-                                let data_value: serde_json::Value =
-                                    match serde_json::from_str(&data) {
-                                        Ok(v) => v,
-                                        Err(_) => continue,
-                                    };
-                                saw_model_event = true;
-                                match event_type.as_str() {
-                                    "response.output_text.delta" => {
-                                        if let Some(text) =
-                                            data_value.get("delta").and_then(|d| d.as_str())
-                                        {
-                                            if !text.is_empty() {
-                                                turn_text.push_str(text);
-                                                full_text.push_str(text);
-                                                let _ = app_handle.emit(
-                                                    "ai-answer-delta",
-                                                    AnswerDeltaPayload {
-                                                        text: text.to_string(),
-                                                    },
-                                                );
-                                            }
-                                        }
-                                    }
-                                    "response.reasoning_summary_text.delta" => {
-                                        if let Some(text) =
-                                            data_value.get("delta").and_then(|d| d.as_str())
-                                        {
-                                            if !text.is_empty() {
-                                                full_thinking.push_str(text);
-                                                append_active_thinking(&state, text);
-                                                let _ = app_handle.emit("ai-thinking", text);
-                                            }
-                                        }
-                                    }
-                                    "response.function_call_arguments.delta" => {
-                                        let idx = data_value
-                                            .get("output_index")
-                                            .and_then(|i| i.as_u64())
-                                            .unwrap_or(0)
-                                            as usize;
-                                        if let Some(delta) =
-                                            data_value.get("delta").and_then(|d| d.as_str())
-                                        {
-                                            accumulated_tool_calls
-                                                .entry(idx)
-                                                .or_default()
-                                                .arguments
-                                                .push_str(delta);
-                                        }
-                                    }
-                                    "response.function_call_arguments.done" => {
-                                        let idx = data_value
-                                            .get("output_index")
-                                            .and_then(|i| i.as_u64())
-                                            .unwrap_or(0)
-                                            as usize;
-                                        if let Some(args) =
-                                            data_value.get("arguments").and_then(|a| a.as_str())
-                                        {
-                                            // done 事件包含完整参数，覆盖累积值
-                                            accumulated_tool_calls.entry(idx).or_default().arguments =
-                                                args.to_string();
-                                        }
-                                    }
-                                    "response.output_item.done" => {
-                                        let idx = data_value
-                                            .get("output_index")
-                                            .and_then(|i| i.as_u64())
-                                            .unwrap_or(0)
-                                            as usize;
-                                        if let Some(item) = data_value.get("item") {
-                                            let item_type = item
-                                                .get("type")
-                                                .and_then(|t| t.as_str())
-                                                .unwrap_or("");
-                                            if item_type == "function_call" {
-                                                let entry =
-                                                    accumulated_tool_calls.entry(idx).or_default();
-                                                if let Some(id) = item
-                                                    .get("call_id")
-                                                    .and_then(|c| c.as_str())
-                                                    .or_else(|| {
-                                                        item.get("id").and_then(|i| i.as_str())
-                                                    })
-                                                {
-                                                    entry.id = id.to_string();
-                                                }
-                                                if let Some(name) =
-                                                    item.get("name").and_then(|n| n.as_str())
-                                                {
-                                                    entry.name = name.to_string();
-                                                }
-                                                if let Some(args) =
-                                                    item.get("arguments").and_then(|a| a.as_str())
-                                                {
-                                                    entry.arguments = args.to_string();
-                                                }
-                                            }
-                                        }
-                                    }
-                                    "response.completed" | "response.done" => {
-                                        done = true;
-                                    }
-                                    "response.failed" | "response.incomplete" => {
-                                        // 失败 / 被截断的响应不能当成功收尾：带上原因报错。
-                                        let reason = data_value
-                                            .pointer("/response/error/message")
-                                            .or_else(|| data_value.pointer("/response/incomplete_details/reason"))
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("上游返回 response.failed")
-                                            .to_string();
-                                        return Err(crate::agent_turn::TurnError::failed(
-                                            format!("上游 API 错误：{reason}"),
-                                            &full_thinking,
-                                        )
-                                        .with_partial_text(&full_text));
-                                    }
-                                    _ => {}
-                                }
-                            } else {
-                                // ===== Chat Completions 流式解析 =====
-                                if let Ok(parsed) =
-                                    serde_json::from_str::<ChatCompletionChunk>(&data)
-                                {
-                                    saw_model_event = true;
-                                    if let Some(choice) = parsed.choices.first() {
-                                        if let Some(reason) = choice.finish_reason.as_deref() {
-                                            finish_reason = Some(reason.to_string());
-                                        }
-                                        if let Some(reasoning) = reasoning_delta_text(&choice.delta)
-                                        {
-                                            full_thinking.push_str(&reasoning);
-                                            append_active_thinking(&state, &reasoning);
-                                            let _ = app_handle.emit("ai-thinking", reasoning);
-                                        }
-
-                                        if let Some(ref text) = choice.delta.content {
-                                            turn_text.push_str(text);
-                                            full_text.push_str(text);
-                                            let _ = app_handle.emit(
-                                                "ai-answer-delta",
-                                                AnswerDeltaPayload { text: text.clone() },
-                                            );
-                                        }
-
-                                        if let Some(ref tool_calls) = choice.delta.tool_calls {
-                                            for tc in tool_calls {
-                                                let index = resolve_tool_call_index(
-                                                    &accumulated_tool_calls,
-                                                    tc,
-                                                    &mut last_tool_index,
-                                                );
-                                                merge_tool_call_delta(
-                                                    accumulated_tool_calls.entry(index).or_default(),
-                                                    tc,
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                        if apply_sse_events(
+                            events,
+                            &config.api_mode,
+                            &mut responses_acc,
+                            &mut accumulated_tool_calls,
+                            &mut last_tool_index,
+                            &mut saw_model_event,
+                            &mut finish_reason,
+                            &mut turn_text,
+                            &mut full_text,
+                            &mut full_thinking,
+                            &state,
+                            &app_handle,
+                            policy,
+                        )? {
+                            done = true;
                         }
 
                         if done || stream_finished {
@@ -696,7 +702,7 @@ pub async fn execute_direct_api_turn(
                             full_thinking.truncate(thinking_mark);
                             turn_text.clear();
                             accumulated_tool_calls.clear();
-                            wait_before_retry(&app_handle, &cancel, attempt, &reason, &full_text, &full_thinking).await?;
+                            wait_before_retry(&app_handle, &cancel, attempt, &reason, &full_text, &full_thinking, policy).await?;
                             continue;
                         }
                         if partial_tool_calls {
@@ -717,7 +723,7 @@ pub async fn execute_direct_api_turn(
                         let note = format!("\n\n[⚠️ {reason}，以上回复可能不完整，可以发送「继续」]");
                         turn_text.push_str(&note);
                         full_text.push_str(&note);
-                        let _ = app_handle.emit("ai-answer-delta", AnswerDeltaPayload { text: note });
+                        emit_turn_delta(&app_handle, policy, note);
                     }
                     break;
                 }
@@ -750,39 +756,93 @@ pub async fn execute_direct_api_turn(
                         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw_buffer) {
                             use crate::direct_api::api_client::ContentExtractor;
 
-                            if let Some(content) = ContentExtractor::extract_content(&value) {
-                                turn_text.push_str(&content);
-                                full_text.push_str(&content);
-                                let _ = app_handle
-                                    .emit("ai-answer-delta", AnswerDeltaPayload { text: content });
-                            }
-
-                            let tool_calls = ContentExtractor::extract_tool_calls(&value);
-                            for (i, tc) in tool_calls.iter().enumerate() {
-                                accumulated_tool_calls.insert(
-                                    i,
-                                    AccumulatedToolCall {
-                                        id: tc.id.clone().unwrap_or_default(),
-                                        name: tc.function.name.clone(),
-                                        arguments: tc.function.arguments.clone(),
-                                    },
-                                );
+                            if config.api_mode == "responses" || value.get("output").is_some() {
+                                let resp = parse_responses_non_stream(&value);
+                                if let Some(content) = resp.content {
+                                    turn_text.push_str(&content);
+                                    full_text.push_str(&content);
+                                    emit_turn_delta(&app_handle, policy, content);
+                                }
+                                for (i, tc) in resp.tool_calls.iter().enumerate() {
+                                    accumulated_tool_calls.insert(
+                                        i,
+                                        AccumulatedToolCall {
+                                            id: tc.id.clone().unwrap_or_default(),
+                                            name: tc.function.name.clone(),
+                                            arguments: tc.function.arguments.clone(),
+                                        },
+                                    );
+                                }
                             }
 
                             if turn_text.is_empty() && accumulated_tool_calls.is_empty() {
-                                if let Some(reasoning) = ContentExtractor::extract_reasoning(&value) {
-                                    full_thinking.push_str(&reasoning);
+                                if let Some(content) = ContentExtractor::extract_content(&value) {
+                                    turn_text.push_str(&content);
+                                    full_text.push_str(&content);
+                                    emit_turn_delta(&app_handle, policy, content);
+                                }
+
+                                let tool_calls = ContentExtractor::extract_tool_calls(&value);
+                                for (i, tc) in tool_calls.iter().enumerate() {
+                                    accumulated_tool_calls.insert(
+                                        i,
+                                        AccumulatedToolCall {
+                                            id: tc.id.clone().unwrap_or_default(),
+                                            name: tc.function.name.clone(),
+                                            arguments: tc.function.arguments.clone(),
+                                        },
+                                    );
+                                }
+
+                                if turn_text.is_empty() && accumulated_tool_calls.is_empty() {
+                                    if let Some(reasoning) = ContentExtractor::extract_reasoning(&value)
+                                    {
+                                        full_thinking.push_str(&reasoning);
+                                        emit_turn_thinking(&app_handle, &state, policy, &reasoning);
+                                    }
                                 }
                             }
                         }
 
-                        // 纯文本兜底：只接受明显不是 SSE / JSON / HTML 的响应体。
+                        // 策略3: 再尝试一次统一 SSE 解析（兼容 Chat Completions 与 Responses API，且处理无换行结尾）
+                        if turn_text.is_empty() && accumulated_tool_calls.is_empty() {
+                            match parse_sse_to_non_stream_result(&raw_buffer) {
+                                Ok(Some(parsed)) => {
+                                    if let Some(content) = parsed.content {
+                                        turn_text = content.clone();
+                                        full_text.push_str(&content);
+                                        emit_turn_delta(&app_handle, policy, content);
+                                    }
+                                    for (i, tc) in parsed.tool_calls.into_iter().enumerate() {
+                                        accumulated_tool_calls.insert(
+                                            i,
+                                            AccumulatedToolCall {
+                                                id: tc.id.unwrap_or_default(),
+                                                name: tc.function.name,
+                                                arguments: tc.function.arguments,
+                                            },
+                                        );
+                                    }
+                                }
+                                Ok(None) => {}
+                                Err(message) => {
+                                    return Err(crate::agent_turn::TurnError::failed(
+                                        message,
+                                        &full_thinking,
+                                    )
+                                    .with_partial_text(&full_text));
+                                }
+                            }
+                        }
+
+                        // 策略4: 纯文本兜底（只接受明显不是 SSE / JSON / HTML 的响应体）
                         let looks_like_protocol = buf_trimmed.starts_with("data:")
                             || buf_trimmed.starts_with("event:")
                             || buf_trimmed.starts_with(':')
                             || buf_trimmed.starts_with('<')
                             || buf_trimmed.starts_with('{')
-                            || buf_trimmed.starts_with('[');
+                            || buf_trimmed.starts_with('[')
+                            || looks_like_sse(buf_trimmed);
                         if turn_text.is_empty()
                             && accumulated_tool_calls.is_empty()
                             && !buf_trimmed.is_empty()
@@ -790,12 +850,7 @@ pub async fn execute_direct_api_turn(
                         {
                             turn_text = buf_trimmed.to_string();
                             full_text.push_str(buf_trimmed);
-                            let _ = app_handle.emit(
-                                "ai-answer-delta",
-                                AnswerDeltaPayload {
-                                    text: buf_trimmed.to_string(),
-                                },
-                            );
+                            emit_turn_delta(&app_handle, policy, buf_trimmed.to_string());
                         }
                     }
                 }
@@ -810,7 +865,7 @@ pub async fn execute_direct_api_turn(
             let note = "\n\n[⚠️ 回复达到模型的输出长度上限被截断，可以发送「继续」]";
             turn_text.push_str(note);
             full_text.push_str(note);
-            let _ = app_handle.emit("ai-answer-delta", AnswerDeltaPayload { text: note.to_string() });
+            emit_turn_delta(&app_handle, policy, note.to_string());
         }
 
         if !turn_text.is_empty() && !accumulated_tool_calls.is_empty() {
@@ -875,8 +930,9 @@ pub async fn execute_direct_api_turn(
                     let tool_output = format!(
                         "工具参数不是完整的 JSON（{error}），没有执行。常见原因是参数太长、被模型的输出长度上限截断：请重新调用并给出完整参数；内容很长时分多次写入，或改用 edit_file 做局部修改。"
                     );
-                    emit_tool_event(
+                    report_tool_event(
                         &app_handle,
+                        policy,
                         &tc_id,
                         &tc_name,
                         "skipped",
@@ -886,8 +942,7 @@ pub async fn execute_direct_api_turn(
                     );
                     let display = format!("\n[调用工具] {tc_name}（参数不完整，未执行）\n");
                     full_thinking.push_str(&display);
-                    append_active_thinking(&state, &display);
-                    let _ = app_handle.emit("ai-thinking", &display);
+                    emit_turn_trace_only(&app_handle, &state, policy, &display);
                     push_tool_message(&mut api_messages, &tc_id, &tc_name, &tool_output);
                     continue;
                 }
@@ -895,8 +950,9 @@ pub async fn execute_direct_api_turn(
             let pretty_args =
                 serde_json::to_string_pretty(&tc_args).unwrap_or_else(|_| tc_args_str.clone());
 
-            emit_tool_event(
+            report_tool_event(
                 &app_handle,
+                policy,
                 &tc_id,
                 &tc_name,
                 "requested",
@@ -910,29 +966,36 @@ pub async fn execute_direct_api_turn(
                 pretty_args
             );
             full_thinking.push_str(&starting_msg);
-            append_active_thinking(&state, &starting_msg);
-            let _ = app_handle.emit("ai-thinking", &starting_msg);
+            emit_turn_trace_only(&app_handle, &state, policy, &starting_msg);
 
-            // 授权缓存按会话隔离：只看本会话批准过的工具。
+            // 授权缓存按会话隔离：优先使用调用显式传递的 session_id，不依赖全局最近会话兜底。
+            let turn_session_id = effective_turn_session(&state, policy);
             let already_approved =
-                crate::is_tool_approved(&state, &crate::current_turn_session(&state), &tc_name).await;
+                crate::is_tool_approved(&state, &turn_session_id, &tc_name).await;
             let latest_config = if follow_global_config {
                 state.direct_api_config.lock().await.clone()
             } else {
                 None
             };
-            let permission = tool_permission(
-                &config,
-                latest_config.as_ref(),
-                &turn_tool_grants,
-                &tc_name,
-                already_approved,
-            );
+            let permission = if policy.read_only
+                && crate::direct_api::tools::is_read_only_tool(&tc_name)
+            {
+                ToolPermission::Allow
+            } else {
+                tool_permission(
+                    &config,
+                    latest_config.as_ref(),
+                    &turn_tool_grants,
+                    &tc_name,
+                    already_approved,
+                )
+            };
             if permission == ToolPermission::Skip {
                 let tool_output =
                     format!("计划模式已阻止执行工具 {tc_name}。请切换执行模式后再操作。");
-                emit_tool_event(
+                report_tool_event(
                     &app_handle,
+                    policy,
                     &tc_id,
                     &tc_name,
                     "skipped",
@@ -941,7 +1004,33 @@ pub async fn execute_direct_api_turn(
                     Some(false),
                 );
                 full_thinking.push_str(&format!("[计划模式未执行]\n{}\n", tool_output));
-                append_active_thinking(&state, &format!("[计划模式未执行]\n{}\n", tool_output));
+                if policy.emit_chat_events {
+                    append_active_thinking(&state, &format!("[计划模式未执行]\n{}\n", tool_output));
+                }
+                push_tool_message(&mut api_messages, &tc_id, &tc_name, &tool_output);
+                continue;
+            }
+
+            // delegate_to_agent 特殊分支: 主会话在工具循环内真实唤醒专职智能体并回收其结果，
+            // 支持按任务类型动态调度、交叉验收与汇总，且不限制在 30 秒常规工具超时内。
+            if tc_name == "delegate_to_agent" {
+                let tool_output = handle_delegate_to_agent(
+                    &state,
+                    &app_handle,
+                    &tc_id,
+                    &tc_args,
+                    &delegated_attachments,
+                    &cancel,
+                    allow_delegation,
+                    delegation,
+                    &full_text,
+                    &full_thinking,
+                )
+                .await?;
+                let output_for_log = tool_output_for_log(&tool_output);
+                let output_display = format!("[执行结果]\n{}\n", output_for_log);
+                full_thinking.push_str(&output_display);
+                emit_turn_trace_only(&app_handle, &state, policy, &output_display);
                 push_tool_message(&mut api_messages, &tc_id, &tc_name, &tool_output);
                 continue;
             }
@@ -950,7 +1039,7 @@ pub async fn execute_direct_api_turn(
             // 用户的回答会作为工具结果回传给模型, 让它据此决定后续方向。
             if tc_name == "ask_user" {
                 let tool_output =
-                    request_user_answer(&state, &app_handle, &mut full_thinking, &tc_id, &tc_args, &cancel)
+                    request_user_answer(&state, &app_handle, &mut full_thinking, &tc_id, &tc_args, &cancel, policy)
                         .await;
                 if cancel.is_cancelled() {
                     return Err(aborted_error(&full_text, &full_thinking));
@@ -959,8 +1048,7 @@ pub async fn execute_direct_api_turn(
                 let output_for_log = tool_output_for_log(&tool_output);
                 let output_display = format!("[执行结果]\n{}\n", output_for_log);
                 full_thinking.push_str(&output_display);
-                append_active_thinking(&state, &output_display);
-                let _ = app_handle.emit("ai-thinking", &output_display);
+                emit_turn_trace_only(&app_handle, &state, policy, &output_display);
                 push_tool_message(&mut api_messages, &tc_id, &tc_name, &tool_output);
                 continue;
             }
@@ -984,6 +1072,7 @@ pub async fn execute_direct_api_turn(
                     &tc_args,
                     &pretty_args,
                     &cancel,
+                    policy,
                 )
                 .await
             } else {
@@ -997,8 +1086,9 @@ pub async fn execute_direct_api_turn(
                 if focus_snapshot.is_some() {
                     crate::computer_use::restore_foreground_window(focus_snapshot.as_ref()).await;
                 }
-                emit_tool_event(
+                report_tool_event(
                     &app_handle,
+                    policy,
                     &tc_id,
                     &tc_name,
                     "running",
@@ -1010,14 +1100,16 @@ pub async fn execute_direct_api_turn(
                 let output = tokio::select! {
                     biased;
                     _ = cancel.cancelled() => {
-                        emit_tool_event(&app_handle, &tc_id, &tc_name, "interrupted", &tc_args, Some("操作已被用户中止。"), Some(false));
+                        report_tool_event(&app_handle, policy, &tc_id, &tc_name, "interrupted", &tc_args, Some("操作已被用户中止。"), Some(false));
                         return Err(aborted_error(&full_text, &full_thinking));
                     }
                     output = execute_tool(&tc_name, &tc_args, &config.search_provider) => output,
                 };
+                crate::orchestration::executor::record_tool_evidence(&tc_name, &tc_args, &output);
                 let output_for_event = tool_output_for_log(&output);
-                emit_tool_event(
+                report_tool_event(
                     &app_handle,
+                    policy,
                     &tc_id,
                     &tc_name,
                     "completed",
@@ -1045,8 +1137,7 @@ pub async fn execute_direct_api_turn(
             let output_for_message = tool_output_for_message(&tool_output);
             let output_display = format!("[执行结果]\n{}\n", output_for_log);
             full_thinking.push_str(&output_display);
-            append_active_thinking(&state, &output_display);
-            let _ = app_handle.emit("ai-thinking", &output_display);
+            emit_turn_trace_only(&app_handle, &state, policy, &output_display);
             push_tool_message(&mut api_messages, &tc_id, &tc_name, &output_for_message);
             append_visual_tool_message(&mut visual_messages, &tc_name, &tool_output);
         }
@@ -1333,6 +1424,119 @@ fn attachment_display_name(attachment: &UserAttachment) -> String {
         .unwrap_or_else(|| "图片附件".to_string())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn apply_sse_events(
+    events: Vec<(String, String)>,
+    api_mode: &str,
+    responses_acc: &mut ResponsesSseAccumulator,
+    accumulated_tool_calls: &mut HashMap<usize, AccumulatedToolCall>,
+    last_tool_index: &mut Option<usize>,
+    saw_model_event: &mut bool,
+    finish_reason: &mut Option<String>,
+    turn_text: &mut String,
+    full_text: &mut String,
+    full_thinking: &mut String,
+    state: &tauri::State<'_, AppState>,
+    app_handle: &tauri::AppHandle,
+    policy: &crate::orchestration::executor::TurnPolicy,
+) -> Result<bool, crate::agent_turn::TurnError> {
+    for (event_type, data) in events {
+        if data == "[DONE]" {
+            return Ok(true);
+        }
+
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&data) else {
+            continue;
+        };
+
+        if let Some(message) = api_error_message_from_value(&value) {
+            return Err(
+                crate::agent_turn::TurnError::failed(message, full_thinking)
+                    .with_partial_text(full_text),
+            );
+        }
+
+        let handle_as_responses = is_responses_sse_event(&event_type, &value)
+            || (api_mode == "responses" && value.get("choices").is_none());
+
+        if handle_as_responses {
+            *saw_model_event = true;
+            let effective_type = if event_type.is_empty() {
+                value.get("type").and_then(|v| v.as_str()).unwrap_or("")
+            } else {
+                event_type.as_str()
+            };
+            if effective_type == "response.incomplete" {
+                let reason = value
+                    .pointer("/response/incomplete_details/reason")
+                    .or_else(|| value.pointer("/response/error/message"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("上游返回 response.incomplete")
+                    .to_string();
+                return Err(crate::agent_turn::TurnError::failed(
+                    format!("上游 API 错误：{reason}"),
+                    full_thinking,
+                )
+                .with_partial_text(full_text));
+            }
+            let outcome = responses_acc
+                .apply_event(&event_type, &value, accumulated_tool_calls)
+                .map_err(|msg| {
+                    crate::agent_turn::TurnError::failed(msg, full_thinking)
+                        .with_partial_text(full_text)
+                })?;
+            if let Some(thinking) = outcome.thinking_delta {
+                full_thinking.push_str(&thinking);
+                emit_turn_thinking(app_handle, state, policy, &thinking);
+            }
+            if let Some(text) = outcome.answer_delta {
+                turn_text.push_str(&text);
+                full_text.push_str(&text);
+                emit_turn_delta(app_handle, policy, text);
+            }
+            if outcome.done {
+                return Ok(true);
+            }
+            continue;
+        }
+
+        if let Ok(parsed) = serde_json::from_value::<ChatCompletionChunk>(value) {
+            *saw_model_event = true;
+            if let Some(choice) = parsed.choices.first() {
+                if let Some(reason) = choice.finish_reason.as_deref() {
+                    *finish_reason = Some(reason.to_string());
+                }
+                if let Some(reasoning) = reasoning_delta_text(&choice.delta) {
+                    full_thinking.push_str(&reasoning);
+                    emit_turn_thinking(app_handle, state, policy, &reasoning);
+                }
+
+                if let Some(ref text) = choice.delta.content {
+                    turn_text.push_str(text);
+                    full_text.push_str(text);
+                    emit_turn_delta(app_handle, policy, text.clone());
+                }
+
+                if let Some(ref tool_calls) = choice.delta.tool_calls {
+                    for tc in tool_calls {
+                        let index = resolve_tool_call_index(
+                            accumulated_tool_calls,
+                            tc,
+                            last_tool_index,
+                        );
+                        merge_tool_call_delta(
+                            accumulated_tool_calls.entry(index).or_default(),
+                            tc,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(false)
+}
+
 fn reasoning_delta_text(delta: &crate::direct_api::api_client::Delta) -> Option<String> {
     if let Some(text) = delta.reasoning_content.as_deref() {
         if !text.is_empty() {
@@ -1384,6 +1588,7 @@ fn append_active_thinking(state: &tauri::State<'_, AppState>, text: &str) {
     crate::append_session_thinking(state, text);
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn request_tool_confirmation(
     state: &tauri::State<'_, AppState>,
     app_handle: &tauri::AppHandle,
@@ -1393,19 +1598,20 @@ async fn request_tool_confirmation(
     args: &serde_json::Value,
     pretty_args: &str,
     cancel: &tokio_util::sync::CancellationToken,
+    policy: &crate::orchestration::executor::TurnPolicy,
 ) -> bool {
     let waiting_msg = format!("[等待授权] {}\n", tool_summary(tool_name, args));
     full_thinking.push_str(&waiting_msg);
-    append_active_thinking(state, &waiting_msg);
-    let _ = app_handle.emit("ai-thinking", &waiting_msg);
-    emit_tool_event(app_handle, event_id, tool_name, "waiting", args, None, None);
+    emit_turn_trace_only(app_handle, state, policy, &waiting_msg);
+    report_tool_event(app_handle, policy, event_id, tool_name, "waiting", args, None, None);
 
     let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
     let confirm_id = format!("confirm_{}", uuid::Uuid::new_v4());
+    let turn_session_id = effective_turn_session(state, policy);
     let payload = ToolConfirmPayload {
         id: confirm_id.clone(), tool_name: tool_name.to_string(), arguments: pretty_args.to_string(),
         summary: tool_summary(tool_name, args), command: tool_command(tool_name, args), path: tool_path(tool_name, args),
-        session_id: crate::current_turn_session(state),
+        session_id: turn_session_id.clone(),
     };
     {
         let mut confirms = state.pending_confirms.lock().await;
@@ -1438,13 +1644,13 @@ async fn request_tool_confirmation(
             emit_resolved(true);
             let approved_msg = "[用户已授权，开始执行]\n".to_string();
             full_thinking.push_str(&approved_msg);
-            append_active_thinking(state, &approved_msg);
-            let _ = app_handle.emit("ai-thinking", &approved_msg);
+            emit_turn_trace_only(app_handle, state, policy, &approved_msg);
             if !is_high_risk_tool(tool_name) {
-                crate::remember_tool_approval(state, &crate::current_turn_session(state), tool_name).await;
+                crate::remember_tool_approval(state, &turn_session_id, tool_name).await;
             }
-            emit_tool_event(
+            report_tool_event(
                 app_handle,
+                policy,
                 event_id,
                 tool_name,
                 "approved",
@@ -1458,10 +1664,10 @@ async fn request_tool_confirmation(
             emit_resolved(false);
             let denied_msg = "[用户拒绝执行此操作]\n".to_string();
             full_thinking.push_str(&denied_msg);
-            append_active_thinking(state, &denied_msg);
-            let _ = app_handle.emit("ai-thinking", &denied_msg);
-            emit_tool_event(
+            emit_turn_trace_only(app_handle, state, policy, &denied_msg);
+            report_tool_event(
                 app_handle,
+                policy,
                 event_id,
                 tool_name,
                 "denied",
@@ -1475,10 +1681,10 @@ async fn request_tool_confirmation(
             emit_resolved(false);
             let err_msg = "[授权通道失效]\n".to_string();
             full_thinking.push_str(&err_msg);
-            append_active_thinking(state, &err_msg);
-            let _ = app_handle.emit("ai-thinking", &err_msg);
-            emit_tool_event(
+            emit_turn_trace_only(app_handle, state, policy, &err_msg);
+            report_tool_event(
                 app_handle,
+                policy,
                 event_id,
                 tool_name,
                 "denied",
@@ -1490,17 +1696,17 @@ async fn request_tool_confirmation(
         }
         crate::interactions::WaitResult::Cancelled => {
             emit_resolved(false);
-            emit_tool_event(app_handle, event_id, tool_name, "interrupted", args, Some("操作已被用户中止。"), Some(false));
+            report_tool_event(app_handle, policy, event_id, tool_name, "interrupted", args, Some("操作已被用户中止。"), Some(false));
             false
         }
         crate::interactions::WaitResult::TimedOut => {
             emit_resolved(false);
             let timeout_msg = "[确认超时 (120秒)，自动拒绝]\n".to_string();
             full_thinking.push_str(&timeout_msg);
-            append_active_thinking(state, &timeout_msg);
-            let _ = app_handle.emit("ai-thinking", &timeout_msg);
-            emit_tool_event(
+            emit_turn_trace_only(app_handle, state, policy, &timeout_msg);
+            report_tool_event(
                 app_handle,
+                policy,
                 event_id,
                 tool_name,
                 "denied",
@@ -1536,6 +1742,7 @@ async fn request_user_answer(
     event_id: &str,
     args: &serde_json::Value,
     cancel: &tokio_util::sync::CancellationToken,
+    policy: &crate::orchestration::executor::TurnPolicy,
 ) -> String {
     let question = args["question"]
         .as_str()
@@ -1563,15 +1770,19 @@ async fn request_user_answer(
 
     let waiting_msg = format!("[等待用户回答] {}\n", question);
     full_thinking.push_str(&waiting_msg);
-    append_active_thinking(state, &waiting_msg);
-    let _ = app_handle.emit("ai-thinking", &waiting_msg);
-    emit_tool_event(
-        app_handle, event_id, "ask_user", "waiting", args, None, None,
+    emit_turn_trace_only(app_handle, state, policy, &waiting_msg);
+    report_tool_event(
+        app_handle, policy, event_id, "ask_user", "waiting", args, None, None,
     );
 
     let (tx, rx) = tokio::sync::oneshot::channel::<String>();
     let question_id = format!("ask_{}", uuid::Uuid::new_v4());
-    let payload = AskUserPayload { id: question_id.clone(), question: question.clone(), options: options.clone(), session_id: crate::current_turn_session(state) };
+    let payload = AskUserPayload {
+        id: question_id.clone(),
+        question: question.clone(),
+        options: options.clone(),
+        session_id: effective_turn_session(state, policy),
+    };
     {
         let mut questions = state.pending_questions.lock().await;
         questions.insert(question_id.clone(), crate::interactions::PendingRequest { sender: tx, payload: payload.clone() });
@@ -1604,10 +1815,10 @@ async fn request_user_answer(
             };
             let answered_msg = format!("[用户已回答] {}\n", display_answer);
             full_thinking.push_str(&answered_msg);
-            append_active_thinking(state, &answered_msg);
-            let _ = app_handle.emit("ai-thinking", &answered_msg);
-            emit_tool_event(
+            emit_turn_trace_only(app_handle, state, policy, &answered_msg);
+            report_tool_event(
                 app_handle,
+                policy,
                 event_id,
                 "ask_user",
                 "completed",
@@ -1628,8 +1839,9 @@ async fn request_user_answer(
                 "ai-ask-user-resolved",
                 json!({ "id": question_id, "answered": false }),
             );
-            emit_tool_event(
+            report_tool_event(
                 app_handle,
+                policy,
                 event_id,
                 "ask_user",
                 "denied",
@@ -1641,7 +1853,7 @@ async fn request_user_answer(
         }
         crate::interactions::WaitResult::Cancelled => {
             let _ = app_handle.emit("ai-ask-user-resolved", json!({ "id": question_id, "answered": false }));
-            emit_tool_event(app_handle, event_id, "ask_user", "interrupted", args, Some("操作已被用户中止。"), Some(false));
+            report_tool_event(app_handle, policy, event_id, "ask_user", "interrupted", args, Some("操作已被用户中止。"), Some(false));
             "操作已被用户中止。".to_string()
         }
         crate::interactions::WaitResult::TimedOut => {
@@ -1652,10 +1864,10 @@ async fn request_user_answer(
             );
             let timeout_msg = "[用户未在 5 分钟内回答，继续自主处理]\n".to_string();
             full_thinking.push_str(&timeout_msg);
-            append_active_thinking(state, &timeout_msg);
-            let _ = app_handle.emit("ai-thinking", &timeout_msg);
-            emit_tool_event(
+            emit_turn_trace_only(app_handle, state, policy, &timeout_msg);
+            report_tool_event(
                 app_handle,
+                policy,
                 event_id,
                 "ask_user",
                 "completed",
@@ -1841,6 +2053,7 @@ fn mode_requires_confirmation(
         || tool_name == "search_memory"
         || tool_name == "save_memory"
         || tool_name == "ask_user"
+        || tool_name == "delegate_to_agent"
     {
         return false;
     }
@@ -1851,6 +2064,41 @@ fn mode_requires_confirmation(
             .iter()
             .any(|tool| tool == tool_name),
         _ => true,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn report_tool_event(
+    app_handle: &tauri::AppHandle,
+    policy: &crate::orchestration::executor::TurnPolicy,
+    id: &str,
+    tool_name: &str,
+    status: &str,
+    args: &serde_json::Value,
+    output: Option<&str>,
+    approved: Option<bool>,
+) {
+    if policy.emit_chat_events {
+        emit_tool_event(app_handle, id, tool_name, status, args, output, approved);
+    }
+    if let Some(sink) = policy.activity_sink.as_ref() {
+        let arguments = serde_json::to_string_pretty(args).unwrap_or_else(|_| "{}".to_string());
+        sink(crate::orchestration::executor::ActivityDelta::Tool(
+            crate::cli_activity::ToolEvent {
+                id: id.to_string(),
+                tool_name: tool_name.to_string(),
+                status: status.to_string(),
+                summary: tool_summary(tool_name, args),
+                arguments,
+                command: tool_command(tool_name, args),
+                path: tool_path(tool_name, args),
+                output: output.map(|value| compact_for_event(value, 3000)),
+                approved,
+                exit_code: None,
+                duration_ms: None,
+                changes: None,
+            },
+        ));
     }
 }
 
@@ -2049,6 +2297,15 @@ fn tool_summary(tool_name: &str, args: &serde_json::Value) -> String {
             "更新智能体 {}",
             args["agent"].as_str().unwrap_or("未知智能体")
         ),
+        "delegate_to_agent" => format!(
+            "委派 @{} 处理任务",
+            args["agent"]
+                .as_str()
+                .map(str::trim)
+                .map(|s| s.trim_start_matches('@'))
+                .filter(|s| !s.is_empty())
+                .unwrap_or("智能体")
+        ),
         "file_search" => format!(
             "搜索文件 '{}'{}",
             args["pattern"].as_str().unwrap_or("*"),
@@ -2058,6 +2315,191 @@ fn tool_summary(tool_name: &str, args: &serde_json::Value) -> String {
                 .unwrap_or_default()
         ),
         _ => format!("调用工具 {tool_name}"),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_delegate_to_agent(
+    state: &tauri::State<'_, AppState>,
+    app_handle: &tauri::AppHandle,
+    event_id: &str,
+    args: &serde_json::Value,
+    attachments: &[UserAttachment],
+    cancel: &tokio_util::sync::CancellationToken,
+    allow_delegation: bool,
+    delegation: &mut DelegationSession,
+    full_text: &str,
+    full_thinking: &str,
+) -> Result<String, crate::agent_turn::TurnError> {
+    if !allow_delegation {
+        let msg = "当前回合不允许再委派其他智能体，请直接完成当前任务并输出结果。".to_string();
+        emit_tool_event(app_handle, event_id, "delegate_to_agent", "skipped", args, Some(&msg), Some(false));
+        return Ok(msg);
+    }
+
+    let raw_agent = args["agent"]
+        .as_str()
+        .unwrap_or("")
+        .trim()
+        .trim_start_matches('@');
+    let task = args["task"].as_str().unwrap_or("").trim();
+    if raw_agent.is_empty() || task.is_empty() {
+        let msg = "委派参数不完整：agent（智能体名字）和 task（具体任务）都不能为空。".to_string();
+        emit_tool_event(app_handle, event_id, "delegate_to_agent", "skipped", args, Some(&msg), Some(false));
+        return Ok(msg);
+    }
+
+    let session_id = crate::current_turn_session(state);
+    if delegation.run_id.is_none() {
+        let busy_elsewhere = state
+            .collaboration_state
+            .lock()
+            .ok()
+            .and_then(|current| current.clone())
+            .is_some_and(|current| current.status == "running" && current.session_id != session_id);
+        if busy_elsewhere {
+            let msg = "另一个会话正在进行多智能体协同，当前暂时无法委派；你可以先由自己直接完成，或提示用户等另一会话结束后重试。".to_string();
+            emit_tool_event(app_handle, event_id, "delegate_to_agent", "skipped", args, Some(&msg), Some(false));
+            return Ok(msg);
+        }
+    }
+
+    let all_agents = {
+        let db = state.db.lock().await;
+        match db.list_agents() {
+            Ok(custom) => crate::collaboration::catalog(custom),
+            Err(error) => {
+                let msg = format!("读取智能体列表失败：{error}");
+                emit_tool_event(app_handle, event_id, "delegate_to_agent", "skipped", args, Some(&msg), Some(false));
+                return Ok(msg);
+            }
+        }
+    };
+
+    let resolved = crate::collaboration::resolve_agents(&all_agents, &[raw_agent.to_string()]);
+    let Some(target) = resolved.into_iter().next() else {
+        let available: Vec<String> = all_agents
+            .iter()
+            .map(|a| format!("@{}", crate::collaboration::mention_name(a)))
+            .collect();
+        let msg = format!(
+            "未找到名为「{raw_agent}」的智能体。当前可用成员：{}。请改用准确的成员名字或由你直接处理。",
+            available.join("、")
+        );
+        emit_tool_event(app_handle, event_id, "delegate_to_agent", "skipped", args, Some(&msg), Some(false));
+        return Ok(msg);
+    };
+
+    if delegation.turns >= crate::collaboration::MAX_TURNS {
+        let msg = format!(
+            "本轮协同委派已达到总上限（{} 次），请基于已有结果直接整合验收并回答用户。",
+            crate::collaboration::MAX_TURNS
+        );
+        emit_tool_event(app_handle, event_id, "delegate_to_agent", "skipped", args, Some(&msg), Some(false));
+        return Ok(msg);
+    }
+
+    let agent_count = delegation.agent_counts.get(&target.id).copied().unwrap_or(0);
+    if agent_count >= crate::collaboration::MAX_AGENT_TURNS {
+        let msg = format!(
+            "智能体 @{} 在本轮已被委派 {} 次（达到单角色上限），请改派其他角色或由你直接收口。",
+            target.name,
+            crate::collaboration::MAX_AGENT_TURNS
+        );
+        emit_tool_event(app_handle, event_id, "delegate_to_agent", "skipped", args, Some(&msg), Some(false));
+        return Ok(msg);
+    }
+
+    let run_id = delegation
+        .run_id
+        .get_or_insert_with(|| uuid::Uuid::new_v4().to_string())
+        .clone();
+    delegation.turns += 1;
+    *delegation.agent_counts.entry(target.id.clone()).or_default() += 1;
+
+    let context_summary = args["context_summary"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let acceptance_criteria = args["acceptance_criteria"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    emit_tool_event(
+        app_handle,
+        event_id,
+        "delegate_to_agent",
+        "running",
+        args,
+        None,
+        Some(true),
+    );
+
+    let result = Box::pin(crate::collaboration::execute_delegated_agent(
+        app_handle,
+        &target,
+        task,
+        context_summary,
+        acceptance_criteria,
+        attachments,
+        cancel,
+        &session_id,
+        &run_id,
+        delegation.turns,
+    ))
+    .await;
+
+    match result {
+        Ok(delegated) => {
+            let output = if delegated.failed {
+                format!(
+                    "[委派失败] 智能体 @{} 执行失败：{}\n你可以调整任务范围重新委派、改派其他更合适的智能体，或由你直接完成并说明情况。",
+                    target.name, delegated.text
+                )
+            } else {
+                format!(
+                    "[委派成功] 智能体 @{} 已完成任务，产出如下（请对照验收标准核对后，决定是否补充委派其他角色复核，或直接整合后交付用户）：\n\n{}",
+                    target.name, delegated.text
+                )
+            };
+            let output_for_event = tool_output_for_log(&output);
+            emit_tool_event(
+                app_handle,
+                event_id,
+                "delegate_to_agent",
+                "completed",
+                args,
+                Some(&output_for_event),
+                Some(true),
+            );
+            Ok(output)
+        }
+        Err(error) if error.aborted => {
+            emit_tool_event(
+                app_handle,
+                event_id,
+                "delegate_to_agent",
+                "interrupted",
+                args,
+                Some("操作已被用户中止。"),
+                Some(false),
+            );
+            Err(aborted_error(full_text, full_thinking))
+        }
+        Err(error) => {
+            let msg = format!("[委派异常] 调度 @{} 时出现内部错误：{}", target.name, error.message);
+            emit_tool_event(
+                app_handle,
+                event_id,
+                "delegate_to_agent",
+                "completed",
+                args,
+                Some(&msg),
+                Some(true),
+            );
+            Ok(msg)
+        }
     }
 }
 

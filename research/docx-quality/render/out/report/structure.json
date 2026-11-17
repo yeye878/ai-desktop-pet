@@ -1,0 +1,468 @@
+{
+ "source": "D:\\ai-desktop-pet\\research\\docx-quality\\out\\研究报告_直连API生成高质量Word能力提升.docx",
+ "file_name": "研究报告_直连API生成高质量Word能力提升.docx",
+ "size": 20983,
+ "sha256": "c9d3a8b8810a8b1e51df2d0cf4f2950496d7d147840fb3f71a2d4195f198e3bc",
+ "generated_at": "2026-11-14T02:07:31+0900",
+ "parts": {
+  "count": 14,
+  "list": [
+   "[Content_Types].xml",
+   "_rels/.rels",
+   "docProps/app.xml",
+   "docProps/core.xml",
+   "word/_rels/document.xml.rels",
+   "word/document.xml",
+   "word/fontTable.xml",
+   "word/footer1.xml",
+   "word/header1.xml",
+   "word/numbering.xml",
+   "word/settings.xml",
+   "word/styles.xml",
+   "word/theme/theme1.xml",
+   "word/webSettings.xml"
+  ],
+  "core_present": true,
+  "core_missing": [],
+  "target_missing": [],
+  "header_parts": [
+   "word/header1.xml"
+  ],
+  "footer_parts": [
+   "word/footer1.xml"
+  ],
+  "media_parts": []
+ },
+ "package": {
+  "parts_count": 14
+ },
+ "styles": {
+  "pstyle_count": 286,
+  "named_style_use": {
+   "Title": 1,
+   "Subtitle": 1,
+   "Divider": 2,
+   "CoverMeta": 2,
+   "TOCHeading": 1,
+   "TOC1": 1,
+   "Heading1": 10,
+   "BodyText": 17,
+   "ListParagraph": 47,
+   "Heading2": 13,
+   "TableHeader": 24,
+   "TableText": 167
+  },
+  "styles_defined_count": 23,
+  "styles_xml_outlineLvl_count": 20,
+  "styles_outline_levels": {
+   "BodyText": 9,
+   "Caption": 9,
+   "CodeBlock": 9,
+   "CoverMeta": 9,
+   "Divider": 9,
+   "Footer": 9,
+   "Header": 9,
+   "Heading1": 0,
+   "Heading2": 1,
+   "Heading3": 2,
+   "ListParagraph": 9,
+   "Quote": 9,
+   "Subtitle": 9,
+   "TOC1": 9,
+   "TOC2": 9,
+   "TOC3": 9,
+   "TOCHeading": 9,
+   "TableHeader": 9,
+   "TableText": 9,
+   "Title": 9
+  },
+  "outline_defined_styles": {
+   "Heading1": 0,
+   "Heading2": 1,
+   "Heading3": 2,
+   "TOCHeading": 9,
+   "TOC1": 9,
+   "TOC2": 9,
+   "TOC3": 9
+  },
+  "heading_styles": {
+   "Heading1": 0,
+   "Heading2": 1,
+   "Heading3": 2
+  },
+  "document_outlineLvl_count": 0,
+  "heading_paragraphs_by_style": {
+   "Heading1": 10,
+   "Heading2": 13,
+   "Heading3": 0
+  },
+  "style_body_text": {
+   "Normal": {
+    "spacing": {
+     "after": "0",
+     "line": "240",
+     "lineRule": "auto"
+    }
+   },
+   "BodyText": {
+    "ind": {
+     "firstLineChars": "200",
+     "firstLine": "480"
+    },
+    "spacing": {
+     "line": "360",
+     "lineRule": "auto",
+     "after": "120"
+    }
+   }
+  }
+ },
+ "numbering": {
+  "numPr_count": 47,
+  "numbering_part": true,
+  "numbering_defs": 10
+ },
+ "hyperlinks": {
+  "hyperlink_elements": 0,
+  "external_rels": 0,
+  "document_rels": []
+ },
+ "layout": {
+  "sectPr_count": 2,
+  "sections": [
+   {
+    "children": [
+     "type",
+     "pgSz",
+     "pgMar",
+     "titlePg",
+     "docGrid"
+    ],
+    "content_width_twips": 9026,
+    "titlePg": true
+   },
+   {
+    "children": [
+     "headerReference",
+     "footerReference",
+     "pgSz",
+     "pgMar",
+     "pgNumType",
+     "docGrid"
+    ],
+    "content_width_twips": 9026,
+    "pgNumType": {
+     "start": "1",
+     "fmt": null
+    }
+   }
+  ],
+  "content_width_twips": 9026,
+  "titlePg_count": 1,
+  "pgNumType_starts": [
+   "1"
+  ],
+  "header_reference_count": 1,
+  "footer_reference_count": 1,
+  "footer_parts": [
+   "word/footer1.xml"
+  ],
+  "header_parts": [
+   "word/header1.xml"
+  ],
+  "footer_field_instr": {
+   "word/footer1.xml": [
+    "PAGE  \\* MERGEFORMAT",
+    "NUMPAGES  \\* MERGEFORMAT"
+   ],
+   "word/header1.xml": []
+  },
+  "footer_text_sample": {
+   "word/footer1.xml": "第  PAGE  \\* MERGEFORMAT 1 页 / 共  NUMPAGES  \\* MERGEFORMAT 1 页"
+  },
+  "page_fields": 1,
+  "numpages_fields": 1
+ },
+ "fields": {
+  "toc_instr": [
+   "TOC \\o \"1-3\" \\h \\z \\u"
+  ],
+  "toc_field_present": true,
+  "updateFields": "true",
+  "updateFields_value": "true",
+  "compat_block": true,
+  "kinsoku": false,
+  "overflowPunct": false
+ },
+ "docprops": {
+  "core": {
+   "title": "直连 API 生成高质量 Word 文档的能力提升研究",
+   "subject": "以桌宠生成的 AI 新闻汇总为例：从「能打开的 docx」到「能用的报告」",
+   "creator": "DeepSeek Harness · 研究分析",
+   "lastModifiedBy": "DeepSeek Harness · 研究分析",
+   "keywords": "AI, 研究报告, OOXML",
+   "created": "2026-11-13T16:55:28Z",
+   "modified": "2026-11-13T16:55:28Z"
+  },
+  "app": {
+   "Pages": "8",
+   "Words": "4248",
+   "Application": "AI Desktop Pet · raw OOXML writer",
+   "Paragraphs": "296"
+  },
+  "core_part": true,
+  "app_part": true
+ },
+ "paragraphs": {
+  "count_all_w_p": 296,
+  "count_body_level": 105,
+  "count_in_tables": 191,
+  "longest_text_chars": 256,
+  "longest_text_head": "桌面上的《AI领域新闻报告汇总_2026年11月.docx》内容质量其实达标：64 个正文段落里 34 段使用了加粗字段名，标题层级正确（6 个二级、5 个三级",
+  "paragraphs_ge_200_chars": 4,
+  "long_paragraph_heads": [
+   "桌面上的《AI领域新闻报告汇总_2026年11月.docx》内容质量其实达标：64 个正文段落里 34 段使用了加粗字段",
+   "工具描述（tools.rs:989）明确写着「正文用 Markdown 语法书写，会自动转换为排版好的 Word 文档」",
+   "一次生成 = 一条 assistant 消息里塞进整篇正文，工具返回 Word 文档已生成: 路径（N 字节），回合结束",
+   "研究边界：本报告基于本机画像（Windows + 该仓库当前 checkout）实测；行号与数字均可用 research"
+  ],
+  "literal_dash_paragraph_count": 0,
+  "literal_dash_sample": null,
+  "literal_dash_wt_nodes": 6,
+  "body_indent_direct_count": 0,
+  "body_spacing_line": {
+   "240/auto": 8
+  },
+  "br_count": 1
+ },
+ "tables": {
+  "count": 7,
+  "grid_equals_tblW_pass": 7,
+  "grid_equals_tblW_fail": 0,
+  "detail": [
+   {
+    "index": 1,
+    "gridCols": 4,
+    "gridCol_sum": 9026,
+    "tblW": null,
+    "tblW_type": null,
+    "reference_width": 9026,
+    "gridCol_equals_tblW": true,
+    "rows": 9,
+    "tcW_count": 36,
+    "cantSplit_count": 9,
+    "tblHeader_count": 1
+   },
+   {
+    "index": 2,
+    "gridCols": 3,
+    "gridCol_sum": 9026,
+    "tblW": null,
+    "tblW_type": null,
+    "reference_width": 9026,
+    "gridCol_equals_tblW": true,
+    "rows": 7,
+    "tcW_count": 21,
+    "cantSplit_count": 7,
+    "tblHeader_count": 1
+   },
+   {
+    "index": 3,
+    "gridCols": 3,
+    "gridCol_sum": 9026,
+    "tblW": null,
+    "tblW_type": null,
+    "reference_width": 9026,
+    "gridCol_equals_tblW": true,
+    "rows": 6,
+    "tcW_count": 18,
+    "cantSplit_count": 6,
+    "tblHeader_count": 1
+   },
+   {
+    "index": 4,
+    "gridCols": 3,
+    "gridCol_sum": 9026,
+    "tblW": null,
+    "tblW_type": null,
+    "reference_width": 9026,
+    "gridCol_equals_tblW": true,
+    "rows": 6,
+    "tcW_count": 18,
+    "cantSplit_count": 6,
+    "tblHeader_count": 1
+   },
+   {
+    "index": 5,
+    "gridCols": 5,
+    "gridCol_sum": 9026,
+    "tblW": null,
+    "tblW_type": null,
+    "reference_width": 9026,
+    "gridCol_equals_tblW": true,
+    "rows": 4,
+    "tcW_count": 20,
+    "cantSplit_count": 4,
+    "tblHeader_count": 1
+   },
+   {
+    "index": 6,
+    "gridCols": 3,
+    "gridCol_sum": 9026,
+    "tblW": null,
+    "tblW_type": null,
+    "reference_width": 9026,
+    "gridCol_equals_tblW": true,
+    "rows": 13,
+    "tcW_count": 39,
+    "cantSplit_count": 13,
+    "tblHeader_count": 1
+   },
+   {
+    "index": 7,
+    "gridCols": 3,
+    "gridCol_sum": 9026,
+    "tblW": null,
+    "tblW_type": null,
+    "reference_width": 9026,
+    "gridCol_equals_tblW": true,
+    "rows": 13,
+    "tcW_count": 39,
+    "cantSplit_count": 13,
+    "tblHeader_count": 1
+   }
+  ]
+ },
+ "rpr_order": {
+  "elements_checked": 233,
+  "violations": 0,
+  "samples": []
+ },
+ "python_docx": {
+  "available": true,
+  "ok": true,
+  "paragraphs": 105,
+  "tables": 7,
+  "sections": 2
+ },
+ "checks": [
+  {
+   "check": "包结构：3 个核心 part 齐全",
+   "status": "PASS",
+   "detail": "缺: 无",
+   "category": "包结构"
+  },
+  {
+   "check": "包结构：目标态可选 part 齐全（styles/settings/theme/fontTable/webSettings/numbering/rels/docProps/header-footer）",
+   "status": "PASS",
+   "detail": "缺: 无；header=1 footer=1",
+   "category": "包结构"
+  },
+  {
+   "check": "命名样式（w:pStyle 引用）",
+   "status": "PASS",
+   "detail": "pStyle=286, 使用样式=12 种, styles.xml=有",
+   "category": "排版系统"
+  },
+  {
+   "check": "大纲级别（styles.xml 中 Heading outlineLvl）",
+   "status": "PASS",
+   "detail": "styles.xml outlineLvl=20, 段落级 outlineLvl=0, 标题样式={'Heading1': 0, 'Heading2': 1, 'Heading3': 2}",
+   "category": "排版系统"
+  },
+  {
+   "check": "真编号列表（w:numPr + numbering.xml）",
+   "status": "PASS",
+   "detail": "numPr=47, numbering.xml=有（=0 表示列表是手写文本前缀）",
+   "category": "内容元素"
+  },
+  {
+   "check": "页眉页脚 + PAGE/NUMPAGES 域",
+   "status": "PASS",
+   "detail": "footer=['word/footer1.xml'], PAGE 域=1, NUMPAGES 域=1",
+   "category": "文档结构"
+  },
+  {
+   "check": "目录 TOC 域",
+   "status": "PASS",
+   "detail": "instrText=['TOC \\\\o \"1-3\" \\\\h \\\\z \\\\u']",
+   "category": "文档结构"
+  },
+  {
+   "check": "settings 打开时更新域（w:updateFields）",
+   "status": "PASS",
+   "detail": "updateFields='true'",
+   "category": "文档结构"
+  },
+  {
+   "check": "文档属性 docProps/core.xml + app.xml",
+   "status": "PASS",
+   "detail": "core=True app=True, title='直连 API 生成高质量 Word 文档的能力提升研究' creator='DeepSeek Harness · 研究分析'",
+   "category": "包结构"
+  },
+  {
+   "check": "封面分节 + 首页不同 + 页码起始 1",
+   "status": "PASS",
+   "detail": "sectPr=2, titlePg=1, pgNumType.start=['1']",
+   "category": "文档结构"
+  },
+  {
+   "check": "表格列宽 gridCol 合计 == tblW（无 tblW 时以版心宽 9026 twips 为参照）",
+   "status": "PASS",
+   "detail": "table=7, 一致=7, 不一致=0, 明细=[(9026, 9026), (9026, 9026), (9026, 9026), (9026, 9026), (9026, 9026), (9026, 9026), (9026, 9026)]",
+   "category": "内容元素"
+  },
+  {
+   "check": "表格行控制/单元格宽度（tcW / cantSplit）",
+   "status": "PASS",
+   "detail": "tcW=[36, 21, 18, 18, 20, 39, 39], cantSplit=[9, 7, 6, 6, 4, 13, 13]",
+   "category": "内容元素"
+  },
+  {
+   "check": "rPr 子元素顺序无违规",
+   "status": "PASS",
+   "detail": "检查 rPr=233, 违规=0",
+   "category": "内容元素"
+  },
+  {
+   "check": "字面量 '---' 分隔线未残留在正文（整段 == '---'）",
+   "status": "PASS",
+   "detail": "独立成段=0, w:t 命中=6, 样本=None",
+   "category": "内容元素"
+  },
+  {
+   "check": "正文首行缩进（BodyText firstLineChars/firstLine 或段落 w:ind firstLine）",
+   "status": "PASS",
+   "detail": "段落直接缩进=0 段；BodyText 样式 ind={'firstLineChars': '200', 'firstLine': '480'}；Normal=None",
+   "category": "排版系统"
+  },
+  {
+   "check": "行距（BodyText spacing line 或正文段落 spacing 一致）",
+   "status": "PASS",
+   "detail": "BodyText spacing={'line': '360', 'lineRule': 'auto', 'after': '120'}；正文段落行距覆盖={'240/auto': 8}",
+   "category": "排版系统"
+  },
+  {
+   "check": "超链接（w:hyperlink + external relationship）",
+   "status": "WARN",
+   "detail": "hyperlink=0, external rels=0",
+   "category": "内容元素"
+  },
+  {
+   "check": "python-docx 可打开",
+   "status": "PASS",
+   "detail": "ok: paragraphs=105 tables=7 sections=2",
+   "category": "兼容性"
+  },
+  {
+   "check": "软换行合并（长段落 >=200 字）——静态观察项",
+   "status": "WARN",
+   "detail": "4 段 >=200 字，最长 256 字：'桌面上的《AI领域新闻报告汇总_2026年11月.docx》内容质量其实达标：64 个正文段落里 34 段使用了加粗字段'",
+   "category": "内容元素"
+  }
+ ],
+ "static_verdict": "WARN",
+ "fail_count": 0,
+ "warn_count": 2,
+ "pass_count": 17
+}

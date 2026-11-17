@@ -11,7 +11,8 @@ import { createAgentActivity, legacyActivity, type AgentActivityItem } from "../
 import { restoreActivityPresentation, saveActivityPresentation } from "../services/agentActivityCache";
 import type { Message, MessageAgent, ToolEventItem, AiFinishedPayload } from "./chat";
 import { messageAgentFromPayload } from "./chat";
-import { useSessionsStore } from "./sessions";
+import { SLOT_DEFAULT_AGENT, useSessionsStore, type ChatSlot } from "./sessions";
+import { useOrchestrationStore } from "./orchestration";
 import type { ToolConfirmPayload, AskUserPayload } from "../services/pendingInteractions";
 import type { CollaborationReply, CollaborationState } from "../services/collaboration";
 import { attachmentPayload, attachmentTags, buildMessageWithFiles, type PendingFile } from "../services/attachments";
@@ -34,9 +35,10 @@ export interface SessionRuntime {
   loaded: boolean;
   pendingConfirm: ToolConfirmPayload | null;
   pendingQuestion: AskUserPayload | null;
-  /** 主会话协同：当前 run_id 与已落窗格的 turn_id（去重）。 */
+  /** 主会话协同：当前 run_id、已落窗格的 turn_id（去重）与最新协同状态。 */
   collaborationRunId: string;
   collaborationTurns: Set<string>;
+  collaboration: CollaborationState | null;
 }
 
 function newTurn(): SessionTurn {
@@ -97,6 +99,7 @@ export const useSessionRuntimeStore = defineStore("sessionRuntime", () => {
         pendingQuestion: null,
         collaborationRunId: "",
         collaborationTurns: new Set<string>(),
+        collaboration: null,
       };
     }
     return runtimes[sessionId];
@@ -178,10 +181,16 @@ export const useSessionRuntimeStore = defineStore("sessionRuntime", () => {
     runtime.turn.streamingAnswer = "";
     runtime.turn.toolEvents = [];
     runtime.turn.activity.reset();
+    runtime.collaboration = null;
+    runtime.collaborationRunId = "";
+    runtime.collaborationTurns.clear();
     touch(sessionId);
     const isAgent = session.slot !== "main";
+    const fixedAgentId = isAgent
+      ? SLOT_DEFAULT_AGENT?.[session.slot as Exclude<ChatSlot, "main">] || session.agent_id || undefined
+      : undefined;
     try {
-      await invoke("send_to_ai", {
+      const result = await invoke<{ orchestrated?: boolean } | undefined>("send_to_ai", {
         message: buildMessageWithFiles(content, files),
         attachments: attachmentPayload(files),
         quotedRole: quote?.role,
@@ -189,9 +198,15 @@ export const useSessionRuntimeStore = defineStore("sessionRuntime", () => {
         mentionAgents: [],
         collaborationEnabled: session.slot === "main",
         sessionId,
-        targetAgentId: isAgent ? session.agent_id || undefined : undefined,
+        targetAgentId: fixedAgentId,
         model: session.model || "",
       });
+      if (result?.orchestrated) {
+        runtime.turn.loading = false;
+        runtime.turn.thinking = "";
+        runtime.turn.streamingAnswer = "";
+        runtime.turn.activity.reset();
+      }
     } catch (error) {
       settle(sessionId, "出错了: " + String(error), { reason: "failed" });
     }
@@ -340,23 +355,55 @@ export const useSessionRuntimeStore = defineStore("sessionRuntime", () => {
     }));
     // 其它视图（单窗格 / 聊天子窗口）发出的用户消息与定时任务系统消息；
     // 发送方自己已乐观插入，按最后一条消息去重，避免重复。
-    listeners.push(await listen<{ session_id?: string; role?: string; content?: string; files?: FileAttachment[]; fileAttachments?: FileAttachment[]; quote?: { role?: string; content?: string } }>("sync-chat-message", ({ payload }) => {
+    listeners.push(await listen<{
+      session_id?: string;
+      role?: string;
+      content?: string;
+      thinking?: string;
+      orchestration_run_id?: string;
+      agent?: { id?: string; name?: string; avatar?: string } | null;
+      files?: FileAttachment[];
+      fileAttachments?: FileAttachment[];
+      quote?: { role?: string; content?: string };
+    }>("sync-chat-message", ({ payload }) => {
       const runtime = route(payload?.session_id);
       if (!runtime || !payload?.content) return;
       const role: Message["role"] = payload.role === "assistant" ? "assistant" : payload.role === "system" ? "system" : "user";
       const last = runtime.messages[runtime.messages.length - 1];
       if (last && last.role === role && visibleMessageContent(last) === visibleMessageContent({ role, content: payload.content })) return;
-      runtime.messages.push({
+      const syncAgent: MessageAgent | null = payload.agent?.name
+        ? { id: payload.agent.id || undefined, name: payload.agent.name, avatar: payload.agent.avatar || undefined }
+        : null;
+      const orchActivity =
+        role === "assistant" && payload.orchestration_run_id
+          ? useOrchestrationStore().buildRunActivity(payload.orchestration_run_id, payload.content)
+          : [];
+      const message: Message = {
         id: nextLocalMessageId++,
         role,
         content: payload.content,
+        thinking: payload.thinking || undefined,
         files: payload.files ?? payload.fileAttachments,
         timestamp: Date.now(),
         quote: payload.quote?.content
           ? { role: payload.quote.role === "assistant" ? "assistant" : "user", content: payload.quote.content }
           : undefined,
+        agent: syncAgent,
         session_id: runtime.sessionId,
-      });
+      };
+      if (orchActivity.length) {
+        message.activity = orchActivity;
+        message.displayContent = payload.content;
+        saveActivityPresentation(presentationStorage, {
+          content: message.content,
+          thinking: message.thinking,
+          timestamp: message.timestamp,
+          agent: message.agent ?? null,
+          activity: orchActivity,
+          displayContent: payload.content,
+        });
+      }
+      runtime.messages.push(message);
       if (role === "user") {
         runtime.turn.loading = true;
         runtime.turn.thinking = "";
@@ -374,6 +421,7 @@ export const useSessionRuntimeStore = defineStore("sessionRuntime", () => {
         runtime.turn.activity.reset();
         runtime.turn.toolEvents = [];
       }
+      runtime.collaboration = payload;
       runtime.turn.loading = payload.status === "running";
       if (payload.status !== "running") {
         runtime.turn.thinking = "";

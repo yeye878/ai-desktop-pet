@@ -1,0 +1,37 @@
+{
+ "label": "report",
+ "source": "D:\\ai-desktop-pet\\research\\docx-quality\\out\\研究报告_直连API生成高质量Word能力提升.docx",
+ "outdir": "D:\\ai-desktop-pet\\research\\docx-quality\\render\\out\\report",
+ "mode": "structure",
+ "started_at": "2026-11-14T02:07:31+0900",
+ "environment": {
+  "python": "3.12.6",
+  "word_exe": "C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE",
+  "free_offers": null
+ },
+ "source_copy": "D:\\ai-desktop-pet\\research\\docx-quality\\render\\out\\report\\source\\source_copy.docx",
+ "sha256": {
+  "original": "c9d3a8b8810a8b1e51df2d0cf4f2950496d7d147840fb3f71a2d4195f198e3bc",
+  "copy": "c9d3a8b8810a8b1e51df2d0cf4f2950496d7d147840fb3f71a2d4195f198e3bc",
+  "identical": true
+ },
+ "size": 20983,
+ "render": {
+  "attempted": false,
+  "ok": false,
+  "reason": "mode=structure，跳过 Word 渲染"
+ },
+ "structure": {
+  "file": "D:\\ai-desktop-pet\\research\\docx-quality\\render\\out\\report\\structure.json",
+  "verdict": "WARN",
+  "parts_count": 14,
+  "checks": {
+   "pass": 17,
+   "fail": 0,
+   "warn": 2
+  },
+  "failed_checks": []
+ },
+ "finished_at": "2026-11-14T02:07:31+0900",
+ "elapsed_s": 0.26
+}

@@ -1,0 +1,3287 @@
+[
+ {
+  "hwnd": 854172,
+  "pid": 13336,
+  "class": "ThumbnailDeviceHelperWnd",
+  "title": "",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66094,
+  "pid": 5636,
+  "class": "ForegroundStaging",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66028,
+  "pid": 14432,
+  "class": "ForegroundStaging",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 656010,
+  "pid": 37068,
+  "class": "TkTopLevel",
+  "title": "tk",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132896,
+  "pid": 13356,
+  "class": "Chrome_WidgetWin_1",
+  "title": "dsh-pet 桌宠（桌面模式）",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 196974,
+  "pid": 13336,
+  "class": "TopLevelWindowForOverflowXamlIsland",
+  "title": "系统托盘溢出窗口。",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 199020,
+  "pid": 5220,
+  "class": "popupshadow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 199040,
+  "pid": 5220,
+  "class": "TrayNotifyWnd",
+  "title": "微信",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 197982,
+  "pid": 12244,
+  "class": "XamlExplorerHostIslandWindow_WASDK",
+  "title": "",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65972,
+  "pid": 12244,
+  "class": "tooltips_class32",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 262810,
+  "pid": 20876,
+  "class": "SonicMapperOSD",
+  "title": "SonicMapperOSD",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66050,
+  "pid": 12568,
+  "class": "CEF-OSC-WIDGET",
+  "title": "NVIDIA GeForce Overlay DT",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66324,
+  "pid": 17336,
+  "class": "Wnd_StartFeed",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 1574944,
+  "pid": 5220,
+  "class": "tooltips_class32",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65928,
+  "pid": 13336,
+  "class": "tooltips_class32",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 460166,
+  "pid": 37516,
+  "class": "KT_SANGOKUSHI14_WINDOW",
+  "title": "三国志14 威力加强版套装",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 17435696,
+  "pid": 38308,
+  "class": "ConsoleWindowClass",
+  "title": "C:\\Users\\15188\\AppData\\Local\\Temp\\dsh-ops-niu-exec-8iZ2oz\\niu.exe",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 263372,
+  "pid": 35248,
+  "class": "DXGIWatchdogThreadWindow",
+  "title": "DXGIWatchdogThreadWindow",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 4000422,
+  "pid": 35984,
+  "class": "DIEmWin",
+  "title": "DIEmWin",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 329554,
+  "pid": 35808,
+  "class": "COMTASKSWINDOWCLASS",
+  "title": "Task Host Window",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 460658,
+  "pid": 37068,
+  "class": "TtkMonitorClass",
+  "title": "TtkMonitorWindow",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 395474,
+  "pid": 27984,
+  "class": "Windows.UI.Core.CoreWindow",
+  "title": "DesktopWindowXamlSource",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 199682,
+  "pid": 32752,
+  "class": "OleDdeWndClass",
+  "title": "DDE Server Window",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 199658,
+  "pid": 32752,
+  "class": "Chrome_WidgetWin_0",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 199692,
+  "pid": 32752,
+  "class": "Electron_NotifyIconHostWindow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 723850,
+  "pid": 35676,
+  "class": "Chrome_WidgetWin_0",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 199632,
+  "pid": 35472,
+  "class": "crashpad_SessionEndWatcher",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 265174,
+  "pid": 32752,
+  "class": "Electron_SystemPreferencesHostWindow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 920428,
+  "pid": 32752,
+  "class": "Chrome_WidgetWin_0",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 1510210,
+  "pid": 32752,
+  "class": "Base_PowerMessageWindow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 3409726,
+  "pid": 11936,
+  "class": "OleDdeWndClass",
+  "title": "DDE Server Window",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 265018,
+  "pid": 31884,
+  "class": "Chrome_WidgetWin_0",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 14420276,
+  "pid": 11936,
+  "class": "Chrome_WidgetWin_0",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 2951654,
+  "pid": 11936,
+  "class": "Chrome_WidgetWin_0",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 985732,
+  "pid": 11936,
+  "class": "Base_PowerMessageWindow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 133474,
+  "pid": 5220,
+  "class": "popupshadow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 133444,
+  "pid": 5220,
+  "class": "CWebviewControlHostWnd",
+  "title": "CWebviewHostWnd",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 133442,
+  "pid": 5220,
+  "class": "popupshadow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 133516,
+  "pid": 5220,
+  "class": "EmotionTipWnd",
+  "title": "EmotionTipWnd",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 133514,
+  "pid": 5220,
+  "class": "popupshadow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 133512,
+  "pid": 5220,
+  "class": "ChatContactMenu",
+  "title": "ChatContactMenu",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 133510,
+  "pid": 5220,
+  "class": "HttpImgHoverWnd",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 133522,
+  "pid": 5220,
+  "class": "HttpImgHoverWnd",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 133520,
+  "pid": 5220,
+  "class": "popupshadow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 133524,
+  "pid": 5220,
+  "class": "EmotionTipWnd",
+  "title": "EmotionTipWnd",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 133526,
+  "pid": 5220,
+  "class": "popupshadow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 133528,
+  "pid": 5220,
+  "class": "ChatContactMenu",
+  "title": "ChatContactMenu",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 133486,
+  "pid": 5220,
+  "class": "WeChatMainWndForPC",
+  "title": "微信",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 133886,
+  "pid": 31044,
+  "class": "tooltips_class32",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 854560,
+  "pid": 31044,
+  "class": "CabinetWClass",
+  "title": "主文件夹 - 文件资源管理器",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 3869200,
+  "pid": 31044,
+  "class": "WorkerW",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 133472,
+  "pid": 5220,
+  "class": "SessionDragWnd",
+  "title": "SessionDragWnd",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 526226,
+  "pid": 13192,
+  "class": "Chrome_WidgetWin_0",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 919522,
+  "pid": 31132,
+  "class": "Chrome_WidgetWin_0",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 853816,
+  "pid": 31132,
+  "class": "Base_PowerMessageWindow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 2164878,
+  "pid": 2468,
+  "class": "crashpad_SessionEndWatcher",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 3801128,
+  "pid": 18760,
+  "class": "global_hotkey_app",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 3276830,
+  "pid": 18760,
+  "class": "Tao Thread Event Target",
+  "title": "",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 985040,
+  "pid": 32604,
+  "class": "crashpad_SessionEndWatcher",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132094,
+  "pid": 12464,
+  "class": "FLUTTER_RUNNER_WIN32_WINDOW",
+  "title": "向日葵远程控制",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 28051740,
+  "pid": 12464,
+  "class": "MbToolTip",
+  "title": "MbToolTip",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 591996,
+  "pid": 26312,
+  "class": "GDI+ Hook Window Class",
+  "title": "GDI+ Window (Explorer.EXE)",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 3213744,
+  "pid": 12876,
+  "class": "OleDdeWndClass",
+  "title": "DDE Server Window",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 264752,
+  "pid": 3156,
+  "class": "Chrome_WidgetWin_0",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 4000016,
+  "pid": 7072,
+  "class": "Chrome_WidgetWin_0",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 658088,
+  "pid": 7072,
+  "class": "Chrome_WidgetWin_0",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 920198,
+  "pid": 7072,
+  "class": "Base_PowerMessageWindow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 592202,
+  "pid": 29464,
+  "class": "crashpad_SessionEndWatcher",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 330206,
+  "pid": 31528,
+  "class": "tray_icon_app",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 395734,
+  "pid": 31528,
+  "class": "com.ccswitch.desktop-sic",
+  "title": "com.ccswitch.desktop-siw",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 461364,
+  "pid": 31528,
+  "class": "Tao Thread Event Target",
+  "title": "",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 133546,
+  "pid": 13828,
+  "class": "Chrome_WidgetWin_0",
+  "title": "微信",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 133462,
+  "pid": 16100,
+  "class": "Chrome_WidgetWin_0",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 133490,
+  "pid": 13828,
+  "class": "Chrome_WidgetWin_0",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 723242,
+  "pid": 13828,
+  "class": "Base_PowerMessageWindow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 4589872,
+  "pid": 8768,
+  "class": "crashpad_SessionEndWatcher",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 133478,
+  "pid": 16100,
+  "class": "Chrome_WidgetWin_0",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 592314,
+  "pid": 5220,
+  "class": "Base_PowerMessageWindow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 1115480,
+  "pid": 5220,
+  "class": "TimerDispatchWnd",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 2558248,
+  "pid": 5220,
+  "class": "EventDispatchWnd",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 5048598,
+  "pid": 29316,
+  "class": "crashpad_SessionEndWatcher",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 2753864,
+  "pid": 20704,
+  "class": "GDI+ Hook Window Class",
+  "title": "GDI+ Window (WeChat.exe)",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 67822,
+  "pid": 26496,
+  "class": "Chrome_WidgetWin_0",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 67820,
+  "pid": 25896,
+  "class": "Electron_NotifyIconHostWindow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 67830,
+  "pid": 25896,
+  "class": "Chrome_WidgetWin_0",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 2033136,
+  "pid": 25896,
+  "class": "Chrome_WidgetWin_0",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 2426800,
+  "pid": 25896,
+  "class": "Base_PowerMessageWindow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 2426926,
+  "pid": 12876,
+  "class": "Chrome_WidgetWin_0",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 133220,
+  "pid": 8960,
+  "class": "HwndWrapper[GCUService.exe;;5cb96599-7b03-45a4-b6d7-29203af57629]",
+  "title": "SystemResourceNotifyWindow",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 133218,
+  "pid": 8960,
+  "class": "HwndWrapper[GCUService.exe;;ad28aafd-b79d-407b-b383-fdcbc174de11]",
+  "title": "MediaContextNotificationWindow",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 918900,
+  "pid": 20824,
+  "class": "WorkerW",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132564,
+  "pid": 6188,
+  "class": "Chrome_WidgetWin_0",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 198160,
+  "pid": 12876,
+  "class": "Electron_NotifyIconHostWindow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 393524,
+  "pid": 12876,
+  "class": "Chrome_WidgetWin_0",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 393546,
+  "pid": 12876,
+  "class": "Base_PowerMessageWindow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132444,
+  "pid": 6456,
+  "class": "Chrome_WidgetWin_0",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 263554,
+  "pid": 22736,
+  "class": "ConsoleWindowClass",
+  "title": "C:\\WINDOWS\\system32\\cmd.exe",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132438,
+  "pid": 20412,
+  "class": "Chrome_WidgetWin_0",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132430,
+  "pid": 6456,
+  "class": "Chrome_WidgetWin_0",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132472,
+  "pid": 6456,
+  "class": "Base_PowerMessageWindow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132418,
+  "pid": 15508,
+  "class": "crashpad_SessionEndWatcher",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 131334,
+  "pid": 27340,
+  "class": "Chrome_WidgetWin_0",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 262428,
+  "pid": 1952,
+  "class": "OwlElectron_NotifyIconHostWindow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 1179706,
+  "pid": 1952,
+  "class": "Chrome_WidgetWin_1",
+  "title": "ChatGPT",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 67278,
+  "pid": 1952,
+  "class": "Base_PowerMessageWindow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 67274,
+  "pid": 1952,
+  "class": "Chrome_WidgetWin_0",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 197950,
+  "pid": 2676,
+  "class": "crashpad_SessionEndWatcher",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 67256,
+  "pid": 21368,
+  "class": ".NET-BroadcastEventWindow.4.0.0.0.141b42a.0",
+  "title": ".NET-BroadcastEventWindow.4.0.0.0.141b42a.0",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 67250,
+  "pid": 21368,
+  "class": "WindowsForms10.Window.0.app.0.141b42a_r10_ad1",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 67244,
+  "pid": 22216,
+  "class": "GDI+ Hook Window Class",
+  "title": "GDI+ Window (SystrayComponent.exe)",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132334,
+  "pid": 8908,
+  "class": "crashpad_SessionEndWatcher",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132336,
+  "pid": 14440,
+  "class": "Qt687MW_QTScreenChangeObserverWindow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 197346,
+  "pid": 9088,
+  "class": "WinMessageDispatcherHiddenWindow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 67214,
+  "pid": 26276,
+  "class": "HwndWrapper[OSDTpDetect.exe;;6e471c46-9da9-4fa1-a112-6993965a7e6f]",
+  "title": "SystemResourceNotifyWindow",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132360,
+  "pid": 26276,
+  "class": "HwndWrapper[OSDTpDetect.exe;;66721a78-c63b-4539-b0be-36d87ee3038c]",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 67192,
+  "pid": 26220,
+  "class": "crashpad_SessionEndWatcher",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 67188,
+  "pid": 26184,
+  "class": "Gemini.AppLauncher.MessageWindow",
+  "title": "Gemini Launcher",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 67174,
+  "pid": 7844,
+  "class": "ConsoleWindowClass",
+  "title": "C:\\WINDOWS\\system32\\cmd.exe",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 67154,
+  "pid": 25288,
+  "class": "Chrome_StatusTrayWindow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 67118,
+  "pid": 25288,
+  "class": "Chrome_WidgetWin_0",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 67110,
+  "pid": 25288,
+  "class": "Base_PowerMessageWindow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 787996,
+  "pid": 25328,
+  "class": "crashpad_SessionEndWatcher",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 196990,
+  "pid": 20964,
+  "class": "Windows.UI.Core.CoreWindow",
+  "title": "Nahimic",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 197558,
+  "pid": 17824,
+  "class": "GDI+ Hook Window Class",
+  "title": "GDI+ Window (AweSun.exe)",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132410,
+  "pid": 15500,
+  "class": "ApplicationFrameWindow",
+  "title": "",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 526454,
+  "pid": 12464,
+  "class": "MbToolTip",
+  "title": "MbToolTip",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 262910,
+  "pid": 13224,
+  "class": "ApplicationFrameWindow",
+  "title": "Nahimic",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 197616,
+  "pid": 4924,
+  "class": "YunBrowserDetectServiceWnd",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132102,
+  "pid": 2096,
+  "class": "ATL:00007FFFDF2BF000",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132104,
+  "pid": 2096,
+  "class": "SecHealth Window Class",
+  "title": "SecurityHealthSystray",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66872,
+  "pid": 22464,
+  "class": "OleDdeWndClass",
+  "title": "DDE Server Window",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132382,
+  "pid": 22464,
+  "class": ".NET-BroadcastEventWindow.4.0.0.0.32b795f.0",
+  "title": ".NET-BroadcastEventWindow.4.0.0.0.32b795f.0",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 197910,
+  "pid": 22464,
+  "class": "WindowsForms10.Window.0.app.0.32b795f_r6_ad1",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66866,
+  "pid": 14108,
+  "class": "WorkerW",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66860,
+  "pid": 20264,
+  "class": "WorkerW",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66812,
+  "pid": 22140,
+  "class": "WindowsForms10.Window.8.app.0.3dee27_r6_ad1",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66792,
+  "pid": 22096,
+  "class": ".NET-BroadcastEventWindow.4.0.0.0.3dee27.0",
+  "title": ".NET-BroadcastEventWindow.4.0.0.0.3dee27.0",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66778,
+  "pid": 4192,
+  "class": "Windows.UI.Core.CoreWindow",
+  "title": "Windows Shell Experience 主机",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66600,
+  "pid": 20896,
+  "class": "Windows.UI.Core.CoreWindow",
+  "title": "Windows 输入体验",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 197160,
+  "pid": 20880,
+  "class": "AudioGraphSettings::GlobalProfile::CEventMonitor::MsgWindow_NahimicAPO4_4",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 262522,
+  "pid": 21340,
+  "class": ".NET-BroadcastEventWindow.bf7771.0",
+  "title": ".NET-BroadcastEventWindow.bf7771.0",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 131708,
+  "pid": 11400,
+  "class": "NVIDIA RLA Utility",
+  "title": "NVIDIA RLA Utility",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 458804,
+  "pid": 11860,
+  "class": "NvContainerWindowClass000027F0",
+  "title": "NvContainerWindowClass000027F0",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 197320,
+  "pid": 20280,
+  "class": "{5AEA657D-F3F5-4BD8-BFE9-A4B537FA24C3}",
+  "title": "{5AEA657D-F3F5-4BD8-BFE9-A4B537FA24C3}",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 524448,
+  "pid": 20056,
+  "class": "BroadcastListenerWindowThreadClass20056",
+  "title": "BroadcastListenerWindow",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 131754,
+  "pid": 20044,
+  "class": "BroadcastListenerWindowThreadClass20044",
+  "title": "BroadcastListenerWindow",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 131756,
+  "pid": 20012,
+  "class": "BroadcastListenerWindowThreadClass20012",
+  "title": "BroadcastListenerWindow",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 197662,
+  "pid": 19980,
+  "class": "BroadcastListenerWindowThreadClass19980",
+  "title": "BroadcastListenerWindow",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 327722,
+  "pid": 19968,
+  "class": "BroadcastListenerWindowThreadClass19968",
+  "title": "BroadcastListenerWindow",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66554,
+  "pid": 19360,
+  "class": "WorkerW",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 131204,
+  "pid": 18580,
+  "class": "NVSVC64.DLL",
+  "title": "NvSvc",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 131210,
+  "pid": 18552,
+  "class": "UxdService",
+  "title": "UxdService",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 131212,
+  "pid": 18544,
+  "class": "UxdService",
+  "title": "UxdService",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66478,
+  "pid": 17268,
+  "class": "MS_WebcheckMonitor",
+  "title": "MS_WebcheckMonitor",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66380,
+  "pid": 16052,
+  "class": "BluetoothNotificationAreaIconWindowClass",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66376,
+  "pid": 17268,
+  "class": "WorkerW",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66366,
+  "pid": 16052,
+  "class": "ATL:00007FF832E0A050",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66330,
+  "pid": 13336,
+  "class": "MiracastConnectionWindow",
+  "title": "MiracastConnectionWindow",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66280,
+  "pid": 17060,
+  "class": "WorkerW",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66262,
+  "pid": 16588,
+  "class": "SystemTray_Main",
+  "title": "电池指示器",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 131680,
+  "pid": 16588,
+  "class": "WorkerW",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66212,
+  "pid": 15756,
+  "class": ".NET-BroadcastEventWindow.21af1a5.0",
+  "title": ".NET-BroadcastEventWindow.21af1a5.0",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66150,
+  "pid": 15932,
+  "class": "CallBackWindowThread",
+  "title": "CallBackWindowThread",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66126,
+  "pid": 14548,
+  "class": ".NET-BroadcastEventWindow.4.0.0.0.12ab327.0",
+  "title": ".NET-BroadcastEventWindow.4.0.0.0.12ab327.0",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66058,
+  "pid": 14548,
+  "class": "HwndWrapper[SenaryAudioApp.exe;;7f477f04-8eb2-4737-9c03-5109948f9a8b]",
+  "title": "MediaContextNotificationWindow",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66054,
+  "pid": 14548,
+  "class": "HwndWrapper[SenaryAudioApp.exe;;4c7b1530-f05d-4e33-b3ab-59afd2a54484]",
+  "title": "SystemResourceNotifyWindow",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66046,
+  "pid": 12568,
+  "class": "CEF-OSC-WIDGET",
+  "title": "NVIDIA GeForce Overlay",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66040,
+  "pid": 14548,
+  "class": "WindowsForms10.Window.0.app.0.12ab327_r10_ad1",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66076,
+  "pid": 14432,
+  "class": "EdgeUiInputTopWndClass",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66198,
+  "pid": 14432,
+  "class": "WorkerW",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 459412,
+  "pid": 14432,
+  "class": "WorkerW",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66082,
+  "pid": 14432,
+  "class": "DummyDWMListenerWindow",
+  "title": "",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66036,
+  "pid": 14432,
+  "class": "DummyDWMListenerWindow",
+  "title": "",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66034,
+  "pid": 14432,
+  "class": "DummyDWMListenerWindow",
+  "title": "",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66032,
+  "pid": 14432,
+  "class": "DummyDWMListenerWindow",
+  "title": "",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66030,
+  "pid": 14432,
+  "class": "DummyDWMListenerWindow",
+  "title": "",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66024,
+  "pid": 14432,
+  "class": "GamingFallbackWindow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 131504,
+  "pid": 14548,
+  "class": "HwndWrapper[SenaryAudioApp.exe;;1d7d3b49-8cde-4b4e-91dc-f55fe6162c84]",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 131498,
+  "pid": 12568,
+  "class": "Chrome_StatusTrayWindow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66018,
+  "pid": 14520,
+  "class": "BroadcastListenerWindowThreadClass14520",
+  "title": "BroadcastListenerWindow",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66010,
+  "pid": 14488,
+  "class": "BroadcastListenerWindowThreadClass14488",
+  "title": "BroadcastListenerWindow",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66006,
+  "pid": 14432,
+  "class": "ApplicationManager_DesktopShellWindow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66000,
+  "pid": 14432,
+  "class": "Postures Broadcast Listener Class",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65996,
+  "pid": 14432,
+  "class": "WorkerW",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65994,
+  "pid": 12244,
+  "class": "WorkerW",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65992,
+  "pid": 12244,
+  "class": "WorkerW",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65952,
+  "pid": 14036,
+  "class": "WorkerW",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65950,
+  "pid": 13336,
+  "class": "WorkerW",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65936,
+  "pid": 13692,
+  "class": "CrossDeviceResumeWindowClass",
+  "title": "CrossDeviceResumeWindow",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65930,
+  "pid": 13776,
+  "class": "BroadcastListenerWindowThreadClass13776",
+  "title": "BroadcastListenerWindow",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 131316,
+  "pid": 12568,
+  "class": "Chrome_WidgetWin_0",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65884,
+  "pid": 12568,
+  "class": "Base_PowerMessageWindow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65766,
+  "pid": 12424,
+  "class": "Windows.UI.Core.CoreWindow",
+  "title": "DesktopWindowXamlSource",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65756,
+  "pid": 12616,
+  "class": "{1274D398-C3C8-422E-87DD-2FAFFD5A7F2F}",
+  "title": "{1274D398-C3C8-422E-87DD-2FAFFD5A7F2F}",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65742,
+  "pid": 12432,
+  "class": "{2A335767-FC94-417F-ABC4-B4122ADBEE60}",
+  "title": "{2A335767-FC94-417F-ABC4-B4122ADBEE60}",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 131092,
+  "pid": 12244,
+  "class": "DDEMLEvent",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 131096,
+  "pid": 12244,
+  "class": "DDEMLMom",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 131106,
+  "pid": 8960,
+  "class": "HwndWrapper[GCUService.exe;;3447f6af-e3f1-4e1c-ab54-6e45b3a04f50]",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 589870,
+  "pid": 11712,
+  "class": "PushNotificationsPowerManagement",
+  "title": "Windows Push Notifications Platform",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 196662,
+  "pid": 11848,
+  "class": "COMTASKSWINDOWCLASS",
+  "title": "Task Host Window",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65700,
+  "pid": 10124,
+  "class": "NvContainerWindowClass00002790",
+  "title": "NvContainerWindowClass00002790",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65692,
+  "pid": 10000,
+  "class": "NvContainerWindowClass00002734",
+  "title": "NvContainerWindowClass00002734",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65650,
+  "pid": 9564,
+  "class": "HelperWndClass",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65646,
+  "pid": 9304,
+  "class": "NvContainerWindowClass00002454",
+  "title": "NvContainerWindowClass00002454",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65642,
+  "pid": 5272,
+  "class": "NvContainerWindowClass00001494",
+  "title": "NvContainerWindowClass00001494",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65612,
+  "pid": 2232,
+  "class": "Dwm",
+  "title": "DWM Notification Window",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66408,
+  "pid": 17856,
+  "class": "CicLoaderWndClass",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 262958,
+  "pid": 3576,
+  "class": "identity_helper_wnd",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 131938,
+  "pid": 12464,
+  "class": "MbToolTip",
+  "title": "MbToolTip",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132198,
+  "pid": 12464,
+  "class": "FlutterMultiWindow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 197732,
+  "pid": 12464,
+  "class": "MiniBlinkTimerWindowClass",
+  "title": "OffScreenTimer",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132366,
+  "pid": 3208,
+  "class": "WUIconClass",
+  "title": "WUIconWindow",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132570,
+  "pid": 26708,
+  "class": "global_hotkey_app",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132890,
+  "pid": 23532,
+  "class": "Chrome_WidgetWin_0",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 198392,
+  "pid": 13356,
+  "class": "Electron_SystemPreferencesHostWindow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 198374,
+  "pid": 13356,
+  "class": "Chrome_WidgetWin_0",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 198370,
+  "pid": 13356,
+  "class": "Base_PowerMessageWindow",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 5898306,
+  "pid": 25956,
+  "class": "Nucleus Auth Window",
+  "title": "Microsoft OneDrive Sync Service",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 4457344,
+  "pid": 5312,
+  "class": "ATL:00007FF88631E0C0",
+  "title": "",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 1378554,
+  "pid": 25896,
+  "class": "OleDdeWndClass",
+  "title": "DDE Server Window",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 395402,
+  "pid": 16472,
+  "class": "Windows.UI.Core.CoreWindow",
+  "title": "DesktopWindowXamlSource",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 20253314,
+  "pid": 16644,
+  "class": "OperationStatusWindow",
+  "title": "进度",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 198038,
+  "pid": 25744,
+  "class": "FLUTTER_RUNNER_WIN32_WINDOW",
+  "title": "FlClash",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 461238,
+  "pid": 31528,
+  "class": "Tauri Window",
+  "title": "CC Switch",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132510,
+  "pid": 6456,
+  "class": "Chrome_WidgetWin_1",
+  "title": "Open Design Cloud 和另外 3 个页面 - 个人 - Microsoft​ Edge",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 1313666,
+  "pid": 32752,
+  "class": "Chrome_WidgetWin_1",
+  "title": "Qoder",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 8062998,
+  "pid": 18760,
+  "class": "Tauri Window",
+  "title": "AI Desktop Pet - 控制台",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 395490,
+  "pid": 25896,
+  "class": "Chrome_WidgetWin_1",
+  "title": "Multi-Agent API Workflow ...",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 524414,
+  "pid": 11936,
+  "class": "Chrome_WidgetWin_1",
+  "title": "设置与记忆库界面重排 · OpenCode",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132740,
+  "pid": 12876,
+  "class": "Chrome_WidgetWin_1",
+  "title": "提升直连API生成高质量Word文档 — DeepSeek Harness",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65892,
+  "pid": 13336,
+  "class": "Shell_TrayWnd",
+  "title": "",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65958,
+  "pid": 12244,
+  "class": "Progman",
+  "title": "Program Manager",
+  "visible": true,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66096,
+  "pid": 5636,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 525690,
+  "pid": 37068,
+  "class": "MSCTFIME UI",
+  "title": "MSCTFIME UI",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 263560,
+  "pid": 37068,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 655682,
+  "pid": 13356,
+  "class": "MSCTFIME UI",
+  "title": "MSCTFIME UI",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 198408,
+  "pid": 13356,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 2230542,
+  "pid": 5220,
+  "class": "MSCTFIME UI",
+  "title": "MSCTFIME UI",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 2165176,
+  "pid": 5220,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 131742,
+  "pid": 20876,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66048,
+  "pid": 12568,
+  "class": "MSCTFIME UI",
+  "title": "MSCTFIME UI",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65886,
+  "pid": 12568,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66326,
+  "pid": 17336,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 329142,
+  "pid": 37516,
+  "class": "MSCTFIME UI",
+  "title": "MSCTFIME UI",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 918926,
+  "pid": 37516,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 19597770,
+  "pid": 3020,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65948,
+  "pid": 13336,
+  "class": "MSCTFIME UI",
+  "title": "MSCTFIME UI",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65894,
+  "pid": 13336,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132322,
+  "pid": 35248,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 11471082,
+  "pid": 35984,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 134154,
+  "pid": 35676,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 199636,
+  "pid": 35472,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 133950,
+  "pid": 31884,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 2492334,
+  "pid": 31044,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 3475342,
+  "pid": 13192,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 1181850,
+  "pid": 2468,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 3868856,
+  "pid": 18760,
+  "class": "MSCTFIME UI",
+  "title": "MSCTFIME UI",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 1641124,
+  "pid": 18760,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 2492272,
+  "pid": 32604,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132364,
+  "pid": 12464,
+  "class": "MSCTFIME UI",
+  "title": "MSCTFIME UI",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132058,
+  "pid": 12464,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 788504,
+  "pid": 26312,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 199326,
+  "pid": 3156,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 461332,
+  "pid": 29464,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 133468,
+  "pid": 13828,
+  "class": "MSCTFIME UI",
+  "title": "MSCTFIME UI",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 133494,
+  "pid": 13828,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 1967008,
+  "pid": 8768,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 264494,
+  "pid": 16100,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 3541278,
+  "pid": 29316,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 2099494,
+  "pid": 20704,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 67824,
+  "pid": 26496,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 524648,
+  "pid": 20824,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 263610,
+  "pid": 6188,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132442,
+  "pid": 18800,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132470,
+  "pid": 20412,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132420,
+  "pid": 15508,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 131338,
+  "pid": 27340,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 67276,
+  "pid": 1952,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132798,
+  "pid": 2676,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 67252,
+  "pid": 21368,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 67246,
+  "pid": 22216,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132338,
+  "pid": 8908,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132344,
+  "pid": 14440,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132332,
+  "pid": 9088,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132406,
+  "pid": 26276,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 67194,
+  "pid": 26220,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 67190,
+  "pid": 26184,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 67176,
+  "pid": 18468,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 67112,
+  "pid": 25288,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 525850,
+  "pid": 25328,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 131136,
+  "pid": 20964,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 197564,
+  "pid": 17824,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 263154,
+  "pid": 15500,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 328284,
+  "pid": 13224,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132066,
+  "pid": 4924,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132108,
+  "pid": 2096,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132372,
+  "pid": 22464,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66868,
+  "pid": 14108,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66862,
+  "pid": 20264,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66814,
+  "pid": 22140,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66794,
+  "pid": 22096,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66780,
+  "pid": 4192,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66602,
+  "pid": 20896,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 197664,
+  "pid": 20880,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 262800,
+  "pid": 21340,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 131710,
+  "pid": 11400,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 131736,
+  "pid": 11860,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 197318,
+  "pid": 20280,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 459424,
+  "pid": 20056,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 131760,
+  "pid": 20044,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 262750,
+  "pid": 20012,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 459716,
+  "pid": 19980,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 197420,
+  "pid": 19968,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66556,
+  "pid": 19360,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 131218,
+  "pid": 18552,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66378,
+  "pid": 17268,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66368,
+  "pid": 16052,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66282,
+  "pid": 17060,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 131792,
+  "pid": 16588,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66214,
+  "pid": 15756,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66152,
+  "pid": 15932,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66022,
+  "pid": 14548,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66020,
+  "pid": 14520,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66012,
+  "pid": 14488,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65998,
+  "pid": 14432,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65954,
+  "pid": 14036,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65938,
+  "pid": 13692,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65932,
+  "pid": 13776,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65758,
+  "pid": 12616,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65744,
+  "pid": 12432,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 131104,
+  "pid": 8960,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 131116,
+  "pid": 11712,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65702,
+  "pid": 10124,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65694,
+  "pid": 10000,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65652,
+  "pid": 9564,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 65648,
+  "pid": 9304,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 197256,
+  "pid": 3576,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 198306,
+  "pid": 3208,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132454,
+  "pid": 26708,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132990,
+  "pid": 23532,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 6424192,
+  "pid": 25956,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 3999230,
+  "pid": 5312,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 723112,
+  "pid": 16472,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 657610,
+  "pid": 16644,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 1050790,
+  "pid": 16644,
+  "class": "MSCTFIME UI",
+  "title": "MSCTFIME UI",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132518,
+  "pid": 25744,
+  "class": "MSCTFIME UI",
+  "title": "MSCTFIME UI",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132616,
+  "pid": 25744,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 198674,
+  "pid": 7072,
+  "class": "MSCTFIME UI",
+  "title": "MSCTFIME UI",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 330284,
+  "pid": 7072,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 526988,
+  "pid": 31528,
+  "class": "MSCTFIME UI",
+  "title": "MSCTFIME UI",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 592208,
+  "pid": 31528,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132426,
+  "pid": 6456,
+  "class": "MSCTFIME UI",
+  "title": "MSCTFIME UI",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132610,
+  "pid": 6456,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 199660,
+  "pid": 32752,
+  "class": "MSCTFIME UI",
+  "title": "MSCTFIME UI",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 1772376,
+  "pid": 32752,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 1181600,
+  "pid": 31132,
+  "class": "MSCTFIME UI",
+  "title": "MSCTFIME UI",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 1572890,
+  "pid": 31132,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 395492,
+  "pid": 25896,
+  "class": "MSCTFIME UI",
+  "title": "MSCTFIME UI",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 1639860,
+  "pid": 25896,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 461508,
+  "pid": 11936,
+  "class": "MSCTFIME UI",
+  "title": "MSCTFIME UI",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 1575600,
+  "pid": 11936,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 132966,
+  "pid": 12876,
+  "class": "MSCTFIME UI",
+  "title": "MSCTFIME UI",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 393536,
+  "pid": 12876,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 66004,
+  "pid": 12244,
+  "class": "MSCTFIME UI",
+  "title": "MSCTFIME UI",
+  "visible": false,
+  "owner": null,
+  "children": []
+ },
+ {
+  "hwnd": 720918,
+  "pid": 12244,
+  "class": "IME",
+  "title": "Default IME",
+  "visible": false,
+  "owner": null,
+  "children": []
+ }
+]

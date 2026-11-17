@@ -85,7 +85,7 @@ type MockChatSession = {
   provider: string;
   /** 思考强度 id；空串 = 跟随本机默认（与后端 chat_sessions.reasoning_effort 一致）。 */
   reasoning_effort: string;
-  /** 本会话的本地 CLI 权限档位；空串 = 跟随设置页默认（chat_sessions.permission）。 */
+  /** 本会话的本地 CLI 权限档位；空串 = 跟随默认（chat_sessions.permission）。 */
   permission: string;
   created_at: number;
   updated_at: number;
@@ -893,6 +893,218 @@ function mockAgentModelCatalog(slot: string): MockAgentModelCatalog {
   };
 }
 
+// ===== 智能调度 mock（浏览器 dev 模式）=====
+let mockOrchestrationMode: "direct" | "collaborative" | "adaptive" = "direct";
+interface MockOrchRun {
+  task_id: string;
+  session_id: string;
+  original_request: string;
+  task_revision: number;
+  run_id: string;
+  state: string;
+  state_revision: number;
+  policy: Record<string, unknown> | null;
+  usage_stats: { agent_invocations: number; tool_calls: number };
+  final_artifact_set_id: string | null;
+  status_message: string;
+  nodes: Record<string, unknown>[];
+  artifacts: Record<string, unknown>[];
+  reviews: Record<string, unknown>[];
+  latest_seq: number;
+  events: Record<string, unknown>[];
+  finalText: string;
+  timers: ReturnType<typeof setTimeout>[];
+  created: number;
+}
+const mockOrchRuns: Record<string, MockOrchRun> = {};
+let mockOrchCounter = 0;
+
+function mockOrchEvent(run: MockOrchRun, type: string, payload: Record<string, unknown>, nodeId = "") {
+  run.latest_seq += 1;
+  const event = {
+    event_id: `evt-${run.latest_seq}`,
+    session_id: run.session_id,
+    task_id: run.task_id,
+    run_id: run.run_id,
+    node_id: nodeId,
+    invocation_id: "",
+    attempt: 0,
+    seq: run.latest_seq,
+    state_revision: run.state_revision,
+    type,
+    payload,
+    created_at: Math.floor(Date.now() / 1000),
+  };
+  run.events.push(event);
+  void emit("orchestration-event", event);
+}
+
+function mockOrchTransition(run: MockOrchRun, state: string, message: string, type: string) {
+  run.state = state;
+  run.state_revision += 1;
+  run.status_message = message;
+  mockOrchEvent(run, type, { state });
+}
+
+function createMockOrchRun(request: string, sessionId: string): MockOrchRun {
+  mockOrchCounter += 1;
+  const needsReview = /修|代码|bug|审核|重构/.test(request);
+  const run: MockOrchRun = {
+    task_id: `task-mock-${mockOrchCounter}`,
+    session_id: sessionId,
+    original_request: request,
+    task_revision: 1,
+    run_id: `run-mock-${mockOrchCounter}`,
+    state: "queued",
+    state_revision: 1,
+    policy: {
+      difficulty: needsReview ? "L2" : "L0",
+      risk: "R1",
+      force_review: needsReview,
+      pre_review_external_actions: false,
+      max_concurrency: 1,
+      max_rework: 2,
+      max_transient_retries: 1,
+      confidence_threshold: 0.75,
+      rule_hits: needsReview ? ["mandatory_review: difficulty=L2 risk=R1"] : [],
+      policy_version: 1,
+    },
+    usage_stats: { agent_invocations: 0, tool_calls: 0 },
+    final_artifact_set_id: null,
+    status_message: "",
+    nodes: [
+      { node_id: "assess", kind: "assess", state: "pending", objective: "独立评估", dependencies: [], assigned_agent_id: "assessor", assigned_agent_name: "任务评估", assigned_backend: "direct_api" },
+      { node_id: "work-1", kind: "work", state: "pending", objective: request, dependencies: ["assess"], rework_round: 0, assigned_agent_id: needsReview ? "builtin-codex" : "main", assigned_agent_name: needsReview ? "codex" : "主助理", assigned_agent_avatar: needsReview ? "⌘" : "🐾", assigned_backend: needsReview ? "codex" : "direct_api" },
+      ...(needsReview ? [{ node_id: "review-final", kind: "review", state: "pending", objective: "独立验收", dependencies: ["work-1"], assigned_agent_id: "reviewer", assigned_agent_name: "独立审核", assigned_backend: "direct_api" }] : []),
+    ],
+    artifacts: [],
+    reviews: [],
+    latest_seq: 0,
+    events: [],
+    finalText: `（mock 交付）已完成：${request}`,
+    timers: [],
+    created: Date.now() + mockOrchCounter / 1000,
+  };
+  mockOrchRuns[run.run_id] = run;
+  return run;
+}
+
+function scheduleMockOrchRun(run: MockOrchRun) {
+  const needsReview = (run.policy as { force_review?: boolean } | null)?.force_review === true;
+  const step = (delay: number, fn: () => void) => {
+    run.timers.push(setTimeout(() => {
+      if (["cancelled", "succeeded", "failed", "review_failed", "budget_exhausted"].includes(run.state)) return;
+      fn();
+    }, delay));
+  };
+  const setNode = (id: string, state: string) => {
+    const node = run.nodes.find((n) => n.node_id === id);
+    if (node) node.state = state;
+  };
+  const workerId = needsReview ? "builtin-codex" : "main";
+  const workerName = needsReview ? "codex" : "主助理";
+  const workerAvatar = needsReview ? "⌘" : "🐾";
+  const workerBackend = needsReview ? "codex" : "direct_api";
+  const emitAct = (nodeId: string, roleKind: string, inv: string, agentId: string, agentName: string, agentAvatar: string, backend: string, kind: string, text?: string, tool?: Record<string, unknown>) => {
+    void emit("orchestration-activity", {
+      session_id: run.session_id,
+      run_id: run.run_id,
+      node_id: nodeId,
+      role_kind: roleKind,
+      invocation_id: inv,
+      attempt: 1,
+      agent_id: agentId,
+      agent_name: agentName,
+      agent_avatar: agentAvatar,
+      backend,
+      kind,
+      text: text ?? null,
+      tool: tool ?? null,
+    });
+  };
+  step(150, () => {
+    mockOrchTransition(run, "assessing", "", "run.assessing");
+    emitAct("assess", "assess", `inv-${run.run_id}-assess`, "assessor", "任务评估", "🧭", "direct_api", "started");
+    emitAct("assess", "assess", `inv-${run.run_id}-assess`, "assessor", "任务评估", "🧭", "direct_api", "thinking", "分析任务范围与风险，匹配合适智能体…");
+  });
+  step(500, () => {
+    emitAct("assess", "assess", `inv-${run.run_id}-assess`, "assessor", "任务评估", "🧭", "direct_api", "completed");
+    setNode("assess", "completed");
+    run.usage_stats.agent_invocations += 1;
+    mockOrchEvent(run, "assessment.completed", {
+      difficulty: (run.policy as { difficulty: string }).difficulty,
+      risk: "R1",
+      force_review: needsReview,
+      recommended_agent_id: workerId,
+      recommended_agent_name: workerName,
+      recommended_agent_avatar: workerAvatar,
+      recommended_backend: workerBackend,
+      recommended_reason: needsReview ? "代码排查与修改交由 Codex" : "通用问答由主助理完成",
+    }, "assess");
+    mockOrchTransition(run, "executing", "", "run.executing");
+    setNode("work-1", "running");
+    emitAct("work-1", "work", `inv-${run.run_id}-work`, workerId, workerName, workerAvatar, workerBackend, "started");
+    emitAct("work-1", "work", `inv-${run.run_id}-work`, workerId, workerName, workerAvatar, workerBackend, "thinking", "正在检索相关信息与核对上下文…");
+    emitAct("work-1", "work", `inv-${run.run_id}-work`, workerId, workerName, workerAvatar, workerBackend, "tool", undefined, {
+      id: `tool-${run.run_id}-1`,
+      tool_name: needsReview ? "read_file" : "web_search",
+      status: "running",
+      summary: needsReview ? "读取相关模块源码" : "检索最新资料",
+      path: needsReview ? "src/stores/memory.ts" : undefined,
+    });
+  });
+  step(1100, () => {
+    emitAct("work-1", "work", `inv-${run.run_id}-work`, workerId, workerName, workerAvatar, workerBackend, "tool", undefined, {
+      id: `tool-${run.run_id}-1`,
+      tool_name: needsReview ? "read_file" : "web_search",
+      status: "completed",
+      summary: needsReview ? "读取相关模块源码" : "检索最新资料",
+      output: "已取得验证结果。",
+    });
+    emitAct("work-1", "work", `inv-${run.run_id}-work`, workerId, workerName, workerAvatar, workerBackend, "completed");
+    setNode("work-1", "completed");
+    run.usage_stats.agent_invocations += 1;
+    run.artifacts.push({ artifact_set_id: `art-${run.run_id}`, revision: 1, content_hash: "mockhash0001", known_limitations: [] });
+    mockOrchEvent(run, "artifact.published", { artifact_set_id: `art-${run.run_id}`, revision: 1 }, "work-1");
+    mockOrchTransition(run, "validating", "", "run.validating");
+  });
+  step(1500, () => {
+    mockOrchEvent(run, "validation.completed", { checks: [{ criterion_id: needsReview ? "checks-pass" : "cover-request", status: "pass" }] }, "work-1");
+    if (needsReview) {
+      mockOrchTransition(run, "reviewing", "", "run.reviewing");
+      setNode("review-final", "running");
+      emitAct("review-final", "review", `inv-${run.run_id}-rev`, "reviewer", "独立审核", "🔍", "direct_api", "started");
+    }
+  });
+  step(2100, () => {
+    if (needsReview) {
+      emitAct("review-final", "review", `inv-${run.run_id}-rev`, "reviewer", "独立审核", "🔍", "direct_api", "completed");
+      run.usage_stats.agent_invocations += 1;
+      run.reviews.push({
+        schema_version: 1,
+        task_revision: 1,
+        artifact_set_id: `art-${run.run_id}`,
+        artifact_hash: "mockhash0001",
+        verdict: "pass",
+        checks: [{ criterion_id: "checks-pass", status: "pass", evidence_refs: ["ev-mock"], explanation: "退出码 0" }],
+        issues: [],
+      });
+      setNode("review-final", "completed");
+      mockOrchEvent(run, "review.completed", { verdict: "pass", artifact_revision: 1 }, "review-final");
+    }
+    run.final_artifact_set_id = `art-${run.run_id}`;
+    mockOrchTransition(run, "succeeded", "验收通过", "run.succeeded");
+    void emit("sync-chat-message", {
+      session_id: run.session_id,
+      role: "assistant",
+      content: run.finalText,
+      orchestration_run_id: run.run_id,
+      agent: { id: workerId, name: workerName, avatar: workerAvatar },
+    });
+    void emit("orchestration-run-finished", { run_id: run.run_id, task_id: run.task_id, session_id: run.session_id, state: "succeeded", text: run.finalText });
+  });
+}
+
 function handleMockCommand(cmd: string, args: MockPayload) {
   if (cmd.startsWith("plugin:")) {
     if (cmd === "plugin:window|get_all_windows") return ["main"];
@@ -905,6 +1117,68 @@ function handleMockCommand(cmd: string, args: MockPayload) {
   }
 
   switch (cmd) {
+    case "get_orchestration_mode":
+      return mockOrchestrationMode;
+    case "set_orchestration_mode": {
+      const mode = String(readArg(args, "mode", "mode", "direct"));
+      if (!["direct", "collaborative", "adaptive"].includes(mode)) throw new Error("未知组织方式");
+      mockOrchestrationMode = mode as typeof mockOrchestrationMode;
+      return mockOrchestrationMode;
+    }
+    case "start_orchestrated_task": {
+      const request = String(readArg(args, "request", "request", ""));
+      const sessionId = String(readArg(args, "sessionId", "session_id", mockActiveMainSessionId || "session-default"));
+      const run = createMockOrchRun(request, sessionId);
+      scheduleMockOrchRun(run);
+      void emit("orchestration-run-started", { session_id: sessionId, task_id: run.task_id, run_id: run.run_id });
+      return { task_id: run.task_id, run_id: run.run_id, session_id: sessionId };
+    }
+    case "get_orchestrated_run": {
+      const run = mockOrchRuns[String(readArg(args, "runId", "run_id", ""))];
+      if (!run) throw new Error("run 不存在");
+      return JSON.parse(JSON.stringify(run));
+    }
+    case "list_orchestrated_runs": {
+      const sessionId = String(readArg(args, "sessionId", "session_id", ""));
+      return Object.values(mockOrchRuns)
+        .filter((run) => run.session_id === sessionId)
+        .sort((a, b) => b.created - a.created)
+        .map((run) => ({
+          run_id: run.run_id, task_id: run.task_id, state: run.state,
+          state_revision: run.state_revision, status_message: run.status_message,
+          created_at: Math.floor(Date.now() / 1000), updated_at: Math.floor(Date.now() / 1000),
+          request: run.original_request,
+        }));
+    }
+    case "get_orchestration_events": {
+      const run = mockOrchRuns[String(readArg(args, "runId", "run_id", ""))];
+      const after = Number(readArg(args, "afterSeq", "after_seq", "0"));
+      return (run?.events ?? []).filter((event) => Number(event.seq) > after);
+    }
+    case "cancel_orchestrated_run": {
+      const run = mockOrchRuns[String(readArg(args, "runId", "run_id", ""))];
+      if (!run) return false;
+      if (["succeeded", "failed", "review_failed", "cancelled"].includes(run.state)) return false;
+      run.timers.forEach(clearTimeout);
+      mockOrchTransition(run, "cancelled", "已取消", "run.cancelled");
+      void emit("orchestration-run-finished", { run_id: run.run_id, session_id: run.session_id, state: "cancelled", text: "" });
+      return true;
+    }
+    case "get_orchestration_artifact": {
+      const run = Object.values(mockOrchRuns).find((r) => r.artifacts.some((a) => a.artifact_set_id === readArg(args, "artifactSetId", "artifact_set_id", "")));
+      return { manifest: run?.artifacts[0] ?? null, items: [{ id: "reply", content: run?.finalText ?? "" }] };
+    }
+    case "resume_orchestrated_run": {
+      const previous = String(readArg(args, "runId", "run_id", ""));
+      const old = mockOrchRuns[previous];
+      const run = createMockOrchRun(old?.original_request ?? "恢复任务", old?.session_id ?? "session-default");
+      scheduleMockOrchRun(run);
+      return { task_id: run.task_id, run_id: run.run_id, previous_run_id: previous };
+    }
+    case "amend_orchestrated_task":
+      return { task_revision: 2 };
+    case "answer_orchestration_interaction":
+      throw new Error("当前版本请通过补充要求（amend）回应澄清");
     case "get_agent_model_catalog": {
       // 浏览器 dev 模式没有真实后端探测，直接返回三 slot 夹具；force 刷新同样返回夹具。
       const slot = readArg(args, "slot", "slot", "dsh").trim() || "dsh";
@@ -1112,6 +1386,12 @@ function handleMockCommand(cmd: string, args: MockPayload) {
         content: message,
         quote: quotedRole && quotedContent ? { role: quotedRole, content: quotedContent } : undefined,
       });
+      if (mockOrchestrationMode === "adaptive" && !targetAgentId && session.slot === "main") {
+        const run = createMockOrchRun(message, session.id);
+        scheduleMockOrchRun(run);
+        void emit("orchestration-run-started", { session_id: session.id, task_id: run.task_id, run_id: run.run_id });
+        return { started: true, orchestrated: true, task_id: run.task_id, run_id: run.run_id };
+      }
       const active: MockActiveChat = { message, thinking: "", started_at: nowSeconds(), session_id: session.id };
       mockActiveChats.set(session.id, active);
       void emit("ai-started", { session_id: session.id, message });

@@ -1,0 +1,414 @@
+{
+ "source": "C:\\Users\\15188\\Desktop\\AI领域新闻报告汇总_2026年11月.docx",
+ "file_name": "AI领域新闻报告汇总_2026年11月.docx",
+ "size": 9407,
+ "sha256": "95ea6051115f3d8501ce35a0107b72b300c87ff3701f90d1bda5f9decc51e911",
+ "generated_at": "2026-11-14T02:07:30+0900",
+ "parts": {
+  "count": 3,
+  "list": [
+   "[Content_Types].xml",
+   "_rels/.rels",
+   "word/document.xml"
+  ],
+  "core_present": true,
+  "core_missing": [],
+  "target_missing": [
+   "word/_rels/document.xml.rels",
+   "word/styles.xml",
+   "word/settings.xml",
+   "word/theme/theme1.xml",
+   "word/fontTable.xml",
+   "word/webSettings.xml",
+   "word/numbering.xml",
+   "docProps/core.xml",
+   "docProps/app.xml"
+  ],
+  "header_parts": [],
+  "footer_parts": [],
+  "media_parts": []
+ },
+ "package": {
+  "parts_count": 3
+ },
+ "styles": {
+  "pstyle_count": 0,
+  "named_style_use": {},
+  "styles_defined_count": 0,
+  "styles_xml_outlineLvl_count": 0,
+  "styles_outline_levels": {},
+  "outline_defined_styles": {},
+  "heading_styles": {},
+  "document_outlineLvl_count": 0,
+  "heading_paragraphs_by_style": {},
+  "style_body_text": {}
+ },
+ "numbering": {
+  "numPr_count": 0,
+  "numbering_part": false,
+  "numbering_defs": 0
+ },
+ "hyperlinks": {
+  "hyperlink_elements": 0,
+  "external_rels": 0,
+  "document_rels": []
+ },
+ "layout": {
+  "sectPr_count": 1,
+  "sections": [
+   {
+    "children": [
+     "pgSz",
+     "pgMar"
+    ],
+    "content_width_twips": 9026
+   }
+  ],
+  "content_width_twips": 9026,
+  "titlePg_count": 0,
+  "pgNumType_starts": [],
+  "header_reference_count": 0,
+  "footer_reference_count": 0,
+  "footer_parts": [],
+  "header_parts": [],
+  "footer_field_instr": {},
+  "footer_text_sample": {},
+  "page_fields": 0,
+  "numpages_fields": 0
+ },
+ "fields": {
+  "toc_instr": [],
+  "toc_field_present": false,
+  "updateFields": null,
+  "updateFields_value": null,
+  "compat_block": null,
+  "kinsoku": null,
+  "overflowPunct": null
+ },
+ "docprops": {
+  "core": {},
+  "app": {},
+  "core_part": false,
+  "app_part": false
+ },
+ "paragraphs": {
+  "count_all_w_p": 123,
+  "count_body_level": 64,
+  "count_in_tables": 59,
+  "longest_text_chars": 264,
+  "longest_text_head": "覆盖周期：2026 年 11 月 1 日 — 11 月 14 日（以 11 月 12—13 日的一周为重点） 成稿时间：2026 年 11 月 14 日 信息性",
+  "paragraphs_ge_200_chars": 2,
+  "long_paragraph_heads": [
+   "覆盖周期：2026 年 11 月 1 日 — 11 月 14 日（以 11 月 12—13 日的一周为重点） 成稿时间：",
+   "价格与可得性：API 当前为推广价 200 万输入 / 1000 万输出 token 各 2 美元、10 美元；2026"
+  ],
+  "literal_dash_paragraph_count": 1,
+  "literal_dash_sample": "---",
+  "literal_dash_wt_nodes": 1,
+  "body_indent_direct_count": 0,
+  "body_spacing_line": {
+   "None/None": 48,
+   "312/auto": 16
+  },
+  "br_count": 0
+ },
+ "tables": {
+  "count": 3,
+  "grid_equals_tblW_pass": 0,
+  "grid_equals_tblW_fail": 3,
+  "detail": [
+   {
+    "index": 1,
+    "gridCols": 4,
+    "gridCol_sum": 9024,
+    "tblW": null,
+    "tblW_type": null,
+    "reference_width": 9026,
+    "gridCol_equals_tblW": false,
+    "rows": 6,
+    "tcW_count": 0,
+    "cantSplit_count": 0,
+    "tblHeader_count": 1
+   },
+   {
+    "index": 2,
+    "gridCols": 5,
+    "gridCol_sum": 9025,
+    "tblW": null,
+    "tblW_type": null,
+    "reference_width": 9026,
+    "gridCol_equals_tblW": false,
+    "rows": 4,
+    "tcW_count": 0,
+    "cantSplit_count": 0,
+    "tblHeader_count": 1
+   },
+   {
+    "index": 3,
+    "gridCols": 3,
+    "gridCol_sum": 9024,
+    "tblW": null,
+    "tblW_type": null,
+    "reference_width": 9026,
+    "gridCol_equals_tblW": false,
+    "rows": 5,
+    "tcW_count": 0,
+    "cantSplit_count": 0,
+    "tblHeader_count": 1
+   }
+  ]
+ },
+ "rpr_order": {
+  "elements_checked": 223,
+  "violations": 72,
+  "samples": [
+   {
+    "part": "word/document.xml",
+    "sequence": [
+     "rFonts",
+     "sz",
+     "szCs",
+     "b",
+     "bCs"
+    ],
+    "expect_after": "szCs",
+    "found_before": "b"
+   },
+   {
+    "part": "word/document.xml",
+    "sequence": [
+     "rFonts",
+     "sz",
+     "szCs",
+     "b",
+     "bCs"
+    ],
+    "expect_after": "szCs",
+    "found_before": "b"
+   },
+   {
+    "part": "word/document.xml",
+    "sequence": [
+     "rFonts",
+     "sz",
+     "szCs",
+     "b",
+     "bCs"
+    ],
+    "expect_after": "szCs",
+    "found_before": "b"
+   },
+   {
+    "part": "word/document.xml",
+    "sequence": [
+     "rFonts",
+     "sz",
+     "szCs",
+     "b",
+     "bCs"
+    ],
+    "expect_after": "szCs",
+    "found_before": "b"
+   },
+   {
+    "part": "word/document.xml",
+    "sequence": [
+     "rFonts",
+     "sz",
+     "szCs",
+     "b",
+     "bCs"
+    ],
+    "expect_after": "szCs",
+    "found_before": "b"
+   },
+   {
+    "part": "word/document.xml",
+    "sequence": [
+     "rFonts",
+     "sz",
+     "szCs",
+     "b",
+     "bCs"
+    ],
+    "expect_after": "szCs",
+    "found_before": "b"
+   },
+   {
+    "part": "word/document.xml",
+    "sequence": [
+     "rFonts",
+     "sz",
+     "szCs",
+     "b",
+     "bCs"
+    ],
+    "expect_after": "szCs",
+    "found_before": "b"
+   },
+   {
+    "part": "word/document.xml",
+    "sequence": [
+     "rFonts",
+     "sz",
+     "szCs",
+     "b",
+     "bCs"
+    ],
+    "expect_after": "szCs",
+    "found_before": "b"
+   },
+   {
+    "part": "word/document.xml",
+    "sequence": [
+     "rFonts",
+     "sz",
+     "szCs",
+     "b",
+     "bCs"
+    ],
+    "expect_after": "szCs",
+    "found_before": "b"
+   },
+   {
+    "part": "word/document.xml",
+    "sequence": [
+     "rFonts",
+     "sz",
+     "szCs",
+     "b",
+     "bCs"
+    ],
+    "expect_after": "szCs",
+    "found_before": "b"
+   }
+  ]
+ },
+ "python_docx": {
+  "available": true,
+  "ok": true,
+  "paragraphs": 64,
+  "tables": 3,
+  "sections": 1
+ },
+ "checks": [
+  {
+   "check": "包结构：3 个核心 part 齐全",
+   "status": "PASS",
+   "detail": "缺: 无",
+   "category": "包结构"
+  },
+  {
+   "check": "包结构：目标态可选 part 齐全（styles/settings/theme/fontTable/webSettings/numbering/rels/docProps/header-footer）",
+   "status": "FAIL",
+   "detail": "缺: ['word/_rels/document.xml.rels', 'word/styles.xml', 'word/settings.xml', 'word/theme/theme1.xml', 'word/fontTable.xml', 'word/webSettings.xml', 'word/numbering.xml', 'docProps/core.xml', 'docProps/app.xml']；header=0 footer=0",
+   "category": "包结构"
+  },
+  {
+   "check": "命名样式（w:pStyle 引用）",
+   "status": "FAIL",
+   "detail": "pStyle=0, 使用样式=0 种, styles.xml=无",
+   "category": "排版系统"
+  },
+  {
+   "check": "大纲级别（styles.xml 中 Heading outlineLvl）",
+   "status": "FAIL",
+   "detail": "styles.xml outlineLvl=0, 段落级 outlineLvl=0, 标题样式=无",
+   "category": "排版系统"
+  },
+  {
+   "check": "真编号列表（w:numPr + numbering.xml）",
+   "status": "WARN",
+   "detail": "numPr=0, numbering.xml=无（=0 表示列表是手写文本前缀）",
+   "category": "内容元素"
+  },
+  {
+   "check": "页眉页脚 + PAGE/NUMPAGES 域",
+   "status": "FAIL",
+   "detail": "footer=无, PAGE 域=0, NUMPAGES 域=0",
+   "category": "文档结构"
+  },
+  {
+   "check": "目录 TOC 域",
+   "status": "FAIL",
+   "detail": "instrText=无",
+   "category": "文档结构"
+  },
+  {
+   "check": "settings 打开时更新域（w:updateFields）",
+   "status": "FAIL",
+   "detail": "updateFields=None",
+   "category": "文档结构"
+  },
+  {
+   "check": "文档属性 docProps/core.xml + app.xml",
+   "status": "FAIL",
+   "detail": "core=False app=False, title=None creator=None",
+   "category": "包结构"
+  },
+  {
+   "check": "封面分节 + 首页不同 + 页码起始 1",
+   "status": "FAIL",
+   "detail": "sectPr=1, titlePg=0, pgNumType.start=[]",
+   "category": "文档结构"
+  },
+  {
+   "check": "表格列宽 gridCol 合计 == tblW（无 tblW 时以版心宽 9026 twips 为参照）",
+   "status": "FAIL",
+   "detail": "table=3, 一致=0, 不一致=3, 明细=[(9024, 9026), (9025, 9026), (9024, 9026)]",
+   "category": "内容元素"
+  },
+  {
+   "check": "表格行控制/单元格宽度（tcW / cantSplit）",
+   "status": "WARN",
+   "detail": "tcW=[0, 0, 0], cantSplit=[0, 0, 0]",
+   "category": "内容元素"
+  },
+  {
+   "check": "rPr 子元素顺序无违规",
+   "status": "FAIL",
+   "detail": "检查 rPr=223, 违规=72",
+   "category": "内容元素"
+  },
+  {
+   "check": "字面量 '---' 分隔线未残留在正文（整段 == '---'）",
+   "status": "FAIL",
+   "detail": "独立成段=1, w:t 命中=1, 样本='---'",
+   "category": "内容元素"
+  },
+  {
+   "check": "正文首行缩进（BodyText firstLineChars/firstLine 或段落 w:ind firstLine）",
+   "status": "FAIL",
+   "detail": "段落直接缩进=0 段；BodyText 样式 ind=None；Normal=None",
+   "category": "排版系统"
+  },
+  {
+   "check": "行距（BodyText spacing line 或正文段落 spacing 一致）",
+   "status": "FAIL",
+   "detail": "BodyText spacing=None；正文段落行距覆盖={'None/None': 48, '312/auto': 16}",
+   "category": "排版系统"
+  },
+  {
+   "check": "超链接（w:hyperlink + external relationship）",
+   "status": "WARN",
+   "detail": "hyperlink=0, external rels=0",
+   "category": "内容元素"
+  },
+  {
+   "check": "python-docx 可打开",
+   "status": "PASS",
+   "detail": "ok: paragraphs=64 tables=3 sections=1",
+   "category": "兼容性"
+  },
+  {
+   "check": "软换行合并（长段落 >=200 字）——静态观察项",
+   "status": "WARN",
+   "detail": "2 段 >=200 字，最长 264 字：'覆盖周期：2026 年 11 月 1 日 — 11 月 14 日（以 11 月 12—13 日的一周为重点） 成稿时间：'",
+   "category": "内容元素"
+  }
+ ],
+ "static_verdict": "FAIL",
+ "fail_count": 13,
+ "warn_count": 4,
+ "pass_count": 2
+}

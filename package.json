@@ -14,7 +14,9 @@
     "verify:agent-model-catalog": "node --test scripts/verify-agent-model-catalog.cjs",
     "verify:chat-sessions": "node --test scripts/verify-chat-sessions.cjs",
     "verify:session-runtime": "node --test scripts/verify-session-runtime.cjs",
+    "verify:session-labels": "node --test scripts/verify-session-labels.cjs",
     "verify:session-layout-browser": "node scripts/verify-session-layout-browser.cjs",
+    "verify:window-resize-browser": "node scripts/verify-window-resize-browser.cjs",
     "verify:attachments": "node --test scripts/verify-attachments.cjs",
     "verify:attachments-browser": "node scripts/verify-attachments-browser.cjs",
     "verify:agent-activity": "node --test scripts/verify-agent-activity.cjs",
@@ -22,6 +24,8 @@
     "verify:markdown": "node --test scripts/verify-markdown.cjs",
     "verify:agent-activity-browser": "node scripts/verify-agent-activity-browser.cjs",
     "verify:pending-interactions": "node --test scripts/verify-pending-interactions.cjs",
+    "verify:orchestration": "node --test scripts/verify-orchestration.cjs",
+    "verify:orchestration-browser": "node scripts/verify-orchestration-browser.cjs",
     "verify:interaction-browser": "node scripts/verify-interaction-browser.cjs",
     "verify:dsh-backend": "cargo test --manifest-path src-tauri/Cargo.toml --lib dsh::tests::mock_provider -- --ignored --nocapture",
     "verify:claude-permissions": "cargo test --manifest-path src-tauri/Cargo.toml --lib mcp_permission::tests::claude_cli -- --ignored --nocapture"
@@ -38,6 +42,7 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",
     "@vitejs/plugin-vue": "^5.2.1",
+    "playwright-core": "^1.65.1",
     "typescript": "~5.7.0",
     "vite": "^6.0.0",
     "vue-tsc": "^2.2.0"

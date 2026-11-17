@@ -1,5 +1,5 @@
 // 工具的稳定 ID，与 Rust 端 `src-tauri/src/direct_api/tools.rs::tool_definitions()` 顺序一致。
-// 排除智能体工坊自己的管理工具（create_agent / update_agent / list_agents），
+// 排除智能体工坊自己的管理工具（create_agent / update_agent / list_agents）以及主会话编排工具（delegate_to_agent），
 // 与 `lib.rs::tool_purpose_for_factory()` 的工坊目录同口径。
 //
 // 这份清单决定工坊「免确认工具」勾选器能看到哪些工具，而且 `Settings.vue` 保存技能时会用它

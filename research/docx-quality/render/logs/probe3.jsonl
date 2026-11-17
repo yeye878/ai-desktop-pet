@@ -1,0 +1,13 @@
+{"t": 0.08, "stage": "spawn"}
+{"t": 2.19, "stage": "attached", "tries": 6, "child_pid": 9824}
+{"t": 4.07, "stage": "configured", "version": "16.0"}
+{"t": 4.07, "stage": "open_begin", "file": "D:\\ai-desktop-pet\\research\\docx-quality\\render\\out\\before\\source\\before_desktop.docx", "readonly": true}
+{"t": 4.43, "stage": "dialog_detected", "hwnd": 5966976, "texts": ["Word 无法创建工作文件，请检查临时环境变量。"]}
+{"t": 4.44, "stage": "dialog_clicked", "hwnd": 5966976, "button": "确定"}
+{"t": 5.2, "stage": "error", "err": "com_error(-2146823191, 'OLE error 0x800a13e9', None, None)"}
+{"t": 5.26, "stage": "word_quit_error", "err": "com_error(-2147352567, '发生意外。', (0, 'Microsoft Word', '“Quit”不是一种属性。', 'wdmain11.chm', 25342, -2146822426), None)"}
+{"t": 5.9, "stage": "word_quit_arg_error", "err": "com_error(-2147352567, '发生意外。', (0, 'Microsoft Word', '“Quit”不是一种属性。', 'wdmain11.chm', 25342, -2146822426), None)"}
+{"t": 11.91, "stage": "word_exited", "exited": false, "code": null}
+{"t": 11.91, "stage": "word_terminate", "sent": true}
+{"t": 12.3, "stage": "word_terminated", "code": 1}
+{"t": 12.3, "stage": "done", "elapsed": 12.3, "dialogs": 1}

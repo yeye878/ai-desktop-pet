@@ -11,7 +11,8 @@ crate-type = ["lib", "cdylib", "staticlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset", "tray-icon", "devtools"] }
+# 2.11.6 requires runtime-wry >= 2.11.4, which fixes the Windows resize HDC leak.
+tauri = { version = "~2.11.6", features = ["protocol-asset", "tray-icon", "devtools"] }
 tauri-plugin-shell = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-dialog = "2"

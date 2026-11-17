@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick, reactive, type Component } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWindow, type DragDropEvent } from "@tauri-apps/api/window";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import CustomPixelPetWorkshop from "./CustomPixelPetWorkshop.vue";
@@ -11,12 +11,12 @@ import AgentPermissionControl from "./AgentPermissionControl.vue";
 import AgentActivity from "./AgentActivity.vue";
 import AgentModelPicker from "./AgentModelPicker.vue";
 import SessionPermissionPicker from "./SessionPermissionPicker.vue";
-import AgentPicker from "./AgentPicker.vue";
 import MetaPicker from "./MetaPicker.vue";
 import EffortSlider from "./EffortSlider.vue";
 import SessionPane from "./SessionPane.vue";
 import AttachmentTray from "./AttachmentTray.vue";
 import { useAttachmentsStore } from "../stores/attachments";
+import { useDraftStore } from "../stores/drafts";
 import { attachmentDropTarget, buildMessageWithFiles, getFileIcon } from "../services/attachments";
 import UserQuestion from "./UserQuestion.vue";
 import { createInteractionSubmission, subscribePendingInteraction, type AskUserPayload } from "../services/pendingInteractions";
@@ -32,6 +32,10 @@ import {
 import { ArrowDown, House, MessageCircle, Brain, Palette, Bot, Mic, Settings as SettingsIcon, Info, PawPrint, Send, Plus, Power, Square as LayoutSingle, Columns2, Columns3, Grid2x2, PanelLeft, Paperclip } from "@lucide/vue";
 import AppIcon from "./AppIcon.vue";
 import CollaborationBar from "./CollaborationBar.vue";
+import OrchestrationModePicker from "./OrchestrationModePicker.vue";
+import OrchestrationTaskCard from "./OrchestrationTaskCard.vue";
+import OrchestrationDetailPanel from "./OrchestrationDetailPanel.vue";
+import { useOrchestrationStore } from "../stores/orchestration";
 import type { CollaborationReply, CollaborationState } from "../services/collaboration";
 import PetCanvas from "./PetCanvas.vue";
 import PetStage from "./PetStage.vue";
@@ -102,6 +106,11 @@ import {
   type WeatherUpdateEvent,
 } from "../services/weather";
 import "../assets/dashboard.css";
+import "../assets/ui-tokens.css";
+import "../assets/dashboard-shell.css";
+import "../assets/dashboard-controls.css";
+import "../assets/pages/memory.css";
+import "../assets/pages/system.css";
 
 const emit = defineEmits<{ openPet: []; closePet: [] }>();
 const pet = usePetStore();
@@ -125,6 +134,7 @@ const skillsStore = useSkillsStore();
 const agentsStore = useAgentsStore();
 const sessions = useSessionsStore();
 const sessionRuntime = useSessionRuntimeStore();
+const orchestration = useOrchestrationStore();
 
 // === 多会话 / 三个 agent 独立对话窗口 ===
 type AgentWindowSlot = Exclude<ChatSlot, "main">;
@@ -153,7 +163,7 @@ function readStoredChatSlot(): ChatSlot {
   return raw === "main" || isAgentWindowSlot(raw) ? raw : "main";
 }
 
-/** 窗口偏好：新建会话 / 未绑定会话时使用的 agent、模型、渠道与思考强度。 */
+/** 窗口偏好：新建会话 / 未绑定会话时使用的固定内置 agent 与模型、渠道、思考强度。 */
 interface AgentWindowPreference { agentId: string; model: string; provider: string; effort: string }
 function readStoredWindowPreference(slot: AgentWindowSlot): AgentWindowPreference {
   const raw = readStoredValue(`${AGENT_WINDOW_PREF_PREFIX}${slot}`);
@@ -161,8 +171,9 @@ function readStoredWindowPreference(slot: AgentWindowSlot): AgentWindowPreferenc
     try {
       const parsed = JSON.parse(raw) as Partial<AgentWindowPreference> | null;
       if (parsed && typeof parsed === "object") {
+        // 独立窗口不允许切换智能体，忽略历史落盘的跨智能体 agentId。
         return {
-          agentId: typeof parsed.agentId === "string" && parsed.agentId ? parsed.agentId : SLOT_DEFAULT_AGENT[slot],
+          agentId: SLOT_DEFAULT_AGENT[slot],
           model: typeof parsed.model === "string" ? parsed.model : "",
           provider: typeof parsed.provider === "string" ? parsed.provider : "",
           effort: typeof parsed.effort === "string" ? parsed.effort : "",
@@ -210,8 +221,8 @@ const agentWindowNavItems = computed(() =>
   AGENT_SLOTS.map((slot) => ({ slot, label: SLOT_WINDOW_LABELS[slot], icon: SLOT_WINDOW_ICONS[slot] })),
 );
 function saveWindowPreference(slot: AgentWindowSlot, patch: Partial<AgentWindowPreference>) {
-  const next: AgentWindowPreference = { ...agentWindowPrefs[slot], ...patch };
-  if (!next.agentId) next.agentId = SLOT_DEFAULT_AGENT[slot];
+  // 独立窗口固定对应内置智能体，始终写回 SLOT_DEFAULT_AGENT[slot] 覆盖历史串台值。
+  const next: AgentWindowPreference = { ...agentWindowPrefs[slot], ...patch, agentId: SLOT_DEFAULT_AGENT[slot] };
   agentWindowPrefs[slot] = next;
   writeStoredValue(`${AGENT_WINDOW_PREF_PREFIX}${slot}`, JSON.stringify(next));
 }
@@ -236,7 +247,7 @@ watch(chatSlot, (slot) => {
   if (slot !== "main") chatNavExpanded.value = true;
 });
 
-// === 系统设置：侧边栏子列表（与「对话互动」同一套展开交互） ===
+// === 系统设置：全局侧栏只保留一级入口，分区导航位于设置页内部 ===
 type SystemSection = "backend" | "models" | "permissions" | "persona" | "skills" | "weather";
 interface SystemSectionItem { id: SystemSection; label: string; icon: string; desc: string }
 const SYSTEM_SECTION_STORAGE_KEY = "dash.system-section";
@@ -256,29 +267,20 @@ function readStoredSystemSection(): SystemSection {
   return isSystemSection(raw) ? raw : "backend";
 }
 const systemSection = ref<SystemSection>(readStoredSystemSection());
-const systemNavExpanded = ref(false);
 const currentSystemSection = computed(
   () => SYSTEM_SECTIONS.find((item) => item.id === systemSection.value) ?? SYSTEM_SECTIONS[0],
 );
 
-/** 进入系统设置的某个子页（缺省回到上次停留的子页），并展开侧边栏子列表。 */
+/** 进入系统设置的某个子页，缺省回到上次停留的分区。 */
 function openSystemSection(section: SystemSection = systemSection.value) {
   systemSection.value = section;
   activePage.value = "system";
-  systemNavExpanded.value = true;
-}
-
-function toggleSystemSubnav() {
-  systemNavExpanded.value = !systemNavExpanded.value;
 }
 
 watch(systemSection, (section) => {
   writeStoredValue(SYSTEM_SECTION_STORAGE_KEY, section);
   // 子页切换不经过页面级 Transition，手动回到顶部，避免停在上个子页的滚动位置。
   void nextTick(() => document.querySelector(".dashboard-content")?.scrollTo({ top: 0 }));
-});
-watch(activePage, (page) => {
-  if (page === "system") systemNavExpanded.value = true;
 });
 
 const backendOptions = [
@@ -289,9 +291,6 @@ const backendOptions = [
 ] as const;
 function backendLabel(id: string) {
   return backendOptions.find((item) => item.id === id)?.label ?? id;
-}
-function backendShortLabel(id: string) {
-  return backendOptions.find((item) => item.id === id)?.short ?? id;
 }
 function backendIcon(id: string) {
   return backendOptions.find((item) => item.id === id)?.icon ?? "sliders";
@@ -652,6 +651,50 @@ const taskDeletingId = ref<number | null>(null);
 const taskTogglingId = ref<number | null>(null);
 const taskError = ref("");
 
+type MemoryWorkspaceView = "memories" | "tasks";
+const memoryWorkspaceView = ref<MemoryWorkspaceView>("memories");
+const memorySearch = ref("");
+const expandedMemoryIds = ref<Set<number>>(new Set());
+const activeScheduledTaskCount = computed(() => scheduledTasks.value.filter((task) => task.enabled).length);
+const visibleMemories = computed(() => {
+  const query = memorySearch.value.trim().toLowerCase();
+  if (!query) return memories.value;
+  return memories.value.filter((memory) =>
+    [memory.key, memory.value, memoryCategoryLabel(memory.category)]
+      .some((value) => value.toLowerCase().includes(query)),
+  );
+});
+
+function openMemoryWorkspace(view: MemoryWorkspaceView = "memories") {
+  memoryWorkspaceView.value = view;
+  activePage.value = "memory";
+  void nextTick(() => dashboardContentRef.value?.scrollTo({ top: 0, behavior: "smooth" }));
+}
+
+function focusMemoryComposer() {
+  const inputId = memoryWorkspaceView.value === "memories" ? "memory-draft-key" : "task-draft-title";
+  void nextTick(() => {
+    const input = document.getElementById(inputId);
+    input?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    input?.focus({ preventScroll: true });
+  });
+}
+
+function isMemoryExpanded(id: number) {
+  return expandedMemoryIds.value.has(id);
+}
+
+function canExpandMemory(value: string) {
+  return value.length > 120 || value.split("\n").length > 3;
+}
+
+function toggleMemoryExpanded(id: number) {
+  const next = new Set(expandedMemoryIds.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  expandedMemoryIds.value = next;
+}
+
 // === Computed ===
 const filteredEdgeVoices = computed(() => {
   const lang = (voiceSettings.value.language || "zh-CN").toLowerCase();
@@ -932,6 +975,53 @@ const agentDeletingId = ref<string | null>(null);
 const agentGenDesc = ref("");
 const agentGenLoading = ref(false);
 const agentGenError = ref("");
+const dashboardContentRef = ref<HTMLElement | null>(null);
+const agentSearch = ref("");
+const agentFilter = ref<"all" | "custom" | "builtin">("all");
+const agentFilterOptions = [
+  { id: "all" as const, label: "全部" },
+  { id: "custom" as const, label: "自定义" },
+  { id: "builtin" as const, label: "内置" },
+];
+const agentGenExamples = [
+  "帮我整理周报，提炼重点和下周计划",
+  "审查代码中的潜在问题，给出修改建议",
+  "把零散资料整理成清晰的知识卡片",
+];
+const customAgentCount = computed(() => agentsStore.agents.filter((agent) => !agent.is_builtin).length);
+const builtinAgentCount = computed(() => agentsStore.agents.filter((agent) => agent.is_builtin).length);
+const filteredAgents = computed(() => {
+  const query = agentSearch.value.trim().toLowerCase();
+  return agentsStore.agents.filter((agent) => {
+    if (agentFilter.value === "custom" && agent.is_builtin) return false;
+    if (agentFilter.value === "builtin" && !agent.is_builtin) return false;
+    if (!query) return true;
+    return [agent.name, agent.description, agent.model, agent.backend]
+      .some((value) => value.toLowerCase().includes(query));
+  });
+});
+
+function agentFilterCount(filter: "all" | "custom" | "builtin") {
+  if (filter === "custom") return customAgentCount.value;
+  if (filter === "builtin") return builtinAgentCount.value;
+  return agentsStore.agents.length;
+}
+
+function agentBackendLabel(agent: Agent) {
+  if (agent.backend === "codex") return "本机 Codex";
+  if (agent.backend === "dsh") return "本机 DeepSeek Harness";
+  if (agent.backend === "claude_code") return "本机 Claude Code";
+  return "直连 API";
+}
+
+function summonAgent(agent: Agent) {
+  openChatSlot("main");
+  chatInput.value = chatInput.value + (chatInput.value && !/\s$/.test(chatInput.value) ? " " : "") + "@" + agentsStore.mentionName(agent) + " ";
+}
+
+function scrollAgentsToTop() {
+  void nextTick(() => dashboardContentRef.value?.scrollTo({ top: 0, behavior: "smooth" }));
+}
 
 function openAgentsPage() {
   activePage.value = "agents";
@@ -979,10 +1069,12 @@ function openAgentEditor(agent?: Agent) {
   agentSaveError.value = "";
   agentSaved.value = false;
   agentEditorOpen.value = true;
+  scrollAgentsToTop();
 }
 
 function closeAgentEditor() {
   agentEditorOpen.value = false;
+  scrollAgentsToTop();
 }
 
 function toggleAgentTool(toolId: string, enabled: boolean) {
@@ -1063,6 +1155,7 @@ async function generateAgentFromDesc() {
     agentSaveError.value = "";
     agentSaved.value = false;
     agentEditorOpen.value = true;
+    scrollAgentsToTop();
   } catch (e) {
     agentGenError.value = String(e);
   } finally {
@@ -1847,6 +1940,7 @@ async function saveMemoryDraft() {
       value,
     });
     memories.value = [saved, ...memories.value.filter((item) => item.id !== saved.id)];
+    memorySearch.value = "";
     memoryDraft.value.key = "";
     memoryDraft.value.value = "";
     memorySaved.value = true;
@@ -2139,7 +2233,12 @@ async function toggleMaximize() {
 }
 
 // === 对话框与消息同步 ===
-const chatInput = ref("");
+// 输入框草稿存在 store 里：切到别的页面再切回来时，输入到一半的内容不丢
+const draftStore = useDraftStore();
+const chatInput = computed({
+  get: () => draftStore.get(`session:${currentSessionId.value || "none"}`),
+  set: (value: string) => draftStore.set(`session:${currentSessionId.value || "none"}`, value),
+});
 const dashChatInputRef = ref<HTMLInputElement | null>(null);
 const dashSlashSelectedIndex = ref(0);
 const dashMentionSelectedIndex = ref(0);
@@ -2310,34 +2409,26 @@ const currentSlotLabel = computed(() => (agentSlot.value ? SLOT_WINDOW_LABELS[ag
 const currentAgentIdentity = computed<{ id: string; name: string; avatar: string }>(() => {
   const slot = agentSlot.value;
   if (!slot) return { id: "", name: "", avatar: "" };
-  const session = currentAgentSession.value;
-  const agentId = session?.agent_id || agentWindowPrefs[slot].agentId || SLOT_DEFAULT_AGENT[slot];
+  // 独立窗口固定绑定对应内置智能体，不再允许通过会话 agent_id 跨窗口切换。
+  const agentId = SLOT_DEFAULT_AGENT[slot];
   const agent = agentsStore.agents.find((item) => item.id === agentId);
   return {
     id: agentId,
-    name: session?.agent_name || agent?.name || SLOT_WINDOW_LABELS[slot],
-    avatar: session?.agent_avatar || agent?.avatar || SLOT_WINDOW_ICONS[slot],
+    name: agent?.name || SLOT_WINDOW_LABELS[slot],
+    avatar: agent?.avatar || SLOT_WINDOW_ICONS[slot],
   };
 });
 /** agent 窗口当前绑定的后端：权限选择器按后端展示不同档位。 */
 const currentAgentBackend = computed(() => {
-  const agent = agentsStore.agents.find((item) => item.id === currentAgentIdentity.value.id);
-  if (agent) return agent.backend;
-  return agentSlot.value === "codex"
-    ? "codex"
-    : agentSlot.value === "dsh"
-      ? "dsh"
-      : agentSlot.value === "claude"
-        ? "claude_code"
-        : "";
+  const slot = agentSlot.value;
+  if (!slot) return "";
+  return slot === "codex" ? "codex" : slot === "dsh" ? "dsh" : "claude_code";
 });
-/** 多窗格看板：会话所属后端（主会话跟随全局后端）。 */
+/** 多窗格看板：会话所属后端（主会话跟随全局后端，独立窗口固定跟随槽位）。 */
 function paneSessionBackend(sessionId: string): string {
   const session = sessions.find(sessionId);
   if (!session) return "";
   if (session.slot === "main") return backendType.value;
-  const agent = agentsStore.agents.find((item) => item.id === session.agent_id);
-  if (agent) return agent.backend;
   return session.slot === "codex"
     ? "codex"
     : session.slot === "dsh"
@@ -2346,16 +2437,6 @@ function paneSessionBackend(sessionId: string): string {
         ? "claude_code"
         : "";
 }
-const agentWindowAgentOptions = computed<{ id: string; name: string; avatar: string; description?: string }[]>(() => {
-  const options: { id: string; name: string; avatar: string; description?: string }[] = agentsStore.agents.map((agent) => ({ id: agent.id, name: agent.name, avatar: agent.avatar, description: agent.description }));
-  const current = currentAgentIdentity.value;
-  if (current.id && !options.some((item) => item.id === current.id)) options.unshift({ ...current });
-  if (!options.length && agentSlot.value) {
-    const slot = agentSlot.value;
-    return [{ id: SLOT_DEFAULT_AGENT[slot], name: SLOT_WINDOW_LABELS[slot], avatar: SLOT_WINDOW_ICONS[slot] }];
-  }
-  return options;
-});
 const currentAgentCatalog = computed(() =>
   agentSlot.value ? agentCatalogs[agentSlot.value] : null,
 );
@@ -2509,12 +2590,31 @@ async function loadAgentSessionMessages(sessionId: string, force = false): Promi
   await sessionRuntime.load(sessionId, force);
 }
 
+const normalizingAgentSessionIds = new Set<string>();
+async function normalizeAgentWindowSession(slot: AgentWindowSlot, session: ChatSession) {
+  const fixedAgentId = SLOT_DEFAULT_AGENT[slot];
+  if (session.agent_id === fixedAgentId || normalizingAgentSessionIds.has(session.id)) return;
+  normalizingAgentSessionIds.add(session.id);
+  // 自愈历史被切串的独立窗口会话，恢复为窗口固定内置智能体而不改动模型配置。
+  const fixedAgent = agentsStore.agents.find((item) => item.id === fixedAgentId);
+  try {
+    await sessions.bind(session.id, {
+      agentId: fixedAgentId,
+      agentName: fixedAgent?.name || slot,
+      agentAvatar: fixedAgent?.avatar || "⌘",
+    });
+  } catch { /* 自愈失败时前端展示与发送链路仍强制按固定智能体处理。 */ } finally {
+    normalizingAgentSessionIds.delete(session.id);
+  }
+}
+
 async function ensureAgentWindow(slot: AgentWindowSlot): Promise<void> {
   if (!sessions.bySlot(slot).length) return;
   const stored = sessions.find(agentSessionIds[slot]);
   const session = stored && stored.slot === slot ? stored : sessions.bySlot(slot)[0];
   if (!session) return;
   if (agentSessionIds[slot] !== session.id) rememberAgentSession(slot, session.id);
+  await normalizeAgentWindowSession(slot, session);
   await loadAgentSessionMessages(session.id);
   scrollDashChatToBottom();
 }
@@ -2554,6 +2654,8 @@ watch(currentAgentSessionId, (id, previous) => {
   const slot = agentSlot.value;
   if (!slot) return;
   rememberAgentSession(slot, id);
+  const session = currentAgentSession.value;
+  if (session && session.slot === slot) void normalizeAgentWindowSession(slot, session);
   void loadAgentSessionMessages(id);
 });
 function openChatSessionFromList(session: ChatSession) {
@@ -2576,7 +2678,7 @@ async function createChatSession() {
     }
     const pref = agentWindowPrefs[slot];
     const created = await sessions.create(slot, {
-      agentId: pref.agentId || SLOT_DEFAULT_AGENT[slot],
+      agentId: SLOT_DEFAULT_AGENT[slot],
       model: pref.model,
       provider: pref.provider,
       reasoningEffort: pref.effort,
@@ -2608,6 +2710,7 @@ async function switchChatSession(session: ChatSession) {
       const slot = agentSlot.value;
       if (!slot) return;
       rememberAgentSession(slot, session.id);
+      await normalizeAgentWindowSession(slot, session);
       await loadAgentSessionMessages(session.id);
     }
     await nextTick();
@@ -2702,32 +2805,16 @@ async function onAgentModelSelect(payload: { model: string; provider: string; ef
     sessionError.value = "保存模型失败：" + errorMessage(error);
   }
 }
-async function onAgentWindowAgentChange(agentId: string) {
-  const slot = agentSlot.value;
-  if (!slot) return;
-  const agent = agentsStore.agents.find((item) => item.id === agentId);
-  saveWindowPreference(slot, { agentId });
-  const session = currentAgentSession.value;
-  if (!session) return;
-  sessionError.value = "";
-  try {
-    if (agent) {
-      await sessions.bind(session.id, { agentId: agent.id, agentName: agent.name, agentAvatar: agent.avatar, model: session.model || undefined });
-    } else {
-      await sessions.bind(session.id, { agentId, agentName: SLOT_WINDOW_LABELS[slot], agentAvatar: SLOT_WINDOW_ICONS[slot], model: session.model || undefined });
-    }
-  } catch (error) {
-    sessionError.value = "切换智能体失败：" + errorMessage(error);
-  }
-}
-
 async function ensureAgentSessionForSend(slot: AgentWindowSlot): Promise<ChatSession | null> {
   const existing = currentAgentSession.value;
-  if (existing) return existing;
+  if (existing) {
+    await normalizeAgentWindowSession(slot, existing);
+    return existing;
+  }
   const pref = agentWindowPrefs[slot];
   try {
     const created = await sessions.create(slot, {
-      agentId: pref.agentId || SLOT_DEFAULT_AGENT[slot],
+      agentId: SLOT_DEFAULT_AGENT[slot],
       model: pref.model,
       provider: pref.provider,
       reasoningEffort: pref.effort,
@@ -2795,6 +2882,19 @@ const filesLoading = computed(() => pendingFiles.value.some((file) => file.statu
 const isFileOver = ref(false);
 const fileOverPaneId = ref("");
 const workspaceFileError = ref("");
+let fileDragActive = false;
+
+function clearFileDragState() {
+  fileDragActive = false;
+  isFileOver.value = false;
+  fileOverPaneId.value = "";
+}
+
+function onFileDragKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape") clearFileDragState();
+}
+
+watch([activePage, workspaceLayout], clearFileDragState);
 
 async function pickDashboardFiles() {
   const key = attachmentDraftKey.value;
@@ -2837,9 +2937,18 @@ function clearPendingFiles() {
   attachments.clear(attachmentDraftKey.value);
 }
 
-function handleDragDropEvent(event: any) {
-  const hasLnk = event.type === "drop" && event.paths?.some((path: string) => path.toLowerCase().endsWith(".lnk"));
+function handleDragDropEvent(event: DragDropEvent) {
+  // Only a real file enter may arm hover events. Old WebView2 runtimes can send
+  // stray "over" events for selected text after an earlier file drag.
+  if (event.type === "enter") fileDragActive = event.paths.length > 0;
   const hovering = event.type === "enter" || event.type === "over";
+  if (hovering && !fileDragActive) {
+    clearFileDragState();
+    return;
+  }
+  if (!hovering) clearFileDragState();
+  if (event.type === "leave") return;
+  const hasLnk = event.type === "drop" && event.paths.some((path) => path.toLowerCase().endsWith(".lnk"));
   isFileOver.value = activePage.value === "chat" && hovering;
   fileOverPaneId.value = "";
   if (activePage.value !== "chat" && !hasLnk) return;
@@ -3008,13 +3117,15 @@ async function sendDashboardMessage() {
   chat.collaboration = null;
   chat.activity.reset();
   followingActivity.value = true;
-  chat.isLoading = true;
-  resetLoadingTimeout(); // 启动超时保底
+  if (orchestration.mode !== "adaptive") {
+    chat.isLoading = true;
+    resetLoadingTimeout(); // 启动超时保底
+    syncPetState("thinking");
+  }
   thinkingContent.value = "";
   streamingAnswer.value = "";
   toolEvents.value = [];
   pendingConfirm.value = null;
-  syncPetState("thinking");
 
   // Broadcast user message to other windows (like the pet chat bubble)
   await currentWindow.emit("sync-chat-message", {
@@ -3026,7 +3137,7 @@ async function sendDashboardMessage() {
   });
 
   try {
-    await invoke("send_to_ai", {
+    const result = await invoke<{ orchestrated?: boolean; run_id?: string }>("send_to_ai", {
       message: fullMessage,
       attachments: aiAttachments,
       quotedRole: quote?.role,
@@ -3035,7 +3146,22 @@ async function sendDashboardMessage() {
       collaborationEnabled: chat.collaborationEnabled,
       sessionId: sessions.activeMainId || undefined,
     });
+    if (result?.orchestrated) {
+      chat.isLoading = false;
+      clearLoadingTimeout();
+      const sid = sessions.activeMainId;
+      const runtime = sid ? sessionRuntime.peek(sid) : undefined;
+      if (runtime) {
+        runtime.turn.loading = false;
+        runtime.turn.thinking = "";
+        runtime.turn.streamingAnswer = "";
+        runtime.turn.activity.reset();
+      }
+      if (sid) void orchestration.bindSession(sid);
+      syncPetState("idle");
+    }
   } catch (err) {
+    clearLoadingTimeout();
     chat.isLoading = false;
     streamingAnswer.value = "";
     chat.addMessage("assistant", `出错了: ${err}`);
@@ -3411,6 +3537,13 @@ function clearLoadingTimeout() {
 }
 
 onMounted(async () => {
+  // Native resize/move loops can consume pointer-up or drag-leave events.
+  window.addEventListener("resize", clearFileDragState);
+  window.addEventListener("blur", clearFileDragState);
+  window.addEventListener("pointerup", clearFileDragState);
+  window.addEventListener("pointercancel", clearFileDragState);
+  window.addEventListener("dragend", clearFileDragState);
+  window.addEventListener("keydown", onFileDragKeydown);
   stopToolConfirm = subscribePendingInteraction("tool", pendingConfirm);
   stopQuestion = subscribePendingInteraction("question", pendingQuestion);
   stopCollaboration = subscribeDashboardCollaboration();
@@ -3447,6 +3580,22 @@ onMounted(async () => {
 
   // 加载对话历史并监听实时同步
   await sessionRuntime.start();
+  await orchestration.start();
+  void orchestration.bindSession(sessions.activeMainId);
+  watch(() => sessions.activeMainId, (id) => void orchestration.bindSession(id));
+  watch(
+    () => [
+      sessions.activeMainId ? orchestration.activeBySession[sessions.activeMainId] : undefined,
+      sessions.activeMainId ? orchestration.activeRun(sessions.activeMainId)?.state : undefined,
+    ],
+    ([runId]) => {
+      if (runId && orchestration.mode === "adaptive" && chat.isLoading) {
+        clearLoadingTimeout();
+        chat.isLoading = false;
+        syncPetState("idle");
+      }
+    },
+  );
   await refreshChatState();
 
   unlistenThinking = await listen<{ session_id?: string; text?: string } | string>("ai-thinking", (event) => {
@@ -3579,6 +3728,7 @@ onMounted(async () => {
 
   unlistenChatCleared = await listen("chat-history-cleared", () => {
     resetAllChatSessionUi();
+    orchestration.clearSessions();
     void loadMemories();
   });
 
@@ -3601,14 +3751,29 @@ onMounted(async () => {
       ? { id: payload.agent.id || undefined, name: payload.agent.name, avatar: payload.agent.avatar || undefined }
       : null;
     if (route.kind === "agent") return; // 由共享运行时处理，避免重复追加或重置轨迹。
+    const orchActivity =
+      payload.role === "assistant" && payload.orchestration_run_id
+        ? orchestration.buildRunActivity(payload.orchestration_run_id, payload.content)
+        : [];
     if (route.kind === "main-bg") {
       if (payload.role === "user") {
-        const turn = ensureMainTurn(route.sessionId);
-        turn.loading = true;
-        turn.thinking = "";
-        turn.streamingAnswer = "";
-        turn.toolEvents = [];
-        turn.activity.reset();
+        if (orchestration.mode !== "adaptive") {
+          const turn = ensureMainTurn(route.sessionId);
+          turn.loading = true;
+          turn.thinking = "";
+          turn.streamingAnswer = "";
+          turn.toolEvents = [];
+          turn.activity.reset();
+        }
+      } else if (orchActivity.length) {
+        saveActivityPresentation(agentPresentationStorage, {
+          content: payload.content,
+          thinking: payload.thinking || undefined,
+          timestamp: Date.now(),
+          agent: syncAgent,
+          activity: orchActivity,
+          displayContent: payload.content,
+        });
       }
       return;
     }
@@ -3616,8 +3781,28 @@ onMounted(async () => {
     if (last && last.role === payload.role && last.content === payload.content) {
       return;
     }
-    chat.addMessage(payload.role, payload.content, undefined, payload.files ?? payload.fileAttachments, undefined, payload.quote, syncAgent);
-    if (payload.role === "user") {
+    const added = chat.addMessage(
+      payload.role,
+      payload.content,
+      payload.thinking || undefined,
+      payload.files ?? payload.fileAttachments,
+      undefined,
+      payload.quote,
+      syncAgent,
+    );
+    if (orchActivity.length) {
+      added.activity = orchActivity;
+      added.displayContent = payload.content;
+      saveActivityPresentation(agentPresentationStorage, {
+        content: added.content,
+        thinking: added.thinking,
+        timestamp: added.timestamp,
+        agent: added.agent ?? null,
+        activity: orchActivity,
+        displayContent: payload.content,
+      });
+    }
+    if (payload.role === "user" && orchestration.mode !== "adaptive") {
       chat.isLoading = true;
       chat.activity.reset();
       followingActivity.value = true;
@@ -3681,6 +3866,13 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  clearFileDragState();
+  window.removeEventListener("resize", clearFileDragState);
+  window.removeEventListener("blur", clearFileDragState);
+  window.removeEventListener("pointerup", clearFileDragState);
+  window.removeEventListener("pointercancel", clearFileDragState);
+  window.removeEventListener("dragend", clearFileDragState);
+  window.removeEventListener("keydown", onFileDragKeydown);
   clearLoadingTimeout();
   stopCollaboration?.();
   agentsStore.stopSync();
@@ -3742,15 +3934,14 @@ ttsPlayer.stop();
     </div>
 
     <div class="dashboard-body">
-      <!-- 侧边栏 -->
-      <!-- 子列表展开后导航变长，会压到底部的装饰插画：展开时先把插画淡出 -->
-      <div :class="['dashboard-sidebar', { 'sidebar-art-hidden': chatNavExpanded || systemNavExpanded }]">
+      <!-- 对话子列表展开时淡出装饰；功能页面优先保证导航与内容密度。 -->
+      <div :class="['dashboard-sidebar', `sidebar-page-${activePage}`, { 'sidebar-art-hidden': chatNavExpanded }]">
         <div class="sidebar-header">
           <div class="sidebar-brand">
             <span class="brand-logo"><AppIcon name="brand-pet" :size="22" /></span>
             <div class="brand-title-group">
               <span class="brand-name">AI Desktop Pet</span>
-              <span class="brand-tag">Control Suite</span>
+              <span class="brand-tag">桌面工作台</span>
             </div>
           </div>
         </div>
@@ -3797,7 +3988,7 @@ ttsPlayer.stop();
           </div>
           <button
             :class="['sidebar-item', { active: activePage === 'memory' }]"
-            @click="activePage = 'memory'"
+            @click="openMemoryWorkspace()"
           >
             <span class="sidebar-item-icon"><Brain :size="15" /></span>
             <span>记忆库</span>
@@ -3823,43 +4014,14 @@ ttsPlayer.stop();
             <span class="sidebar-item-icon"><Mic :size="15" /></span>
             <span>语音设置</span>
           </button>
-          <div :class="['sidebar-group', { expanded: systemNavExpanded }]">
-            <div :class="['sidebar-item', 'sidebar-item-parent', { active: activePage === 'system' }]">
-              <button type="button" class="sidebar-item-main" title="进入系统设置" @click="openSystemSection()">
-                <span class="sidebar-item-icon"><SettingsIcon :size="15" /></span>
-                <span class="sidebar-item-label">系统设置</span>
-              </button>
-              <button
-                type="button"
-                :class="['sidebar-item-caret', { open: systemNavExpanded }]"
-                :aria-expanded="systemNavExpanded"
-                aria-label="展开/收起系统设置分区"
-                title="展开/收起系统设置分区"
-                @click.stop="toggleSystemSubnav"
-              >
-                <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
-                  <path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-                </svg>
-              </button>
-            </div>
-            <div v-show="systemNavExpanded" class="sidebar-subnav">
-              <button
-                v-for="item in SYSTEM_SECTIONS"
-                :key="item.id"
-                :class="['sidebar-subitem', { active: activePage === 'system' && systemSection === item.id }]"
-                :aria-current="activePage === 'system' && systemSection === item.id ? 'page' : undefined"
-                @click="openSystemSection(item.id)"
-              >
-                <span class="sidebar-subitem-avatar" aria-hidden="true"><AppIcon :name="item.icon" :size="13" /></span>
-                <span class="sidebar-subitem-label">{{ item.label }}</span>
-                <span
-                  v-if="item.id === 'backend'"
-                  class="sidebar-subitem-hint"
-                  :title="'当前 AI 后端：' + backendLabel(backendType)"
-                >{{ backendShortLabel(backendType) }}</span>
-              </button>
-            </div>
-          </div>
+          <button
+            :class="['sidebar-item', { active: activePage === 'system' }]"
+            title="进入系统设置"
+            @click="openSystemSection()"
+          >
+            <span class="sidebar-item-icon"><SettingsIcon :size="15" /></span>
+            <span>系统设置</span>
+          </button>
 
           <div class="sidebar-divider" />
 
@@ -3888,7 +4050,7 @@ ttsPlayer.stop();
       </div>
 
       <!-- 内容区 -->
-      <div :class="['dashboard-content', `page-${activePage}`, { 'chat-page-active': activePage === 'chat' }]">
+      <div ref="dashboardContentRef" :class="['dashboard-content', `page-${activePage}`, { 'chat-page-active': activePage === 'chat' }]">
         <Transition name="page-fade" mode="out-in" @after-enter="handlePageEntered">
           <!-- ========== 首页 ========== -->
           <div v-if="activePage === 'home'" key="home" class="home-page">
@@ -3984,13 +4146,13 @@ ttsPlayer.stop();
                       <span v-else class="home-glance-value muted">{{ isWeatherLoading ? '加载中' : '未开启' }}</span>
                       <span v-if="weatherInfo" class="home-glance-sub">{{ weatherInfo.city }} · {{ weatherInfo.description }}</span>
                     </div>
-                    <button type="button" class="home-glance-item clickable" @click="activePage = 'memory'">
+                    <button type="button" class="home-glance-item clickable" @click="openMemoryWorkspace('tasks')">
                       <span class="home-glance-label">下个提醒</span>
                       <span v-if="nextScheduledTask" class="home-glance-value">{{ taskStatusLabel(nextScheduledTask) }}</span>
                       <span v-else class="home-glance-value muted">暂无</span>
                       <span v-if="nextScheduledTask" class="home-glance-sub">{{ nextScheduledTask.title }}</span>
                     </button>
-                    <button type="button" class="home-glance-item clickable" @click="activePage = 'memory'">
+                    <button type="button" class="home-glance-item clickable" @click="openMemoryWorkspace()">
                       <span class="home-glance-label">记忆</span>
                       <span class="home-glance-value">{{ memories.length }} 条</span>
                       <span class="home-glance-sub">它记住的关于你的事</span>
@@ -4102,13 +4264,15 @@ ttsPlayer.stop();
               </template>
               <template v-else>
                 <div class="dash-agent-head-info">
-                  <AgentPicker
-                    :agents="agentWindowAgentOptions"
-                    :model-value="currentAgentIdentity.id"
-                    :subtitle="currentSlotLabel + ' · ' + (currentSession?.title || '新会话')"
-                    :disabled="paneIsLoading"
-                    @change="onAgentWindowAgentChange"
-                  />
+                  <div class="dash-agent-identity">
+                    <span class="dash-agent-identity-avatar">
+                      <AppIcon :name="agentSlot || 'claude'" :size="18" />
+                    </span>
+                    <span class="dash-agent-identity-copy">
+                      <span class="dash-agent-identity-name">{{ currentAgentIdentity.name }}</span>
+                      <span class="dash-agent-identity-subtitle">{{ currentSlotLabel + ' · ' + (currentSession?.title || '新会话') }}</span>
+                    </span>
+                  </div>
                 </div>
                 <div class="dash-agent-head-controls">
                   <AgentModelPicker
@@ -4196,10 +4360,11 @@ ttsPlayer.stop();
                 <div v-if="msg.role !== 'system'" class="dash-msg-bubble">
                   <div v-if="msg.agent && msg.role === 'assistant'" class="dash-msg-agent-badge">
                     <span class="dash-msg-agent-avatar">
-                      <AppIcon v-if="msg.agent.id === 'builtin-claude'" name="claude" :size="12" />
+                      <AppIcon v-if="msg.agent.id === 'main'" name="brand-pet" :size="12" />
+                      <AppIcon v-else-if="msg.agent.id === 'builtin-claude'" name="claude" :size="12" />
                       <AppIcon v-else-if="msg.agent.id === 'builtin-codex'" name="codex" :size="12" />
                       <AppIcon v-else-if="msg.agent.id === 'builtin-dsh'" name="dsh" :size="12" />
-                      <template v-else>{{ msg.agent.avatar || "🤖" }}</template>
+                      <AppIcon v-else :name="msg.agent.avatar || '🤖'" :size="12" />
                     </span>
                     <span class="dash-msg-agent-name">{{ msg.agent.name }}</span>
                   </div>
@@ -4236,9 +4401,10 @@ ttsPlayer.stop();
                 </div>
               </div>
 
-              <div v-if="paneIsLoading" class="dash-msg-wrapper assistant loading">
+              <div v-if="paneIsLoading && !(isMainSlot && orchestration.mode === 'adaptive')" class="dash-msg-wrapper assistant loading">
                 <AgentActivity :items="paneActivityItems" :thinking="paneThinking" :active="true" :waiting="!!pendingConfirm || !!pendingQuestion" :awaiting-answer="!!pendingQuestion" @stop="abortCurrentTurn" />
               </div>
+              <OrchestrationTaskCard v-if="isMainSlot && orchestration.mode === 'adaptive'" :session-id="sessions.activeMainId" />
               <div ref="dashChatEndRef" class="dash-chat-end" aria-hidden="true"></div>
               <!-- 新消息悬浮按钮（跟随最新消息时隐藏） -->
               <button v-if="!followingActivity" type="button" class="dash-scroll-fab" title="回到最新消息" aria-label="回到最新消息" @click="jumpToLatest">
@@ -4277,7 +4443,7 @@ ttsPlayer.stop();
                       <AppIcon v-if="agent.id === 'builtin-claude'" name="claude" :size="14" />
                       <AppIcon v-else-if="agent.id === 'builtin-codex'" name="codex" :size="14" />
                       <AppIcon v-else-if="agent.id === 'builtin-dsh'" name="dsh" :size="14" />
-                      <template v-else>{{ agent.avatar || "🤖" }}</template>
+                      <AppIcon v-else :name="agent.avatar || '🤖'" :size="14" />
                     </span>
                     <span class="dash-mention-main">
                       <span class="dash-mention-title">@{{ agent.name }}</span>
@@ -4320,7 +4486,9 @@ ttsPlayer.stop();
                 </div>
               </Transition>
 
-              <CollaborationBar v-if="isMainSlot" />
+              <OrchestrationModePicker v-if="isMainSlot" />
+              <CollaborationBar v-if="isMainSlot && orchestration.mode !== 'adaptive'" />
+              <OrchestrationDetailPanel />
               <div class="dash-chat-input-area">
                 <button type="button" class="dash-chat-attach-btn" title="添加附件（也可拖入文件）" aria-label="添加附件" :disabled="attachmentDraft.picking" @click="pickDashboardFiles">
                   <Paperclip :size="17" />
@@ -4386,7 +4554,7 @@ ttsPlayer.stop();
                     :disabled="paneIsLoading"
                     placement="up"
                   />
-                  <button type="button" class="dash-meta-btn" @click="activePage = 'memory'">记忆</button>
+                  <button type="button" class="dash-meta-btn" @click="openMemoryWorkspace()">记忆</button>
                   <button type="button" class="dash-meta-btn" @click="openSystemSection('backend')">设置</button>
                 </template>
               </div>
@@ -4465,7 +4633,7 @@ ttsPlayer.stop();
                     <AppIcon v-else-if="currentAgentIdentity.id === 'builtin-claude'" name="claude" :size="20" />
                     <AppIcon v-else-if="currentAgentIdentity.id === 'builtin-codex'" name="codex" :size="20" />
                     <AppIcon v-else-if="currentAgentIdentity.id === 'builtin-dsh'" name="dsh" :size="20" />
-                    <template v-else>{{ currentAgentIdentity.avatar }}</template>
+                    <AppIcon v-else :name="currentAgentIdentity.avatar || '🤖'" :size="20" />
                   </div>
                   <div class="dash-aside-hero-main">
                     <div class="dash-aside-hero-name">{{ isMainSlot ? chatHeaderTitle : currentAgentIdentity.name }}</div>
@@ -4508,7 +4676,7 @@ ttsPlayer.stop();
               <section class="dash-aside-card">
                 <div class="dash-aside-title">
                   最近记忆
-                  <button type="button" class="dash-aside-link" @click="activePage = 'memory'">管理</button>
+                  <button type="button" class="dash-aside-link" @click="openMemoryWorkspace()">管理</button>
                 </div>
                 <div v-if="recentMemories.length === 0" class="dash-aside-empty">还没有长期记忆</div>
                 <div v-else class="dash-aside-list">
@@ -4535,59 +4703,243 @@ ttsPlayer.stop();
           </div>
 
           <!-- ========== 记忆库 ========== -->
-          <div v-else-if="activePage === 'memory'" key="memory">
-            <div class="page-header">
-              <div class="page-kicker">Memory</div>
-              <h1 class="page-title">长期记忆库</h1>
-              <p class="page-subtitle">保存稳定偏好、重要背景，并管理 AI 的定时提醒</p>
+          <div v-else-if="activePage === 'memory'" key="memory" class="memory-workspace-page">
+            <div class="page-header memory-header">
+              <div class="memory-header-copy">
+                <div class="page-kicker">工作台 / 记忆库</div>
+                <h1 class="page-title">长期记忆库</h1>
+                <p class="page-subtitle">保存稳定偏好、重要背景，以及需要按时执行的事项。</p>
+              </div>
+              <button type="button" class="dash-btn primary memory-create-btn" @click="focusMemoryComposer">
+                <AppIcon name="plus" :size="15" />
+                {{ memoryWorkspaceView === 'memories' ? '新建记忆' : '新建提醒' }}
+              </button>
             </div>
 
-            <div class="dash-memory-layout">
-              <div class="dash-memory-editor-stack">
-                <div class="dash-card palette-panel skin-panel">
-                  <div class="dash-card-title"><span class="card-icon"><AppIcon name="memory-note" :size="15" /></span> 新建记忆</div>
-                  <div class="dash-form-group">
-                    <label>标题</label>
-                    <input type="text" v-model="memoryDraft.key" placeholder="例如：沟通偏好" />
+            <div class="memory-toolbar">
+              <div class="memory-view-tabs" role="tablist" aria-label="记忆库内容">
+                <button
+                  id="memory-tab-memories"
+                  type="button"
+                  role="tab"
+                  :aria-selected="memoryWorkspaceView === 'memories'"
+                  aria-controls="memory-panel"
+                  :class="['memory-view-tab', { active: memoryWorkspaceView === 'memories' }]"
+                  @click="memoryWorkspaceView = 'memories'"
+                >
+                  <AppIcon name="memory-note" :size="15" />
+                  <span>长期记忆</span>
+                  <span class="memory-view-count">{{ memories.length }}</span>
+                </button>
+                <button
+                  id="memory-tab-tasks"
+                  type="button"
+                  role="tab"
+                  :aria-selected="memoryWorkspaceView === 'tasks'"
+                  aria-controls="memory-panel"
+                  :class="['memory-view-tab', { active: memoryWorkspaceView === 'tasks' }]"
+                  @click="memoryWorkspaceView = 'tasks'"
+                >
+                  <AppIcon name="clock-task" :size="15" />
+                  <span>定时提醒</span>
+                  <span class="memory-view-count">{{ scheduledTasks.length }}</span>
+                </button>
+              </div>
+              <label v-if="memoryWorkspaceView === 'memories'" class="memory-search">
+                <AppIcon name="search" :size="15" />
+                <input v-model="memorySearch" type="search" placeholder="搜索标题或内容" aria-label="搜索长期记忆" />
+                <button v-if="memorySearch" type="button" title="清空搜索" aria-label="清空记忆搜索" @click="memorySearch = ''">
+                  <AppIcon name="close" :size="12" />
+                </button>
+              </label>
+              <span v-else class="memory-schedule-summary">
+                <span class="memory-schedule-dot" aria-hidden="true" />
+                {{ activeScheduledTaskCount }} 个提醒进行中
+              </span>
+            </div>
+
+            <div
+              id="memory-panel"
+              role="tabpanel"
+              :aria-labelledby="memoryWorkspaceView === 'memories' ? 'memory-tab-memories' : 'memory-tab-tasks'"
+              :class="['dash-memory-layout', `view-${memoryWorkspaceView}`]"
+            >
+              <div class="dash-memory-list">
+                <section v-if="memoryWorkspaceView === 'memories'" class="dash-memory-section">
+                  <div class="dash-memory-section-head">
+                    <div>
+                      <h2>长期记忆</h2>
+                      <p>AI 会在后续对话中参考这些信息</p>
+                    </div>
+                    <span class="dash-memory-count">{{ memorySearch ? `${visibleMemories.length} / ${memories.length}` : `${memories.length} 条` }}</span>
+                  </div>
+                  <div v-if="memories.length === 0" class="dash-memory-empty">
+                    <span class="dash-memory-empty-icon"><AppIcon name="memory-note" :size="24" /></span>
+                    <strong>还没有长期记忆</strong>
+                    <p>添加一条稳定偏好，或在清空对话后自动生成摘要。</p>
+                    <button type="button" class="dash-btn secondary" @click="focusMemoryComposer">添加第一条记忆</button>
+                  </div>
+                  <div v-else-if="visibleMemories.length === 0" class="dash-memory-empty search-empty">
+                    <span class="dash-memory-empty-icon"><AppIcon name="search" :size="22" /></span>
+                    <strong>没有匹配的记忆</strong>
+                    <p>换一个关键词，或清空当前搜索。</p>
+                    <button type="button" class="dash-btn secondary" @click="memorySearch = ''">清空搜索</button>
+                  </div>
+                  <div v-else class="dash-memory-records">
+                    <article v-for="memory in visibleMemories" :key="memory.id" class="dash-memory-record">
+                      <div class="dash-memory-record-head">
+                        <div class="dash-memory-record-title">
+                          <span class="dash-memory-record-icon" aria-hidden="true"><AppIcon name="memory-note" :size="15" /></span>
+                          <div>
+                            <span class="dash-memory-category">{{ memoryCategoryLabel(memory.category) }}</span>
+                            <h3>{{ memory.key }}</h3>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          class="dash-icon-btn danger"
+                          title="删除记忆"
+                          :aria-label="'删除记忆 ' + memory.key"
+                          :disabled="memoryDeletingId === memory.id"
+                          @click="deleteMemoryItem(memory.id)"
+                        >
+                          <AppIcon name="trash" :size="14" />
+                        </button>
+                      </div>
+                      <p :class="{ expanded: isMemoryExpanded(memory.id) }">{{ memory.value }}</p>
+                      <button
+                        v-if="canExpandMemory(memory.value)"
+                        type="button"
+                        class="memory-expand-btn"
+                        :aria-expanded="isMemoryExpanded(memory.id)"
+                        @click="toggleMemoryExpanded(memory.id)"
+                      >
+                        {{ isMemoryExpanded(memory.id) ? '收起内容' : '展开全部' }}
+                        <AppIcon name="chevron-down" :size="12" />
+                      </button>
+                    </article>
+                  </div>
+                </section>
+
+                <section v-else class="dash-memory-section">
+                  <div class="dash-memory-section-head">
+                    <div>
+                      <h2>定时提醒</h2>
+                      <p>集中管理一次提醒与重复任务</p>
+                    </div>
+                    <span class="dash-memory-count">{{ activeScheduledTaskCount }} / {{ scheduledTasks.length }} 启用</span>
+                  </div>
+                  <div v-if="scheduledTasks.length === 0" class="dash-memory-empty">
+                    <span class="dash-memory-empty-icon task"><AppIcon name="clock-task" :size="24" /></span>
+                    <strong>还没有定时提醒</strong>
+                    <p>创建一个新任务，也可以在对话框里直接让 AI 帮你设置。</p>
+                    <button type="button" class="dash-btn secondary" @click="focusMemoryComposer">添加第一条提醒</button>
+                  </div>
+                  <div v-else class="dash-task-records">
+                    <article
+                      v-for="task in scheduledTasks"
+                      :key="task.id"
+                      :class="['dash-task-record', { disabled: !task.enabled }]"
+                    >
+                      <div class="dash-task-time-block">
+                        <span class="dash-task-date-label">下次提醒</span>
+                        <strong>{{ formatTaskTime(task.due_at) }}</strong>
+                        <span>{{ taskRepeatLabel(task.repeat) }}</span>
+                      </div>
+                      <div class="dash-task-main">
+                        <div class="dash-memory-record-head">
+                          <div>
+                            <span class="dash-memory-category">{{ taskStatusLabel(task) }}</span>
+                            <h3>{{ task.title }}</h3>
+                          </div>
+                          <div class="dash-task-actions">
+                            <button
+                              type="button"
+                              class="dash-icon-btn"
+                              :title="task.enabled ? '暂停任务' : '启用任务'"
+                              :aria-label="(task.enabled ? '暂停任务 ' : '启用任务 ') + task.title"
+                              :disabled="taskTogglingId === task.id"
+                              @click="toggleScheduledTask(task)"
+                            >
+                              <AppIcon :name="task.enabled ? 'pause' : 'play'" :size="13" />
+                            </button>
+                            <button
+                              type="button"
+                              class="dash-icon-btn danger"
+                              title="删除任务"
+                              :aria-label="'删除任务 ' + task.title"
+                              :disabled="taskDeletingId === task.id"
+                              @click="deleteScheduledTask(task.id)"
+                            >
+                              <AppIcon name="close" :size="13" />
+                            </button>
+                          </div>
+                        </div>
+                        <p v-if="task.note">{{ task.note }}</p>
+                        <div class="dash-task-meta">{{ formatTaskFullTime(task.due_at) }}</div>
+                      </div>
+                    </article>
+                  </div>
+                </section>
+              </div>
+
+              <aside class="dash-memory-editor-stack" aria-label="创建面板">
+                <form v-if="memoryWorkspaceView === 'memories'" class="dash-card memory-editor-card" @submit.prevent="saveMemoryDraft">
+                  <div class="memory-editor-heading">
+                    <span class="memory-editor-icon"><AppIcon name="memory-note" :size="18" /></span>
+                    <div><h2>新建记忆</h2><p>记录长期有效的偏好与背景</p></div>
                   </div>
                   <div class="dash-form-group">
-                    <label>内容</label>
+                    <label for="memory-draft-key">标题</label>
+                    <input id="memory-draft-key" type="text" v-model="memoryDraft.key" placeholder="例如：沟通偏好" />
+                  </div>
+                  <div class="dash-form-group">
+                    <div class="memory-field-label">
+                      <label for="memory-draft-value">内容</label>
+                      <span>{{ memoryDraft.value.length }} 字</span>
+                    </div>
                     <textarea
+                      id="memory-draft-value"
                       class="dash-textarea"
                       v-model="memoryDraft.value"
-                      rows="5"
+                      rows="6"
                       placeholder="写下希望 AI 长期记住的事实、偏好或背景"
                     ></textarea>
                   </div>
-                  <div class="dash-field-row">
-                    <span class="dash-field-label">分类</span>
-                    <select class="dash-select" v-model="memoryDraft.category">
+                  <div class="dash-form-group">
+                    <label for="memory-draft-category">分类</label>
+                    <select id="memory-draft-category" class="dash-select" v-model="memoryDraft.category">
                       <option value="manual">手动</option>
                       <option value="general">通用</option>
                     </select>
                   </div>
                   <button
-                    class="dash-btn primary"
+                    type="submit"
+                    class="dash-btn primary memory-submit-btn"
                     :disabled="isSavingMemory || !memoryDraft.key.trim() || !memoryDraft.value.trim()"
-                    @click="saveMemoryDraft"
                   >
-                    {{ memorySaved ? '已保存' : (isSavingMemory ? '保存中...' : '保存记忆') }}
+                    <AppIcon :name="memorySaved ? 'check' : 'plus'" :size="14" />
+                    {{ memorySaved ? '已保存到记忆库' : (isSavingMemory ? '保存中…' : '保存记忆') }}
                   </button>
-                </div>
+                  <p class="memory-editor-tip">适合记录稳定信息，请勿写入密码等敏感内容。</p>
+                </form>
 
-                <div class="dash-card dash-task-composer">
-                  <div class="dash-card-title"><span class="card-icon"><AppIcon name="clock-task" :size="15" /></span> 新建定时任务</div>
-                  <div class="dash-form-group">
-                    <label>任务</label>
-                    <input type="text" v-model="taskDraft.title" placeholder="例如：提醒我喝水" />
+                <form v-else class="dash-card memory-editor-card task-editor-card" @submit.prevent="saveTaskDraft">
+                  <div class="memory-editor-heading">
+                    <span class="memory-editor-icon task"><AppIcon name="clock-task" :size="18" /></span>
+                    <div><h2>新建定时提醒</h2><p>到时间后由桌宠主动提醒你</p></div>
                   </div>
                   <div class="dash-form-group">
-                    <label>时间</label>
-                    <input type="datetime-local" v-model="taskDraft.dueAtLocal" />
+                    <label for="task-draft-title">任务</label>
+                    <input id="task-draft-title" type="text" v-model="taskDraft.title" placeholder="例如：提醒我喝水" />
                   </div>
-                  <div class="dash-field-row">
-                    <span class="dash-field-label">重复</span>
-                    <select class="dash-select" v-model="taskDraft.repeat">
+                  <div class="dash-form-group">
+                    <label for="task-draft-time">提醒时间</label>
+                    <input id="task-draft-time" type="datetime-local" v-model="taskDraft.dueAtLocal" />
+                  </div>
+                  <div class="dash-form-group">
+                    <label for="task-draft-repeat">重复</label>
+                    <select id="task-draft-repeat" class="dash-select" v-model="taskDraft.repeat">
                       <option value="once">仅一次</option>
                       <option value="daily">每天</option>
                       <option value="weekly">每周</option>
@@ -4595,266 +4947,359 @@ ttsPlayer.stop();
                     </select>
                   </div>
                   <div class="dash-form-group">
-                    <label>备注</label>
+                    <label for="task-draft-note">备注 <span class="memory-optional">可选</span></label>
                     <textarea
+                      id="task-draft-note"
                       class="dash-textarea"
                       v-model="taskDraft.note"
-                      rows="3"
-                      placeholder="可选：补充提醒内容"
+                      rows="4"
+                      placeholder="补充提醒内容或注意事项"
                     ></textarea>
                   </div>
-                  <div v-if="taskError" class="dash-test-result compact error">{{ taskError }}</div>
+                  <div v-if="taskError" class="dash-test-result compact error" role="alert">{{ taskError }}</div>
                   <button
-                    class="dash-btn primary"
+                    type="submit"
+                    class="dash-btn primary memory-submit-btn"
                     :disabled="isSavingTask || !taskDraft.title.trim() || !taskDraft.dueAtLocal"
-                    @click="saveTaskDraft"
                   >
-                    {{ taskSaved ? '已创建' : (isSavingTask ? '创建中...' : '创建任务') }}
+                    <AppIcon :name="taskSaved ? 'check' : 'plus'" :size="14" />
+                    {{ taskSaved ? '提醒已创建' : (isSavingTask ? '创建中…' : '创建提醒') }}
                   </button>
-                </div>
-              </div>
-
-              <div class="dash-memory-list">
-                <section class="dash-memory-section">
-                  <div class="dash-memory-section-head">
-                    <div>
-                      <span class="dash-section-kicker">Schedule</span>
-                      <h2>定时任务</h2>
-                    </div>
-                    <span class="dash-memory-count">{{ scheduledTasks.length }} 项</span>
-                  </div>
-                  <div v-if="scheduledTasks.length === 0" class="dash-memory-empty">
-                    暂无定时任务。可以在左侧创建，也可以在对话框里让 AI 帮你设置提醒。
-                  </div>
-                  <div
-                    v-for="task in scheduledTasks"
-                    :key="task.id"
-                    :class="['dash-task-record', { disabled: !task.enabled }]"
-                  >
-                    <div class="dash-task-time-block">
-                      <strong>{{ formatTaskTime(task.due_at) }}</strong>
-                      <span>{{ taskRepeatLabel(task.repeat) }}</span>
-                    </div>
-                    <div class="dash-task-main">
-                      <div class="dash-memory-record-head">
-                        <div>
-                          <span class="dash-memory-category">{{ taskStatusLabel(task) }}</span>
-                          <h3>{{ task.title }}</h3>
-                        </div>
-                        <div class="dash-task-actions">
-                          <button
-                            class="dash-icon-btn"
-                            :title="task.enabled ? '暂停任务' : '启用任务'"
-                            :disabled="taskTogglingId === task.id"
-                            @click="toggleScheduledTask(task)"
-                          >
-                            <AppIcon :name="task.enabled ? 'pause' : 'play'" :size="13" />
-                          </button>
-                          <button
-                            class="dash-icon-btn danger"
-                            title="删除任务"
-                            :disabled="taskDeletingId === task.id"
-                            @click="deleteScheduledTask(task.id)"
-                          >
-                            <AppIcon name="close" :size="13" />
-                          </button>
-                        </div>
-                      </div>
-                      <p v-if="task.note">{{ task.note }}</p>
-                      <div class="dash-task-meta">下次提醒：{{ formatTaskFullTime(task.due_at) }}</div>
-                    </div>
-                  </div>
-                </section>
-
-                <section class="dash-memory-section">
-                  <div class="dash-memory-section-head">
-                    <div>
-                      <span class="dash-section-kicker">Memory</span>
-                      <h2>记忆条目</h2>
-                    </div>
-                    <span class="dash-memory-count">{{ memories.length }} 条</span>
-                  </div>
-                  <div v-if="memories.length === 0" class="dash-memory-empty">
-                    暂无长期记忆。清空一段对话后会自动生成摘要，也可以在左侧手动添加。
-                  </div>
-                  <div v-for="memory in memories" :key="memory.id" class="dash-memory-record">
-                    <div class="dash-memory-record-head">
-                      <div>
-                        <span class="dash-memory-category">{{ memoryCategoryLabel(memory.category) }}</span>
-                        <h3>{{ memory.key }}</h3>
-                      </div>
-                      <button
-                        class="dash-icon-btn danger"
-                        title="删除记忆"
-                        :disabled="memoryDeletingId === memory.id"
-                        @click="deleteMemoryItem(memory.id)"
-                      >
-                        <AppIcon name="close" :size="13" />
-                      </button>
-                    </div>
-                    <p>{{ memory.value }}</p>
-                  </div>
-                </section>
-              </div>
+                </form>
+              </aside>
             </div>
           </div>
 
           <!-- ========== 智能体工坊 ========== -->
           <div v-else-if="activePage === 'agents'" key="agents" class="dash-agents-page">
-            <div class="page-header">
-              <div class="page-kicker">Agents</div>
-              <h1 class="page-title">智能体工坊</h1>
-              <p class="page-subtitle">每个角色独立执行并读取当前会话全部发言。开启协同后，角色可用独立的 @名字 任务 行交接工作。</p>
-            </div>
+            <template v-if="!agentEditorOpen">
+              <div class="page-header dash-agents-header">
+                <div>
+                  <div class="page-kicker">Agent workshop</div>
+                  <h1 class="page-title">智能体工坊</h1>
+                  <p class="page-subtitle">组建你的专属协作团队，在对话中用 @名字 随时召唤。</p>
+                </div>
+                <div class="dash-agents-header-actions">
+                  <span class="dash-agents-total">{{ agentsStore.agents.length }} 位角色待命</span>
+                  <button type="button" class="dash-primary-btn dash-agents-create-btn" @click="openAgentEditor()">
+                    <AppIcon name="plus" :size="15" />
+                    新建智能体
+                  </button>
+                </div>
+              </div>
 
-            <div class="dash-agents-layout">
-              <div class="dash-card dash-agents-list-panel">
-                <div class="dash-card-title">
-                  <span class="card-icon"><AppIcon name="agent-hub" :size="15" /></span> 我的智能体
-                  <button class="dash-agents-add-btn" @click="openAgentEditor()">＋ 新建</button>
+              <section class="dash-agents-ai-studio" aria-labelledby="agent-ai-title">
+                <div class="dash-agents-ai-intro">
+                  <span class="dash-agents-ai-icon"><AppIcon name="ai-spark" :size="24" /></span>
+                  <div>
+                    <span class="dash-agents-ai-kicker">AI designer</span>
+                    <h2 id="agent-ai-title">描述需求，让 AI 帮你设计</h2>
+                    <p>自动生成名字、头像、角色设定和工具建议，确认后再保存。</p>
+                  </div>
                 </div>
-                <div v-if="agentSaved" class="dash-agents-saved-tip">✓ 已保存</div>
-                <div v-if="agentsStore.agents.length === 0" class="dash-agents-empty">
-                  还没有自定义智能体。<br />点击「＋ 新建」自由定义，或用下方的 AI 帮你生成一个。
+                <div class="dash-agents-ai-composer">
+                  <textarea
+                    v-model="agentGenDesc"
+                    class="dash-agents-gen-input"
+                    rows="2"
+                    aria-label="描述想创建的智能体"
+                    placeholder="例如：我需要一个周报助手，能从零散的记录里提炼成果、问题和下周计划……"
+                    @keydown.ctrl.enter.prevent="generateAgentFromDesc"
+                  ></textarea>
+                  <div class="dash-agents-ai-composer-footer">
+                    <div class="dash-agents-examples" aria-label="示例需求">
+                      <span>试试</span>
+                      <button
+                        v-for="example in agentGenExamples"
+                        :key="example"
+                        type="button"
+                        :title="example"
+                        @click="agentGenDesc = example"
+                      >{{ example }}</button>
+                    </div>
+                    <button
+                      type="button"
+                      class="dash-primary-btn dash-agents-generate-btn"
+                      :disabled="agentGenLoading || !agentGenDesc.trim()"
+                      @click="generateAgentFromDesc"
+                    >
+                      <AppIcon name="ai-spark" :size="14" />
+                      {{ agentGenLoading ? "正在设计…" : "生成方案" }}
+                    </button>
+                  </div>
+                  <p class="dash-agents-ai-footnote">使用系统直连 API · Ctrl + Enter 快速生成</p>
+                  <p v-if="agentGenError" class="dash-agents-gen-error" role="alert">{{ agentGenError }}</p>
                 </div>
-                <div v-for="agent in agentsStore.agents" :key="agent.id" class="dash-agent-card">
-                  <span class="dash-agent-card-avatar">
-                    <AppIcon v-if="agent.id === 'builtin-claude'" name="claude" :size="18" />
-                    <AppIcon v-else-if="agent.id === 'builtin-codex'" name="codex" :size="18" />
-                    <AppIcon v-else-if="agent.id === 'builtin-dsh'" name="dsh" :size="18" />
-                    <template v-else>{{ agent.avatar || "🤖" }}</template>
-                  </span>
-                  <div class="dash-agent-card-main">
-                    <div class="dash-agent-card-name">@{{ agent.name }}</div>
-                    <div class="dash-agent-card-desc">{{ agent.description || "（无描述）" }}</div>
-                    <div class="dash-agent-card-meta">
-                      {{ agent.backend === 'codex' ? '本机 Codex' : agent.backend === 'dsh' ? '本机 DeepSeek Harness' : agent.backend === 'claude_code' ? '本机 Claude Code' : '直连 API' }}{{ agent.is_builtin ? ' · 内置角色' : '' }}{{ agent.model ? ' · ' + agent.model : '' }}{{ !agent.is_builtin && !agent.system_prompt.trim() ? ' · 未写角色设定' : '' }}
+              </section>
+
+              <section class="dash-agents-directory" aria-labelledby="agent-directory-title">
+                <div class="dash-agents-directory-head">
+                  <div class="dash-agents-directory-title">
+                    <span class="dash-agents-directory-icon"><AppIcon name="agent-hub" :size="18" /></span>
+                    <div>
+                      <h2 id="agent-directory-title">我的角色库</h2>
+                      <p>{{ customAgentCount }} 个自定义 · {{ builtinAgentCount }} 个内置角色</p>
                     </div>
                   </div>
-                  <div class="dash-agent-card-actions">
-                    <button class="dash-mini-btn" @click="openChatSlot('main'); chatInput = chatInput + (chatInput && !/\s$/.test(chatInput) ? ' ' : '') + '@' + agentsStore.mentionName(agent) + ' '">召唤</button>
-                    <button v-if="agent.is_builtin" class="dash-mini-btn" @click="configureBuiltinAgent(agent)">登录配置</button>
-                    <button v-if="!agent.is_builtin" class="dash-mini-btn" @click="openAgentEditor(agent)">编辑</button>
-                    <button
-                      class="dash-mini-btn danger"
-                      v-if="!agent.is_builtin"
-                      :disabled="agentDeletingId === agent.id"
-                      @click="deleteAgentDraft(agent)"
-                    >
-                      删除
+                  <label class="dash-agents-search">
+                    <AppIcon name="search" :size="15" />
+                    <input v-model="agentSearch" type="search" placeholder="搜索名字、能力或模型" aria-label="搜索智能体" />
+                    <button v-if="agentSearch" type="button" title="清空搜索" @click="agentSearch = ''">
+                      <AppIcon name="close" :size="13" />
                     </button>
-                  </div>
+                  </label>
                 </div>
 
-                <div class="dash-card-title" style="margin-top: 18px;">
-                  <span class="card-icon"><AppIcon name="ai-spark" :size="15" /></span> 用 AI 创建
+                <div class="dash-agents-directory-toolbar">
+                  <div class="dash-agents-filters" role="group" aria-label="筛选智能体">
+                    <button
+                      v-for="filter in agentFilterOptions"
+                      :key="filter.id"
+                      type="button"
+                      :class="{ active: agentFilter === filter.id }"
+                      @click="agentFilter = filter.id"
+                    >
+                      {{ filter.label }}
+                      <span>{{ agentFilterCount(filter.id) }}</span>
+                    </button>
+                  </div>
+                  <transition name="dash-agent-tip">
+                    <span v-if="agentSaved" class="dash-agents-saved-tip"><AppIcon name="check" :size="13" /> 已保存到角色库</span>
+                  </transition>
                 </div>
-                <p class="dash-agents-ai-hint">一句话说清你要它做什么，AI 会推断使用场景，写出名字、头像、完整角色设定和工具权限，你确认后即可保存。也可以在对话里直接说「帮我创建一个……的智能体」。此功能使用系统设置中的直连 API 配置。</p>
-                <textarea
-                  v-model="agentGenDesc"
-                  class="dash-agents-gen-input"
-                  rows="3"
-                  placeholder="例如：一个帮我写周报的智能体，语气正式，善于从零散信息里提炼重点……"
-                ></textarea>
-                <div class="dash-agents-gen-row">
-                  <button
-                    class="dash-primary-btn"
-                    :disabled="agentGenLoading || !agentGenDesc.trim()"
-                    @click="generateAgentFromDesc"
+
+                <div v-if="agentsStore.loading && agentsStore.agents.length === 0" class="dash-agents-empty">
+                  <AppIcon name="refresh" :size="22" />
+                  <p>正在整理角色库…</p>
+                </div>
+                <div v-else-if="agentsStore.agents.length === 0" class="dash-agents-empty">
+                  <span class="dash-agents-empty-icon"><AppIcon name="agent-hub" :size="28" /></span>
+                  <h3>从第一位智能体开始</h3>
+                  <p>在上方描述你的需求，或点击「新建智能体」自由定义。</p>
+                  <button type="button" class="dash-mini-btn" @click="openAgentEditor()">手动新建</button>
+                </div>
+                <div v-else-if="filteredAgents.length === 0" class="dash-agents-empty compact">
+                  <AppIcon name="search" :size="24" />
+                  <h3>没有找到匹配的角色</h3>
+                  <p>换个关键词，或清除当前筛选条件。</p>
+                  <button type="button" class="dash-mini-btn" @click="agentSearch = ''; agentFilter = 'all'">清除筛选</button>
+                </div>
+                <div v-else class="dash-agents-grid">
+                  <article
+                    v-for="agent in filteredAgents"
+                    :key="agent.id"
+                    class="dash-agent-card"
+                    :class="{ 'is-builtin': agent.is_builtin }"
                   >
-                    {{ agentGenLoading ? "生成中…" : "生成智能体" }}
-                  </button>
-                  <span v-if="agentGenError" class="dash-agents-gen-error">{{ agentGenError }}</span>
+                    <div class="dash-agent-card-head">
+                      <span class="dash-agent-card-avatar">
+                        <AppIcon v-if="agent.id === 'builtin-claude'" name="claude" :size="24" />
+                        <AppIcon v-else-if="agent.id === 'builtin-codex'" name="codex" :size="24" />
+                        <AppIcon v-else-if="agent.id === 'builtin-dsh'" name="dsh" :size="24" />
+                        <AppIcon v-else :name="agent.avatar || '🤖'" :size="24" />
+                      </span>
+                      <div class="dash-agent-card-main">
+                        <div class="dash-agent-card-name-row">
+                          <h3 class="dash-agent-card-name">@{{ agent.name }}</h3>
+                          <span class="dash-agent-card-type">{{ agent.is_builtin ? "内置" : "自定义" }}</span>
+                        </div>
+                        <span class="dash-agent-card-backend">{{ agentBackendLabel(agent) }}</span>
+                      </div>
+                    </div>
+
+                    <p class="dash-agent-card-desc">{{ agent.description || "还没有填写能力描述，编辑角色来补充。" }}</p>
+                    <div class="dash-agent-card-meta">
+                      <span v-if="agent.model" class="dash-agent-model-tag" :title="agent.model">{{ agent.model }}</span>
+                      <span v-else-if="agent.backend === 'direct_api'">跟随当前模型</span>
+                      <span v-if="!agent.is_builtin && agent.allowed_tools.length">{{ agent.allowed_tools.length }} 项免确认工具</span>
+                      <span v-if="!agent.is_builtin && !agent.system_prompt.trim()" class="is-warning">待完善角色设定</span>
+                    </div>
+
+                    <div class="dash-agent-card-actions">
+                      <button type="button" class="dash-agent-summon-btn" @click="summonAgent(agent)">
+                        <AppIcon name="play" :size="11" />
+                        开始协作
+                      </button>
+                      <button v-if="agent.is_builtin" type="button" class="dash-agent-secondary-btn" @click="configureBuiltinAgent(agent)">登录配置</button>
+                      <button v-if="!agent.is_builtin" type="button" class="dash-agent-secondary-btn" @click="openAgentEditor(agent)">编辑</button>
+                      <button
+                        v-if="!agent.is_builtin"
+                        type="button"
+                        class="dash-agent-delete-btn"
+                        :title="'删除 ' + agent.name"
+                        :aria-label="'删除 ' + agent.name"
+                        :disabled="agentDeletingId === agent.id"
+                        @click="deleteAgentDraft(agent)"
+                      >
+                        <AppIcon name="trash" :size="15" />
+                      </button>
+                    </div>
+                  </article>
+                </div>
+              </section>
+            </template>
+
+            <div v-else class="dash-agent-editor">
+              <div class="dash-agent-editor-header">
+                <button type="button" class="dash-agent-back-btn" @click="closeAgentEditor()">← 返回角色库</button>
+                <div class="dash-agent-editor-heading">
+                  <span class="dash-agent-editor-avatar"><AppIcon :name="agentDraft.avatar || '🤖'" :size="26" /></span>
+                  <div>
+                    <span class="page-kicker">{{ editingAgentId ? "Edit agent" : "New agent" }}</span>
+                    <h1>{{ editingAgentId ? `编辑 @${agentDraft.name || "智能体"}` : "创建一位新智能体" }}</h1>
+                    <p>{{ editingAgentId ? "调整角色设定与运行方式，保存后立即生效。" : "先定义它是谁，再决定它如何工作。" }}</p>
+                  </div>
                 </div>
               </div>
 
-              <div v-if="agentEditorOpen" class="dash-card dash-agent-editor-panel">
-                <div class="dash-card-title">
-                  <span class="card-icon">{{ agentDraft.avatar || "🤖" }}</span>
-                  {{ editingAgentId ? "编辑智能体" : "新建智能体" }}
-                  <button class="dash-agents-close-btn" @click="closeAgentEditor()">×</button>
-                </div>
-                <div class="dash-form-group">
-                  <label>名字（对话中 @ 它用，不能含空格和 @）</label>
-                  <input v-model="agentDraft.name" type="text" placeholder="例如：周报助手" maxlength="40" />
-                </div>
-                <div class="dash-form-group">
-                  <label>头像</label>
-                  <div class="dash-avatar-picker">
-                    <button
-                      v-for="emoji in AGENT_AVATARS"
-                      :key="emoji"
-                      type="button"
-                      class="dash-avatar-option"
-                      :class="{ active: agentDraft.avatar === emoji }"
-                      @click="agentDraft.avatar = emoji"
-                    >
-                      {{ emoji }}
-                    </button>
+              <form class="dash-agent-editor-form" @submit.prevent="saveAgentDraft">
+                <div class="dash-agent-editor-grid">
+                  <div class="dash-agent-editor-main">
+                    <section class="dash-card dash-agent-editor-section">
+                      <div class="dash-agent-section-head">
+                        <span class="dash-agent-section-number">01</span>
+                        <div>
+                          <h2>身份与形象</h2>
+                          <p>这些信息会出现在角色库和 @ 提及列表中。</p>
+                        </div>
+                      </div>
+                      <div class="dash-agent-identity-fields">
+                        <div class="dash-form-group">
+                          <label for="agent-name">名字</label>
+                          <input id="agent-name" v-model="agentDraft.name" type="text" placeholder="例如：周报助手" maxlength="40" autofocus />
+                          <p class="dash-agent-field-hint">用于 @ 提及，不能包含空格或 @。</p>
+                        </div>
+                        <div class="dash-form-group">
+                          <label for="agent-description">一句话描述</label>
+                          <input id="agent-description" v-model="agentDraft.description" type="text" placeholder="它擅长什么？" maxlength="100" />
+                          <p class="dash-agent-field-hint">用一句话说清楚它的核心能力。</p>
+                        </div>
+                      </div>
+                      <div class="dash-form-group dash-agent-avatar-field">
+                        <label>选择头像</label>
+                        <div class="dash-avatar-picker">
+                          <button
+                            v-for="emoji in AGENT_AVATARS"
+                            :key="emoji"
+                            type="button"
+                            class="dash-avatar-option"
+                            :class="{ active: agentDraft.avatar === emoji }"
+                            :aria-label="'选择头像 ' + emoji"
+                            :aria-pressed="agentDraft.avatar === emoji"
+                            @click="agentDraft.avatar = emoji"
+                          >
+                            <AppIcon :name="emoji" :size="19" />
+                          </button>
+                        </div>
+                      </div>
+                    </section>
+
+                    <section class="dash-card dash-agent-editor-section dash-agent-prompt-section">
+                      <div class="dash-agent-section-head">
+                        <span class="dash-agent-section-number">02</span>
+                        <div>
+                          <h2>角色设定</h2>
+                          <p>定义它的职责、工作方式、表达风格和边界。</p>
+                        </div>
+                        <button
+                          type="button"
+                          class="dash-agent-ai-complete-btn"
+                          :disabled="agentCompleteLoading"
+                          @click="completeAgentDraft()"
+                        >
+                          <AppIcon name="ai-spark" :size="13" />
+                          {{ agentCompleteLoading ? "补全中…" : agentDraft.system_prompt.trim() ? "AI 完善" : "AI 补全" }}
+                        </button>
+                      </div>
+                      <div class="dash-form-group">
+                        <label for="agent-system-prompt">System prompt</label>
+                        <textarea
+                          id="agent-system-prompt"
+                          v-model="agentDraft.system_prompt"
+                          class="dash-agents-prompt-input"
+                          rows="11"
+                          maxlength="4000"
+                          placeholder="例如：你是一位严谨的产品分析师。收到需求后先确认目标，再拆解关键问题；输出时先给结论，再列依据……"
+                        ></textarea>
+                        <div class="dash-agent-prompt-meta">
+                          <span>可以先写名字和描述，再让 AI 帮你补全。</span>
+                          <span>{{ agentDraft.system_prompt.length }} / 4000</span>
+                        </div>
+                      </div>
+                    </section>
                   </div>
+
+                  <aside class="dash-agent-editor-side">
+                    <section class="dash-card dash-agent-editor-section">
+                      <div class="dash-agent-section-head">
+                        <span class="dash-agent-section-number">03</span>
+                        <div>
+                          <h2>运行配置</h2>
+                          <p>选择这个角色的执行后端和模型。</p>
+                        </div>
+                      </div>
+                      <div class="dash-form-group">
+                        <label for="agent-backend">执行后端</label>
+                        <select id="agent-backend" v-model="agentDraft.backend" class="dash-select">
+                          <option value="direct_api">直连 API</option>
+                          <option value="claude_code">本机 Claude Code</option>
+                          <option value="codex">本机 Codex</option>
+                          <option value="dsh">本机 DeepSeek Harness</option>
+                        </select>
+                      </div>
+                      <template v-if="agentDraft.backend === 'direct_api'">
+                        <div class="dash-form-group">
+                          <label for="agent-api-profile">API 配置</label>
+                          <select id="agent-api-profile" v-model="agentDraft.api_profile_id" class="dash-select">
+                            <option value="">使用当前 API 配置</option>
+                            <option v-for="profile in apiProfiles" :key="profile.id" :value="profile.id">{{ profile.name || profile.model }}</option>
+                          </select>
+                        </div>
+                        <div class="dash-form-group">
+                          <label for="agent-model">专属模型</label>
+                          <input id="agent-model" v-model="agentDraft.model" type="text" placeholder="例如：gpt-4o-mini" maxlength="200" />
+                          <p class="dash-agent-field-hint">留空则跟随所选 API 配置。</p>
+                        </div>
+                      </template>
+                      <div v-else class="dash-agent-local-note">
+                        <AppIcon name="prompt-terminal" :size="16" />
+                        <p>登录、模型与本地权限由对应后端的配置统一管理。</p>
+                      </div>
+                    </section>
+
+                    <section class="dash-card dash-agent-editor-section dash-agent-tools-section">
+                      <div class="dash-agent-section-head">
+                        <span class="dash-agent-section-number">04</span>
+                        <div>
+                          <h2>工具权限</h2>
+                          <p>勾选本轮被 @ 时无需再次确认的工具。</p>
+                        </div>
+                      </div>
+                      <template v-if="agentDraft.backend === 'direct_api'">
+                        <div class="dash-tool-perm-list">
+                          <label v-for="tool in toolPermissionOptions" :key="tool.id" class="dash-tool-perm-item">
+                            <input
+                              type="checkbox"
+                              :checked="agentDraft.allowed_tools.includes(tool.id)"
+                              @change="toggleAgentTool(tool.id, ($event.target as HTMLInputElement).checked)"
+                            />
+                            <span>{{ tool.label }}</span>
+                          </label>
+                        </div>
+                        <p class="dash-agent-tools-note"><AppIcon name="shield-bolt" :size="13" /> 仅直连 API 生效，计划模式不会执行工具。</p>
+                      </template>
+                      <p v-else class="dash-agent-tools-unavailable">切换为直连 API 后，可单独设置免确认工具。</p>
+                    </section>
+                  </aside>
                 </div>
-                <div class="dash-form-group">
-                  <label>一句话描述</label>
-                  <input v-model="agentDraft.description" type="text" placeholder="它擅长什么（会显示在 @ 列表中）" maxlength="100" />
-                </div>
-                <div class="dash-form-group">
-                  <label>角色设定（system prompt）</label>
-                  <textarea
-                    v-model="agentDraft.system_prompt"
-                    rows="6"
-                    maxlength="4000"
-                    placeholder="可以留空后点下方「AI 补全设定」：AI 会根据名字和一句话描述写出身份、职责、工作方式和边界"
-                  ></textarea>
-                  <div class="dash-agents-gen-row">
-                    <button
-                      type="button"
-                      class="dash-mini-btn"
-                      :disabled="agentCompleteLoading"
-                      @click="completeAgentDraft()"
-                    >
-                      {{ agentCompleteLoading ? "补全中…" : agentDraft.system_prompt.trim() ? "AI 完善设定" : "AI 补全设定" }}
-                    </button>
-                  </div>
-                </div>
-                <div class="dash-form-group">
-                  <label>执行后端</label>
-                  <select v-model="agentDraft.backend" class="dash-select">
-                    <option value="direct_api">直连 API</option>
-                    <option value="claude_code">本机 Claude Code</option>
-                    <option value="codex">本机 Codex</option>
-                    <option value="dsh">本机 DeepSeek Harness</option>
-                  </select>
-                </div>
-                <div v-if="agentDraft.backend === 'direct_api'" class="dash-form-group">
-                  <label>API 配置</label>
-                  <select v-model="agentDraft.api_profile_id" class="dash-select">
-                    <option value="">使用当前 API 配置</option>
-                    <option v-for="profile in apiProfiles" :key="profile.id" :value="profile.id">{{ profile.name || profile.model }}</option>
-                  </select>
-                </div>
-                <div v-if="agentDraft.backend === 'direct_api'" class="dash-form-group">
-                  <label>专属模型（留空跟随所选 API 配置）</label>
-                  <input v-model="agentDraft.model" type="text" placeholder="例如：gpt-4o-mini / deepseek-chat" />
-                </div>
-                <div class="dash-form-group">
-                  <label>免确认工具（仅直连 API，本轮被 @ 时生效；计划模式不执行工具）</label>
-                  <div class="dash-tool-perm-list">
-                    <label v-for="tool in toolPermissionOptions" :key="tool.id" class="dash-tool-perm-item">
-                      <input
-                        type="checkbox"
-                        :checked="agentDraft.allowed_tools.includes(tool.id)"
-                        @change="toggleAgentTool(tool.id, ($event.target as HTMLInputElement).checked)"
-                      />
-                      <span>{{ tool.label }}</span>
-                    </label>
-                  </div>
-                </div>
+
                 <div class="dash-agents-editor-actions">
-                  <span v-if="agentSaveError" class="dash-agents-gen-error">{{ agentSaveError }}</span>
-                  <button class="dash-primary-btn" @click="saveAgentDraft()">保存智能体</button>
-                  <button class="dash-mini-btn" @click="closeAgentEditor()">取消</button>
+                  <span v-if="agentSaveError" class="dash-agents-gen-error" role="alert">{{ agentSaveError }}</span>
+                  <span v-else class="dash-agents-editor-save-hint">保存后即可在主对话中 @{{ agentDraft.name || "名字" }} 召唤</span>
+                  <button type="button" class="dash-agent-secondary-btn" @click="closeAgentEditor()">取消</button>
+                  <button type="submit" class="dash-primary-btn dash-agent-save-btn"><AppIcon name="check" :size="14" /> 保存智能体</button>
                 </div>
-              </div>
+              </form>
             </div>
           </div>
 
@@ -5174,27 +5619,56 @@ ttsPlayer.stop();
             </div>
           </div>
 
-          <!-- ========== 系统设置（侧边栏子列表分区，见 docs/settings-redesign.md） ========== -->
+          <!-- ========== 系统设置：页面内二级导航 ========== -->
           <div v-else-if="activePage === 'system'" key="system" class="system-lab-page sys-page">
-            <div class="page-header lab-header sys-header">
+            <div class="page-header sys-header">
               <div class="sys-header-copy">
-                <div class="page-kicker">系统设置</div>
-                <h1 class="page-title">{{ currentSystemSection.label }}</h1>
-                <p class="page-subtitle">{{ currentSystemSection.desc }}</p>
+                <div class="page-kicker">工作台 / 系统设置</div>
+                <h1 class="page-title">系统设置</h1>
+                <p class="page-subtitle">管理模型、执行权限、角色行为与应用提醒。</p>
               </div>
-              <button
-                type="button"
-                class="sys-header-badge"
-                :title="'当前 AI 后端：' + backendLabel(backendType)"
-                @click="openSystemSection('backend')"
-              >
-                <AppIcon :name="backendIcon(backendType)" :size="14" />
-                <span>{{ backendLabel(backendType) }}</span>
-              </button>
+              <div class="sys-header-meta">
+                <span class="sys-header-meta-label">当前 AI 后端</span>
+                <button
+                  type="button"
+                  class="sys-header-badge"
+                  :title="'查看 AI 后端设置：' + backendLabel(backendType)"
+                  @click="openSystemSection('backend')"
+                >
+                  <AppIcon :name="backendIcon(backendType)" :size="14" />
+                  <span>{{ backendLabel(backendType) }}</span>
+                </button>
+              </div>
             </div>
 
-            <Transition name="page-fade" mode="out-in">
-              <div :key="systemSection" class="sys-body">
+            <div class="sys-workspace">
+              <aside class="sys-local-nav">
+                <span class="sys-local-nav-label">设置分类</span>
+                <nav aria-label="系统设置分类">
+                  <button
+                    v-for="item in SYSTEM_SECTIONS"
+                    :key="item.id"
+                    type="button"
+                    :class="['sys-local-nav-item', { active: systemSection === item.id }]"
+                    :aria-current="systemSection === item.id ? 'page' : undefined"
+                    @click="openSystemSection(item.id)"
+                  >
+                    <AppIcon :name="item.icon" :size="16" />
+                    <span>{{ item.label }}</span>
+                  </button>
+                </nav>
+              </aside>
+
+              <div class="sys-content">
+                <header class="sys-content-header">
+                  <div>
+                    <h2>{{ currentSystemSection.label }}</h2>
+                    <p>{{ currentSystemSection.desc }}</p>
+                  </div>
+                </header>
+
+                <Transition name="page-fade" mode="out-in">
+                  <div :key="systemSection" :class="['sys-body', `sys-body-${systemSection}`]">
                 <!-- ===== AI 后端 ===== -->
                 <template v-if="systemSection === 'backend'">
                   <section class="dash-card sys-section">
@@ -5327,7 +5801,7 @@ ttsPlayer.stop();
                             <span class="sys-profile-name">{{ profile.name || profile.model }}</span>
                             <span class="sys-profile-meta">{{ profile.model }}</span>
                           </button>
-                          <span v-if="profile.id === activeApiProfileId" class="sys-pill">使用中</span>
+                          <span v-if="profile.id === activeApiProfileId" class="sys-pill" title="当前使用中的模型配置">使用中</span>
                           <button
                             type="button"
                             class="sys-profile-delete"
@@ -5675,7 +6149,7 @@ ttsPlayer.stop();
 
                 <!-- ===== 角色设定 ===== -->
                 <template v-else-if="systemSection === 'persona'">
-                  <section class="dash-card sys-section">
+                  <section class="dash-card sys-section sys-personality-panel">
                     <header class="sys-section-head">
                       <div>
                         <h2 class="sys-section-title">性格</h2>
@@ -5698,7 +6172,7 @@ ttsPlayer.stop();
                     </div>
                   </section>
 
-                  <section class="dash-card sys-section">
+                  <section class="dash-card sys-section sys-profession-panel">
                     <header class="sys-section-head">
                       <div>
                         <h2 class="sys-section-title">职业</h2>
@@ -5721,7 +6195,7 @@ ttsPlayer.stop();
                     </div>
                   </section>
 
-                  <section class="dash-card sys-section">
+                  <section class="dash-card sys-section sys-prompt-panel">
                     <header class="sys-section-head">
                       <div>
                         <h2 class="sys-section-title">自定义系统提示</h2>
@@ -5828,8 +6302,10 @@ ttsPlayer.stop();
                     </footer>
                   </section>
                 </template>
+                  </div>
+                </Transition>
               </div>
-            </Transition>
+            </div>
           </div>
 
           <!-- ========== 关于 ========== -->

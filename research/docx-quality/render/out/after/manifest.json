@@ -1,0 +1,37 @@
+{
+ "label": "after",
+ "source": "D:\\ai-desktop-pet\\research\\docx-quality\\out\\gold.docx",
+ "outdir": "D:\\ai-desktop-pet\\research\\docx-quality\\render\\out\\after",
+ "mode": "structure",
+ "started_at": "2026-11-14T02:07:30+0900",
+ "environment": {
+  "python": "3.12.6",
+  "word_exe": "C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE",
+  "free_offers": null
+ },
+ "source_copy": "D:\\ai-desktop-pet\\research\\docx-quality\\render\\out\\after\\source\\source_copy.docx",
+ "sha256": {
+  "original": "9fb217bcbf0c6f483b6b8725c6769d82e227c7f871960669990c5b1c9c90c429",
+  "copy": "9fb217bcbf0c6f483b6b8725c6769d82e227c7f871960669990c5b1c9c90c429",
+  "identical": true
+ },
+ "size": 16191,
+ "render": {
+  "attempted": false,
+  "ok": false,
+  "reason": "mode=structure，跳过 Word 渲染"
+ },
+ "structure": {
+  "file": "D:\\ai-desktop-pet\\research\\docx-quality\\render\\out\\after\\structure.json",
+  "verdict": "WARN",
+  "parts_count": 14,
+  "checks": {
+   "pass": 18,
+   "fail": 0,
+   "warn": 1
+  },
+  "failed_checks": []
+ },
+ "finished_at": "2026-11-14T02:07:30+0900",
+ "elapsed_s": 0.26
+}

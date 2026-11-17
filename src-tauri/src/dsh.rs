@@ -247,7 +247,8 @@ fn prompt_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| error.to_string())
 }
 
-/// 桌宠 profile 的补丁层：关掉随包的一次性应用，挂上自带 runner。
+/// 桌宠 profile 的补丁层：关掉随包的一次性应用，挂上自带 runner；
+/// 并重新启用 dsh-headless 关闭的交互式凭据库，以复用本机 dsh 已保存的登录凭据。
 fn patch_layer() -> String {
     format!(
         "# {PATCH_MARKER} v2 — 由 ai-desktop-pet 生成并维护，覆盖旧版本时请保留本标记行。\n\
@@ -263,6 +264,10 @@ fn patch_layer() -> String {
          \x20\x20disabled: true\n\
          - id: headless-runner\n\
          \x20\x20disabled: true\n\
+         # dsh-headless 关闭了交互式凭据库、只认启动环境里的 API Key；桌宠要复用本机 dsh\n\
+         # 在 Models 页保存的登录凭据（模型目录与对话都依赖它），所以在托管补丁里重新启用。\n\
+         - id: credentials\n\
+         \x20\x20disabled: false\n\
          - insert:\n\
          \x20\x20\x20\x20- id: pet-runner\n\
          \x20\x20\x20\x20\x20\x20name: './plugins/pet-runner.mjs'\n"
@@ -741,16 +746,54 @@ impl DshAdapter {
         effort: Option<&str>,
         permission: &str,
     ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
-        let workspace = workspace_dir(app)?;
+        self.spawn_streaming_in_workspace(
+            app,
+            message,
+            history,
+            system_prompt,
+            None,
+            None,
+            session,
+            model,
+            provider,
+            effort,
+            permission,
+        )
+        .await
+    }
+
+    /// 可显式指定工作区与归属会话的 spawn 版本（供智能调度按节点隔离目录执行）。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn spawn_streaming_in_workspace(
+        &self,
+        app: &tauri::AppHandle,
+        message: &str,
+        history: &[crate::storage::ChatMessage],
+        system_prompt: &str,
+        workspace: Option<&Path>,
+        owner_session_id: Option<&str>,
+        session: Option<&str>,
+        model: Option<&str>,
+        provider: Option<&str>,
+        effort: Option<&str>,
+        permission: &str,
+    ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
+        let fallback_workspace = workspace_dir(app)?;
+        let effective_workspace = workspace.unwrap_or(&fallback_workspace);
         let prompts = prompt_dir(app)?;
         // 会话级 / 设置页选定的权限档位：空串不覆写 DSH 环境，保持本机配置。
         let permission = crate::cli_permission::dsh_permission(permission);
         let state = app.state::<crate::AppState>();
+        let owner_session = owner_session_id
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| crate::current_turn_session(&state));
         let memory_url = state.permission_bridge.lock().ok().and_then(|bridge| {
-            bridge.as_ref().map(|b| b.url_for_session(&crate::current_turn_session(&state)))
+            bridge.as_ref().map(|b| b.url_for_session(&owner_session))
         });
         self.spawn_in_workspace_with(
-            &workspace,
+            effective_workspace,
             &prompts,
             message,
             history,
@@ -1371,6 +1414,10 @@ fn read_default_model(home: &Path) -> (Option<String>, Option<String>) {
 
 fn unquote(value: &str) -> String {
     value.trim().trim_matches(['"', '\'']).to_string()
+}
+
+pub fn is_cli_available() -> bool {
+    resolve_launcher().is_ok()
 }
 
 pub async fn check_status(app: &tauri::AppHandle) -> Result<DshStatus, String> {
@@ -2466,6 +2513,17 @@ mod tests {
         assert!(patch.contains(PATCH_MARKER));
         assert!(!patch.contains("自动同步自本机"), "没有源 profile 时不能追加同步段");
         let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn patch_layer_reenables_the_local_credential_store() {
+        // dsh-headless 会关闭交互式凭据库；托管补丁排在它之后必须重新启用，
+        // 否则 runner 看不到本机 dsh 已保存的渠道凭据，模型目录只剩空列表。
+        let patch = patch_layer();
+        assert!(
+            patch.contains("- id: credentials\n  disabled: false"),
+            "托管补丁必须重新启用 credentials: {patch}"
+        );
     }
 
     #[test]

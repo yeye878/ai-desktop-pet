@@ -228,6 +228,8 @@ public class IconMaker {
 Write-Host "Icon created: $IconPath"
 
 Write-Host "Building production app..."
+# 本机 rustc 在 release 优化大 crate 时曾栈溢出（STATUS_STACK_BUFFER_OVERRUN），加大编译线程栈。
+$env:RUST_MIN_STACK = "16777216"
 Push-Location $ProjectRoot
 try {
     & npm run tauri build

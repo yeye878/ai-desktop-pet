@@ -17,7 +17,8 @@ const props = withDefaults(defineProps<{
   waiting?: boolean;
   awaitingAnswer?: boolean;
   compact?: boolean;
-}>(), { active: false, waiting: false, awaitingAnswer: false, compact: false });
+  hideStop?: boolean;
+}>(), { active: false, waiting: false, awaitingAnswer: false, compact: false, hideStop: false });
 const emit = defineEmits<{ stop: [] }>();
 
 /** 单次输出超过这个字符数就先截断，避免一屏塞满日志。 */
@@ -261,7 +262,7 @@ onBeforeUnmount(() => { if (timer !== undefined) clearInterval(timer); });
       <span>{{ status }}</span>
       <span v-if="tools.length" class="activity-count">{{ completed }}/{{ tools.length }}</span>
       <span v-if="elapsedLabel" class="activity-elapsed">{{ elapsedLabel }}</span>
-      <button type="button" class="activity-stop" title="停止生成" aria-label="停止生成" @click.stop="emit('stop')"><Square :size="12" fill="currentColor" /></button>
+      <button v-if="!hideStop" type="button" class="activity-stop" title="停止生成" aria-label="停止生成" @click.stop="emit('stop')"><Square :size="12" fill="currentColor" /></button>
     </div>
     <button v-if="rows.length" type="button" class="activity-toggle" :aria-expanded="isProcessExpanded" @click="isProcessExpanded = !isProcessExpanded">
       <ChevronRight :size="14" class="activity-chevron" />

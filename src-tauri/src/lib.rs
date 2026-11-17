@@ -13,6 +13,8 @@ mod mcp_permission;
 mod computer_use;
 mod direct_api;
 mod openclaw;
+mod orchestration;
+mod session_title;
 mod skills;
 mod storage;
 mod subprocess;
@@ -160,6 +162,7 @@ pub struct AppState {
     pub weather_cache: tokio::sync::Mutex<Option<system::WeatherInfo>>,
     pub last_active_skill_id: tokio::sync::Mutex<Option<String>>,
     pub subprocs: subprocess::SubprocessManager,
+    pub orchestration: std::sync::Arc<orchestration::Service>,
 }
 
 fn unix_now() -> i64 {
@@ -200,6 +203,12 @@ pub(crate) fn next_turn_id() -> u64 {
     NEXT_TURN_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+/// 为每次智能调度发送生成全局唯一幂等键；不能复用进程启动后从 1 递增的 `turn_id`，
+/// 否则重启应用后 `send-1` / `send-2` 会命中数据库历史任务导致静默无响应。
+fn adaptive_send_idempotency_key() -> String {
+    format!("send-{}", uuid::Uuid::new_v4().simple())
+}
+
 /// 工具授权缓存按会话隔离：键是 "会话 id + 分隔符 + 工具名"。
 /// 以前只按工具名记，在一个窗口批准过 edit_file / computer_* 后，其它所有会话都免确认。
 fn tool_approval_key(session_id: &str, tool_name: &str) -> String {
@@ -231,6 +240,33 @@ pub(crate) async fn clear_tool_approvals(state: &AppState, session_id: Option<&s
             approved.retain(|key| !key.starts_with(&prefix));
         }
         None => approved.clear(),
+    }
+}
+
+/// 暂存并清空某个会话的本轮已批准工具（用于子智能体隔离授权）。
+pub(crate) async fn take_session_tool_approvals(state: &AppState, session_id: &str) -> Vec<String> {
+    let prefix = format!("{session_id}\u{1f}");
+    let mut approved = state.approved_tool_types.lock().await;
+    let saved: Vec<String> = approved
+        .iter()
+        .filter(|key| key.starts_with(&prefix))
+        .cloned()
+        .collect();
+    approved.retain(|key| !key.starts_with(&prefix));
+    saved
+}
+
+/// 恢复先前暂存的会话级工具授权（先清掉子智能体期间新增的临时授权）。
+pub(crate) async fn restore_session_tool_approvals(
+    state: &AppState,
+    session_id: &str,
+    saved: Vec<String>,
+) {
+    let prefix = format!("{session_id}\u{1f}");
+    let mut approved = state.approved_tool_types.lock().await;
+    approved.retain(|key| !key.starts_with(&prefix));
+    for key in saved {
+        approved.insert(key);
     }
 }
 
@@ -423,29 +459,81 @@ fn notify_active_session_changed(app: &tauri::AppHandle, session: &storage::Chat
     notify_sessions_changed(app);
 }
 
-/// 折叠空白并截断，用于会话标题 / 预览。
+/// 折叠空白并截断，用于会话预览。
 fn compact_session_text(text: &str, limit: usize) -> String {
     let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
     compact.chars().take(limit).collect()
 }
 
+/// 标题输入只取用户真正输入的文字：去掉附件说明段与“仅附件”占位。
+/// 附件段格式与前端 visibleMessageContent 保持一致。
+fn session_title_message_text(message: &str) -> String {
+    let text = message
+        .split("\n\n---\n[用户附加了以下本地文件]")
+        .next()
+        .unwrap_or(message)
+        .trim();
+    if text == "[用户附加了文件，但没有输入文字]" {
+        String::new()
+    } else {
+        text.to_string()
+    }
+}
+
+/// DSH 风格确定性回退标题：首条用户消息的前 5 个词 / 40 字节（UTF-8 安全）。
+/// 中文没有空格时等价于按 40 字节截断，约 13 个汉字；最终标题上限 80 字节。
 fn conversation_title_from(text: &str) -> String {
-    compact_session_text(text, 24)
+    session_title::fallback_session_title(&session_title_message_text(text))
 }
 
 pub(crate) fn conversation_preview_from(text: &str) -> String {
-    compact_session_text(text, 60)
+    compact_session_text(&session_title_message_text(text), 60)
 }
 
-/// 新会话默认标题：主对话「新对话 N」，agent 窗口用角色名 / 槽位名。
-fn default_session_title(db: &storage::Database, slot: &str, agent_name: &str) -> String {
+/// 旧版标题回退（折叠空白后取前 24 字符），仅用于识别需要迁移的旧自动标题。
+fn legacy_conversation_title_from(text: &str) -> String {
+    compact_session_text(text, 24)
+}
+
+/// 判断现有标题是不是旧版自动生成的，允许本次迁移重做。用户手动改过的标题返回 false。
+fn looks_like_legacy_auto_session_title(title: &str, first_message: &str) -> bool {
+    let title = title.trim();
+    if title.is_empty() {
+        return true;
+    }
+    if matches!(
+        title,
+        "默认对话"
+            | "新对话"
+            | "claude"
+            | "codex"
+            | "dsh"
+            | "Claude Code"
+            | "Codex"
+            | "DeepSeek Harness"
+            | "主对话"
+    ) {
+        return true;
+    }
+    if title
+        .strip_prefix("新对话 ")
+        .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_digit()))
+    {
+        return true;
+    }
+    let old_raw = legacy_conversation_title_from(first_message);
+    let old_clean = legacy_conversation_title_from(&session_title_message_text(first_message));
+    title == old_raw || title == old_clean
+}
+
+/// 新会话默认标题：主对话「新对话 N」，agent 窗口统一「新对话」。
+/// 标题会在首条用户消息落库后由 DSH 风格回退/模型生成覆盖；不要再把槽位名当标题。
+fn default_session_title(db: &storage::Database, slot: &str, _agent_name: &str) -> String {
     if slot == storage::MAIN_CHAT_SLOT {
         let count = db.count_main_sessions().unwrap_or(0);
         format!("新对话 {}", count + 1)
-    } else if agent_name.trim().is_empty() {
-        slot.to_string()
     } else {
-        agent_name.trim().to_string()
+        "新对话".to_string()
     }
 }
 
@@ -543,7 +631,189 @@ async fn apply_active_main_session(
     Ok(session)
 }
 
+/// 首个用户消息后异步让模型生成更准确的会话标题（对应 DSH first-prompt 节奏）：
+/// 回退标题先行落库，模型结果只有在标题仍停在本次回退值时才会覆盖。
+fn schedule_llm_session_title(
+    app: &tauri::AppHandle,
+    session_id: &str,
+    fallback_title: &str,
+    message: &str,
+) {
+    let app = app.clone();
+    let session_id = session_id.to_string();
+    let fallback_title = fallback_title.to_string();
+    let message = message.to_string();
+    tauri::async_runtime::spawn(async move {
+        generate_session_title_with_llm(app, session_id, fallback_title, message).await;
+    });
+}
+
+/// 标题提示词与 DSH 一致：只喂人类消息，只要求一行标题；用 JSON 包住用户文本。
+fn session_title_request_messages(message: &str) -> Vec<serde_json::Value> {
+    vec![
+        serde_json::json!({
+            "role": "system",
+            "content": session_title::title_system_prompt(),
+        }),
+        serde_json::json!({
+            "role": "user",
+            "content": format!(
+                "Generate the session title from this JSON array of human messages:\n{}",
+                serde_json::json!([message])
+            ),
+        }),
+    ]
+}
+
+/// 用当前直连 API 配置生成会话标题；没有 API Key、网络失败或返回不可用时保留回退标题。
+async fn generate_session_title_with_llm(
+    app: tauri::AppHandle,
+    session_id: String,
+    fallback_title: String,
+    message: String,
+) {
+    if message.trim().is_empty() || fallback_title.trim().is_empty() {
+        return;
+    }
+    let state = app.state::<AppState>();
+    let mut config = {
+        let db = state.db.lock().await;
+        active_api_profile(&db)
+    };
+    if config.api_key.trim().is_empty()
+        || config.model.trim().is_empty()
+        || config.base_url.trim().is_empty()
+    {
+        return;
+    }
+    // 标题是辅助请求：压低思考强度、强制非流式，且不携带任何工具。
+    config.stream_mode = "non_stream".to_string();
+    config.thinking_depth = "auto".to_string();
+    // 与 DSH 相同，让标题请求排在主请求之后开始，避免抢占主回合路由。
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let messages = session_title_request_messages(&message);
+    let result = direct_api::api_client::call_chat_completions_non_stream(
+        &state.http_client,
+        &config,
+        &messages,
+        None,
+    )
+    .await;
+    let content = match result {
+        Ok(result) => result.content.unwrap_or_default(),
+        Err(error) => {
+            eprintln!("会话标题请求失败（{session_id}）：{error}");
+            return;
+        }
+    };
+    let Some(title) = session_title::title_from_model_output(&content) else {
+        return;
+    };
+    let title = title.trim().to_string();
+    if title.is_empty() {
+        return;
+    }
+    let db = state.db.lock().await;
+    let current_title = match db.get_chat_session(&session_id) {
+        Ok(Some(session)) => session.title,
+        _ => return,
+    };
+    // 只有标题还停在本次回退值时才能覆盖；用户手动改名或其它来源已写入则保留。
+    if current_title.trim() != fallback_title.trim() {
+        return;
+    }
+    if let Err(error) = db.set_chat_session_title(&session_id, &title) {
+        eprintln!("写入会话标题失败（{session_id}）：{error}");
+        return;
+    }
+    drop(db);
+    notify_sessions_changed(&app);
+}
+
+/// 旧会话迁移标记：升级后第一次启动时把所有旧自动标题重做一遍。
+const SESSION_TITLE_BACKFILL_KEY: &str = "session_title_v2_backfilled";
+
+/// 启动后异步重做历史会话标题：先落 DSH 回退标题，再用当前 API 配置陆续生成更简短的标题。
+/// 只处理“旧自动标题/尚未偏离回退值”的会话，手动改过的标题保持不变。
+fn start_session_title_backfill(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        let state = app.state::<AppState>();
+        let (done, sessions) = {
+            let db = state.db.lock().await;
+            let done = db
+                .get_setting(SESSION_TITLE_BACKFILL_KEY)
+                .ok()
+                .flatten()
+                .as_deref()
+                == Some("1");
+            (done, db.list_chat_sessions(None).unwrap_or_default())
+        };
+        if done {
+            return;
+        }
+        for session in sessions {
+            let first_message = {
+                let db = state.db.lock().await;
+                db.first_user_message(&session.id).ok().flatten()
+            };
+            let first_raw = first_message.unwrap_or_default();
+            let cleaned_message = session_title_message_text(&first_raw);
+            let current_title = {
+                let db = state.db.lock().await;
+                match db.get_chat_session(&session.id) {
+                    Ok(Some(current)) => current.title,
+                    _ => continue,
+                }
+            };
+            if cleaned_message.is_empty() {
+                // 空会话 / 纯附件消息没有可命名的文本：只把旧槽位名、旧占位标题
+                // 收敛成通用的“新对话”，用户自定义标题保持不动。
+                if looks_like_legacy_auto_session_title(&current_title, &first_raw)
+                    && current_title.trim() != "新对话"
+                {
+                    let db = state.db.lock().await;
+                    if let Err(error) = db.set_chat_session_title(&session.id, "新对话") {
+                        eprintln!("重做空会话标题失败（{}）：{error}", session.id);
+                        continue;
+                    }
+                    drop(db);
+                    notify_sessions_changed(&app);
+                }
+                continue;
+            }
+            let fallback_title = session_title::fallback_session_title(&cleaned_message);
+            if fallback_title.is_empty() {
+                continue;
+            }
+            // 这是一次性迁移：用户要求“把每一个会话都重做”，所以只要会话里存在合格的
+            // 首条用户消息，就按新规则重写标题，不再只挑旧占位标题。
+            if current_title.trim() != fallback_title.trim() {
+                let db = state.db.lock().await;
+                if let Err(error) = db.set_chat_session_title(&session.id, &fallback_title) {
+                    eprintln!("重做会话标题失败（{}）：{error}", session.id);
+                    continue;
+                }
+                drop(db);
+                notify_sessions_changed(&app);
+            }
+            generate_session_title_with_llm(
+                app.clone(),
+                session.id.clone(),
+                fallback_title,
+                cleaned_message,
+            )
+            .await;
+        }
+        let db = state.db.lock().await;
+        let _ = db.save_setting(SESSION_TITLE_BACKFILL_KEY, "1");
+        drop(db);
+        notify_sessions_changed(&app);
+    });
+}
+
 /// 消息落库后刷新会话标题 / 更新时间并通知前端。
+/// 标题首次落库使用 DSH 风格回退；首条用户消息再异步请求模型生成正式短标题。
 fn touch_session_after_message(
     app: &tauri::AppHandle,
     db: &storage::Database,
@@ -554,6 +824,18 @@ fn touch_session_after_message(
     let preview = conversation_preview_from(message);
     let _ = db.touch_chat_session(session_id, Some(title.as_str()), Some(preview.as_str()));
     notify_sessions_changed(app);
+    if title.is_empty() || db.count_user_messages(session_id).unwrap_or(0) != 1 {
+        return;
+    }
+    let title_is_fallback = db
+        .get_chat_session(session_id)
+        .ok()
+        .flatten()
+        .is_some_and(|session| session.title.trim() == title.trim());
+    let cleaned_message = session_title_message_text(message);
+    if title_is_fallback && !cleaned_message.is_empty() {
+        schedule_llm_session_title(app, session_id, &title, &cleaned_message);
+    }
 }
 
 /// 把本轮 CLI 后端返回的续接 id 写回会话行。
@@ -2176,6 +2458,37 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_send_idempotency_key_avoids_restart_collisions() {
+        struct TempDir(PathBuf);
+        impl Drop for TempDir {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let dir = TempDir(std::env::temp_dir().join(format!(
+            "pet-orch-send-key-{}",
+            uuid::Uuid::new_v4().simple()
+        )));
+        std::fs::create_dir_all(&dir.0).expect("tempdir");
+        let db_path = dir.0.join("pet.db");
+        orchestration::persistence::ensure_schema(&db_path).expect("schema");
+        let store = orchestration::persistence::Store::new(db_path);
+
+        let key1 = adaptive_send_idempotency_key();
+        let key2 = adaptive_send_idempotency_key();
+        assert!(key1.starts_with("send-"));
+        assert!(key2.starts_with("send-"));
+        assert_ne!(key1, key2);
+
+        let (task1, run1, created1) = store.create_run("session-a", "第一条", &key1).expect("run1");
+        let (task2, run2, created2) = store.create_run("session-b", "第二条", &key2).expect("run2");
+        assert!(created1);
+        assert!(created2);
+        assert_ne!(task1, task2);
+        assert_ne!(run1, run2);
+    }
+
+    #[test]
     fn summarizes_chat_messages_into_memory_text() {
         let messages = vec![
             chat_message("user", "我想给桌宠增加长期记忆。", 10),
@@ -2576,9 +2889,29 @@ mod tests {
             "换行折叠为空格"
         );
         let long_title = conversation_title_from(&"字".repeat(30));
-        assert_eq!(long_title.chars().count(), 24, "标题取前 24 个字符");
+        assert_eq!(
+            long_title.chars().count(),
+            13,
+            "DSH 回退标题按 40 字节截断，约 13 个汉字"
+        );
         let preview = conversation_preview_from(&"x".repeat(80));
         assert_eq!(preview.chars().count(), 60, "预览取前 60 个字符");
+    }
+
+    #[test]
+    fn conversation_title_ignores_attachment_marker_and_recognizes_legacy_titles() {
+        let with_files = "看一下这个\n\n---\n[用户附加了以下本地文件]";
+        assert_eq!(conversation_title_from(with_files), "看一下这个");
+        let files_only =
+            "[用户附加了文件，但没有输入文字]\n\n---\n[用户附加了以下本地文件]";
+        assert_eq!(conversation_title_from(files_only), "");
+        assert!(looks_like_legacy_auto_session_title("claude", "你好"));
+        assert!(looks_like_legacy_auto_session_title("新对话 3", "你好"));
+        assert!(looks_like_legacy_auto_session_title("你好。", "你好。"));
+        assert!(!looks_like_legacy_auto_session_title(
+            "重命名后的标题",
+            "你好"
+        ));
     }
 
     #[test]
@@ -2837,12 +3170,18 @@ async fn send_to_ai(
     let mentioned_agents = if target_agent.is_some() {
         Vec::new()
     } else {
-        resolve_mentioned_agents(&state, Some(names)).await?
+        resolve_mentioned_agents(&state, Some(names.clone())).await?
     };
 
+    let is_adaptive_main = if target_agent.is_none() && session.slot == "main" {
+        let db = state.db.lock().await;
+        db.get_setting("orchestration_mode").ok().flatten().unwrap_or_default() == orchestration::MODE_ADAPTIVE
+    } else {
+        false
+    };
     // 协同状态全局只有一份：另一个会话的协同还在跑时，新协同会把它顶掉，旧会话随之
-    // 卡在"思考中"。先拒绝，等它完成或停止后再发起。
-    if !mentioned_agents.is_empty() {
+    // 卡在"思考中"。先拒绝，等它完成或停止后再发起（adaptive 模式不走 collaboration_state）。
+    if !is_adaptive_main && !mentioned_agents.is_empty() {
         let busy_elsewhere = state
             .collaboration_state
             .lock()
@@ -2855,6 +3194,11 @@ async fn send_to_ai(
     }
 
     let turn_id = next_turn_id();
+    if is_adaptive_main {
+        if state.orchestration.store.active_run(&session.id).ok().flatten().is_some() {
+            return Err("该会话已有进行中的智能调度任务，请先完成或停止".to_string());
+        }
+    }
     {
         let mut active = state
             .active_chat
@@ -2957,6 +3301,24 @@ async fn send_to_ai(
             .await;
         });
         return Ok(serde_json::json!({ "started": true }));
+    }
+
+    // 3.5) 智能调度模式：在自由协同 / 定时任务快捷解析之前分流（方案第 3 节）。
+    // 专用 agent 窗口保持固定角色语义，不进入该分支。
+    if is_adaptive_main {
+        clear_active_chat_for(&state, &session.id);
+        let key = adaptive_send_idempotency_key();
+        let options = orchestration::StartOptions {
+            model: model_override.or_else(|| Some(session.model.clone()).filter(|m| !m.trim().is_empty())),
+            effort: Some(session.reasoning_effort.clone()).filter(|e| !e.trim().is_empty()),
+            permission: session.permission.clone(),
+            mentioned_agents: names,
+        };
+        let (task_id, run_id) = state
+            .orchestration
+            .start_with_options(&app_handle, &session.id, &message, &key, options)
+            .await?;
+        return Ok(serde_json::json!({"started": true, "orchestrated": true, "task_id": task_id, "run_id": run_id}));
     }
 
     if let Some(parsed_task) = if mentioned_agents.is_empty() { parse_schedule_request(&message, unix_now()) } else { None } {
@@ -3066,7 +3428,7 @@ async fn send_to_ai(
                     collaboration::run(app_handle_clone.clone(), msg_clone, att_clone, mentioned_agents,
                         collaboration_enabled.unwrap_or(true), run_id, cancel, session_clone.id).await;
                 } else {
-                    run_ai_message(app_handle_clone.clone(), session_clone, msg_clone, att_clone, quote_clone, vec![], model_override).await;
+                    run_ai_message(app_handle_clone.clone(), session_clone, msg_clone, att_clone, quote_clone, vec![], model_override, collaboration_enabled.unwrap_or(true)).await;
                 }
             };
             let result = std::panic::AssertUnwindSafe(task)
@@ -3122,9 +3484,11 @@ async fn run_ai_message(
     quote: Option<(String, String)>,
     agents: Vec<storage::Agent>,
     model_override: Option<String>,
+    collaboration_enabled: bool,
 ) {
     let state = app_handle.state::<AppState>();
     let backend = state.backend_type.lock().await.clone();
+    let handoff_enabled = collaboration_enabled && agents.is_empty();
 
     if backend == "direct_api" {
         let config_opt = state.direct_api_config.lock().await.clone();
@@ -3168,6 +3532,11 @@ async fn run_ai_message(
             let all_skills = db.list_skills().unwrap_or_default();
             let active_skill = db.get_active_skill().unwrap_or(None);
             let memory_block = memory_context_block(&db);
+            let all_agents = if agents.is_empty() {
+                Some(collaboration::catalog(db.list_agents().unwrap_or_default()))
+            } else {
+                None
+            };
             drop(db);
 
             let base = openclaw::build_system_prompt(&personality, &profession);
@@ -3185,6 +3554,10 @@ async fn run_ai_message(
             let base = attach_custom_prompt(base, &custom_prompt);
             let base = attach_skill_prompt(base, active_skill.as_ref(), &all_skills, true).await;
             let base = attach_agent_prompt(base, &agents);
+            let base = match all_agents.as_deref() {
+                Some(all) => attach_main_collaboration_prompt(base, all, collaboration_enabled),
+                None => base,
+            };
             (base, active_skill)
         };
 
@@ -3231,8 +3604,13 @@ async fn run_ai_message(
 
         // 创建按会话隔离的 CancellationToken
         let token = register_turn_cancel(&state, &session.id);
+        let handoff_attachments = if handoff_enabled {
+            attachments.clone()
+        } else {
+            Vec::new()
+        };
 
-        direct_api::run_direct_api_agent(
+        let completed_text = direct_api::run_direct_api_agent(
             app_handle.clone(),
             message,
             config,
@@ -3243,11 +3621,19 @@ async fn run_ai_message(
             Some(agent_ctx),
             turn_tool_grants,
             token,
+            !handoff_enabled,
+            handoff_enabled,
         )
         .await;
 
         // 执行结束，清空当前会话的 abort_token
         unregister_turn_cancel(&state, &session.id);
+        if handoff_enabled {
+            if let Some(reply_text) = completed_text {
+                maybe_handoff_from_main(&app_handle, &session.id, &reply_text, handoff_attachments)
+                    .await;
+            }
+        }
         return;
     }
 
@@ -3264,6 +3650,11 @@ async fn run_ai_message(
         let all_skills = db.list_skills().unwrap_or_default();
         let active_skill = db.get_active_skill().unwrap_or(None);
         let memory_block = memory_context_block(&db);
+        let all_agents = if agents.is_empty() {
+            Some(collaboration::catalog(db.list_agents().unwrap_or_default()))
+        } else {
+            None
+        };
         drop(db);
 
         let base = openclaw::build_system_prompt(&personality, &profession);
@@ -3272,6 +3663,10 @@ async fn run_ai_message(
         let base = attach_custom_prompt(base, &custom_prompt);
         let base = attach_skill_prompt(base, active_skill.as_ref(), &all_skills, false).await;
         let base = attach_agent_prompt(base, &agents);
+        let base = match all_agents.as_deref() {
+            Some(all) => attach_main_collaboration_prompt(base, all, collaboration_enabled),
+            None => base,
+        };
         (base, active_skill)
     };
 
@@ -3296,8 +3691,9 @@ async fn run_ai_message(
         *last_id = None;
     }
 
-    run_cli_turn(
-        app_handle,
+    let session_id = session.id.clone();
+    let completed_text = run_cli_turn(
+        app_handle.clone(),
         session,
         backend,
         message,
@@ -3305,6 +3701,151 @@ async fn run_ai_message(
         system_prompt,
         agents,
         model_override,
+        !handoff_enabled,
+    )
+    .await;
+    if handoff_enabled {
+        if let Some(reply_text) = completed_text {
+            maybe_handoff_from_main(&app_handle, &session_id, &reply_text, attachments).await;
+        }
+    }
+}
+
+fn attach_main_collaboration_prompt(
+    system_prompt: String,
+    all_agents: &[storage::Agent],
+    allow_handoffs: bool,
+) -> String {
+    let section = collaboration::main_assistant_prompt(all_agents, allow_handoffs);
+    if section.trim().is_empty() {
+        system_prompt
+    } else {
+        format!("{system_prompt}\n\n{section}")
+    }
+}
+
+fn finish_session_delegation_if_running(app_handle: &tauri::AppHandle, session_id: &str) {
+    let state = app_handle.state::<AppState>();
+    let active_delegation = state
+        .collaboration_state
+        .lock()
+        .ok()
+        .and_then(|collab| collab.clone())
+        .filter(|collab| collab.status == "running" && collab.session_id == session_id);
+    if let Some(collab) = active_delegation {
+        collaboration::finish_delegation(
+            app_handle,
+            &collab.run_id,
+            "completed",
+            collab.turn,
+            "主助理协同委派与验收已完成。".to_string(),
+            session_id,
+        );
+    }
+}
+
+async fn maybe_handoff_from_main(
+    app_handle: &tauri::AppHandle,
+    session_id: &str,
+    reply_text: &str,
+    attachments: Vec<direct_api::UserAttachment>,
+) {
+    let state = app_handle.state::<AppState>();
+    let still_active = state
+        .active_chat
+        .lock()
+        .ok()
+        .is_some_and(|active| active.by_session.contains_key(session_id));
+    if !still_active {
+        finish_session_delegation_if_running(app_handle, session_id);
+        return;
+    }
+    let all = {
+        let db = state.db.lock().await;
+        match db.list_agents() {
+            Ok(agents) => collaboration::catalog(agents),
+            Err(_) => {
+                clear_active_chat_for(&state, session_id);
+                finish_session_delegation_if_running(app_handle, session_id);
+                return;
+            }
+        }
+    };
+    let requests = collaboration::handoffs(reply_text, &all);
+    if requests.is_empty() {
+        clear_active_chat_for(&state, session_id);
+        finish_session_delegation_if_running(app_handle, session_id);
+        return;
+    }
+    let queue = collaboration::Queue::from_handoffs(requests, "桌宠");
+    if queue.pending.is_empty() {
+        clear_active_chat_for(&state, session_id);
+        finish_session_delegation_if_running(app_handle, session_id);
+        return;
+    }
+    let still_active = state
+        .active_chat
+        .lock()
+        .ok()
+        .is_some_and(|active| active.by_session.contains_key(session_id));
+    if !still_active {
+        return;
+    }
+    {
+        let busy_other = state
+            .collaboration_state
+            .lock()
+            .ok()
+            .is_some_and(|collab| {
+                collab
+                    .as_ref()
+                    .is_some_and(|c| c.status == "running" && c.session_id != session_id)
+            });
+        if busy_other {
+            clear_active_chat_for(&state, session_id);
+            if !has_any_active_chat(&state) {
+                state.behavior.lock().await.set_state(behavior::PetState::Idle);
+            }
+            return;
+        }
+    }
+    {
+        let mut behavior = state.behavior.lock().await;
+        behavior.set_state(behavior::PetState::Thinking);
+    }
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let cancel = register_turn_cancel(&state, session_id);
+    let initial = collaboration::CollaborationState {
+        run_id: run_id.clone(),
+        status: "running".into(),
+        active_agent: None,
+        queued: queue
+            .pending
+            .iter()
+            .map(|job| collaboration::Identity::from(&job.agent))
+            .collect(),
+        turn: 0,
+        max_turns: collaboration::MAX_TURNS,
+        message: "准备协同任务".into(),
+        session_id: session_id.to_string(),
+    };
+    if let Ok(mut collab) = state.collaboration_state.lock() {
+        *collab = Some(initial.clone());
+    } else {
+        unregister_turn_cancel(&state, session_id);
+        clear_active_chat_for(&state, session_id);
+        return;
+    }
+    emit_ai_for(app_handle, session_id, "collaboration-state", initial);
+    collaboration::run_queue(
+        app_handle.clone(),
+        all,
+        queue,
+        attachments,
+        true,
+        run_id,
+        cancel,
+        session_id.to_string(),
     )
     .await;
 }
@@ -3326,7 +3867,8 @@ async fn run_cli_turn(
     system_prompt: String,
     agents: Vec<storage::Agent>,
     model_override: Option<String>,
-) {
+    clear_active_on_success: bool,
+) -> Option<String> {
     let state = app_handle.state::<AppState>();
     let is_codex = backend == "codex";
     let is_dsh = backend == "dsh";
@@ -3432,7 +3974,7 @@ async fn run_cli_turn(
             unregister_turn_cancel(&state, &session.id);
             if cancel_token.is_cancelled() {
                 clear_active_chat_for(&state, &session.id);
-                return;
+                return None;
             }
             {
                 let state = app_handle.state::<AppState>();
@@ -3449,7 +3991,7 @@ async fn run_cli_turn(
                     aborted: false,
                 },
             );
-            return;
+            return None;
         }
     };
     let child_pid = child.id();
@@ -3462,7 +4004,7 @@ async fn run_cli_turn(
             let _ = child.wait().await;
             unregister_turn_cancel(&state, &session.id);
             clear_active_chat_for(&state, &session.id);
-            return;
+            return None;
         }
         register_turn_pid(&state, &session.id, pid);
     }
@@ -3566,7 +4108,7 @@ async fn run_cli_turn(
                     aborted: false,
                 },
             );
-            return;
+            return None;
         }
     };
 
@@ -3605,7 +4147,7 @@ async fn run_cli_turn(
         if !has_any_active_chat(&state) {
             state.behavior.lock().await.set_state(behavior::PetState::Idle);
         }
-        return;
+        return None;
     }
 
     match stream_result {
@@ -3658,7 +4200,7 @@ async fn run_cli_turn(
                         aborted: false,
                     },
                 );
-                return;
+                return None;
             }
 
             // CLI 非零退出但流里没有 error 事件：不能把半截输出当成功落库。
@@ -3699,7 +4241,7 @@ async fn run_cli_turn(
                         aborted: false,
                     },
                 );
-                return;
+                return None;
             }
 
             if parsed.full_text.trim().is_empty() {
@@ -3733,7 +4275,7 @@ async fn run_cli_turn(
                         aborted: false,
                     },
                 );
-                return;
+                return None;
             }
 
             // 保存对话（单智能体时带上归属）
@@ -3766,19 +4308,22 @@ async fn run_cli_turn(
                 Some(parsed.full_thinking)
             };
 
-            clear_active_chat_for(&state, &session.id);
+            if clear_active_on_success {
+                clear_active_chat_for(&state, &session.id);
+            }
 
             emit_ai(
                 &app_handle,
                 "ai-finished",
                 AiFinishedPayload {
-                    text: parsed.full_text,
+                    text: parsed.full_text.clone(),
                     thinking,
                     agent_id: single_agent.map(|agent| agent.id.clone()),
                     agent_name: single_agent.map(|agent| agent.name.clone()),
                     agent_avatar: single_agent.map(|agent| agent.avatar.clone()),
                 },
             );
+            Some(parsed.full_text)
         }
         Err(error) => {
             // 读取输出流本身出错（用户停止的情况已经在上面处理）。
@@ -3797,6 +4342,7 @@ async fn run_cli_turn(
                     aborted: false,
                 },
             );
+            None
         }
     }
 }
@@ -3952,6 +4498,7 @@ async fn run_agent_session_turn(
             grants,
             cancel.clone(),
             agent.api_profile_id.trim().is_empty(),
+            false,
         )
         .await;
         unregister_turn_cancel(&state, &session.id);
@@ -4084,6 +4631,7 @@ async fn run_agent_session_turn(
         system,
         vec![agent],
         model,
+        true,
     )
     .await;
 }
@@ -4508,26 +5056,40 @@ async fn test_api_compatibility(
     if is_json {
         // 尝试解析为JSON
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&full_text) {
-            if let Some(content) = ContentExtractor::extract_content(&value) {
-                content_extracted = Some(content);
-                content_field_path =
-                    Some("choices[0].delta.content 或 choices[0].message.content".to_string());
-                recommended_mode = Some("non_stream".to_string());
+            if effective_api_mode == "responses" || value.get("output").is_some() {
+                let parsed = direct_api::api_client::parse_responses_non_stream(&value);
+                if let Some(content) = parsed.content {
+                    content_extracted = Some(content);
+                    content_field_path = Some("output[].content[].text".to_string());
+                    recommended_mode = Some("non_stream".to_string());
+                }
+                has_tool_calls = !parsed.tool_calls.is_empty();
+            }
+
+            if content_extracted.is_none() {
+                if let Some(content) = ContentExtractor::extract_content(&value) {
+                    content_extracted = Some(content);
+                    content_field_path =
+                        Some("choices[0].delta.content 或 choices[0].message.content".to_string());
+                    recommended_mode = Some("non_stream".to_string());
+                }
             }
 
             has_reasoning = ContentExtractor::extract_reasoning(&value).is_some();
 
             // 检查tool calls
-            if let Some(choices) = value.get("choices") {
-                if let Some(first) = choices.as_array().and_then(|arr| arr.first()) {
-                    has_tool_calls = first
-                        .get("delta")
-                        .and_then(|d| d.get("tool_calls"))
-                        .is_some()
-                        || first
-                            .get("message")
-                            .and_then(|m| m.get("tool_calls"))
-                            .is_some();
+            if !has_tool_calls {
+                if let Some(choices) = value.get("choices") {
+                    if let Some(first) = choices.as_array().and_then(|arr| arr.first()) {
+                        has_tool_calls = first
+                            .get("delta")
+                            .and_then(|d| d.get("tool_calls"))
+                            .is_some()
+                            || first
+                                .get("message")
+                                .and_then(|m| m.get("tool_calls"))
+                                .is_some();
+                    }
                 }
             }
 
@@ -4539,33 +5101,52 @@ async fn test_api_compatibility(
             errors.push("响应以JSON开头但解析失败".to_string());
         }
     } else if is_sse {
-        // SSE格式：尝试解析第一个data。
-        let mut found_content = false;
-        for line in full_text.lines() {
-            if let Some(data) = line.strip_prefix("data:") {
-                let data = data.trim();
-                if data == "[DONE]" {
-                    continue;
+        match direct_api::api_client::parse_sse_to_non_stream_result(&full_text) {
+            Ok(Some(parsed)) => {
+                if let Some(content) = parsed.content {
+                    content_extracted = Some(content);
+                    content_field_path = Some(if effective_api_mode == "responses" {
+                        "SSE Responses output_text".to_string()
+                    } else {
+                        "SSE data行中的delta.content".to_string()
+                    });
                 }
-                if !data.is_empty() {
+                has_tool_calls = !parsed.tool_calls.is_empty();
+                recommended_mode = Some("stream".to_string());
+            }
+            Ok(None) => {
+                errors.push("SSE data行中未找到content字段".to_string());
+                recommended_mode = Some("non_stream".to_string());
+            }
+            Err(err) => {
+                errors.push(err);
+                recommended_mode = Some("non_stream".to_string());
+            }
+        }
+        if !has_reasoning {
+            for line in full_text.lines() {
+                if let Some(data) = line.strip_prefix("data:") {
+                    let data = data.trim();
+                    if data == "[DONE]" || data.is_empty() {
+                        continue;
+                    }
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
-                        if let Some(content) = ContentExtractor::extract_content(&value) {
-                            content_extracted = Some(content);
-                            content_field_path = Some("SSE data行中的delta.content".to_string());
-                            found_content = true;
+                        if ContentExtractor::extract_reasoning(&value).is_some()
+                            || value.get("type").and_then(|t| t.as_str()).is_some_and(|t| {
+                                matches!(
+                                    t,
+                                    "response.reasoning_summary_text.delta"
+                                        | "response.reasoning_text.delta"
+                                        | "response.reasoning.delta"
+                                )
+                            })
+                        {
+                            has_reasoning = true;
                             break;
                         }
-                        has_reasoning = ContentExtractor::extract_reasoning(&value).is_some();
                     }
                 }
             }
-        }
-
-        if found_content {
-            recommended_mode = Some("stream".to_string());
-        } else {
-            errors.push("SSE data行中未找到content字段".to_string());
-            recommended_mode = Some("non_stream".to_string());
         }
     } else {
         errors.push("响应既不是SSE格式也不是JSON格式".to_string());
@@ -6217,7 +6798,10 @@ async fn generate_agent_spec(
         let Some(name) = function.get("name").and_then(|value| value.as_str()) else {
             continue;
         };
-        if matches!(name, "create_agent" | "update_agent" | "list_agents") {
+        if matches!(
+            name,
+            "create_agent" | "update_agent" | "list_agents" | "delegate_to_agent"
+        ) {
             continue;
         }
         let description = function
@@ -7320,6 +7904,10 @@ pub fn run() {
                 weather_cache: tokio::sync::Mutex::new(None),
                 last_active_skill_id: tokio::sync::Mutex::new(None),
                 subprocs: subprocess::SubprocessManager::new(),
+                orchestration: orchestration::Service::new(
+                    get_db_path(),
+                    get_db_path().parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from(".")),
+                ),
             };
             app.manage(app_state);
 
@@ -7349,6 +7937,9 @@ pub fn run() {
 
             start_scheduled_task_runner(app.handle().clone());
 
+            // 升级后首次启动：把历史会话的旧自动标题按 DSH 规则重做一遍。
+            start_session_title_backfill(app.handle().clone());
+
             // 启动时检查并发送天气
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -7368,6 +7959,17 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             send_to_ai,
             abort_ai,
+            orchestration::start_orchestrated_task,
+            orchestration::get_orchestrated_run,
+            orchestration::list_orchestrated_runs,
+            orchestration::get_orchestration_events,
+            orchestration::cancel_orchestrated_run,
+            orchestration::resume_orchestrated_run,
+            orchestration::amend_orchestrated_task,
+            orchestration::answer_orchestration_interaction,
+            orchestration::get_orchestration_artifact,
+            orchestration::get_orchestration_mode,
+            orchestration::set_orchestration_mode,
             get_pet_state,
             set_pet_state,
             get_system_info,

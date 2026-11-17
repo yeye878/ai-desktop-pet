@@ -712,7 +712,9 @@ test("Dashboard 用 provider 透传：picker 传 provider、bind 只写变化字
   assert.ok(hint.includes("currentSessionChannelLabel") && hint.includes("currentSessionModelLabel"));
   assert.ok(hint.includes("currentSessionEffortLabel") && hint.includes(":title="));
   assert.doesNotMatch(source, /class="dash-agent-meta-pill"/);
-  assert.equal((source.match(/<AgentPicker\b/g) || []).length, 1);
+  assert.doesNotMatch(source, /<AgentPicker\b/);
+  assert.doesNotMatch(source, /\bonAgentWindowAgentChange\b|\bagentWindowAgentOptions\b/);
+  assert.match(source, /class="dash-agent-identity"/);
   assert.ok(source.includes("patch.provider = provider"), "bind 只传变化的 provider");
   assert.ok(source.includes("patch.model = model"));
   assert.ok(source.includes("patch.reasoningEffort = effort"));
@@ -913,4 +915,15 @@ test("dev mock 会话 create/bind 落库 provider/reasoning_effort，并注册 g
 test("package.json 注册 verify:agent-model-catalog 脚本", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
   assert.equal(pkg.scripts["verify:agent-model-catalog"], "node --test scripts/verify-agent-model-catalog.cjs");
+});
+
+test("Dashboard 独立窗口锁定固定内置智能体并自愈历史串台会话", () => {
+  const source = componentText("src/components/Dashboard.vue");
+  assert.doesNotMatch(source, /AgentPicker/);
+  assert.doesNotMatch(source, /\bonAgentWindowAgentChange\b|\bagentWindowAgentOptions\b/);
+  assert.ok(!source.includes("pref.agentId"), "新建独立窗口会话不得读取历史 pref.agentId");
+  assert.ok(source.includes("normalizeAgentWindowSession"), "打开/切换/发送时必须自愈旧串台会话");
+  assert.match(source, /agentId:\s*SLOT_DEFAULT_AGENT\[slot\]/);
+  const runtimeSource = fs.readFileSync(path.join(root, "src/stores/sessionRuntime.ts"), "utf8");
+  assert.ok(runtimeSource.includes("SLOT_DEFAULT_AGENT"), "sessionRuntime.send 必须按槽位强制锁定内置智能体");
 });

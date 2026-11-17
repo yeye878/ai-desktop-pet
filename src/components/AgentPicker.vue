@@ -68,7 +68,7 @@ onBeforeUnmount(() => {
         <AppIcon v-if="current?.id === 'builtin-claude'" name="claude" :size="18" />
         <AppIcon v-else-if="current?.id === 'builtin-codex'" name="codex" :size="18" />
         <AppIcon v-else-if="current?.id === 'builtin-dsh'" name="dsh" :size="18" />
-        <template v-else>{{ current?.avatar || "🤖" }}</template>
+        <AppIcon v-else :name="current?.avatar || '🤖'" :size="18" />
       </span>
       <span class="agent-picker-copy">
         <span class="agent-picker-name">{{ current?.name || "选择智能体" }}</span>
@@ -90,7 +90,7 @@ onBeforeUnmount(() => {
           <AppIcon v-if="agent.id === 'builtin-claude'" name="claude" :size="15" />
           <AppIcon v-else-if="agent.id === 'builtin-codex'" name="codex" :size="15" />
           <AppIcon v-else-if="agent.id === 'builtin-dsh'" name="dsh" :size="15" />
-          <template v-else>{{ agent.avatar || "🤖" }}</template>
+          <AppIcon v-else :name="agent.avatar || '🤖'" :size="15" />
         </span>
         <span class="agent-picker-row-main">
           <span class="agent-picker-row-name">{{ agent.name }}</span>

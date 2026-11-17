@@ -1193,6 +1193,45 @@ impl Database {
             .ok_or(rusqlite::Error::QueryReturnedNoRows)
     }
 
+    /// 会话里最早一条用户消息（按 id ASC 取第一条）。空 content 也原样返回；
+    /// 没有 user 行时返回 None。标题重做时用它作为 DSH 风格标题的原始输入。
+    pub fn first_user_message(&self, session_id: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT content FROM chat_history
+                 WHERE session_id = ?1 AND role = 'user'
+                 ORDER BY id ASC
+                 LIMIT 1",
+                [session_id],
+                |row| row.get(0),
+            )
+            .optional()
+    }
+
+    /// 会话里的用户消息条数（只算 role='user'），用于判断该会话是否已有用户输入。
+    pub fn count_user_messages(&self, session_id: &str) -> Result<u32> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM chat_history WHERE session_id = ?1 AND role = 'user'",
+            [session_id],
+            |row| row.get(0),
+        )?;
+        Ok(count.max(0) as u32)
+    }
+
+    /// 只改会话标题；不刷新 updated_at，避免自动重命名把会话顶到列表最前。
+    /// 标题先 trim；trim 后为空视为「不改」，直接返回 Ok(())。
+    pub fn set_chat_session_title(&self, id: &str, title: &str) -> Result<()> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Ok(());
+        }
+        self.conn.execute(
+            "UPDATE chat_sessions SET title = ?1 WHERE id = ?2",
+            (title, id),
+        )?;
+        Ok(())
+    }
+
     /// 删除会话及其全部历史消息。
     pub fn delete_chat_session(&self, id: &str) -> Result<()> {
         self.conn
@@ -1926,13 +1965,23 @@ fn chat_session_from_row(row: &rusqlite::Row<'_>) -> Result<ChatSession> {
     })
 }
 
-/// 会话标题是否还是占位标题（空 / 「默认对话」/「新对话」/「新对话 N」）。
-/// 占位标题允许被首条消息覆盖；用户手动改过的标题永远保留。
+/// 会话标题是否还是占位标题（空 / 「默认对话」/「新对话」/「新对话 N」），
+/// 以及历史版本按 agent 槽位名生成的自动标题（claude / codex / dsh 等）。
+/// 占位标题允许被首条消息覆盖；用户手动改过的标题永远保留（匹配区分大小写）。
 fn is_placeholder_session_title(title: &str) -> bool {
     let title = title.trim();
     title.is_empty()
-        || title == "默认对话"
-        || title == "新对话"
+        || matches!(
+            title,
+            "默认对话"
+                | "新对话"
+                | "claude"
+                | "codex"
+                | "dsh"
+                | "Claude Code"
+                | "Codex"
+                | "DeepSeek Harness"
+        )
         || title
             .strip_prefix("新对话 ")
             .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_digit()))
@@ -2286,6 +2335,185 @@ mod tests {
         assert_eq!(
             db.get_chat_session(&numbered.id).unwrap().unwrap().title,
             "第三条消息"
+        );
+    }
+
+    #[test]
+    fn first_user_message_returns_the_earliest_user_row() {
+        let db = Database::open_in_memory().unwrap();
+        let mut new_session = NewChatSession::for_slot("claude");
+        new_session.agent_id = "builtin-claude".into();
+        let session = db.create_chat_session(new_session).unwrap();
+        assert_eq!(
+            db.first_user_message(&session.id).unwrap(),
+            None,
+            "还没有用户消息"
+        );
+
+        db.save_message_in(&session.id, "assistant", "助手先说话")
+            .unwrap();
+        db.save_message_in(&session.id, "system", "系统提示")
+            .unwrap();
+        db.save_message_in(&session.id, "user", "第一条用户消息")
+            .unwrap();
+        db.save_message_in(&session.id, "user", "第二条用户消息")
+            .unwrap();
+        // 故意让后落库的消息 created_at 更早：排序必须按 id ASC，而不是 created_at。
+        db.conn
+            .execute(
+                "INSERT INTO chat_history (session_id, role, content, created_at)
+                 VALUES (?1, 'user', '时间更早但落库更晚', 0)",
+                [session.id.as_str()],
+            )
+            .unwrap();
+        db.save_message_in(DEFAULT_CHAT_SESSION_ID, "user", "别的会话消息")
+            .unwrap();
+
+        assert_eq!(
+            db.first_user_message(&session.id).unwrap().as_deref(),
+            Some("第一条用户消息"),
+            "首条用户消息要按 id ASC 取最早一条，并忽略 assistant/system 与其它会话"
+        );
+
+        // 空 content 的 user 行仍算「首条用户消息」，原样返回空串。
+        let empty_session = db
+            .create_chat_session(NewChatSession::for_slot("codex"))
+            .unwrap();
+        db.save_message_in(&empty_session.id, "user", "").unwrap();
+        assert_eq!(
+            db.first_user_message(&empty_session.id).unwrap().as_deref(),
+            Some(""),
+            "空内容的用户消息也要返回，交由调用方决定是否拿来生成标题"
+        );
+    }
+
+    #[test]
+    fn count_user_messages_counts_only_user_rows() {
+        let db = Database::open_in_memory().unwrap();
+        let session = db
+            .create_chat_session(NewChatSession::for_slot("dsh"))
+            .unwrap();
+        assert_eq!(db.count_user_messages(&session.id).unwrap(), 0);
+
+        db.save_message_in(&session.id, "user", "第一条").unwrap();
+        db.save_message_in(&session.id, "assistant", "回复")
+            .unwrap();
+        db.save_message_in(&session.id, "system", "系统角色")
+            .unwrap();
+        db.save_message_in(&session.id, "user", "第二条").unwrap();
+        db.save_message_in(DEFAULT_CHAT_SESSION_ID, "user", "别的会话消息")
+            .unwrap();
+
+        assert_eq!(
+            db.count_user_messages(&session.id).unwrap(),
+            2,
+            "只统计 role='user'，且不跨会话"
+        );
+    }
+
+    #[test]
+    fn set_chat_session_title_only_touches_the_title() {
+        let db = Database::open_in_memory().unwrap();
+        let session = db
+            .create_chat_session(NewChatSession::for_slot("main"))
+            .unwrap();
+        // 固定一个过去的时间戳：同秒内写入看不出 updated_at 是否被刷新。
+        db.conn
+            .execute(
+                "UPDATE chat_sessions SET updated_at = 1700000000 WHERE id = ?1",
+                [session.id.as_str()],
+            )
+            .unwrap();
+
+        db.set_chat_session_title(&session.id, "  首条消息标题  ")
+            .unwrap();
+        let updated = db.get_chat_session(&session.id).unwrap().unwrap();
+        assert_eq!(updated.title, "首条消息标题", "标题两侧空白要裁剪");
+        assert_eq!(
+            updated.updated_at, 1700000000,
+            "只改标题不能刷新 updated_at，否则自动重命名会把会话顶到列表最前"
+        );
+
+        // trim 后为空 = 不改标题，也不报错；不存在的会话同样静默忽略。
+        db.set_chat_session_title(&session.id, "   ").unwrap();
+        assert_eq!(
+            db.get_chat_session(&session.id).unwrap().unwrap().title,
+            "首条消息标题"
+        );
+        db.set_chat_session_title("session-missing", "新标题")
+            .unwrap();
+        assert!(db.get_chat_session("session-missing").unwrap().is_none());
+    }
+
+    #[test]
+    fn placeholder_session_titles_include_legacy_agent_slot_names() {
+        for title in [
+            "",
+            "  ",
+            "默认对话",
+            "新对话",
+            "新对话 12",
+            "  claude  ",
+            "codex",
+            "dsh",
+            "Claude Code",
+            "Codex",
+            "DeepSeek Harness",
+        ] {
+            assert!(
+                is_placeholder_session_title(title),
+                "{title:?} 是历史自动标题，应允许首条用户消息覆盖"
+            );
+        }
+
+        for title in [
+            "新对话 abc",
+            "Claude Code 排查报错",
+            "今天要做什么",
+            "Dsh",
+            "CODEX",
+        ] {
+            assert!(
+                !is_placeholder_session_title(title),
+                "{title:?} 是用户可见的自定义标题，必须保留"
+            );
+        }
+
+        // 历史槽位标题会被首条用户消息覆盖（touch_chat_session 走同一个判定）。
+        let db = Database::open_in_memory().unwrap();
+        let legacy = db
+            .create_chat_session(NewChatSession::for_slot("claude"))
+            .unwrap();
+        db.update_chat_session(&legacy.id, Some("claude"), None, None, None, None, None)
+            .unwrap();
+        db.touch_chat_session(&legacy.id, Some("帮我排查报错"), None)
+            .unwrap();
+        assert_eq!(
+            db.get_chat_session(&legacy.id).unwrap().unwrap().title,
+            "帮我排查报错",
+            "历史槽位标题 claude 应被首条用户消息覆盖"
+        );
+
+        // 用户手动改过的标题保持不动。
+        let custom = db
+            .create_chat_session(NewChatSession::for_slot("codex"))
+            .unwrap();
+        db.update_chat_session(
+            &custom.id,
+            Some("Claude Code 排查报错"),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        db.touch_chat_session(&custom.id, Some("不应覆盖"), None)
+            .unwrap();
+        assert_eq!(
+            db.get_chat_session(&custom.id).unwrap().unwrap().title,
+            "Claude Code 排查报错",
+            "自定义标题不能被自动标题逻辑覆盖"
         );
     }
 

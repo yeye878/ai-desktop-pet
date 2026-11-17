@@ -59,7 +59,32 @@ pub async fn run(
             }
         }
     };
-    let mut queue = Queue::new(selected, &message);
+    let queue = Queue::new(selected, &message);
+    run_queue(
+        app,
+        all,
+        queue,
+        attachments,
+        allow_handoffs,
+        run_id,
+        cancel,
+        session_id,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn run_queue(
+    app: tauri::AppHandle,
+    all: Vec<Agent>,
+    mut queue: Queue,
+    attachments: Vec<direct_api::UserAttachment>,
+    allow_handoffs: bool,
+    run_id: String,
+    cancel: CancellationToken,
+    session_id: String,
+) {
+    let state = app.state::<AppState>();
     let mut failures = 0;
     while !cancel.is_cancelled() && owns_run(&state, &run_id) {
         let Some(job) = queue.next() else {
@@ -156,6 +181,7 @@ pub async fn run(
             "text": reply.text, "thinking": reply.thinking,
             "agent_id": job.agent.id, "agent_name": job.agent.name, "agent_avatar": job.agent.avatar,
             "failed": failed,
+            "session_id": session_id,
         }));
         if allow_handoffs && !failed {
             queue.handoff(&job.agent, &reply.text, &all);
@@ -235,6 +261,172 @@ pub(crate) async fn finish(
     }
 }
 
+pub(crate) struct DelegatedResult {
+    pub text: String,
+    pub failed: bool,
+}
+
+/// 结束直连 API 主会话内部的委派协同状态条，但不提前释放主回合的 active_chat / cancel_token。
+pub(crate) fn finish_delegation(
+    app: &tauri::AppHandle,
+    run_id: &str,
+    status: &str,
+    turns: usize,
+    message: String,
+    session_id: &str,
+) {
+    let state = app.state::<AppState>();
+    if !owns_run(&state, run_id) {
+        return;
+    }
+    publish(
+        app,
+        CollaborationState {
+            run_id: run_id.into(),
+            status: status.into(),
+            active_agent: None,
+            queued: vec![],
+            turn: turns,
+            max_turns: MAX_TURNS,
+            message,
+            session_id: session_id.to_string(),
+        },
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn execute_delegated_agent(
+    app: &tauri::AppHandle,
+    agent: &Agent,
+    task: &str,
+    context_summary: Option<&str>,
+    acceptance_criteria: Option<&str>,
+    attachments: &[direct_api::UserAttachment],
+    cancel: &CancellationToken,
+    session_id: &str,
+    run_id: &str,
+    turn: usize,
+) -> Result<DelegatedResult, TurnError> {
+    let state = app.state::<AppState>();
+    publish(
+        app,
+        CollaborationState {
+            run_id: run_id.into(),
+            status: "running".into(),
+            active_agent: Some(agent.into()),
+            queued: vec![],
+            turn,
+            max_turns: MAX_TURNS,
+            message: format!("主助理已委派 @{} 处理子任务", agent.name),
+            session_id: session_id.to_string(),
+        },
+    );
+
+    // 隔离主助理在本会话已授权的工具缓存，避免子智能体静默继承，也不破坏主助理的授权状态。
+    let saved_approvals = crate::take_session_tool_approvals(&state, session_id).await;
+    let role_prompt = delegation_system_prompt(agent);
+    let result = execute_agent_turn(
+        app,
+        agent,
+        &role_prompt,
+        attachments,
+        cancel,
+        session_id,
+        60_000,
+        |omitted_note, history_transcript| {
+            delegation_user_message(
+                omitted_note,
+                history_transcript,
+                task,
+                context_summary,
+                acceptance_criteria,
+            )
+        },
+    )
+    .await;
+    crate::restore_session_tool_approvals(&state, session_id, saved_approvals).await;
+
+    if cancel.is_cancelled() {
+        return Err(TurnError::aborted("", ""));
+    }
+
+    let (reply, failed) = match result {
+        Ok(reply) => (reply, false),
+        Err(error) if error.aborted => return Err(error),
+        Err(error) => (
+            TurnOutput {
+                text: format!("执行失败：{}", error.message),
+                thinking: error.thinking,
+            },
+            true,
+        ),
+    };
+
+    // 委派结果同样持久化为带角色归属的会话记录，便于用户查看各智能体真实分工与后续追溯。
+    {
+        let db = state.db.lock().await;
+        if let Err(error) = db.save_message_with_agent_in(
+            session_id,
+            "assistant",
+            &reply.text,
+            if reply.thinking.is_empty() {
+                None
+            } else {
+                Some(&reply.thinking)
+            },
+            Some(&agent.id),
+            Some(&agent.name),
+            Some(&agent.avatar),
+        ) {
+            return Err(TurnError::failed(
+                format!("保存委派角色回复失败：{error}"),
+                &reply.thinking,
+            ));
+        }
+        let preview = crate::conversation_preview_from(&reply.text);
+        let _ = db.touch_chat_session(session_id, None, Some(preview.as_str()));
+    }
+    crate::notify_sessions_changed(app);
+
+    let _ = app.emit(
+        "collaboration-reply",
+        serde_json::json!({
+            "run_id": run_id,
+            "turn_id": format!("{run_id}:{turn}"),
+            "text": reply.text,
+            "thinking": reply.thinking,
+            "agent_id": agent.id,
+            "agent_name": agent.name,
+            "agent_avatar": agent.avatar,
+            "failed": failed,
+            "session_id": session_id,
+        }),
+    );
+
+    publish(
+        app,
+        CollaborationState {
+            run_id: run_id.into(),
+            status: "running".into(),
+            active_agent: None,
+            queued: vec![],
+            turn,
+            max_turns: MAX_TURNS,
+            message: if failed {
+                format!("@{} 执行失败，正在由主助理处理后续", agent.name)
+            } else {
+                format!("@{} 已完成，主助理正在验收并整合结果", agent.name)
+            },
+            session_id: session_id.to_string(),
+        },
+    );
+
+    Ok(DelegatedResult {
+        text: reply.text,
+        failed,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn execute_job(
     app: &tauri::AppHandle,
@@ -245,6 +437,39 @@ async fn execute_job(
     cancel: &CancellationToken,
     session_id: &str,
 ) -> Result<TurnOutput, TurnError> {
+    let role_prompt = collaboration_prompt(&job.agent, all, allow_handoffs);
+    execute_agent_turn(
+        app,
+        &job.agent,
+        &role_prompt,
+        attachments,
+        cancel,
+        session_id,
+        100_000,
+        |omitted_note, history_transcript| {
+            format!(
+                "【共享会话记录（按时间顺序，作为上下文）】\n{}{}\n\n【当前交给你的任务】\n请求者：{}\n{}",
+                omitted_note, history_transcript, job.requested_by, job.task
+            )
+        },
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_agent_turn<F>(
+    app: &tauri::AppHandle,
+    agent: &Agent,
+    role_prompt: &str,
+    attachments: &[direct_api::UserAttachment],
+    cancel: &CancellationToken,
+    session_id: &str,
+    history_budget: usize,
+    build_user_message: F,
+) -> Result<TurnOutput, TurnError>
+where
+    F: FnOnce(&str, &str) -> String,
+{
     let state = app.state::<AppState>();
     let (history, skills, skill, custom_prompt, profile, memory_block) = {
         let db = state.db.lock().await;
@@ -252,14 +477,14 @@ async fn execute_job(
         let history = db
             .get_session_messages(session_id, None)
             .map_err(|error| TurnError::failed(error.to_string(), ""))?;
-        let profile = if job.agent.backend == "direct_api" {
-            if job.agent.api_profile_id.is_empty() {
+        let profile = if agent.backend == "direct_api" {
+            if agent.api_profile_id.is_empty() {
                 Some(crate::active_api_profile(&db))
             } else {
                 Some(
                     crate::load_api_profiles(&db)
                         .into_iter()
-                        .find(|profile| profile.id == job.agent.api_profile_id)
+                        .find(|profile| profile.id == agent.api_profile_id)
                         .ok_or_else(|| {
                             TurnError::failed(
                                 "此角色的 API 配置已不存在，请在智能体工坊重新选择。",
@@ -283,14 +508,13 @@ async fn execute_job(
         )
     };
     // 共享记录同样受上下文预算约束：整段会话塞进一条消息，长会话会让每个角色都超出上下文。
-    let (history, omitted) = direct_api::trim_history_for_context(history, 100_000);
+    let (history, omitted) = direct_api::trim_history_for_context(history, history_budget);
     let omitted_note = if omitted > 0 {
         format!("（更早的 {omitted} 条消息因长度限制未附上）\n")
     } else {
         String::new()
     };
-    let message = format!("【共享会话记录（按时间顺序，作为上下文）】\n{}{}\n\n【当前交给你的任务】\n请求者：{}\n{}",
-        omitted_note, transcript(&history), job.requested_by, job.task);
+    let message = build_user_message(&omitted_note, &transcript(&history));
     let personality = state.personality.lock().await.clone();
     let profession = state.profession.lock().await.clone();
     let mut system = crate::openclaw::build_system_prompt(&personality, &profession);
@@ -304,12 +528,12 @@ async fn execute_job(
     system = crate::attach_custom_prompt(system, &custom_prompt);
     system = crate::attach_skill_prompt(system, skill.as_ref(), &skills, profile.is_some()).await;
     system.push_str("\n\n");
-    system.push_str(&collaboration_prompt(&job.agent, all, allow_handoffs));
+    system.push_str(role_prompt);
     if cancel.is_cancelled() {
         return Err(TurnError::aborted("", ""));
     }
     if let Some(mut config) = profile {
-        crate::apply_agent_model(&mut config, std::slice::from_ref(&job.agent));
+        crate::apply_agent_model(&mut config, std::slice::from_ref(agent));
         system = crate::attach_runtime_identity_prompt(system, &config);
         system = crate::attach_execution_mode_prompt(system, &config);
         system = crate::attach_word_and_ask_prompt(system);
@@ -319,13 +543,28 @@ async fn execute_job(
         system = crate::attach_search_prompt(system);
         system = crate::attach_weather_prompt(system);
         let grants =
-            crate::collect_turn_tool_grants(std::slice::from_ref(&job.agent), skill.as_ref());
-        // 取消由回合内部处理（会带回部分结果），不再在外层 select 里抢先丢弃。
-        return direct_api::execute_direct_api_turn(app.clone(), message, config, system, vec![], attachments.to_vec(), None,
-            Some(crate::AgentContext { agents: vec![job.agent.clone()] }), grants, cancel.clone(), job.agent.api_profile_id.is_empty())
-            .await;
+            crate::collect_turn_tool_grants(std::slice::from_ref(agent), skill.as_ref());
+        // 取消由回合内部处理（会带回部分结果），不再在外层 select 里抢先丢弃；
+        // 用 Box::pin 避免直连 API 委派链引发 async 递归大小问题，且子智能体禁止再次委派。
+        return Box::pin(direct_api::execute_direct_api_turn(
+            app.clone(),
+            message,
+            config,
+            system,
+            vec![],
+            attachments.to_vec(),
+            None,
+            Some(crate::AgentContext {
+                agents: vec![agent.clone()],
+            }),
+            grants,
+            cancel.clone(),
+            agent.api_profile_id.is_empty(),
+            false,
+        ))
+        .await;
     }
-    execute_cli(app, &job.agent, &message, &system, cancel).await
+    execute_cli(app, agent, &message, &system, cancel).await
 }
 
 async fn execute_cli(

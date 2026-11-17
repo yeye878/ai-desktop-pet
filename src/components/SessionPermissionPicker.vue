@@ -6,8 +6,8 @@ import { useSessionsStore } from "../stores/sessions";
 
 /**
  * 会话级权限选择器：放在对话输入框 / 会话窗格里，改的是当前这条会话的
- * 本地 CLI 权限档位（chat_sessions.permission），不动设置页里的全局默认。
- * 空值 = 跟随设置页默认；设置页里的对应选择仍作为兜底。
+ * 本地 CLI 权限档位（chat_sessions.permission），不动全局默认。
+ * 空值 = 跟随全局默认；没有全局默认时跟随本机 CLI 配置。
  */
 type CliBackend = "claude_code" | "codex" | "dsh";
 
@@ -85,13 +85,14 @@ const globalLabel = computed(() => {
   if (option) return option.label;
   return globalValue.value.trim() ? globalValue.value.trim() : "跟随本机配置";
 });
-const triggerLabel = computed(() => current.value?.label || "跟随设置");
+const triggerLabel = computed(() => current.value?.label || "跟随默认");
 const canRender = computed(() => !!spec.value && !!props.sessionId && !!session.value);
 const effectiveHint = computed(() => {
   if (!spec.value) return "";
-  return current.value
-    ? `本会话固定为「${current.value.label}」`
-    : `本会话跟随设置页默认：${globalLabel.value}`;
+  if (current.value) return `本会话固定为「${current.value.label}」`;
+  return globalValue.value.trim()
+    ? `本会话跟随默认：${globalLabel.value}`
+    : "本会话未单独设置，跟随本机 CLI 配置";
 });
 
 async function loadGlobal() {
@@ -225,8 +226,8 @@ onMounted(() => {
         @click="resetToDefault"
       >
         <span class="session-access-row-main">
-          <span class="session-access-row-label">跟随设置页默认</span>
-          <span class="session-access-row-detail">设置页当前：{{ globalLabel }}</span>
+          <span class="session-access-row-label">跟随默认</span>
+          <span class="session-access-row-detail">当前默认：{{ globalLabel }}</span>
         </span>
         <Check v-if="value === ''" :size="13" class="session-access-check" />
       </button>

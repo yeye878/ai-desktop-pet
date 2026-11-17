@@ -1,0 +1,679 @@
+{
+ "total_windows": 412,
+ "relevant": [
+  {
+   "hwnd": 3868854,
+   "pid": 37592,
+   "class": "#32770",
+   "title": "Microsoft Word",
+   "visible": true,
+   "exe": ""
+  },
+  {
+   "hwnd": 16189356,
+   "pid": 30640,
+   "class": "OpusApp",
+   "title": "Word",
+   "visible": false,
+   "exe": ""
+  },
+  {
+   "hwnd": 7801852,
+   "pid": 17156,
+   "class": "#32770",
+   "title": "Microsoft Word",
+   "visible": true,
+   "exe": ""
+  },
+  {
+   "hwnd": 1574714,
+   "pid": 13268,
+   "class": "OpusApp",
+   "title": "Word",
+   "visible": false,
+   "exe": ""
+  },
+  {
+   "hwnd": 7800566,
+   "pid": 18940,
+   "class": "#32770",
+   "title": "Microsoft Word",
+   "visible": true,
+   "exe": ""
+  },
+  {
+   "hwnd": 10160198,
+   "pid": 30900,
+   "class": "OpusApp",
+   "title": "Word",
+   "visible": false,
+   "exe": ""
+  },
+  {
+   "hwnd": 5898306,
+   "pid": 25956,
+   "class": "Nucleus Auth Window",
+   "title": "Microsoft OneDrive Sync Service",
+   "visible": false,
+   "exe": ""
+  },
+  {
+   "hwnd": 132510,
+   "pid": 6456,
+   "class": "Chrome_WidgetWin_1",
+   "title": "Open Design Cloud 和另外 3 个页面 - 个人 - Microsoft​ Edge",
+   "visible": true,
+   "exe": ""
+  },
+  {
+   "hwnd": 132740,
+   "pid": 12876,
+   "class": "Chrome_WidgetWin_1",
+   "title": "提升直连API生成高质量Word文档 — DeepSeek Harness",
+   "visible": true,
+   "exe": ""
+  }
+ ],
+ "all_titles": [
+  {
+   "class": "TkTopLevel",
+   "title": "tk",
+   "pid": 37068
+  },
+  {
+   "class": "Chrome_WidgetWin_1",
+   "title": "dsh-pet 桌宠（桌面模式）",
+   "pid": 13356
+  },
+  {
+   "class": "HardwareMonitorWindowClass",
+   "title": "HardwareMonitorWindow",
+   "pid": 30640
+  },
+  {
+   "class": "HardwareMonitorWindowClass",
+   "title": "HardwareMonitorWindow",
+   "pid": 13268
+  },
+  {
+   "class": "HardwareMonitorWindowClass",
+   "title": "HardwareMonitorWindow",
+   "pid": 30900
+  },
+  {
+   "class": "TopLevelWindowForOverflowXamlIsland",
+   "title": "系统托盘溢出窗口。",
+   "pid": 13336
+  },
+  {
+   "class": "TrayNotifyWnd",
+   "title": "微信",
+   "pid": 5220
+  },
+  {
+   "class": "SonicMapperOSD",
+   "title": "SonicMapperOSD",
+   "pid": 20876
+  },
+  {
+   "class": "CEF-OSC-WIDGET",
+   "title": "NVIDIA GeForce Overlay DT",
+   "pid": 12568
+  },
+  {
+   "class": "KT_SANGOKUSHI14_WINDOW",
+   "title": "三国志14 威力加强版套装",
+   "pid": 37516
+  },
+  {
+   "class": "ConsoleWindowClass",
+   "title": "C:\\Users\\15188\\AppData\\Local\\Temp\\dsh-ops-niu-exec-BZQHYU\\niu.exe",
+   "pid": 31688
+  },
+  {
+   "class": "#32770",
+   "title": "Microsoft Word",
+   "pid": 37592
+  },
+  {
+   "class": "WindowsForms10.Window.0.app.0.29e8405_r122_ad2",
+   "title": "OfficeAid.Addin_{7b9259ad-9af5-4cf9-aae9-19c7c139d9f7}",
+   "pid": 30640
+  },
+  {
+   "class": ".NET-BroadcastEventWindow.4.0.0.0.29e8405.0",
+   "title": ".NET-BroadcastEventWindow.4.0.0.0.29e8405.0",
+   "pid": 30640
+  },
+  {
+   "class": "OleDdeWndClass",
+   "title": "DDE Server Window",
+   "pid": 30640
+  },
+  {
+   "class": "OpusApp",
+   "title": "Word",
+   "pid": 30640
+  },
+  {
+   "class": "OfficePowerManagerWindow",
+   "title": "OfficePowerManagerWindow",
+   "pid": 32512
+  },
+  {
+   "class": "ConsoleWindowClass",
+   "title": "C:\\Users\\15188\\AppData\\Local\\Temp\\dsh-ops-niu-exec-32khRW\\niu.exe",
+   "pid": 37380
+  },
+  {
+   "class": "#32770",
+   "title": "Microsoft Word",
+   "pid": 17156
+  },
+  {
+   "class": "WindowsForms10.Window.0.app.0.29e8405_r123_ad2",
+   "title": "OfficeAid.Addin_{2670fe48-e893-451c-925c-abb4d67e65f0}",
+   "pid": 13268
+  },
+  {
+   "class": ".NET-BroadcastEventWindow.4.0.0.0.29e8405.0",
+   "title": ".NET-BroadcastEventWindow.4.0.0.0.29e8405.0",
+   "pid": 13268
+  },
+  {
+   "class": "OleDdeWndClass",
+   "title": "DDE Server Window",
+   "pid": 13268
+  },
+  {
+   "class": "OpusApp",
+   "title": "Word",
+   "pid": 13268
+  },
+  {
+   "class": "OfficePowerManagerWindow",
+   "title": "OfficePowerManagerWindow",
+   "pid": 4132
+  },
+  {
+   "class": "#32770",
+   "title": "Microsoft Word",
+   "pid": 18940
+  },
+  {
+   "class": "WindowsForms10.Window.0.app.0.29e8405_r122_ad2",
+   "title": "OfficeAid.Addin_{155509e6-1b77-4cfc-b807-88114b073d86}",
+   "pid": 30900
+  },
+  {
+   "class": ".NET-BroadcastEventWindow.4.0.0.0.29e8405.0",
+   "title": ".NET-BroadcastEventWindow.4.0.0.0.29e8405.0",
+   "pid": 30900
+  },
+  {
+   "class": "OleDdeWndClass",
+   "title": "DDE Server Window",
+   "pid": 30900
+  },
+  {
+   "class": "OpusApp",
+   "title": "Word",
+   "pid": 30900
+  },
+  {
+   "class": "OfficePowerManagerWindow",
+   "title": "OfficePowerManagerWindow",
+   "pid": 17868
+  },
+  {
+   "class": "DXGIWatchdogThreadWindow",
+   "title": "DXGIWatchdogThreadWindow",
+   "pid": 35248
+  },
+  {
+   "class": "DIEmWin",
+   "title": "DIEmWin",
+   "pid": 35984
+  },
+  {
+   "class": "COMTASKSWINDOWCLASS",
+   "title": "Task Host Window",
+   "pid": 35808
+  },
+  {
+   "class": "TtkMonitorClass",
+   "title": "TtkMonitorWindow",
+   "pid": 37068
+  },
+  {
+   "class": "Windows.UI.Core.CoreWindow",
+   "title": "DesktopWindowXamlSource",
+   "pid": 27984
+  },
+  {
+   "class": "OleDdeWndClass",
+   "title": "DDE Server Window",
+   "pid": 32752
+  },
+  {
+   "class": "OleDdeWndClass",
+   "title": "DDE Server Window",
+   "pid": 11936
+  },
+  {
+   "class": "CWebviewControlHostWnd",
+   "title": "CWebviewHostWnd",
+   "pid": 5220
+  },
+  {
+   "class": "EmotionTipWnd",
+   "title": "EmotionTipWnd",
+   "pid": 5220
+  },
+  {
+   "class": "ChatContactMenu",
+   "title": "ChatContactMenu",
+   "pid": 5220
+  },
+  {
+   "class": "EmotionTipWnd",
+   "title": "EmotionTipWnd",
+   "pid": 5220
+  },
+  {
+   "class": "ChatContactMenu",
+   "title": "ChatContactMenu",
+   "pid": 5220
+  },
+  {
+   "class": "WeChatMainWndForPC",
+   "title": "微信",
+   "pid": 5220
+  },
+  {
+   "class": "CabinetWClass",
+   "title": "主文件夹 - 文件资源管理器",
+   "pid": 31044
+  },
+  {
+   "class": "SessionDragWnd",
+   "title": "SessionDragWnd",
+   "pid": 5220
+  },
+  {
+   "class": "FLUTTER_RUNNER_WIN32_WINDOW",
+   "title": "向日葵远程控制",
+   "pid": 12464
+  },
+  {
+   "class": "MbToolTip",
+   "title": "MbToolTip",
+   "pid": 12464
+  },
+  {
+   "class": "GDI+ Hook Window Class",
+   "title": "GDI+ Window (Explorer.EXE)",
+   "pid": 26312
+  },
+  {
+   "class": "OleDdeWndClass",
+   "title": "DDE Server Window",
+   "pid": 12876
+  },
+  {
+   "class": "com.ccswitch.desktop-sic",
+   "title": "com.ccswitch.desktop-siw",
+   "pid": 31528
+  },
+  {
+   "class": "Chrome_WidgetWin_0",
+   "title": "微信",
+   "pid": 13828
+  },
+  {
+   "class": "GDI+ Hook Window Class",
+   "title": "GDI+ Window (WeChat.exe)",
+   "pid": 20704
+  },
+  {
+   "class": "HwndWrapper[GCUService.exe;;5cb96599-7b03-45a4-b6d7-29203af57629]",
+   "title": "SystemResourceNotifyWindow",
+   "pid": 8960
+  },
+  {
+   "class": "HwndWrapper[GCUService.exe;;ad28aafd-b79d-407b-b383-fdcbc174de11]",
+   "title": "MediaContextNotificationWindow",
+   "pid": 8960
+  },
+  {
+   "class": "ConsoleWindowClass",
+   "title": "C:\\WINDOWS\\system32\\cmd.exe",
+   "pid": 22736
+  },
+  {
+   "class": "Chrome_WidgetWin_1",
+   "title": "ChatGPT",
+   "pid": 1952
+  },
+  {
+   "class": ".NET-BroadcastEventWindow.4.0.0.0.141b42a.0",
+   "title": ".NET-BroadcastEventWindow.4.0.0.0.141b42a.0",
+   "pid": 21368
+  },
+  {
+   "class": "GDI+ Hook Window Class",
+   "title": "GDI+ Window (SystrayComponent.exe)",
+   "pid": 22216
+  },
+  {
+   "class": "HwndWrapper[OSDTpDetect.exe;;6e471c46-9da9-4fa1-a112-6993965a7e6f]",
+   "title": "SystemResourceNotifyWindow",
+   "pid": 26276
+  },
+  {
+   "class": "Gemini.AppLauncher.MessageWindow",
+   "title": "Gemini Launcher",
+   "pid": 26184
+  },
+  {
+   "class": "ConsoleWindowClass",
+   "title": "C:\\WINDOWS\\system32\\cmd.exe",
+   "pid": 7844
+  },
+  {
+   "class": "Windows.UI.Core.CoreWindow",
+   "title": "Nahimic",
+   "pid": 20964
+  },
+  {
+   "class": "GDI+ Hook Window Class",
+   "title": "GDI+ Window (AweSun.exe)",
+   "pid": 17824
+  },
+  {
+   "class": "MbToolTip",
+   "title": "MbToolTip",
+   "pid": 12464
+  },
+  {
+   "class": "ApplicationFrameWindow",
+   "title": "Nahimic",
+   "pid": 13224
+  },
+  {
+   "class": "SecHealth Window Class",
+   "title": "SecurityHealthSystray",
+   "pid": 2096
+  },
+  {
+   "class": "OleDdeWndClass",
+   "title": "DDE Server Window",
+   "pid": 22464
+  },
+  {
+   "class": ".NET-BroadcastEventWindow.4.0.0.0.32b795f.0",
+   "title": ".NET-BroadcastEventWindow.4.0.0.0.32b795f.0",
+   "pid": 22464
+  },
+  {
+   "class": ".NET-BroadcastEventWindow.4.0.0.0.3dee27.0",
+   "title": ".NET-BroadcastEventWindow.4.0.0.0.3dee27.0",
+   "pid": 22096
+  },
+  {
+   "class": "Windows.UI.Core.CoreWindow",
+   "title": "Windows Shell Experience 主机",
+   "pid": 4192
+  },
+  {
+   "class": "Windows.UI.Core.CoreWindow",
+   "title": "Windows 输入体验",
+   "pid": 20896
+  },
+  {
+   "class": ".NET-BroadcastEventWindow.bf7771.0",
+   "title": ".NET-BroadcastEventWindow.bf7771.0",
+   "pid": 21340
+  },
+  {
+   "class": "NVIDIA RLA Utility",
+   "title": "NVIDIA RLA Utility",
+   "pid": 11400
+  },
+  {
+   "class": "NvContainerWindowClass000027F0",
+   "title": "NvContainerWindowClass000027F0",
+   "pid": 11860
+  },
+  {
+   "class": "{5AEA657D-F3F5-4BD8-BFE9-A4B537FA24C3}",
+   "title": "{5AEA657D-F3F5-4BD8-BFE9-A4B537FA24C3}",
+   "pid": 20280
+  },
+  {
+   "class": "BroadcastListenerWindowThreadClass20056",
+   "title": "BroadcastListenerWindow",
+   "pid": 20056
+  },
+  {
+   "class": "BroadcastListenerWindowThreadClass20044",
+   "title": "BroadcastListenerWindow",
+   "pid": 20044
+  },
+  {
+   "class": "BroadcastListenerWindowThreadClass20012",
+   "title": "BroadcastListenerWindow",
+   "pid": 20012
+  },
+  {
+   "class": "BroadcastListenerWindowThreadClass19980",
+   "title": "BroadcastListenerWindow",
+   "pid": 19980
+  },
+  {
+   "class": "BroadcastListenerWindowThreadClass19968",
+   "title": "BroadcastListenerWindow",
+   "pid": 19968
+  },
+  {
+   "class": "NVSVC64.DLL",
+   "title": "NvSvc",
+   "pid": 18580
+  },
+  {
+   "class": "UxdService",
+   "title": "UxdService",
+   "pid": 18552
+  },
+  {
+   "class": "UxdService",
+   "title": "UxdService",
+   "pid": 18544
+  },
+  {
+   "class": "MS_WebcheckMonitor",
+   "title": "MS_WebcheckMonitor",
+   "pid": 17268
+  },
+  {
+   "class": "MiracastConnectionWindow",
+   "title": "MiracastConnectionWindow",
+   "pid": 13336
+  },
+  {
+   "class": "SystemTray_Main",
+   "title": "电池指示器",
+   "pid": 16588
+  },
+  {
+   "class": ".NET-BroadcastEventWindow.21af1a5.0",
+   "title": ".NET-BroadcastEventWindow.21af1a5.0",
+   "pid": 15756
+  },
+  {
+   "class": "CallBackWindowThread",
+   "title": "CallBackWindowThread",
+   "pid": 15932
+  },
+  {
+   "class": ".NET-BroadcastEventWindow.4.0.0.0.12ab327.0",
+   "title": ".NET-BroadcastEventWindow.4.0.0.0.12ab327.0",
+   "pid": 14548
+  },
+  {
+   "class": "HwndWrapper[SenaryAudioApp.exe;;7f477f04-8eb2-4737-9c03-5109948f9a8b]",
+   "title": "MediaContextNotificationWindow",
+   "pid": 14548
+  },
+  {
+   "class": "HwndWrapper[SenaryAudioApp.exe;;4c7b1530-f05d-4e33-b3ab-59afd2a54484]",
+   "title": "SystemResourceNotifyWindow",
+   "pid": 14548
+  },
+  {
+   "class": "CEF-OSC-WIDGET",
+   "title": "NVIDIA GeForce Overlay",
+   "pid": 12568
+  },
+  {
+   "class": "BroadcastListenerWindowThreadClass14520",
+   "title": "BroadcastListenerWindow",
+   "pid": 14520
+  },
+  {
+   "class": "BroadcastListenerWindowThreadClass14488",
+   "title": "BroadcastListenerWindow",
+   "pid": 14488
+  },
+  {
+   "class": "CrossDeviceResumeWindowClass",
+   "title": "CrossDeviceResumeWindow",
+   "pid": 13692
+  },
+  {
+   "class": "BroadcastListenerWindowThreadClass13776",
+   "title": "BroadcastListenerWindow",
+   "pid": 13776
+  },
+  {
+   "class": "Windows.UI.Core.CoreWindow",
+   "title": "DesktopWindowXamlSource",
+   "pid": 12424
+  },
+  {
+   "class": "{1274D398-C3C8-422E-87DD-2FAFFD5A7F2F}",
+   "title": "{1274D398-C3C8-422E-87DD-2FAFFD5A7F2F}",
+   "pid": 12616
+  },
+  {
+   "class": "{2A335767-FC94-417F-ABC4-B4122ADBEE60}",
+   "title": "{2A335767-FC94-417F-ABC4-B4122ADBEE60}",
+   "pid": 12432
+  },
+  {
+   "class": "PushNotificationsPowerManagement",
+   "title": "Windows Push Notifications Platform",
+   "pid": 11712
+  },
+  {
+   "class": "COMTASKSWINDOWCLASS",
+   "title": "Task Host Window",
+   "pid": 11848
+  },
+  {
+   "class": "NvContainerWindowClass00002790",
+   "title": "NvContainerWindowClass00002790",
+   "pid": 10124
+  },
+  {
+   "class": "NvContainerWindowClass00002734",
+   "title": "NvContainerWindowClass00002734",
+   "pid": 10000
+  },
+  {
+   "class": "NvContainerWindowClass00002454",
+   "title": "NvContainerWindowClass00002454",
+   "pid": 9304
+  },
+  {
+   "class": "NvContainerWindowClass00001494",
+   "title": "NvContainerWindowClass00001494",
+   "pid": 5272
+  },
+  {
+   "class": "Dwm",
+   "title": "DWM Notification Window",
+   "pid": 2232
+  },
+  {
+   "class": "MbToolTip",
+   "title": "MbToolTip",
+   "pid": 12464
+  },
+  {
+   "class": "MiniBlinkTimerWindowClass",
+   "title": "OffScreenTimer",
+   "pid": 12464
+  },
+  {
+   "class": "WUIconClass",
+   "title": "WUIconWindow",
+   "pid": 3208
+  },
+  {
+   "class": "Nucleus Auth Window",
+   "title": "Microsoft OneDrive Sync Service",
+   "pid": 25956
+  },
+  {
+   "class": "OleDdeWndClass",
+   "title": "DDE Server Window",
+   "pid": 25896
+  },
+  {
+   "class": "Windows.UI.Core.CoreWindow",
+   "title": "DesktopWindowXamlSource",
+   "pid": 16472
+  },
+  {
+   "class": "OperationStatusWindow",
+   "title": "进度",
+   "pid": 16644
+  },
+  {
+   "class": "FLUTTER_RUNNER_WIN32_WINDOW",
+   "title": "FlClash",
+   "pid": 25744
+  },
+  {
+   "class": "Tauri Window",
+   "title": "CC Switch",
+   "pid": 31528
+  },
+  {
+   "class": "Chrome_WidgetWin_1",
+   "title": "Open Design Cloud 和另外 3 个页面 - 个人 - Microsoft​ Edge",
+   "pid": 6456
+  },
+  {
+   "class": "Chrome_WidgetWin_1",
+   "title": "Qoder",
+   "pid": 32752
+  },
+  {
+   "class": "Tauri Window",
+   "title": "AI Desktop Pet - 控制台",
+   "pid": 18760
+  },
+  {
+   "class": "Chrome_WidgetWin_1",
+   "title": "Multi-Agent API Workflow ...",
+   "pid": 25896
+  },
+  {
+   "class": "Chrome_WidgetWin_1",
+   "title": "设置与记忆库界面重排 · OpenCode",
+   "pid": 11936
+  }
+ ]
+}

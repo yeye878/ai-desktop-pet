@@ -1083,7 +1083,67 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
                 }
             }
         }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "delegate_to_agent",
+                "description": "在主会话中按任务类型委派一个团队智能体（如 claude、codex、dsh 或智能体工坊中的自定义角色）处理明确的子任务，并将对方的工作结果返回给主助理验收与汇总。适合多文件代码实现、独立代码审查/复核、专项调研或写作；简单问答请主助理直接回答，不要过度委派。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "agent": { "type": "string", "description": "目标智能体名字（不带 @，如 claude、codex、dsh 或自定义角色名）" },
+                        "task": { "type": "string", "description": "分配给该智能体的具体任务说明、涉及文件路径/范围与限制条件" },
+                        "context_summary": { "type": "string", "description": "可选：主助理提炼的关键背景、已知事实或前置结论，减少对方摸索" },
+                        "acceptance_criteria": { "type": "string", "description": "可选：验收标准与期望产出格式（如改动文件列表、验证命令结果、风险点清单）" }
+                    },
+                    "required": ["agent", "task"]
+                }
+            }
+        }),
     ]
+}
+
+/// 按当前回合是否允许内部委派返回工具定义（子智能体与未开启协同时隐藏 `delegate_to_agent`）。
+pub fn tool_definitions_for(allow_delegation: bool) -> Vec<serde_json::Value> {
+    let mut defs = tool_definitions();
+    if !allow_delegation {
+        defs.retain(|def| {
+            def.get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+                != Some("delegate_to_agent")
+        });
+    }
+    defs
+}
+
+/// 只读工具白名单（智能调度评估/审核角色）。调用端过滤定义、执行端拒绝越权，
+/// 两处同时强制（方案第 9.2 节）。
+pub fn is_read_only_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "read_file"
+            | "list_directory"
+            | "file_search"
+            | "code_search"
+            | "search_memory"
+            | "web_search"
+            | "read_webpage"
+            | "get_weather"
+            | "list_scheduled_tasks"
+    )
+}
+
+pub fn tool_definitions_read_only() -> Vec<serde_json::Value> {
+    tool_definitions_for(false)
+        .into_iter()
+        .filter(|def| {
+            def.get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+                .is_some_and(is_read_only_tool)
+        })
+        .collect()
 }
 
 pub async fn execute_tool(
@@ -1091,6 +1151,10 @@ pub async fn execute_tool(
     args: &serde_json::Value,
     preferred_search_provider: &str,
 ) -> String {
+    // 执行端强制：只读调用（评估/审核）即使模型 hallucinate 出写工具也拒绝。
+    if crate::orchestration::executor::orch_read_only() && !is_read_only_tool(name) {
+        return format!("只读调用拒绝工具 {name}：该角色仅允许只读工具");
+    }
     let timeout_duration = std::time::Duration::from_secs(30);
     match name {
         "read_file" => match tokio::time::timeout(timeout_duration, exec_read_file(args)).await {
@@ -6304,14 +6368,14 @@ mod tests {
                 .into_iter()
                 .collect();
 
-        // 与 lib.rs::tool_purpose_for_factory() 的工坊目录同口径：排除工坊自己的管理工具。
+        // 与 lib.rs::tool_purpose_for_factory() 的工坊目录同口径：排除工坊自己的管理工具与主会话编排工具。
         let expected: std::collections::BTreeSet<String> = tool_definitions()
             .iter()
             .filter_map(|def| def.get("function")?.get("name")?.as_str().map(str::to_string))
             .filter(|name| {
                 !matches!(
                     name.as_str(),
-                    "create_agent" | "update_agent" | "list_agents"
+                    "create_agent" | "update_agent" | "list_agents" | "delegate_to_agent"
                 )
             })
             .collect();
@@ -6390,5 +6454,15 @@ mod tests {
 
         assert!(description.contains("app_path"));
         assert!(description.contains("4000"));
+    }
+
+    #[test]
+    fn tool_definitions_for_hides_delegation_when_disallowed() {
+        let has_delegate = |defs: &[serde_json::Value]| {
+            defs.iter()
+                .any(|def| def["function"]["name"] == "delegate_to_agent")
+        };
+        assert!(has_delegate(&tool_definitions_for(true)));
+        assert!(!has_delegate(&tool_definitions_for(false)));
     }
 }

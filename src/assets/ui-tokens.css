@@ -1,0 +1,58 @@
+/* Warm Harbor design tokens. Legacy --dash-* aliases keep existing pages usable
+   while the shell and workspaces migrate to the shared --ui-* vocabulary. */
+:root {
+  --ui-canvas: #f3f5f7;
+  --ui-surface: #ffffff;
+  --ui-surface-soft: #f8f9fb;
+  --ui-surface-warm: #fbf8f4;
+
+  --ui-text: #253041;
+  --ui-text-secondary: #525e70;
+  --ui-text-muted: #6f7988;
+  --ui-text-disabled: #98a1af;
+
+  --ui-border: rgba(37, 48, 65, 0.10);
+  --ui-border-strong: rgba(37, 48, 65, 0.18);
+
+  --ui-accent-rgb: var(--pet-primary-rgb, 185, 87, 70);
+  --ui-accent: rgb(var(--ui-accent-rgb));
+  --ui-accent-ink: #a94e3e;
+  --ui-action: #b95746;
+  --ui-action-hover: #a94e3e;
+  --ui-accent-hover: var(--pet-primary-dark, #a94e3e);
+  --ui-accent-soft: rgba(var(--ui-accent-rgb), 0.09);
+  --ui-info: #587e9f;
+  --ui-info-soft: #eaf2f8;
+  --ui-success: #35765a;
+  --ui-success-soft: #e9f4ee;
+  --ui-warning: #986522;
+  --ui-warning-soft: #fbf1df;
+  --ui-danger: #ad4d4d;
+  --ui-danger-soft: #faecec;
+
+  --ui-radius-control: 9px;
+  --ui-radius-card: 14px;
+  --ui-shadow-card: 0 6px 20px rgba(37, 48, 65, 0.05);
+  --ui-shadow-overlay: 0 16px 40px rgba(37, 48, 65, 0.12);
+
+  --dash-sidebar-width: 224px;
+  --dash-titlebar-height: 36px;
+  --dash-text-primary: var(--ui-text);
+  --dash-text-secondary: var(--ui-text-secondary);
+  --dash-text-muted: var(--ui-text-muted);
+  --dash-text-inverse: var(--ui-text);
+  --dash-card-border: var(--ui-border);
+  --dash-divider: var(--ui-border);
+  --dash-control-bg: rgba(255, 255, 255, 0.88);
+  --dash-control-bg-hover: #ffffff;
+  --dash-control-border: var(--ui-border);
+  --dash-control-border-strong: rgba(var(--ui-accent-rgb), 0.42);
+  --dash-focus: rgba(var(--ui-accent-rgb), 0.13);
+  --dash-radius-xl: 14px;
+  --dash-radius-lg: 14px;
+  --dash-radius-md: 10px;
+  --dash-radius-sm: 9px;
+  --dash-shadow-sm: var(--ui-shadow-card);
+  --dash-shadow-md: var(--ui-shadow-card);
+  --dash-shadow-hover: 0 8px 24px rgba(37, 48, 65, 0.07);
+}

@@ -37,7 +37,14 @@ function fixture(options = {}) {
       handlers.set(event, handler);
       return () => handlers.delete(event);
     } },
-    './sessions': { useSessionsStore: () => ({ activeMainId: options.activeMainId || '', find: id => ({ id, slot: id.startsWith('main') ? 'main' : 'claude', agent_id: 'builtin-claude', model: 'sonnet' }), scheduleReload() {} }) },
+    './sessions': {
+      SLOT_DEFAULT_AGENT: { claude: 'builtin-claude', codex: 'builtin-codex', dsh: 'builtin-dsh' },
+      useSessionsStore: () => ({
+        activeMainId: options.activeMainId || '',
+        find: options.find || (id => ({ id, slot: id.startsWith('main') ? 'main' : 'claude', agent_id: 'builtin-claude', model: 'sonnet' })),
+        scheduleReload() {},
+      }),
+    },
   };
   const pinia = createPinia();
   setActivePinia(pinia);
@@ -198,4 +205,15 @@ test('旧版无 session_id 的事件回退到活跃主对话，同屏和单窗�
   assert.equal(store.peek('main-a').messages.at(-1).content, '旧版最终回复');
   assert.equal(store.peek('main-a').messages.at(-1).session_id, 'main-a');
   assert.equal(store.peek('main-a').turn.loading, false);
+});
+
+test('独立窗口发送消息按槽位锁定内置智能体，不受历史串台 agent_id 影响', async () => {
+  const { store, calls } = fixture({
+    find: id => ({ id, slot: 'claude', agent_id: 'builtin-dsh', model: 'sonnet' }),
+  });
+  await store.send('claude-polluted', '你好');
+  const sendCall = calls.find(c => c.cmd === 'send_to_ai');
+  assert.ok(sendCall, '必须触发 send_to_ai');
+  assert.equal(sendCall.args.targetAgentId, 'builtin-claude');
+  assert.equal(sendCall.args.collaborationEnabled, false);
 });

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
-import { Send, Square, X, ArrowUpRight, GripHorizontal, Plus, Settings2, Paperclip } from "@lucide/vue";
+import { Send, Square, X, ArrowUpRight, GripHorizontal, Plus, Settings2, Paperclip, Copy, Check } from "@lucide/vue";
 import AppIcon from "./AppIcon.vue";
 import AttachmentTray from "./AttachmentTray.vue";
 import { useAttachmentsStore } from "../stores/attachments";
@@ -8,12 +8,16 @@ import { useDraftStore } from "../stores/drafts";
 import { getFileIcon } from "../services/attachments";
 import AgentActivity from "./AgentActivity.vue";
 import AgentModelPicker from "./AgentModelPicker.vue";
+import OrchestrationTaskCard from "./OrchestrationTaskCard.vue";
 import SessionPermissionPicker from "./SessionPermissionPicker.vue";
+import SessionPicker from "./SessionPicker.vue";
 import UserQuestion from "./UserQuestion.vue";
 import { renderMessageSegments } from "../services/markdown";
+import { useOrchestrationStore } from "../stores/orchestration";
 import { useSessionRuntimeStore } from "../stores/sessionRuntime";
 import { useSessionsStore, SLOT_DEFAULT_AGENT, type ChatSession, type ChatSlot, type BindSessionPatch } from "../stores/sessions";
 import { effortLabel, type AgentModelSlot } from "../services/agentModels";
+import { displayTitle, sessionMeta } from "../services/sessionLabels";
 
 /**
  * 同屏多窗格里的一个会话窗格。
@@ -29,6 +33,7 @@ const emit = defineEmits<{
 }>();
 
 const runtime = useSessionRuntimeStore();
+const orchestration = useOrchestrationStore();
 const sessions = useSessionsStore();
 const attachments = useAttachmentsStore();
 const attachmentDraft = computed(() => attachments.ensure(props.sessionId));
@@ -50,7 +55,31 @@ const savingModel = ref(false);
 const paneError = ref("");
 const settingsError = ref("");
 const customModel = ref("");
+const copiedMessageId = ref<number | null>(null);
+let copyFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
 let disposed = false;
+
+function clearCopyFeedback() {
+  if (copyFeedbackTimer !== null) clearTimeout(copyFeedbackTimer);
+  copyFeedbackTimer = null;
+  copiedMessageId.value = null;
+}
+
+async function copyMessage(id: number, content: string) {
+  const sessionId = props.sessionId;
+  paneError.value = "";
+  try {
+    await navigator.clipboard.writeText(content);
+    if (disposed || props.sessionId !== sessionId) return;
+    clearCopyFeedback();
+    copiedMessageId.value = id;
+    copyFeedbackTimer = setTimeout(clearCopyFeedback, 1600);
+  } catch (cause) {
+    if (!disposed && props.sessionId === sessionId) {
+      paneError.value = "复制失败：" + (cause instanceof Error ? cause.message : String(cause));
+    }
+  }
+}
 
 const newSessionOptions: { slot: ChatSlot; label: string }[] = [
   { slot: "main", label: "主对话" },
@@ -66,6 +95,7 @@ const turn = computed(() => state.value?.turn);
 const loading = computed(() => !!turn.value?.loading);
 const pendingConfirm = computed(() => state.value?.pendingConfirm ?? null);
 const pendingQuestion = computed(() => state.value?.pendingQuestion ?? null);
+const collaboration = computed(() => state.value?.collaboration ?? null);
 const confirming = ref(false);
 const dragging = ref(false);
 const isMainSession = computed(() => session.value?.slot === "main");
@@ -168,7 +198,7 @@ async function selectModel(payload: { model: string; provider: string; effort: s
  * 指针拖拽换位。Tauri 窗口开启了原生文件拖放，HTML5 drag 事件会被拦截，
  * 所以用 pointerdown/move/up 自己实现：拖标题栏，松手时落在哪个窗格就与它交换。
  */
-let dragPointer: { startX: number; startY: number; active: boolean } | null = null;
+let dragPointer: { id: number; startX: number; startY: number; active: boolean } | null = null;
 let hoveredPane: HTMLElement | null = null;
 
 function clearHover() {
@@ -179,12 +209,22 @@ function onHandlePointerDown(event: PointerEvent) {
   if (event.button !== 0 || creating.value) return;
   const target = event.target as HTMLElement | null;
   if (target?.closest("button, select, input, a, option")) return;
-  dragPointer = { startX: event.clientX, startY: event.clientY, active: false };
+  cancelPaneDrag();
+  event.preventDefault();
+  dragPointer = { id: event.pointerId, startX: event.clientX, startY: event.clientY, active: false };
   window.addEventListener("pointermove", onPointerMove);
-  window.addEventListener("pointerup", onPointerUp, { once: true });
+  window.addEventListener("pointerup", onPointerUp);
+  window.addEventListener("pointercancel", onPointerCancel);
+  window.addEventListener("blur", cancelPaneDrag);
+  window.addEventListener("resize", cancelPaneDrag);
+  window.addEventListener("keydown", onDragKeydown);
 }
 function onPointerMove(event: PointerEvent) {
-  if (!dragPointer) return;
+  if (!dragPointer || event.pointerId !== dragPointer.id) return;
+  if (!(event.buttons & 1)) {
+    cancelPaneDrag();
+    return;
+  }
   if (!dragPointer.active) {
     if (Math.hypot(event.clientX - dragPointer.startX, event.clientY - dragPointer.startY) < 6) return;
     dragPointer.active = true;
@@ -199,31 +239,44 @@ function onPointerMove(event: PointerEvent) {
     hoveredPane?.classList.add("drag-over");
   }
 }
-function onPointerUp() {
+function finishPaneDrag(commit: boolean) {
   window.removeEventListener("pointermove", onPointerMove);
-  const wasActive = dragPointer?.active === true;
+  window.removeEventListener("pointerup", onPointerUp);
+  window.removeEventListener("pointercancel", onPointerCancel);
+  window.removeEventListener("blur", cancelPaneDrag);
+  window.removeEventListener("resize", cancelPaneDrag);
+  window.removeEventListener("keydown", onDragKeydown);
+  const wasActive = dragging.value;
   dragPointer = null;
   dragging.value = false;
-  document.body.style.cursor = "";
+  if (wasActive) document.body.style.cursor = "";
   const targetId = hoveredPane?.dataset.paneId || "";
   clearHover();
-  if (wasActive && targetId && targetId !== props.paneId) emit("paneDrop", targetId, props.paneId);
+  if (commit && wasActive && targetId && targetId !== props.paneId) emit("paneDrop", targetId, props.paneId);
+}
+function cancelPaneDrag() {
+  finishPaneDrag(false);
+}
+function onPointerUp(event: PointerEvent) {
+  if (event.pointerId === dragPointer?.id) finishPaneDrag(true);
+}
+function onPointerCancel(event: PointerEvent) {
+  if (event.pointerId === dragPointer?.id) cancelPaneDrag();
+}
+function onDragKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape") cancelPaneDrag();
 }
 onBeforeUnmount(() => {
   disposed = true;
+  clearCopyFeedback();
   closeDialog();
-  window.removeEventListener("pointermove", onPointerMove);
-  window.removeEventListener("pointerup", onPointerUp);
-  clearHover();
-  if (dragging.value) document.body.style.cursor = "";
+  cancelPaneDrag();
 });
 
-const title = computed(() => session.value?.agent_name || session.value?.title || "选择会话");
-const subtitle = computed(() => {
-  if (!session.value) return "空窗格";
-  const slot = session.value.slot === "main" ? "主对话" : session.value.slot;
-  return `${slot} · ${session.value.title || "新会话"}`;
-});
+// 标题优先展示会话标题；未命名会话回退为“未命名会话”，槽位、消息量与更新时间放进副标题，
+// 这样多窗格里同名/空标题的会话也能一眼区分。
+const title = computed(() => (session.value ? displayTitle(session.value) : "选择会话"));
+const subtitle = computed(() => (session.value ? sessionMeta(session.value) : "空窗格"));
 const avatar = computed(() => session.value?.agent_avatar || (session.value?.slot === "main" ? "🐾" : "🤖"));
 
 /** 同一会话只允许出现在一个窗格，由父组件去重；这里提供全部会话供换绑。 */
@@ -232,10 +285,14 @@ const options = computed(() => sessions.sessions);
 watch(
   () => props.sessionId,
   (id) => {
-    input.value = "";
+    // 草稿按会话隔离，切会话时输入框会自动切到目标会话的草稿，这里不要清空
     paneError.value = "";
+    clearCopyFeedback();
     closeDialog();
-    if (id) void runtime.load(id);
+    if (id) {
+      void runtime.load(id);
+      if (isMainSession.value) void orchestration.start().then(() => orchestration.bindSession(id));
+    }
   },
   { immediate: true },
 );
@@ -250,9 +307,8 @@ watch(
   },
 );
 
-function onAssign(event: Event) {
-  const id = (event.target as HTMLSelectElement).value;
-  if (!creating.value && id && id !== props.sessionId) emit("assign", props.paneId, id);
+function onAssign(sessionId: string) {
+  if (!creating.value && sessionId && sessionId !== props.sessionId) emit("assign", props.paneId, sessionId);
 }
 
 async function send() {
@@ -299,7 +355,7 @@ function rendered(content: string) {
         <AppIcon v-else-if="session.agent_id === 'builtin-claude' || session.slot === 'claude'" name="claude" :size="16" />
         <AppIcon v-else-if="session.agent_id === 'builtin-codex' || session.slot === 'codex'" name="codex" :size="16" />
         <AppIcon v-else-if="session.agent_id === 'builtin-dsh' || session.slot === 'dsh'" name="dsh" :size="16" />
-        <template v-else>{{ avatar }}</template>
+        <AppIcon v-else :name="avatar" :size="16" />
       </span>
       <div class="session-pane-title">
         <strong :title="title">{{ title }}</strong>
@@ -307,18 +363,13 @@ function rendered(content: string) {
       </div>
       <span :class="['session-pane-state', loading ? 'busy' : 'ready']">{{ loading ? "运行中" : "就绪" }}</span>
       <div class="session-pane-actions">
-        <select
+        <SessionPicker
           class="session-pane-switch"
-          :value="sessionId"
-          title="切换此窗格显示的会话"
+          :sessions="options"
+          :model-value="sessionId"
           :disabled="creating"
-          @change="onAssign"
-        >
-          <option value="" disabled>选择会话</option>
-          <option v-for="item in options" :key="item.id" :value="item.id">
-            {{ item.slot === "main" ? "🐾" : (item.agent_avatar || "🤖") }} {{ item.title || item.agent_name || item.id }}
-          </option>
-        </select>
+          @select="onAssign"
+        />
         <button type="button" class="session-pane-new" title="在此窗格新建对话" :disabled="creating || savingModel" @click="startNewConversation">
           <Plus :size="14" />
           <span>{{ creating ? "创建中" : "新对话" }}</span>
@@ -341,12 +392,15 @@ function rendered(content: string) {
       <button type="button" class="session-pane-empty-new" :disabled="creating" @click="startNewConversation">
         <Plus :size="15" /> 新建对话
       </button>
-      <select class="session-pane-switch" :disabled="creating" @change="onAssign">
-        <option value="" selected disabled>选择会话</option>
-        <option v-for="item in options" :key="item.id" :value="item.id">
-          {{ item.slot === "main" ? "🐾" : (item.agent_avatar || "🤖") }} {{ item.title || item.agent_name || item.id }}
-        </option>
-      </select>
+      <SessionPicker
+        class="session-pane-switch"
+        :sessions="options"
+        :model-value="sessionId"
+        :disabled="creating"
+        placeholder="选择已有会话"
+        variant="empty"
+        @select="onAssign"
+      />
     </div>
 
     <div v-else ref="messagesRef" class="session-pane-messages">
@@ -361,10 +415,11 @@ function rendered(content: string) {
         />
         <div v-if="msg.role !== 'system'" class="session-pane-bubble">
           <div v-if="msg.agent && msg.role === 'assistant'" class="session-pane-agent">
-            <AppIcon v-if="msg.agent.id === 'builtin-claude'" name="claude" :size="12" />
+            <AppIcon v-if="msg.agent.id === 'main'" name="brand-pet" :size="12" />
+            <AppIcon v-else-if="msg.agent.id === 'builtin-claude'" name="claude" :size="12" />
             <AppIcon v-else-if="msg.agent.id === 'builtin-codex'" name="codex" :size="12" />
             <AppIcon v-else-if="msg.agent.id === 'builtin-dsh'" name="dsh" :size="12" />
-            <span v-else>{{ msg.agent.avatar || "🤖" }}</span>
+            <AppIcon v-else :name="msg.agent.avatar || '🤖'" :size="12" />
             <span>{{ msg.agent.name }}</span>
           </div>
           <div class="md-body" v-html="rendered(msg.displayContent ?? msg.content)"></div>
@@ -373,6 +428,17 @@ function rendered(content: string) {
           </div>
         </div>
         <div v-else class="session-pane-system">{{ msg.content }}</div>
+        <button
+          v-if="msg.role !== 'system' && msg.content"
+          type="button"
+          class="session-pane-copy"
+          title="复制整条消息"
+          @click="copyMessage(msg.id, msg.content)"
+        >
+          <Check v-if="copiedMessageId === msg.id" :size="12" />
+          <Copy v-else :size="12" />
+          <span>{{ copiedMessageId === msg.id ? '已复制' : '复制' }}</span>
+        </button>
       </div>
       <div v-if="loading" class="session-pane-msg assistant">
         <AgentActivity
@@ -388,6 +454,13 @@ function rendered(content: string) {
           <div class="md-body" v-html="rendered(turn.streamingAnswer)"></div>
         </div>
       </div>
+      <OrchestrationTaskCard v-if="isMainSession && orchestration.mode === 'adaptive' && sessionId" :session-id="sessionId" />
+    </div>
+
+    <div v-if="isMainSession && collaboration" class="session-pane-collab" aria-live="polite">
+      <strong v-if="collaboration.status === 'running'">{{ collaboration.active_agent?.name || '主助理' }} · {{ collaboration.turn }}/{{ collaboration.max_turns }}</strong>
+      <span>{{ collaboration.message }}</span>
+      <span v-if="collaboration.queued.length">等待：{{ collaboration.queued.map(agent => '@' + agent.name).join(' → ') }}</span>
     </div>
 
     <div v-if="pendingConfirm" class="session-pane-confirm">
@@ -443,7 +516,7 @@ function rendered(content: string) {
         <header class="session-pane-dialog-head">
           <div>
             <h2>{{ dialogMode === "new" ? "新建对话" : "会话设置" }}</h2>
-            <p>{{ dialogMode === "new" ? "创建后只在当前窗格打开" : `${title} · ${session?.title || '新对话'}` }}</p>
+            <p>{{ dialogMode === "new" ? "创建后只在当前窗格打开" : (session ? sessionMeta(session) : "") }}</p>
           </div>
           <button type="button" class="session-pane-dialog-close" aria-label="关闭设置面板" :disabled="creating" @click="closeDialog">
             <X :size="18" />
@@ -530,23 +603,30 @@ function rendered(content: string) {
 .session-pane-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 2px; min-width: 0; }
 .session-pane-actions button { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border: none; border-radius: 7px; background: transparent; cursor: pointer; color: #7d7267; transition: background .12s, color .12s; }
 .session-pane-actions button:hover { background: rgba(0,0,0,.07); color: #3d3630; }
-.session-pane-switch { flex: 1; min-width: 70px; width: 0; font-size: 11px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: #7d7267; padding: 3px 4px; cursor: pointer; }
-.session-pane-switch:hover, .session-pane-switch:focus { border-color: rgba(120,110,100,.25); background: #fff; }
-.session-pane-messages { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+/* SessionPicker 的根节点在操作行里占满剩余宽度，触发器自身保持紧凑。 */
+.session-pane-actions .session-pane-switch { flex: 1; min-width: 70px; width: 0; display: flex; }
+.session-pane-actions .session-pane-switch :deep(.session-picker-trigger) { width: 100%; min-height: 26px; justify-content: flex-start; }
+.session-pane-actions .session-pane-switch :deep(.session-picker-trigger-label) { flex: 1; text-align: left; }
+.session-pane-messages { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; user-select: text; -webkit-user-select: text; }
 .session-pane-hint { color: #968b7f; font-size: 12px; text-align: center; margin: auto 0; }
 .session-pane-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; margin: 10px; border: 1.5px dashed rgba(120,110,100,.25); border-radius: 10px; color: #968b7f; font-size: 12px; }
 .session-pane-empty p { margin: 0; }
-.session-pane-empty .session-pane-switch { flex: none; width: min(200px, 100%); border-color: rgba(120,110,100,.3); background: #fff; padding: 6px 10px; font-size: 12px; }
+.session-pane-empty .session-pane-switch { flex: none; width: min(260px, 100%); display: flex; }
 .session-pane-empty-new { display: inline-flex; align-items: center; gap: 5px; padding: 8px 14px; border: 1px solid rgba(120,110,100,.18); border-radius: 9px; background: #fff; color: #3d3630; cursor: pointer; }
 .session-pane-actions .session-pane-new { width: auto; padding: 0 7px; gap: 3px; color: #3d3630; background: rgba(120,110,100,.06); font-size: 11px; }
 .session-pane-actions button:disabled { opacity: .45; cursor: default; }
 .session-pane-msg { display: flex; flex-direction: column; gap: 4px; }
 .session-pane-msg.user { align-items: flex-end; }
+.session-pane-copy { align-self: flex-start; display: inline-flex; align-items: center; gap: 4px; padding: 2px 5px; border: none; border-radius: 5px; background: transparent; color: #968b7f; font-size: 11px; cursor: pointer; user-select: none; -webkit-user-select: none; }
+.session-pane-copy:hover { background: rgba(120,110,100,.08); color: #3d3630; }
+.session-pane-msg.user .session-pane-copy { align-self: flex-end; }
 .session-pane-bubble { max-width: 100%; padding: 8px 11px; border-radius: 12px; background: #fff; border: 1px solid rgba(120,110,100,.1); font-size: 12.5px; line-height: 1.6; overflow-wrap: anywhere; }
 .session-pane-msg.user .session-pane-bubble { background: var(--pet-primary, #ff6b6b); color: #fff; border: none; border-bottom-right-radius: 4px; }
 .session-pane-msg.assistant .session-pane-bubble { border-bottom-left-radius: 4px; }
 .session-pane-agent { font-size: 11px; color: #968b7f; margin-bottom: 3px; }
 .session-pane-system { text-align: center; font-size: 11px; color: #968b7f; }
+.session-pane-collab { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin: 0 12px 8px; padding: 7px 10px; border: 1px solid rgba(120,110,100,.14); border-radius: 9px; background: rgba(255,255,255,.78); color: #64748b; font-size: 11px; line-height: 1.4; flex-shrink: 0; }
+.session-pane-collab strong { color: #334155; font-weight: 600; }
 .session-pane-confirm { margin: 0 12px 10px; padding: 12px; border: 1px solid #f0c36d; border-radius: 12px; background: #fffaf0; display: flex; flex-direction: column; gap: 8px; font-size: 12px; flex-shrink: 0; }
 .session-pane-confirm code { font-size: 11px; overflow-wrap: anywhere; }
 .session-pane-confirm-actions { display: flex; gap: 8px; justify-content: flex-end; }

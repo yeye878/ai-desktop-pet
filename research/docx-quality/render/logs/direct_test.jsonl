@@ -1,0 +1,6 @@
+{"t": 0.08, "stage": "coinit", "tmp": "D:\\ai-desktop-pet\\research\\docx-quality\\render\\tmp", "tmp_exists": true, "tmp_writable": true, "env_temp": "C:\\Users\\15188\\AppData\\Local\\Temp\\dsh-n4jw0n"}
+{"t": 0.08, "stage": "spawn", "exe": "C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE", "pid_before": []}
+{"t": 0.1, "stage": "spawned", "child_pid": 38572}
+{"t": 0.1, "stage": "getactiveobject_first_error", "err": "com_error(-2147221021, '操作无法使用', None, None)"}
+{"t": 3.54, "stage": "attached", "via": "GetActiveObject", "tries": 5, "pids": [31268], "child_pid": 38572}
+{"t": 4.12, "stage": "app_configured", "version": "16.0"}

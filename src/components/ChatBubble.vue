@@ -17,9 +17,14 @@ import SessionPermissionPicker from "./SessionPermissionPicker.vue";
 import UserQuestion from "./UserQuestion.vue";
 import { createInteractionSubmission, subscribePendingInteraction, type AskUserPayload } from "../services/pendingInteractions";
 import { isNearBottom, legacyActivity, type AgentActivityTool } from "../services/agentActivity";
+import { saveActivityPresentation } from "../services/agentActivityCache";
 import { ArrowDown } from "@lucide/vue";
 import AppIcon from "./AppIcon.vue";
 import CollaborationBar from "./CollaborationBar.vue";
+import OrchestrationModePicker from "./OrchestrationModePicker.vue";
+import OrchestrationTaskCard from "./OrchestrationTaskCard.vue";
+import OrchestrationDetailPanel from "./OrchestrationDetailPanel.vue";
+import { useOrchestrationStore } from "../stores/orchestration";
 import { subscribeCollaboration, type CollaborationReply, type CollaborationState } from "../services/collaboration";
 import {
   SLASH_COMMANDS,
@@ -47,6 +52,7 @@ const pet = usePetStore();
 const skillsStore = useSkillsStore();
 const agentsStore = useAgentsStore();
 const sessions = useSessionsStore();
+const orchestration = useOrchestrationStore();
 
 type ActiveTab = "chat" | "clipboard";
 type ClipboardItem = {
@@ -395,6 +401,24 @@ onMounted(async () => {
   });
   void agentsStore.startSync().catch((error) => console.error("加载智能体失败", error));
   void sessions.startSync().catch((error) => console.error("加载会话失败", error));
+  void orchestration.start().then(() => orchestration.bindSession(sessions.activeMainId));
+  watch(() => sessions.activeMainId, (id) => {
+    if (id) void orchestration.bindSession(id);
+  });
+  watch(
+    () => [
+      sessions.activeMainId ? orchestration.activeBySession[sessions.activeMainId] : undefined,
+      sessions.activeMainId ? orchestration.activeRun(sessions.activeMainId)?.state : undefined,
+    ],
+    ([runId]) => {
+      if (runId && orchestration.mode === "adaptive" && chat.isLoading) {
+        clearLoadingTimeout();
+        chat.isLoading = false;
+        isThinkingCollapsed.value = true;
+        pet.setState("idle");
+      }
+    },
+  );
   unlistenDragDrop = await currentWindow.onDragDropEvent((event) => {
     handleDragDropEvent(event.payload);
   });
@@ -465,6 +489,7 @@ onMounted(async () => {
 
   unlistenChatCleared = await listen("chat-history-cleared", () => {
     resetChatUi();
+    orchestration.clearSessions();
   });
 
   // 活跃主会话切换 / 会话列表变化（新建、改名、删除、首条消息生成标题）后刷新历史。
@@ -482,8 +507,37 @@ onMounted(async () => {
     if (last && last.role === payload.role && last.content === payload.content) {
       return;
     }
-    chat.addMessage(payload.role, payload.content, undefined, payload.files ?? payload.fileAttachments);
-    if (payload.role === "user") {
+    const syncAgent: MessageAgent | null = payload.agent?.name
+      ? { id: payload.agent.id || undefined, name: payload.agent.name, avatar: payload.agent.avatar || undefined }
+      : null;
+    const orchActivity =
+      payload.role === "assistant" && payload.orchestration_run_id
+        ? orchestration.buildRunActivity(payload.orchestration_run_id, payload.content)
+        : [];
+    const added = chat.addMessage(
+      payload.role,
+      payload.content,
+      payload.thinking || undefined,
+      payload.files ?? payload.fileAttachments,
+      undefined,
+      undefined,
+      syncAgent,
+    );
+    if (orchActivity.length) {
+      added.activity = orchActivity;
+      added.displayContent = payload.content;
+      try {
+        saveActivityPresentation(globalThis.localStorage, {
+          content: added.content,
+          thinking: added.thinking,
+          timestamp: added.timestamp,
+          agent: added.agent ?? null,
+          activity: orchActivity,
+          displayContent: payload.content,
+        });
+      } catch { /* ignore */ }
+    }
+    if (payload.role === "user" && orchestration.mode !== "adaptive") {
       chat.isLoading = true;
       chat.activity.reset();
       followingActivity.value = true;
@@ -701,12 +755,14 @@ async function sendMessage() {
   chat.collaboration = null;
   chat.activity.reset();
   followingActivity.value = true;
-  chat.isLoading = true;
-  resetLoadingTimeout(); // 启动超时保底
+  if (orchestration.mode !== "adaptive") {
+    chat.isLoading = true;
+    resetLoadingTimeout(); // 启动超时保底
+    pet.setState("thinking");
+  }
   pendingConfirm.value = null;  // Clear any pending tool confirmation
   thinkingContent.value = "";
   isThinkingCollapsed.value = false;
-  pet.setState("thinking");
 
   await nextTick();
   scrollToBottom();
@@ -719,7 +775,14 @@ async function sendMessage() {
       collaborationEnabled: chat.collaborationEnabled,
     };
     if (sessions.activeMainId) sendArgs.sessionId = sessions.activeMainId;
-    await invoke<{ started: boolean }>("send_to_ai", sendArgs);
+    const result = await invoke<{ started: boolean; orchestrated?: boolean }>("send_to_ai", sendArgs);
+    if (result?.orchestrated) {
+      chat.isLoading = false;
+      clearLoadingTimeout();
+      isThinkingCollapsed.value = true;
+      if (sessions.activeMainId) void orchestration.bindSession(sessions.activeMainId);
+      pet.setState("idle");
+    }
   } catch (err) {
     chat.isLoading = false;
     isThinkingCollapsed.value = true;
@@ -1582,7 +1645,7 @@ function formatClipboardTime(value: string | number): string {
       <div ref="messagesRef" class="chat-messages" @click="onBgClick" @scroll.passive="trackChatScroll">
       <template v-if="activeTab === 'chat'">
         <div v-if="chat.messages.length === 0 && !chat.isLoading" class="empty-hint">
-          <div class="empty-icon">&#x1F43E;</div>
+          <div class="empty-icon"><AppIcon name="brand-pet" :size="24" /></div>
           <div>点击输入框和我聊天吧~</div>
         </div>
 
@@ -1607,10 +1670,11 @@ function formatClipboardTime(value: string | number): string {
           <div class="msg-body">
             <div v-if="msg.agent && msg.role === 'assistant'" class="msg-agent-badge">
               <span class="msg-agent-avatar">
-                <AppIcon v-if="msg.agent.id === 'builtin-claude' || msg.agent.name.toLowerCase() === 'claude'" name="claude" :size="12" />
+                <AppIcon v-if="msg.agent.id === 'main'" name="brand-pet" :size="12" />
+                <AppIcon v-else-if="msg.agent.id === 'builtin-claude' || msg.agent.name.toLowerCase() === 'claude'" name="claude" :size="12" />
                 <AppIcon v-else-if="msg.agent.id === 'builtin-codex' || msg.agent.name.toLowerCase() === 'codex'" name="codex" :size="12" />
                 <AppIcon v-else-if="msg.agent.id === 'builtin-dsh' || msg.agent.name.toLowerCase() === 'dsh'" name="dsh" :size="12" />
-                <template v-else>{{ msg.agent.avatar || "🤖" }}</template>
+                <AppIcon v-else :name="msg.agent.avatar || '🤖'" :size="12" />
               </span>
               <span class="msg-agent-name">{{ msg.agent.name }}</span>
             </div>
@@ -1647,7 +1711,7 @@ function formatClipboardTime(value: string | number): string {
           </template>
         </div>
 
-        <div v-if="chat.isLoading" class="message assistant msg-enter">
+        <div v-if="chat.isLoading && orchestration.mode !== 'adaptive'" class="message assistant msg-enter">
           <div class="avatar bot-avatar">
             <span class="avatar-thinking"><AppIcon name="brand-pet" :size="16" /></span>
           </div>
@@ -1657,6 +1721,7 @@ function formatClipboardTime(value: string | number): string {
 
           </div>
         </div>
+        <OrchestrationTaskCard v-if="orchestration.mode === 'adaptive' && sessions.activeMainId" :session-id="sessions.activeMainId" />
         <div ref="chatEndRef" class="chat-end" aria-hidden="true"></div>
       </template>
 
@@ -1831,7 +1896,12 @@ function formatClipboardTime(value: string | number): string {
           @mouseenter="mentionSelectedIndex = index"
           @click="chooseMentionItem(agent)"
         >
-          <span class="mention-avatar">{{ agent.avatar || "🤖" }}</span>
+          <span class="mention-avatar">
+            <AppIcon v-if="agent.id === 'builtin-claude'" name="claude" :size="14" />
+            <AppIcon v-else-if="agent.id === 'builtin-codex'" name="codex" :size="14" />
+            <AppIcon v-else-if="agent.id === 'builtin-dsh'" name="dsh" :size="14" />
+            <AppIcon v-else :name="agent.avatar || '🤖'" :size="14" />
+          </span>
           <span class="mention-main">
             <span class="mention-title">@{{ agent.name }}</span>
             <span class="mention-desc">{{ agent.description || "自定义智能体" }}</span>
@@ -1862,7 +1932,9 @@ function formatClipboardTime(value: string | number): string {
       </div>
     </Transition>
 
-    <CollaborationBar v-if="activeTab === 'chat'" />
+    <OrchestrationModePicker v-if="activeTab === 'chat'" />
+    <CollaborationBar v-if="activeTab === 'chat' && orchestration.mode !== 'adaptive'" />
+    <OrchestrationDetailPanel />
     <div
       v-if="activeTab === 'chat' && backendType !== 'direct_api' && sessions.activeMainId"
       class="chat-access-row"
@@ -2031,7 +2103,9 @@ function formatClipboardTime(value: string | number): string {
 .tabs {
   display: flex;
   gap: 4px;
-  flex: 1;
+  flex: 0 1 auto;
+  width: fit-content;
+  margin-right: auto;
   min-width: 0;
   max-width: 178px;
   padding: 3px;

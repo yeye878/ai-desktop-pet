@@ -18,6 +18,10 @@ use tokio::{
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+pub fn is_cli_available() -> bool {
+    find_cli().is_ok()
+}
+
 fn find_cli() -> Result<PathBuf, String> {
     let mut directories: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|path| std::env::split_paths(&path).collect())
@@ -143,16 +147,50 @@ impl CodexAdapter {
         effort: Option<&str>,
         permission: &str,
     ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
-        let workspace = workspace_dir(app)?;
+        self.spawn_streaming_in_workspace(
+            app,
+            message,
+            system_prompt,
+            None,
+            None,
+            session,
+            model,
+            effort,
+            permission,
+        )
+        .await
+    }
+
+    /// 可显式指定工作区与归属会话的 spawn 版本（供智能调度在隔离目录/worktree 内执行）。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn spawn_streaming_in_workspace(
+        &self,
+        app: &tauri::AppHandle,
+        message: &str,
+        system_prompt: &str,
+        workspace: Option<&std::path::Path>,
+        owner_session_id: Option<&str>,
+        session: Option<&str>,
+        model: Option<&str>,
+        effort: Option<&str>,
+        permission: &str,
+    ) -> Result<Child, Box<dyn std::error::Error + Send + Sync>> {
+        let fallback_workspace = workspace_dir(app)?;
+        let effective_workspace = workspace.unwrap_or(&fallback_workspace);
         // 会话级 / 设置页选定的沙箱档位：只在显式的 danger-full-access 时放开
         // 工作区外的写入，其余情况保持默认的 workspace-write。
         let sandbox = crate::cli_permission::codex_sandbox_mode(permission);
         let state = app.state::<crate::AppState>();
+        let owner_session = owner_session_id
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| crate::current_turn_session(&state));
         let memory_url = state.permission_bridge.lock().ok().and_then(|bridge| {
-            bridge.as_ref().map(|b| b.url_for_session(&crate::current_turn_session(&state)))
+            bridge.as_ref().map(|b| b.url_for_session(&owner_session))
         });
         self.spawn_in_workspace_with(
-            &workspace,
+            effective_workspace,
             message,
             system_prompt,
             session,

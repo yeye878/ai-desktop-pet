@@ -1,0 +1,341 @@
+/* Application shell: quiet navigation, legible typography and an unobstructed
+   background canvas. Page-specific canvas images are defined in dashboard.css. */
+.dashboard-root {
+  color: var(--ui-text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-feature-settings: "calt", "kern", "liga";
+}
+
+.dashboard-titlebar {
+  height: var(--dash-titlebar-height);
+  padding-right: 10px;
+  padding-left: 14px;
+  background: rgba(252, 253, 254, 0.96);
+  border-bottom: 1px solid var(--ui-border);
+  box-shadow: none;
+}
+
+.dashboard-titlebar::before {
+  opacity: 0.16;
+}
+
+.dashboard-titlebar::after {
+  display: none;
+}
+
+.titlebar-title {
+  gap: 8px;
+  color: var(--ui-text-secondary);
+  font-size: 12px;
+}
+
+.titlebar-mark {
+  width: 21px;
+  height: 21px;
+  border: 1px solid rgba(var(--ui-accent-rgb), 0.12);
+  border-radius: 7px;
+  background: var(--ui-accent-soft);
+  color: var(--ui-accent-ink);
+  box-shadow: none;
+  text-shadow: none;
+}
+
+.titlebar-btn {
+  border-radius: 7px;
+  background: transparent;
+}
+
+.titlebar-btn:hover {
+  background: var(--ui-surface-soft);
+  transform: none;
+}
+
+.dashboard-body {
+  background-color: var(--ui-canvas);
+}
+
+.dashboard-sidebar {
+  width: var(--dash-sidebar-width);
+  padding: 16px 12px 14px;
+  background:
+    url("./art/paper-grain.webp"),
+    linear-gradient(180deg, rgba(253, 252, 249, 0.98), rgba(246, 249, 251, 0.98));
+  background-size: 520px 520px, auto;
+  border-right: 1px solid var(--ui-border);
+  box-shadow: none;
+}
+
+.dashboard-sidebar::after {
+  display: none;
+}
+
+.dashboard-sidebar::before {
+  bottom: 116px;
+  opacity: 0.58;
+  transition: opacity var(--dash-dur-base) var(--dash-ease-out);
+}
+
+.dashboard-sidebar.sidebar-art-hidden::before,
+.dashboard-sidebar.sidebar-page-memory::before,
+.dashboard-sidebar.sidebar-page-system::before {
+  opacity: 0;
+}
+
+.sidebar-header {
+  padding: 4px 8px 22px;
+}
+
+.sidebar-brand {
+  gap: 10px;
+}
+
+.brand-logo {
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(var(--ui-accent-rgb), 0.12);
+  border-radius: 10px;
+  background: var(--ui-accent-soft);
+  color: var(--ui-accent-ink);
+  box-shadow: none;
+  text-shadow: none;
+}
+
+.brand-name {
+  font-size: 13.5px;
+  font-weight: 700;
+}
+
+.brand-tag {
+  color: var(--ui-text-muted);
+  font-size: 10.5px;
+}
+
+.sidebar-nav {
+  gap: 3px;
+}
+
+.sidebar-item {
+  min-height: 38px;
+  gap: 10px;
+  padding: 8px 10px;
+  border-color: transparent;
+  border-radius: var(--ui-radius-control);
+  color: var(--ui-text-secondary);
+  font-size: 13px;
+  font-weight: 520;
+}
+
+.sidebar-item:hover {
+  border-color: transparent;
+  /* A quiet neutral veil instead of a solid white card — the old white
+     fill read like an elevated button and made the hovered item (especially
+     the expandable 对话互动 parent) look detached from its neighbours. */
+  background: rgba(37, 48, 65, 0.05);
+  color: var(--ui-text);
+  transform: none;
+}
+
+.sidebar-item:active {
+  transform: none;
+}
+
+.sidebar-item.active {
+  border-color: rgba(var(--ui-accent-rgb), 0.10);
+  background: var(--ui-accent-soft);
+  color: var(--ui-accent-ink);
+  box-shadow: none;
+  font-weight: 650;
+}
+
+.sidebar-item.active::before {
+  display: none;
+}
+
+.sidebar-item-icon,
+.sidebar-item:nth-child(2n) .sidebar-item-icon {
+  width: 25px;
+  height: 25px;
+  border-radius: 7px;
+  background: transparent;
+  box-shadow: none;
+  transform: none;
+}
+
+.sidebar-item.active .sidebar-item-icon {
+  background: rgba(255, 255, 255, 0.58);
+}
+
+/* Keep the expandable 对话互动 parent at the same height/metrics as the flat
+   items, otherwise its hover/active block looks taller than everything else. */
+.sidebar-item-parent {
+  min-height: 38px;
+  padding: 0;
+}
+
+.sidebar-item-main {
+  padding: 6px 2px 6px 10px;
+}
+
+.sidebar-item-caret {
+  width: 24px;
+  height: 24px;
+  margin-right: 4px;
+}
+
+/* The old design painted the parent with a white gradient card; keep it on the
+   same quiet accent tint as every other active nav item. */
+.sidebar-item-parent.active {
+  background: var(--ui-accent-soft);
+  border-color: rgba(var(--ui-accent-rgb), 0.10);
+  box-shadow: none;
+}
+
+.sidebar-subnav {
+  margin-top: 3px;
+  margin-bottom: 5px;
+}
+
+.sidebar-subitem {
+  border-radius: 8px;
+}
+
+.sidebar-subitem.active {
+  background: var(--ui-accent-soft);
+  box-shadow: none;
+}
+
+.sidebar-divider {
+  margin: 10px;
+  background: var(--ui-border);
+}
+
+.sidebar-footer {
+  gap: 5px;
+  padding-top: 12px;
+}
+
+.sidebar-action-btn {
+  min-height: 38px;
+  padding: 9px 11px;
+  border-radius: var(--ui-radius-control);
+  font-size: 12.5px;
+}
+
+.sidebar-action-btn.primary,
+.sidebar-action-btn.primary.active {
+  background: var(--ui-action);
+  color: #ffffff;
+  box-shadow: none;
+}
+
+.sidebar-action-btn.primary:hover {
+  background: var(--ui-action-hover);
+  box-shadow: none;
+  transform: none;
+}
+
+.sidebar-action-btn.danger {
+  min-height: 34px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--ui-text-muted);
+}
+
+.sidebar-action-btn.danger:hover {
+  border-color: transparent;
+  background: var(--ui-danger-soft);
+  color: var(--ui-danger);
+  transform: none;
+}
+
+/* Remove the second outer frame. Existing page canvas backgrounds stay intact. */
+.dashboard-content {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.dashboard-content:not(.chat-page-active) {
+  padding: 28px 32px 48px;
+}
+
+.dashboard-content::after {
+  opacity: 0.18;
+}
+
+.dashboard-content.page-memory::after,
+.dashboard-content.page-system::after {
+  display: none;
+}
+
+.dashboard-content.page-memory::before,
+.dashboard-content.page-system::before {
+  opacity: 0.20;
+  mix-blend-mode: multiply;
+}
+
+.page-header {
+  max-width: 1200px;
+  margin-bottom: 24px;
+}
+
+.page-kicker {
+  margin-bottom: 6px;
+  color: var(--ui-text-muted);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.page-title {
+  color: var(--ui-text);
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.28;
+}
+
+.page-subtitle {
+  margin-top: 6px;
+  color: var(--ui-text-secondary);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.page-fade-enter-from,
+.page-fade-leave-to {
+  transform: translateY(4px);
+}
+
+@media (max-width: 1100px) {
+  .dashboard-content:not(.chat-page-active) {
+    padding: 24px 24px 40px;
+  }
+}
+
+@media (max-width: 760px) {
+  .dashboard-sidebar {
+    width: 100%;
+    padding: 10px;
+  }
+
+  .sidebar-header {
+    padding: 2px 6px 8px;
+  }
+
+  .dashboard-content:not(.chat-page-active) {
+    padding: 22px 20px 36px;
+  }
+
+  .page-title {
+    font-size: 25px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-fade-enter-from,
+  .page-fade-leave-to {
+    transform: none;
+  }
+}

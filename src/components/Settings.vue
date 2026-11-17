@@ -7,7 +7,6 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import CustomPixelPetWorkshop from "./CustomPixelPetWorkshop.vue";
 import CodexConnection from "./CodexConnection.vue";
 import DshConnection from "./DshConnection.vue";
-import AgentPermissionControl from "./AgentPermissionControl.vue";
 import PetCanvas from "./PetCanvas.vue";
 import AppIcon from "./AppIcon.vue";
 import { usePetStore, THEMES, FONT_COLORS, resolveSkinId } from "../stores/pet";
@@ -1632,8 +1631,7 @@ onUnmounted(() => {
           <!-- Claude Code 模式 -->
           <template v-if="backendType === 'claude_code'">
             <p class="current-model">{{ currentModel || '加载中...' }}</p>
-            <p class="hint">使用本地 Claude Code CLI 子进程，会话自动保持上下文；需要授权的工具会按下方权限模式弹出确认窗口（或自动放行）。</p>
-            <AgentPermissionControl backend="claude_code" />
+            <p class="hint">使用本地 Claude Code CLI 子进程，会话自动保持上下文；需要授权的工具会弹出确认窗口（或直接放行），权限可在对话输入框旁的选择器里按会话调整。</p>
             <div class="model-actions">
               <button class="action-btn" @click="resetModel">
                 {{ modelSaved ? "已重置" : "重置会话" }}

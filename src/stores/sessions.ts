@@ -20,7 +20,7 @@ export interface ChatSession {
   provider: string;
   /** 思考强度 id；空串 = 跟随本机默认。 */
   reasoning_effort: string;
-  /** 本会话的本地 CLI 权限档位；空串 = 跟随设置页里该后端的默认权限。 */
+  /** 本会话的本地 CLI 权限档位；空串 = 跟随默认（没有全局默认时跟随本机 CLI 配置）。 */
   permission: string;
   created_at: number;
   updated_at: number;
@@ -161,7 +161,7 @@ export const useSessionsStore = defineStore("sessions", () => {
     return session;
   }
 
-  /** 只改本会话的权限档位（不改全局设置）；空串 = 回到设置页默认。 */
+  /** 只改本会话的权限档位（不改全局设置）；空串 = 回到默认（没有全局默认时跟随本机 CLI 配置）。 */
   async function setPermission(id: string, permission: string): Promise<ChatSession> {
     const session = await invoke<ChatSession>("set_chat_session_permission", { id, permission });
     upsert(session);

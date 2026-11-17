@@ -134,7 +134,8 @@ async function nativeDrop(page, pane, paths, type = 'drop') {
     await pane(3).locator('.attachment-tray').waitFor({ state: 'detached' });
     await nativeDrop(page, pane(3), ['C:/资料/新对话.txt']);
     await pane(3).getByText('新对话.txt', { exact: true }).waitFor();
-    await pane(3).locator('.session-pane-switch').selectOption('mock-session-1');
+    await pane(3).locator('.session-picker-trigger').click();
+    await page.locator('.session-picker-option[data-session-id="mock-session-1"]').click();
     await pane(0).locator('.session-pane-empty').waitFor();
     await nativeDrop(page, pane(0), ['C:/资料/空窗格.txt'], 'enter');
     await pane(0).getByText('先选择会话，再添加文件', { exact: true }).waitFor();

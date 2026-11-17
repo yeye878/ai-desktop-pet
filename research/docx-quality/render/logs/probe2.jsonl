@@ -1,0 +1,10 @@
+{"t": 0.07, "stage": "spawn", "exe": "C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE", "tmp": "D:\\ai-desktop-pet\\research\\docx-quality\\render\\tmp"}
+{"t": 3.54, "stage": "attached", "tries": 5, "child_pid": 38520, "opus": [{"hwnd": 12191210, "title": "Word", "visible": true}], "pids": [35028]}
+{"t": 3.55, "stage": "watchdog_started"}
+{"t": 4.05, "stage": "app_configured", "version": "16.0"}
+{"t": 4.05, "stage": "main_error", "err": "TypeError(\"step() got multiple values for argument 'name'\")"}
+{"t": 4.05, "stage": "word_quit_error", "err": "com_error(-2147352567, '发生意外。', (0, 'Microsoft Word', '“Quit”不是一种属性。', 'wdmain11.chm', 25342, -2146822426), None)"}
+{"t": 10.07, "stage": "word_exited", "exited": false, "code": null}
+{"t": 10.07, "stage": "word_terminate", "sent": true}
+{"t": 10.19, "stage": "word_terminated", "code": 1}
+{"t": 10.19, "stage": "done", "elapsed": 10.19, "dialogs": 0}

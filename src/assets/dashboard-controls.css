@@ -1,0 +1,158 @@
+/* Shared controls used by the redesigned workspaces. */
+.dash-btn {
+  min-height: 38px;
+  gap: 7px;
+  padding: 8px 14px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-control);
+  background: rgba(255, 255, 255, 0.88);
+  color: var(--ui-text);
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.dash-btn:hover:not(:disabled) {
+  border-color: var(--ui-border-strong);
+  background: #ffffff;
+  box-shadow: none;
+  transform: none;
+}
+
+.dash-btn:active:not(:disabled) {
+  transform: none;
+}
+
+.dash-btn.primary {
+  border-color: var(--ui-action);
+  background: var(--ui-action);
+  color: #ffffff;
+  box-shadow: none;
+}
+
+.dash-btn.primary:hover:not(:disabled) {
+  border-color: var(--ui-action-hover);
+  background: var(--ui-action-hover);
+  box-shadow: none;
+  transform: none;
+}
+
+.dash-btn.secondary {
+  background: var(--ui-surface-soft);
+  color: var(--ui-text-secondary);
+}
+
+.dash-btn:disabled {
+  opacity: 0.46;
+}
+
+.dash-icon-btn {
+  width: 32px;
+  height: 32px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ui-text-muted);
+  box-shadow: none;
+}
+
+.dash-icon-btn:hover:not(:disabled) {
+  border-color: var(--ui-border);
+  background: var(--ui-surface-soft);
+  box-shadow: none;
+  transform: none;
+}
+
+.dash-icon-btn.danger:hover:not(:disabled) {
+  border-color: rgba(173, 77, 77, 0.16);
+  background: var(--ui-danger-soft);
+  color: var(--ui-danger);
+}
+
+.dash-select,
+.dash-input,
+.dash-voice-search,
+.dash-textarea,
+.dash-form-group input[type="text"],
+.dash-form-group input[type="password"],
+.dash-form-group input[type="datetime-local"] {
+  min-height: 38px;
+  padding: 9px 12px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-control);
+  background: rgba(255, 255, 255, 0.90);
+  color: var(--ui-text);
+  font-size: 13px;
+  box-shadow: none;
+}
+
+.dash-textarea {
+  line-height: 1.65;
+}
+
+.dash-select:hover:not(:disabled),
+.dash-input:hover:not(:disabled),
+.dash-voice-search:hover:not(:disabled),
+.dash-textarea:hover:not(:disabled),
+.dash-form-group input:hover:not(:disabled) {
+  border-color: var(--ui-border-strong);
+  background: #ffffff;
+}
+
+.dash-select:focus,
+.dash-input:focus,
+.dash-voice-search:focus,
+.dash-textarea:focus,
+.dash-form-group input:focus {
+  border-color: rgba(var(--ui-accent-rgb), 0.58);
+  background: #ffffff;
+  box-shadow: 0 0 0 3px var(--dash-focus);
+  transform: none;
+}
+
+input,
+textarea {
+  user-select: text;
+}
+
+.dash-form-group {
+  margin-bottom: 16px;
+}
+
+.dash-form-group label {
+  margin-bottom: 6px;
+  color: var(--ui-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.dash-toggle {
+  border-color: var(--ui-border-strong);
+  background: rgba(37, 48, 65, 0.14);
+}
+
+.dash-toggle:checked {
+  border-color: var(--ui-action);
+  background: var(--ui-action);
+}
+
+.dash-mini-btn {
+  border-radius: 8px;
+}
+
+.dash-mini-btn.primary {
+  border-color: var(--ui-action);
+  background: var(--ui-action);
+  color: #ffffff;
+}
+
+.dash-btn:focus-visible,
+.dash-icon-btn:focus-visible,
+.dash-mini-btn:focus-visible,
+.dash-select:focus-visible,
+.dash-input:focus-visible,
+.dash-textarea:focus-visible {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: 2px;
+}
